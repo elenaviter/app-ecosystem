@@ -24,6 +24,55 @@ hold before it is switched on. Everything here is **off by default**:
 | Decision routing | `RoutedDecisionPort` | A Card staged by another application's transaction reads its decision from that application's authority. |
 | Recovery | cron `card-transaction-recover` | Finishes or presumes-aborts in-doubt Hub transactions, page by page, with the cursor kept in Redis. |
 
+### Invocation policy markers after a process interruption
+
+An invocation-policy effect places a `PREPARED` marker at STAGE. A later policy
+save for the same authority first validates its requested mode and expected
+revision, then resolves that marker through the exact Card transaction named by
+`<transaction id>:<authority key>`. A recorded COMMIT is FINISHed so its earlier
+policy takes effect before the new save. A `COMMITTED` policy marker alone does
+not prove that FINISH completed: the process may have stopped after publishing
+the policy but before recording its Card effect. The next save replays FINISH
+before replacing that marker, so the Card's serving fence is cleared only after
+its effect is acknowledged. For a Hub-owned transaction without a
+terminal decision, the Hub may record ABORT only when its decision store says
+the transaction expired; FINISH then releases the marker. For a transaction
+staged by another application, the Hub reads that caller's configured decision
+authority and FINISHes only its terminal decision. It does not decide ABORT for
+the caller.
+
+If the decision remains live or its authority, intent, or receipt cannot be
+verified, the save returns retryable
+`invocation_policy_earlier_change_undecided` after a bounded wait. Its
+`transaction_ref.member_transaction_id` names the exact Card receipt; when
+that receipt is readable, `transaction_ref.decision_transaction_id` names the
+decision to recover (the group transaction ID for a group member). Both are
+bounded non-secret transaction IDs. If the receipt is unavailable, only the
+member ID can be returned until recovery can read it. The marker
+continues to fence use of the policy; it is never cleared by elapsed time in
+the policy store. A stale `expected_revision` is refused before recovery work.
+Operators should recover the named Card transaction at its decision authority,
+then retry the policy save. A direct save's earlier `PREPARED` marker follows
+the separate direct-save supersession rule and needs no Card recovery.
+
+Hosts composing policy effects must bind `InvocationPolicyService` to their
+durable recovery route with `bind_transaction_settler`, as the Hub application
+does. This also applies to test hosts that compose OAuth issuance with policy
+effects. An already-finished transaction is replay-safe through that route;
+without it, a transaction-owned marker fails closed, because `COMMITTED` alone
+cannot distinguish a completed FINISH from an unacknowledged effect.
+
+Disabling `card_transactions` also disables the application's recovery binding;
+it does not retire transaction-owned policy markers. Before turning it off on
+a host that used transactions, resolve its outstanding transaction work. Even
+a fully finished transaction can retain a `COMMITTED` policy marker: without
+the recovery binding, later policy changes for that authority still refuse
+`invocation_policy_change_in_progress`. Restore the enabled feature and its
+decision authority to recover; neither the flag being off nor the marker's
+state proves that its effects finished. A host that never enabled transactions
+has no such markers and is unaffected. Recovery or readiness while the feature
+is disabled is not implemented by this change.
+
 **How the Hub calls a host's signed operation.** This applies to plan
 authorization, the transaction authority fetch (`cards/authority_transport.py`)
 and the managed Card edit forward:

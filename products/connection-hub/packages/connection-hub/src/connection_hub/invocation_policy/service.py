@@ -9,7 +9,7 @@ import pathlib
 import time
 from contextlib import AbstractAsyncContextManager, AsyncExitStack
 from dataclasses import replace
-from typing import Any, Protocol
+from typing import Any, Awaitable, Callable, Protocol
 
 from connection_hub.invocation_policy.models import (
     INVOCATION_COMPLETED,
@@ -55,18 +55,49 @@ class InvocationPolicyMutationLock(Protocol):
 
 
 class InvocationPolicyConflict(RuntimeError):
-    def __init__(self, reason: str, *, current_revision: int = 0) -> None:
+    def __init__(
+        self, reason: str, *, current_revision: int = 0,
+        transaction_ref: Mapping[str, str] | None = None,
+    ) -> None:
         super().__init__(reason)
         self.reason = reason
         self.current_revision = current_revision
+        self.transaction_ref = dict(transaction_ref) if transaction_ref else None
+
+
+def recovery_transaction_ref(change: InvocationPolicyChange | None) -> dict[str, str] | None:
+    """Name only a bounded Card transaction id from a policy marker."""
+
+    if change is None:
+        return None
+    suffix = ":" + change.authority.key
+    if not change.change_id.endswith(suffix):
+        return None
+    member_id = change.change_id[:-len(suffix)]
+    if len(member_id) != 64 or any(char not in "0123456789abcdef" for char in member_id):
+        return None
+    return {"member_transaction_id": member_id}
+
+
+def invocation_policy_conflict_response(exc: InvocationPolicyConflict) -> dict[str, Any]:
+    """The public refusal body used by the Connection Hub entrypoint."""
+
+    result: dict[str, Any] = {
+        "ok": False, "error": exc.reason, "status": 409,
+        "current_revision": exc.current_revision,
+    }
+    if exc.reason == "invocation_policy_earlier_change_undecided":
+        result["retryable"] = True
+        if exc.transaction_ref is not None:
+            result["transaction_ref"] = dict(exc.transaction_ref)
+    return result
 
 
 def _transaction_owned(change: InvocationPolicyChange) -> bool:
     """A Card transaction's marker: its change id is ``<transaction>:<authority key>`` (effect_targets).
 
-    Its transaction may still COMMIT and apply it, so it is never superseded here (W750 decides
-    that case). Any other PREPARED marker is a direct save's: nothing but its own request commits it,
-    and that request releases it or fails by name (W749).
+    A COMMITTED marker may still have an unacknowledged Card effect. Any other
+    PREPARED marker is a direct save's: only its own request can commit it (W749).
     """
     return change.change_id.endswith(":" + change.authority.key)
 
@@ -77,9 +108,17 @@ class InvocationPolicyService:
         *,
         store: InvocationPolicyStore,
         mutation_lock: InvocationPolicyMutationLock,
+        transaction_settler: Callable[[InvocationPolicyChange, str], Awaitable[None]] | None = None,
     ) -> None:
         self._store = store
         self._mutation_lock = mutation_lock
+        self._transaction_settler = transaction_settler
+
+    def bind_transaction_settler(
+        self, settler: Callable[[InvocationPolicyChange, str], Awaitable[None]]
+    ) -> None:
+        """Bind the host's durable Card-transaction recovery route."""
+        self._transaction_settler = settler
 
     def _critical_section(self, *, owner_hash: str, authority: InvocationAuthority):
         return self._mutation_lock(
@@ -176,36 +215,49 @@ class InvocationPolicyService:
             raise InvocationPolicyRecordError("policy_mode_invalid")
         owner_hash = owner_hash_for(owner)
         moment = int(now if now is not None else time.time())
-        async with self._critical_section(owner_hash=owner_hash, authority=authority):
-            change = await self._store.read_policy_change(
-                owner_hash=owner_hash,
-                authority=authority,
-            )
-            stuck = change is not None and change.state == POLICY_CHANGE_PREPARED
-            if stuck and _transaction_owned(change):
+        settling: InvocationPolicyChange | None = None
+        for _ in range(2):
+            async with self._critical_section(owner_hash=owner_hash, authority=authority):
+                change = await self._store.read_policy_change(owner_hash=owner_hash, authority=authority)
+                current = await self._store.read_policy(owner_hash=owner_hash, authority=authority)
+                current_revision = current.revision if current is not None else 0
+                if expected_revision is not None and int(expected_revision) != current_revision:
+                    raise InvocationPolicyConflict(
+                        "invocation_policy_revision_moved", current_revision=current_revision
+                    )
+                stuck = change is not None and change.state == POLICY_CHANGE_PREPARED
+                if change is not None and _transaction_owned(change) and settling is None:
+                    # A COMMITTED policy marker can still belong to a Card
+                    # whose effect acknowledgement and FINISH were interrupted.
+                    settling = change
+                elif settling is not None and change is not None and (
+                    stuck or change.change_id != settling.change_id
+                    or change.mode != settling.mode
+                    or change.expected_policy_revision != settling.expected_policy_revision
+                ):
+                    # FINISH must have moved this exact marker out of PREPARED.
+                    # Preserve any marker another writer placed meanwhile.
+                    raise InvocationPolicyConflict(
+                        "invocation_policy_earlier_change_undecided",
+                        transaction_ref=recovery_transaction_ref(change),
+                    )
+                else:
+                    if stuck:
+                        # W749 direct save: validation precedes superseding its marker.
+                        await self._store.delete_policy_change(owner_hash=owner_hash, authority=authority)
+                    policy = InvocationPolicy(
+                        authority=authority, mode=selected_mode, revision=current_revision + 1,
+                        state=POLICY_AVAILABLE, updated_at=moment,
+                    )
+                    await self._store.write_policy(owner_hash=owner_hash, policy=policy)
+                    return policy
+            if self._transaction_settler is None:
                 raise InvocationPolicyConflict("invocation_policy_change_in_progress")
-            current = await self._store.read_policy(
-                owner_hash=owner_hash, authority=authority
-            )
-            current_revision = current.revision if current is not None else 0
-            if expected_revision is not None and int(expected_revision) != current_revision:
-                raise InvocationPolicyConflict(
-                    "invocation_policy_revision_moved",
-                    current_revision=current_revision,
-                )
-            if stuck:
-                # W749: an earlier direct save never blocks a new change. Only now, with the new
-                # change validated, is its marker superseded; its commit is refused by change_id.
-                await self._store.delete_policy_change(owner_hash=owner_hash, authority=authority)
-            policy = InvocationPolicy(
-                authority=authority,
-                mode=selected_mode,
-                revision=current_revision + 1,
-                state=POLICY_AVAILABLE,
-                updated_at=moment,
-            )
-            await self._store.write_policy(owner_hash=owner_hash, policy=policy)
-            return policy
+            await self._transaction_settler(settling, owner)
+        raise InvocationPolicyConflict(
+            "invocation_policy_earlier_change_undecided",
+            transaction_ref=recovery_transaction_ref(settling),
+        )
 
     async def prepare_policy_change(
         self,
@@ -227,52 +279,50 @@ class InvocationPolicyService:
             raise InvocationPolicyRecordError("policy_mode_invalid")
         owner_hash = owner_hash_for(owner)
         moment = int(now if now is not None else time.time())
-        async with self._critical_section(owner_hash=owner_hash, authority=authority):
-            existing = await self._store.read_policy_change(
-                owner_hash=owner_hash,
-                authority=authority,
-            )
-            if existing is not None:
-                if (
-                    existing.change_id == clean_change_id
-                    and existing.mode == selected_mode
-                ):
-                    return existing
-                if existing.state == POLICY_CHANGE_PREPARED and (
-                    existing.change_id == clean_change_id
-                    or _transaction_owned(existing)
-                ):
-                    # The same change id asking for another mode is not a new attempt; a Card
-                    # transaction's marker is unchanged here (W750).
+        settling: InvocationPolicyChange | None = None
+        for _ in range(2):
+            async with self._critical_section(owner_hash=owner_hash, authority=authority):
+                existing = await self._store.read_policy_change(owner_hash=owner_hash, authority=authority)
+                if existing is not None and existing.change_id == clean_change_id:
+                    if existing.mode == selected_mode:
+                        return existing
+                    raise InvocationPolicyConflict("invocation_policy_change_in_progress")
+                current = await self._store.read_policy(owner_hash=owner_hash, authority=authority)
+                current_revision = current.revision if current is not None else 0
+                if expected_revision is not None and int(expected_revision) != current_revision:
                     raise InvocationPolicyConflict(
-                        "invocation_policy_change_in_progress"
+                        "invocation_policy_revision_moved", current_revision=current_revision
                     )
-                # W749: a direct save's PREPARED marker of a DIFFERENT change never blocks a new
-                # attempt. Once the new change is validated below, it replaces that marker; the
-                # superseded change's commit is then refused by its change_id.
-            current = await self._store.read_policy(
-                owner_hash=owner_hash,
-                authority=authority,
-            )
-            current_revision = current.revision if current is not None else 0
-            if expected_revision is not None and int(expected_revision) != current_revision:
-                raise InvocationPolicyConflict(
-                    "invocation_policy_revision_moved",
-                    current_revision=current_revision,
-                )
-            change = InvocationPolicyChange(
-                authority=authority,
-                change_id=clean_change_id,
-                mode=selected_mode,
-                state=POLICY_CHANGE_PREPARED,
-                expected_policy_revision=current_revision,
-                prepared_at=moment,
-            )
-            await self._store.write_policy_change(
-                owner_hash=owner_hash,
-                change=change,
-            )
-            return change
+                stuck = existing is not None and existing.state == POLICY_CHANGE_PREPARED
+                if existing is not None and _transaction_owned(existing) and settling is None:
+                    # The policy may be committed while the Card still has an
+                    # unacknowledged effect and cannot yet be served.
+                    settling = existing
+                elif settling is not None and existing is not None and (
+                    stuck or existing.change_id != settling.change_id
+                    or existing.mode != settling.mode
+                    or existing.expected_policy_revision != settling.expected_policy_revision
+                ):
+                    raise InvocationPolicyConflict(
+                        "invocation_policy_earlier_change_undecided",
+                        transaction_ref=recovery_transaction_ref(existing),
+                    )
+                else:
+                    # W749 direct save: a different PREPARED id is replaced only after validation.
+                    change = InvocationPolicyChange(
+                        authority=authority, change_id=clean_change_id, mode=selected_mode,
+                        state=POLICY_CHANGE_PREPARED, expected_policy_revision=current_revision,
+                        prepared_at=moment,
+                    )
+                    await self._store.write_policy_change(owner_hash=owner_hash, change=change)
+                    return change
+            if self._transaction_settler is None:
+                raise InvocationPolicyConflict("invocation_policy_change_in_progress")
+            await self._transaction_settler(settling, owner)
+        raise InvocationPolicyConflict(
+            "invocation_policy_earlier_change_undecided",
+            transaction_ref=recovery_transaction_ref(settling),
+        )
 
     async def commit_policy_change(
         self,
