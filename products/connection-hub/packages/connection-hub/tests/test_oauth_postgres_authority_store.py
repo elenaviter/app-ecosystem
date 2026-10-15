@@ -140,10 +140,13 @@ async def test_ensure_schema_installs_device_authority_in_one_transaction() -> N
 
     assert connection.transaction_enters == 1
     assert connection.transaction_exits == 1
-    assert len(connection.calls) == 2
+    assert len(connection.calls) == 3
     assert all(depth == 1 for _kind, _sql, _args, depth in connection.calls)
-    assert "connection_hub_oauth_credential_families" in connection.calls[0][1]
-    assert TABLE_PROFILE_DEVICES in connection.calls[1][1]
+    # W880: the transaction first takes the schema's advisory lock, so concurrent loads serialize.
+    assert "pg_advisory_xact_lock" in connection.calls[0][1]
+    assert connection.calls[0][2] == (f"{store.schema}:connection-hub-oauth-authority-schema",)
+    assert "connection_hub_oauth_credential_families" in connection.calls[1][1]
+    assert TABLE_PROFILE_DEVICES in connection.calls[2][1]
     # W414: the device grant migration is never part of schema setup; the
     # release runs it only after every process checks Card continuity.
     assert not any("UPDATE" in sql for _kind, sql, _args, _depth in connection.calls)
