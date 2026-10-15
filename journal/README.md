@@ -133,6 +133,8 @@ that concern this repository so the history is discoverable from here.
 | 2026-10-10 | Card writes get a storage-level version check under the Redis Card lock | Option P: the Card pointer and card-version txn marker become PostgreSQL rows changed only by compare-and-swap, so a holder whose Redis lock expired is refused at write time; activation is a one-way bundle property. Journals: Problem Board project (W700) and Connection Hub card-locks. |
 | 2026-10-11 | A row fence needs an ordered token | The Card row claim takes a fence token from one PostgreSQL sequence, drawn before the owner guard, so a stale operation's late claim can no longer make the live lock owner's save fail; four overnight review schedules (late hint, ABA, lock order, guard-to-SQL stall) each keep a witness. [Public contract](../docs/connection-hub/package/card-version-store.md). Journals: Problem Board project (W700) and Connection Hub card-locks. |
 
+| 2026-10-15 | Whole-content heartbeat identities do not make changing observations stable | Lossless complete-reply section and observation-group negotiation preserves fresh authority and exact values; synthetic wire savings do not establish live CPU savings. |
+
 Entries are listed newest last. The store itself is not public; the
 addresses here are titles, and the decisions that matter to users of this
 repository are always reflected in [`docs/`](../docs/README.md).

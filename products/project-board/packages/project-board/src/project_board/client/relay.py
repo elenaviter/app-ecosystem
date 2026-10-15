@@ -33,6 +33,7 @@ except ImportError:  # pragma: no cover - the relay runtime is a host-side depen
 
 from .card_refusal import actionable_card_refusal
 from project_board.client.heartbeat_team import TeamRequest, TeamSnapshots
+from .heartbeat_reply import ReplyRequest, ReplySnapshots, ReplyDecodeError
 from .limit_state import qualify_limit_state, session_with_limit_state, wake_deferred_until
 from .limit_state import merge_codex_quota, codex_limit_state
 from .codex_quota import (
@@ -1314,12 +1315,14 @@ class ProblemBoardHostRelayAdapter:
         worktree_observer: WorktreeObserverCache | None = None,
         store_executor: Executor | None = None,
         team_snapshots: TeamSnapshots | None = None,
+        reply_snapshots: ReplySnapshots | None = None,
     ) -> None:
         self.config = config
         self.field = field
         self.client = client
         # Children share one process-memory pair owner across attendance cycles.
         self._team_snapshots = team_snapshots if team_snapshots is not None else TeamSnapshots()
+        self._reply_snapshots = reply_snapshots if reply_snapshots is not None else ReplySnapshots()
         # W794: a control the board queues is served at once, not at the end of the next attendance turn.
         # Project adapters are rebuilt every discovery turn over the same client: the hook is keyed by project
         # (the newest adapter replaces the last) and the pull lock lives on the client, one per project.
@@ -1645,7 +1648,7 @@ class ProblemBoardHostRelayAdapter:
         # This is a best-effort latency read; no failure may strand its batch.
         try:
             discovery, republished = await self._heartbeat_with_republish(
-                {"availability": "available"}
+                {"availability": "available"}, materialize=self._record_attendance_observation
             )
         except Exception as exc:  # noqa: BLE001
             logger.warning(
@@ -1662,7 +1665,6 @@ class ProblemBoardHostRelayAdapter:
         ):
             return "limbo"
         self._record_project_heartbeat("")
-        self._record_attendance_observation(discovery)
         refreshed = (
             "attendances" in discovery
             and bool(self._attendance_cache.get("initialized"))
@@ -1723,6 +1725,9 @@ class ProblemBoardHostRelayAdapter:
                 self._heartbeat_teams().retain_projects({
                     str(item["project_ref"]) for item in self._attendance_cache["items"]
                 })
+                self._heartbeat_replies().retain_projects({
+                    str(item["project_ref"]) for item in self._attendance_cache["items"]
+                })
         if value.get("worker_alias"):
             self._attendance_cache["worker_alias"] = str(value["worker_alias"])
         if "host_retirements" in value:
@@ -1734,6 +1739,7 @@ class ProblemBoardHostRelayAdapter:
 
     def _invalidate_cached_project(self, project_ref: str) -> None:
         self._heartbeat_teams().forget(project_ref)
+        self._heartbeat_replies().forget(project_ref)
         self._attendance_cache["initialized"] = False
         self._attendance_cache["items"] = [
             dict(item)
@@ -4676,12 +4682,16 @@ class ProblemBoardHostRelayAdapter:
         )
         heartbeat_payload: dict[str, Any] = {}
         team_request = None
+        reply_request = None
         if heartbeat_sent:
-            team_request = self._heartbeat_teams().begin(project_ref, self._team_context())
+            # The complete reply protocol supersedes TEAM v1 negotiation. The
+            # legacy team materializer still receives a full reconstructed list.
+            team_request = self._heartbeat_teams().begin(project_ref, None)
+            reply_request = self._heartbeat_replies().begin(project_ref, self._team_context())
             heartbeat_payload = {
                 "availability": "available",
                 "project_ref": project_ref,
-                **team_request.payload(),
+                **reply_request.payload(),
             }
             if session_delta is not None:
                 heartbeat_payload["agent_sessions"] = session_delta
@@ -4705,7 +4715,28 @@ class ProblemBoardHostRelayAdapter:
             "heartbeat_sent": heartbeat_sent,
             "heartbeat_payload": heartbeat_payload,
             "team_request": team_request,
+            "reply_request": reply_request,
         }
+
+    def _heartbeat_replies(self) -> ReplySnapshots:
+        owner = getattr(self, "_reply_snapshots", None)
+        if owner is None:
+            owner = self._reply_snapshots = ReplySnapshots()
+        return owner
+
+    def _prepare_reply_request(self, project_ref: str, payload: Mapping[str, Any]) -> tuple[ReplyRequest, dict[str, Any]]:
+        request = self._heartbeat_replies().begin(project_ref, self._team_context())
+        return request, {**payload, **request.payload()}
+
+    def _materialize_heartbeat_reply(self, request: ReplyRequest, response: Mapping[str, Any],
+                                     materialize: Callable[[dict[str, Any]], None]) -> dict[str, Any]:
+        try:
+            result = self._heartbeat_replies().apply(request, response, context=self._team_context(), materialize=materialize)
+        except ReplyDecodeError as exc:
+            raise HostRelayRetryableError("work_heartbeat_reply_full_required", "Heartbeat reply requires a fresh full snapshot.") from exc
+        if result is None:
+            raise HostRelayRetryableError("work_heartbeat_reply_obsolete", "Heartbeat reply crossed a channel or newer request.")
+        return result
 
     def _heartbeat_teams(self) -> TeamSnapshots:
         # Narrow tests/one-shot adapters may be built without __init__.
@@ -4761,11 +4792,20 @@ class ProblemBoardHostRelayAdapter:
             request = teams.begin(project_ref, None)
             context = None
         try:
-            teams.apply(request, heartbeat_result, context=context,
-                        materialize=lambda team: self.field.sync_project_team(self.config.project_id, team))
+            if isinstance(prepared.get("reply_request"), ReplyRequest):
+                # The reply owner already fenced and reconstructed this full
+                # list. Do not feed a context-free legacy request to TEAM v1.
+                team = heartbeat_result.get("team")
+                if isinstance(team, list):
+                    self.field.sync_project_team(self.config.project_id, team)
+                else:
+                    self._heartbeat_replies().forget(project_ref)
+            else:
+                teams.apply(request, heartbeat_result, context=context,
+                            materialize=lambda team: self.field.sync_project_team(self.config.project_id, team))
         except DomainError:
             # No token survives a failed materialization; next request is full.
-            pass
+            self._heartbeat_replies().forget(project_ref)
         # Who acts as coordinator now (W313): the holder, not the first
         # labelled teammate. Absent from a board that predates it.
         if isinstance(heartbeat_result.get("coordinator"), Mapping):
@@ -4776,7 +4816,7 @@ class ProblemBoardHostRelayAdapter:
             except DomainError:
                 # Like the team sync: a project not yet on this host keeps
                 # no holder; the next heartbeat after it lands writes one.
-                pass
+                self._heartbeat_replies().forget(project_ref)
         # W517: the optional roles the board carries (knowledge-keeper).
         # Absent from a board that predates them.
         if isinstance(heartbeat_result.get("roles"), Mapping):
@@ -4785,7 +4825,7 @@ class ProblemBoardHostRelayAdapter:
                     self.config.project_id, heartbeat_result["roles"]
                 )
             except DomainError:
-                pass
+                self._heartbeat_replies().forget(project_ref)
 
     async def _poll_project_once(
         self,
@@ -4835,6 +4875,7 @@ class ProblemBoardHostRelayAdapter:
                     )
             except DomainError as exc:
                 self._heartbeat_teams().forget(project_ref)
+                self._heartbeat_replies().forget(project_ref)
                 if exc.code != "work_worker_not_linked":
                     raise
                 self._invalidate_cached_project(project_ref)
@@ -4861,33 +4902,43 @@ class ProblemBoardHostRelayAdapter:
                     "journal_workspace": {"state": "waiting_for_link"},
                 }
             heartbeat_result = _object_result(heartbeat_response)
-            await run_off_loop(
-                self._record_project_heartbeat_result,
-                project_ref=project_ref,
-                prepared=prepared,
-                heartbeat_result=heartbeat_result,
-                executor=self._store_thread(),
-            )
-            journal_workspace = await self._reconcile_journal_binding_background(heartbeat_result)
-            recipients = heartbeat_result.get("mail_recipients")
-            if not isinstance(recipients, list):
-                recipients = heartbeat_result.get("team")
-            mailbox_reconciliation = {"state": "directory_unavailable"}
-            if isinstance(recipients, list):
-                try:
-                    mailbox_reconciliation = await self._run_startup_recovery(
-                        recipients
-                    )
-                except DomainError:
-                    # The same project-materialization race applies to this compact
-                    # address directory. The next heartbeat replaces it completely.
-                    mailbox_reconciliation = {"state": "waiting_for_materialization"}
-            (
-                assignment_notices_reconciled,
-                assignment_reconciliation_issues,
-            ) = await run_off_loop(
-                self._reconcile_assignments, heartbeat_result, executor=self._store_thread()
-            )
+            reply_request = prepared.get("reply_request")
+            if isinstance(reply_request, ReplyRequest):
+                heartbeat_result = await run_off_loop(
+                    self._materialize_heartbeat_reply, reply_request, heartbeat_result,
+                    lambda value: self._record_project_heartbeat_result(
+                        project_ref=project_ref, prepared=prepared, heartbeat_result=value),
+                    executor=self._store_thread(),
+                )
+            else:
+                # Existing one-shot/test adapters can still provide legacy preparation.
+                await run_off_loop(self._record_project_heartbeat_result, project_ref=project_ref,
+                                   prepared=prepared, heartbeat_result=heartbeat_result, executor=self._store_thread())
+            try:
+                journal_workspace = await self._reconcile_journal_binding_background(heartbeat_result)
+                recipients = heartbeat_result.get("mail_recipients")
+                if not isinstance(recipients, list):
+                    recipients = heartbeat_result.get("team")
+                mailbox_reconciliation = {"state": "directory_unavailable"}
+                if isinstance(recipients, list):
+                    try:
+                        mailbox_reconciliation = await self._run_startup_recovery(recipients)
+                    except DomainError:
+                        # A project-materialization race must not retain conditional
+                        # knowledge of a directory that did not reach this host.
+                        self._heartbeat_replies().forget(project_ref)
+                        mailbox_reconciliation = {"state": "waiting_for_materialization"}
+                (
+                    assignment_notices_reconciled,
+                    assignment_reconciliation_issues,
+                ) = await run_off_loop(
+                    self._reconcile_assignments, heartbeat_result, executor=self._store_thread()
+                )
+                if assignment_reconciliation_issues:
+                    self._heartbeat_replies().forget(project_ref)
+            except BaseException:
+                self._heartbeat_replies().forget(project_ref)
+                raise
         with self._trace_stage(
             "attendance.controls",
             operation="control.pull",
@@ -5142,40 +5193,42 @@ class ProblemBoardHostRelayAdapter:
         )
 
     async def _heartbeat_with_republish(
-        self, payload: Mapping[str, Any]
+        self, payload: Mapping[str, Any], *, materialize: Callable[[dict[str, Any]], None] | None = None,
     ) -> tuple[dict[str, Any], dict[str, Any] | None]:
         """Heartbeat first; republish only when the control plane no longer knows us."""
 
         heartbeat_payload = dict(payload)
         await self._add_runtime_account(heartbeat_payload)
+
+        async def attempt() -> dict[str, Any]:
+            request, wire_payload = await run_off_loop(
+                self._prepare_reply_request, "", heartbeat_payload, executor=self._store_thread())
+            try:
+                response = _object_result(await self._account_action(
+                    wire_payload,
+                    lambda: self.client.action(object_ref="work:worker:self", action="worker.heartbeat", payload=wire_payload),
+                ))
+            except BaseException:
+                self._heartbeat_replies().forget("")
+                raise
+            return await run_off_loop(self._materialize_heartbeat_reply, request, response,
+                                      materialize or (lambda value: None), executor=self._store_thread())
+
         try:
-            return _object_result(
-                await self._account_action(
-                    heartbeat_payload,
-                    lambda: self.client.action(
-                        object_ref="work:worker:self", action="worker.heartbeat", payload=heartbeat_payload
-                    ),
-                )
-            ), None
+            return await attempt(), None
         except DomainError as exc:
             if exc.code != "work_worker_unavailable":
                 raise
         # Re-register with the interval already advertised so the recovery does
         # not cost a second publish for the interval alone.
         self._heartbeat_teams().retain_projects(set())
+        self._heartbeat_replies().retain_projects(set())
         interval = self._published_interval
         self._published_interval = None
         registration = await self._publish_worker(reconcile_ceiling_seconds=interval)
         if registration["remote"].get("pool_status") == "limbo":
             return {}, registration
-        return _object_result(
-            await self._account_action(
-                heartbeat_payload,
-                lambda: self.client.action(
-                    object_ref="work:worker:self", action="worker.heartbeat", payload=heartbeat_payload
-                ),
-            )
-        ), registration
+        return await attempt(), registration
 
     def _listener_sessions(self) -> list[dict[str, Any]]:
         """This session's listener row, carrying the runtime's own limit state (W26)
@@ -5342,21 +5395,15 @@ class ProblemBoardHostRelayAdapter:
                     operation="worker.heartbeat.discovery",
                 ):
                     discovery, republished = await self._heartbeat_with_republish(
-                        heartbeat_payload
+                        heartbeat_payload,
+                        materialize=lambda value: self._record_discovery_heartbeat(
+                            session_signature, worker_info, alias_request, value),
                     )
                 if (
                     republished is not None
                     and republished["remote"].get("pool_status") == "limbo"
                 ):
                     return await self._limbo_result()
-                await run_off_loop(
-                    self._record_discovery_heartbeat,
-                    session_signature,
-                    worker_info,
-                    alias_request,
-                    discovery,
-                    executor=self._store_thread(),
-                )
         with self._trace_stage(
             "attendance.controls",
             operation="control.pull.discovery",
@@ -5394,6 +5441,7 @@ class ProblemBoardHostRelayAdapter:
                 worktree_observer=self._worktree_observer,
                 store_executor=self._store_thread(),
                 team_snapshots=self._heartbeat_teams(),
+                reply_snapshots=self._heartbeat_replies(),
             )
             project = await adapter._poll_project_once(agent_sessions=sessions)
             if project.get("attendance") == "linked":

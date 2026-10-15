@@ -453,7 +453,11 @@ PROBLEM_BOARD_OPERATION_POLICIES: dict[str, dict[str, Any]] = {
             " Optional team_protocol=problem_board.heartbeat_team.v1 and "
             "known_team_revision negotiate display-only complete TEAM snapshots; "
             "team_view state unchanged omits team, never clears it. "
-            "Current authority and other heartbeat fields are not conditional."
+            "Current authority is always fresh. Optional reply_protocol="
+            "problem_board.heartbeat_reply.v1 with known_reply takes precedence "
+            "and negotiates lossless complete-reply sections and exact observation "
+            "groups; the client reconstructs and verifies the full result before "
+            "consuming it. Missing or invalid knowledge gets a full reply."
         ),
     },
     "worker.estimate": {
