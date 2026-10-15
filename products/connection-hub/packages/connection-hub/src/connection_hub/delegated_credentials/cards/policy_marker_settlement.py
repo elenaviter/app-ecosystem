@@ -12,11 +12,15 @@ from __future__ import annotations
 
 import asyncio
 import time
+from datetime import datetime
 from typing import Any, Awaitable, Callable, Mapping
 
 from service_foundation.coordination.durable_decision_log import DecisionRefused
 
-from connection_hub.invocation_policy.models import InvocationPolicyChange, POLICY_CHANGE_PREPARED
+from connection_hub.invocation_policy.models import (
+    InvocationPolicyChange, POLICY_CHANGE_COMMITTED, POLICY_CHANGE_PREPARED,
+)
+from connection_hub.invocation_policy.store import owner_hash_for
 from connection_hub.invocation_policy.service import (
     InvocationPolicyConflict,
     recovery_transaction_ref,
@@ -24,7 +28,12 @@ from connection_hub.invocation_policy.service import (
 
 from ..issuer_gate import MAX_DECISION_SECONDS
 from .card_participant import PARTICIPANT, LocalCardIntentSource
-from .transaction_store import effect_outcomes, pending_effects, read_receipt
+from .transaction_store import (
+    card_version_outcome, card_version_txn_id, effect_outcomes, pending_effects,
+    read_card_version_marker, read_receipt,
+)
+
+CARD_VERSION_PROOF_LIMIT = 64
 
 
 class CardPolicyMarkerSettler:
@@ -95,9 +104,79 @@ class CardPolicyMarkerSettler:
         outcome = (await effect_outcomes(self._card_store, member_id)).get(str(effect_index))
         return isinstance(outcome, str) and bool(outcome)
 
+    async def _finished_card_version(
+        self, change: InvocationPolicyChange, owner_subject: str, txn: str,
+    ) -> bool:
+        """D2: the exact version survives only a fully completed PUBLISH.
+
+        The committed policy marker is the policy-side effect witness. It is
+        insufficient alone: derive OUTCOME's exact link, time and binding from
+        that Card's immutable version, never a request or a directory scan.
+        Follow at most 64 immutable base links; never list versions. PREPARED,
+        an in-progress txn or missing/over-bound evidence stays undecided.
+        The policy service rechecks the marker and policy under its own lock.
+        A change id can be request-supplied: retiring an already-applied
+        COMMITTED marker applies no undecided effect, even for a forged id.
+        """
+        if change.state != POLICY_CHANGE_COMMITTED:
+            return False
+        card_version_txn_id(txn)
+        store = self._card_store
+        subject_hash, access_id = owner_hash_for(owner_subject), change.authority.access_id
+        current = await store.read_current(subject_hash=subject_hash, access_id=access_id)
+        if current is None or await read_card_version_marker(store, txn) is not None:
+            return False
+        name, seen, record = current.revision_name, set(), None
+        for _ in range(CARD_VERSION_PROOF_LIMIT):
+            if not isinstance(name, str) or not name or name in seen:
+                return False
+            seen.add(name)
+            record = await store.read_version_record(
+                subject_hash=subject_hash, access_id=access_id, revision_name=name,
+            )
+            if not isinstance(record, Mapping):
+                return False
+            if record.get("txn") == txn:
+                break
+            name = record.get("base")
+        else:
+            return False
+        card = await store.read_revision(
+            subject_hash=subject_hash, access_id=access_id, revision_name=name,
+        )
+        if (card is None or card.access_id != access_id or card.grantor_subject != owner_subject
+                or card.card_revision > current.card_revision
+                or (name == current.revision_name and (card.card_revision != current.card_revision
+                                                       or card.content_hash() != current.content_hash))):
+            return False
+        at = datetime.fromisoformat(record["at"])
+        result = await card_version_outcome(
+            store, txn=txn, binding=record.get("binding"), at=at,
+            links=[{"subject_hash": subject_hash, "access_id": access_id,
+                    "version": card.card_revision, "checksum": card.content_hash()}],
+        )
+        from .card_version_reservation import read_reservation
+        held = await read_reservation(store, subject_hash=subject_hash, access_id=access_id)
+        return (result["state"] == "published"
+                and (held is None or held["txn"] != txn)
+                and await read_card_version_marker(store, txn) is None
+                and await store.read_current(subject_hash=subject_hash, access_id=access_id) == current)
+
     async def __call__(self, change: InvocationPolicyChange, owner_subject: str) -> bool:
         suffix = ":" + change.authority.key
         recovery = recovery_transaction_ref(change)
+        if change.change_id.endswith(suffix) and recovery is None:
+            # CardVersion uses a separate transaction namespace and completion
+            # protocol, not legacy Card receipts or a caller's FINISH endpoint.
+            txn = change.change_id[:-len(suffix)]
+            try:
+                if await asyncio.wait_for(
+                    self._finished_card_version(change, owner_subject, txn),
+                    timeout=self._max_wait_seconds,
+                ):
+                    return True
+            except Exception:  # noqa: BLE001 - incomplete/corrupt proof never clears a marker
+                pass
         if not change.change_id.endswith(suffix) or recovery is None:
             raise InvocationPolicyConflict(
                 "invocation_policy_earlier_change_undecided", transaction_ref=recovery,

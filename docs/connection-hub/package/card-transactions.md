@@ -74,6 +74,25 @@ Turning the flag off no longer requires a manual marker settle when the
 existing decision authority remains available.
 A host that never enabled transactions has no such markers and is unaffected.
 
+CardVersion Saves use their own completion proof, not legacy Card receipts.
+For a `COMMITTED` policy marker, the settler follows at most 64 immutable
+`version_record.base` links from that Card's current version, by exact name,
+to find the marker's transaction. It derives OUTCOME's exact link, time and
+caller/scope binding from that version. The full Card checksum, revision,
+owner and access id must agree, the authoritative transaction marker must be
+absent, and OUTCOME must prove `published`. Under D2, PUBLISH removes its
+marker only after all effects and cleanup; ROLLBACK removes unpublished
+versions before the marker. The policy service then rechecks the unchanged
+policy marker and current policy mode/revision under its mutation lock before
+retiring the marker. No policy effect is applied by this recovery path.
+A request-supplied transaction-shaped change id or `COMMITTED` state alone
+is not proof. A change id can be request-supplied: retiring an already-applied
+COMMITTED marker applies no undecided effect, even for a forged id. PREPARED
+markers, incomplete publication, mismatched or missing evidence, and a
+transaction beyond the 64-version bound remain undecided. Recovery reads
+exact objects only and retains no additional Card
+snapshot, effect history or tombstone.
+
 **How the Hub calls a host's signed operation.** This applies to plan
 authorization, the transaction authority fetch (`cards/authority_transport.py`)
 and the managed Card edit forward:
