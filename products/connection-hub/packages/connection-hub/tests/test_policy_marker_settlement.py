@@ -132,13 +132,32 @@ async def test_finished_card_marker_allows_the_next_policy_change(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("next_change", ("set", "prepare"))
-async def test_committed_marker_without_recovery_binding_stays_closed(tmp_path, next_change):
-    policies, authority, before, _store, coordinator, _decisions, row = await _staged(
+@pytest.mark.parametrize("finish_complete", (False, True))
+async def test_committed_marker_without_recovery_binding_stays_closed(
+    tmp_path, monkeypatch, next_change, finish_complete,
+):
+    policies, authority, before, store, coordinator, decisions, row = await _staged(
         tmp_path, decision="committed",
     )
-    await coordinator.finish(row.transaction_id)
+    if finish_complete:
+        await coordinator.finish(row.transaction_id)
+    else:
+        original_write = tx.write_json_atomic
+
+        async def fail_effect_ack(path, payload):
+            if path == tx.effects_path(store, row.transaction_id):
+                raise OSError("injected_after_policy_commit")
+            return await original_write(path, payload)
+
+        monkeypatch.setattr(tx, "write_json_atomic", fail_effect_ack)
+        with pytest.raises(CardServingUnavailable, match="card_effects_pending"):
+            await coordinator.finish(row.transaction_id)
+    marker = await policies.get_policy_change(owner_subject=before.grantor_subject, authority=authority)
+    assert marker.state == POLICY_CHANGE_COMMITTED
+    receipt = await read_receipt(store, row.transaction_id)
+    assert bool(receipt.get("intent_finished")) is finish_complete
     # The marker alone cannot distinguish completed FINISH from a crash before
-    # effect acknowledgement. A host must supply its durable recovery route.
+    # effect acknowledgement. Turning recovery off does not prove completion.
     unbound = _service(tmp_path / "policies")
     with pytest.raises(InvocationPolicyConflict, match="invocation_policy_change_in_progress"):
         if next_change == "set":
@@ -150,6 +169,11 @@ async def test_committed_marker_without_recovery_binding_stays_closed(tmp_path, 
                 mode=POLICY_ALWAYS, change_id="next-direct",
             )
     assert (await policies.get(owner_subject=before.grantor_subject, authority=authority)).revision == 1
+    if not finish_complete:
+        assert len(await tx.pending_effects(store, receipt)) == 1
+        assert not (await decisions.read(row.transaction_id)).finished
+        with pytest.raises(CardStorageError, match="card_effects_pending"):
+            await store.read_current_authority(subject_hash=SUBJECT_HASH, access_id=before.access_id)
 
 
 @pytest.mark.asyncio
