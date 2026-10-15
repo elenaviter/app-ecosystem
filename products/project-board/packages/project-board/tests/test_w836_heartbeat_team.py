@@ -12,6 +12,9 @@ from project_board.contract.heartbeat_team import TEAM_PROTOCOL, content_digest,
 
 
 PROJECT = "work:project:project-one"
+SCOPE = {"tenant": "test", "platform_project": "test", "bundle": "test",
+         "viewer": "worker-a", "authority": "test-card", "view": "heartbeat.reply",
+         "project_ref": PROJECT}
 CONTEXT = ("channel-a", 1)
 TEAM = [{"worker_name": "worker-a", "runtime_model": {"model": "synthetic-a"},
          "runtime_account": {"account_id": "synthetic-account"}, "limit_state": {"used_percent": 10}}]
@@ -212,7 +215,8 @@ def test_actual_relay_materialization_refusal_drops_conditional_knowledge(monkey
     assert not prepared(adapter)["team_request"].known_revision
 
 
-def test_actual_prepare_path_sends_only_the_coherent_token_and_resets_on_reconnect(monkeypatch):
+def test_actual_prepare_path_negotiates_complete_reply_and_resets_on_reconnect(monkeypatch):
+    from project_board.contract.heartbeat_reply import REPLY_PROTOCOL, encode_reply
     adapter, seen = adapter_for_team(monkeypatch)
     for name, result in {"_session_report_delta": (None, "s"), "_assignment_files_delta": (None, "f"),
                          "_store_reads_delta": (None, "r"), "_worker_info": ({}, False),
@@ -223,17 +227,22 @@ def test_actual_prepare_path_sends_only_the_coherent_token_and_resets_on_reconne
     def prepare():
         return adapter._prepare_project_heartbeat(project_ref=PROJECT, agent_sessions=[], force_heartbeat=True)
     first = prepare()
-    assert first["heartbeat_payload"] == {"availability": "available", "project_ref": PROJECT, "team_protocol": TEAM_PROTOCOL}
-    adapter._record_project_heartbeat_result(project_ref=PROJECT, prepared=first, heartbeat_result=full())
-    assert prepare()["heartbeat_payload"]["known_team_revision"] == full()["team_view"]["revision"]
+    assert first["heartbeat_payload"] == {"availability": "available", "project_ref": PROJECT, "reply_protocol": REPLY_PROTOCOL}
+    reply = encode_reply({"team": TEAM}, protocol=REPLY_PROTOCOL, scope=SCOPE)
+    adapter._materialize_heartbeat_reply(
+        first["reply_request"], reply,
+        lambda value: adapter._record_project_heartbeat_result(project_ref=PROJECT, prepared=first, heartbeat_result=value),
+    )
+    assert seen[-1] == TEAM
+    assert "known_reply" in prepare()["heartbeat_payload"]
     adapter.client.connection_generation = 2
-    assert "known_team_revision" not in prepare()["heartbeat_payload"]
+    assert "known_reply" not in prepare()["heartbeat_payload"]
     adapter.client.connected = False
-    assert "team_protocol" not in prepare()["heartbeat_payload"]
+    assert "known_reply" not in prepare()["heartbeat_payload"]
     adapter.client.connected = True
-    assert "known_team_revision" not in prepare()["heartbeat_payload"]
+    assert "known_reply" not in prepare()["heartbeat_payload"]
     adapter._invalidate_cached_project(PROJECT)
-    assert "known_team_revision" not in prepare()["heartbeat_payload"]
+    assert "known_reply" not in prepare()["heartbeat_payload"]
 
 
 def test_rebuilt_attendance_adapter_uses_the_parent_pair_owner(monkeypatch):

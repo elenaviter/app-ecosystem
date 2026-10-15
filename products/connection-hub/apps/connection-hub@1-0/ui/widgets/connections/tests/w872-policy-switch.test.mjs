@@ -6,7 +6,7 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import test from 'node:test'
 
-import { heldModeChanges, policySwitchView, withInvocationPolicy } from '../src/features/delegatedAccess/invocationChoice.ts'
+import { heldModeChanges, policySwitchView, undecidedPolicyMessage, withInvocationPolicy } from '../src/features/delegatedAccess/invocationChoice.ts'
 
 const read = (path) => readFileSync(new URL(`../src/features/delegatedAccess/${path}`, import.meta.url), 'utf8')
 
@@ -65,4 +65,24 @@ test('a written policy still updates both copies of the Card', () => {
   const policy = { policy_id: 'p1', mode: 'once', authority: { access_id: 'aut_1' } }
   const card = { access_id: 'aut_1', card_revision: 12, invocation_policies: [{ ...policy, mode: 'always' }] }
   assert.deepEqual(withInvocationPolicy(card, policy).invocation_policies, [policy])
+})
+
+test('the "changed, not saved" label sits beside the switch at a readable size', () => {
+  // The operator, 2026-10-15 20:10Z: "text is badly visible under the once/always".
+  const controls = read('InvocationControls.tsx')
+  const control = controls.slice(controls.indexOf('export function InvocationPolicyControl'),
+    controls.indexOf('export function OperationInvocationChoice'))
+  const switchEnd = control.indexOf('</span>\n      {changed ? (')
+  assert.ok(switchEnd > 0, 'the label follows the closed switch, not inside it')
+  assert.match(control, /className="operation-policy__status operation-policy__status--changed"/)
+  const css = readFileSync(new URL('../src/styles.css', import.meta.url), 'utf8')
+  assert.match(css, /\.operation-policy \.operation-policy__status\.operation-policy__status--changed \{[^}]*font-size: 12px/)
+})
+
+test('a Save refused because an earlier policy change is undecided says so, naming the operations', () => {
+  assert.equal(undecidedPolicyMessage(['journal.view.request']),
+    'An earlier change to journal.view.request is not settled yet; nothing was saved. Your draft is kept; try Save again in a moment.')
+  assert.match(undecidedPolicyMessage([]), /An earlier change to this permission is not settled yet/)
+  const panel = read('DelegatedAccessPanel.tsx')
+  assert.match(panel, /includes\('invocation_policy_earlier_change_undecided'\)\n\s*\? undecidedPolicyMessage\(editHeldModeChanges\(item\)/)
 })

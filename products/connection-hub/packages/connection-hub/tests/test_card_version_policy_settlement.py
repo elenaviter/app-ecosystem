@@ -53,7 +53,7 @@ async def test_card_save_then_next_policy_change(tmp_path, monkeypatch, next_cha
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("successors", [1, 63, 64])
+@pytest.mark.parametrize("successors", [1, 64, 65])
 async def test_save_save_again_then_switch_and_proof_bound(tmp_path, monkeypatch, successors):
     store, service, before, after, policies, authority = await _saved(tmp_path, monkeypatch)
     current = after
@@ -66,7 +66,7 @@ async def test_save_save_again_then_switch_and_proof_bound(tmp_path, monkeypatch
         )
         await service.publish_card_version(txn=txn)
         current = following
-    if successors == 64:
+    if successors == 65:
         with pytest.raises(InvocationPolicyConflict, match="invocation_policy_earlier_change_undecided"):
             await policies.set_policy(owner_subject=before.grantor_subject, authority=authority, mode=POLICY_ALWAYS)
         assert await policies.get_policy_change(owner_subject=before.grantor_subject, authority=authority) is not None
@@ -75,6 +75,102 @@ async def test_save_save_again_then_switch_and_proof_bound(tmp_path, monkeypatch
                                           mode=POLICY_ALWAYS, expected_revision=1)
         assert saved.revision == 2
     assert (await store.read_current(subject_hash=SUBJECT_HASH, access_id=before.access_id)).card_revision == current.card_revision
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("distance", [1, 64, 65])
+async def test_historical_recordless_writer_uses_bounded_card_local_recovery(tmp_path, monkeypatch, distance):
+    store, _service, before, after, policies, authority = await _saved(tmp_path, monkeypatch)
+    # Simulate the old direct issuer, not CardVersion: no version_record.
+    pointer = await store.write_revision(
+        subject_hash=SUBJECT_HASH,
+        authority=replace(after, card_revision=after.card_revision + distance, last_issued_at=123),
+        updated_at=WHEN + timedelta(seconds=1),
+    )
+    await store.advance_current(subject_hash=SUBJECT_HASH, pointer=pointer)
+    if distance <= 64:
+        assert (await policies.set_policy(owner_subject=before.grantor_subject, authority=authority,
+                                          mode=POLICY_ALWAYS, expected_revision=1)).revision == 2
+    else:
+        with pytest.raises(InvocationPolicyConflict, match="invocation_policy_earlier_change_undecided"):
+            await policies.set_policy(owner_subject=before.grantor_subject, authority=authority, mode=POLICY_ALWAYS)
+    assert await store.read_current(subject_hash=SUBJECT_HASH, access_id=before.access_id) == pointer
+
+
+@pytest.mark.asyncio
+async def test_history_inventory_refuses_its_directory_entry_cap(tmp_path, monkeypatch):
+    store, _service, before, after, policies, authority = await _saved(tmp_path, monkeypatch)
+    pointer = await store.write_revision(subject_hash=SUBJECT_HASH,
+        authority=replace(after, card_revision=3), updated_at=WHEN + timedelta(seconds=1))
+    await store.advance_current(subject_hash=SUBJECT_HASH, pointer=pointer)
+    directory = store.revision_path(subject_hash=SUBJECT_HASH, access_id=before.access_id,
+                                    revision_name=pointer.revision_name).parent
+    # Even non-version entries count: do not sort or scan an unbounded directory.
+    for index in range(257):
+        (directory / f"unrelated-{index}").touch()
+    marker = await policies.get_policy_change(owner_subject=before.grantor_subject, authority=authority)
+    with pytest.raises(InvocationPolicyConflict, match="invocation_policy_earlier_change_undecided"):
+        await policies.set_policy(owner_subject=before.grantor_subject, authority=authority, mode=POLICY_ALWAYS)
+    assert await policies.get_policy_change(owner_subject=before.grantor_subject, authority=authority) == marker
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mixed", [False, True])
+async def test_oauth_issuance_persistence_keeps_its_own_predecessor_record(tmp_path, monkeypatch, mixed):
+    from connection_hub.delegated_credentials.automation_access import AutomationAccessService, record_from_card
+    from types import SimpleNamespace
+
+    store, service, before, after, policies, authority = await _saved(tmp_path, monkeypatch)
+    host = object.__new__(AutomationAccessService)
+    host._caller_writers = None
+    host._card_coordinator = None
+
+    async def persist(card, _handles, *, subject_hash, expected_revision):
+        await service.commit(card, subject_hash=subject_hash, expected_revision=expected_revision,
+                             now=int(WHEN.timestamp()))
+
+    host._persistence = SimpleNamespace(persist=persist)
+
+    async def notify(*_args, **_kwargs):
+        pass
+
+    monkeypatch.setattr(host, "notify_change", notify)
+    current = after
+    for index in range(2 if mixed else 1):
+        base = await store.read_current(subject_hash=SUBJECT_HASH, access_id=before.access_id)
+        renewed = replace(current, card_revision=current.card_revision + 1,
+                          expires_at=current.expires_at + 1, last_issued_at=123 + index)
+        record = record_from_card(renewed)
+
+        async def build(**_kwargs):
+            # Candidate construction is isolated; record_oauth_grant,
+            # _persist_record and the real Card service writer are not.
+            return record, current.card_revision, False, {}
+
+        monkeypatch.setattr(host, "_oauth_grant_record", build)
+        assert await host.record_oauth_grant(grantor_subject=current.grantor_subject,
+                                             client_id=current.client_id) == record
+        pointer = await store.read_current(subject_hash=SUBJECT_HASH, access_id=before.access_id)
+        own = await store.read_version_record(subject_hash=SUBJECT_HASH, access_id=before.access_id,
+                                               revision_name=pointer.revision_name)
+        assert own["base"] == base.revision_name
+        assert own["txn"] == "" and own["txn"] != TXN
+        assert own["at"] and own["actor"] == {"kind": "card-service"}
+        current = renewed
+    if mixed:
+        following = replace(current, card_revision=current.card_revision + 1, label="another board save")
+        txn = "another-board-save-" + "c" * 32
+        await service.stage_card_version(txn=txn, request_digest=DIGEST, catalog="catalog-1",
+            now=WHEN + timedelta(seconds=3),
+            members=[(SUBJECT_HASH, before.access_id, current.card_revision, following)])
+        await service.publish_card_version(txn=txn)
+
+    async def no_inventory(**_kwargs):
+        raise AssertionError("new writers must keep the exact predecessor chain")
+
+    monkeypatch.setattr(store, "policy_recovery_candidates", no_inventory)
+    assert (await policies.set_policy(owner_subject=before.grantor_subject, authority=authority,
+                                      mode=POLICY_ALWAYS, expected_revision=1)).revision == 2
 
 
 @pytest.mark.asyncio

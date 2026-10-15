@@ -18,6 +18,7 @@ section, updating marker, ordered commit — belongs to the card service.
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import os
 import pathlib
@@ -590,6 +591,40 @@ class BundleStorageDelegatedCardStore:
         return [name for name in names if _REVISION_NAME_PATTERN.match(name)
                 and await self._revision_is_committed(subject_hash=subject_hash, access_id=access_id,
                                                       revision_name=name)]
+
+    async def policy_recovery_candidates(
+        self, *, subject_hash: str, access_id: str, current_revision: int,
+        max_predecessors: int = 64, max_entries: int = 256,
+    ) -> list[str]:
+        """Names only, for ONE Card's broken historical predecessor chain.
+
+        Bound directory enumeration itself, not a slice of an unbounded list.
+        Ambiguous revision numbers refuse rather than selecting an object.
+        Serving/publication checks remain the caller's exact-read proof.
+        """
+        directory = self.card_path(subject_hash=subject_hash, access_id=access_id) / REVISIONS_DIRNAME
+
+        def names():
+            ranked = {}
+            try:
+                with os.scandir(directory) as entries:
+                    for count, entry in enumerate(entries, 1):
+                        if count > max_entries:
+                            raise CardStorageError("policy_recovery_history_limit")
+                        if not _REVISION_NAME_PATTERN.fullmatch(entry.name):
+                            continue
+                        match = _REVISION_NUMBER_PATTERN.search(entry.name)
+                        revision = int(match.group(1))
+                        if not max(1, current_revision - max_predecessors) <= revision <= current_revision:
+                            continue
+                        if revision in ranked:
+                            raise CardStorageError("policy_recovery_history_ambiguous")
+                        ranked[revision] = entry.name
+            except FileNotFoundError:
+                return []
+            return [ranked[revision] for revision in sorted(ranked, reverse=True)]
+
+        return await asyncio.to_thread(names)
 
     async def read_initial_authority(
         self, *, subject_hash: str, access_id: str

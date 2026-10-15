@@ -7,6 +7,10 @@ tags: [heartbeat, team, protocol, display]
 
 # Conditional heartbeat TEAM snapshots
 
+This remains the older TEAM-only negotiation. New relays use the
+[complete-reply protocol](heartbeat-reply.md), which takes precedence when both
+are requested; the TEAM-only behavior below remains supported for older peers.
+
 The optional `worker.heartbeat` TEAM protocol reduces repeated display payloads,
 not authorization reads. The server builds the complete TEAM afresh on every
 heartbeat, after recording the reporting worker's current observations. Current
