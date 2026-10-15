@@ -530,14 +530,20 @@ server closed every socket of the host).
 ### Local work does not wake every channel (W875)
 
 The relay serves outbox rows and coordinate requests beside its cycle, as they
-arrive (W316, W459). While both of those servers run, a new outbox row or
-coordinate request no longer ends the cycle wait. Before W875 it did: every
+arrive (W316, W459), but only for a worker whose channel has an open session
+that is not closing. So the exclusion is per worker: while both servers run, a
+new outbox row or coordinate request of such a served worker no longer ends the
+cycle wait. Any other worker's row still does, because the cycle is what opens
+that worker's session and drains it. The wait re-reads the served set every
+0.25 s and returns when it changes (a server stopped, a session closed or
+opened). Before W875 every row woke the cycle: every
 `pb coordinate` call and every reply an agent sent woke a full turn of every
 channel on the host, each with two `control.pull` to the board. On spark1, one
 agent's three coordinate requests in 9 seconds produced seven turns of another
 channel within 150 ms. An operator response, a listener state change, a relay
-fault and a Data Bus push still wake the cycle. If either server is down, the
-old wake on outbox and coordinate work returns, so the cycle stays the fallback.
+fault and a Data Bus push still wake the cycle. If either server is down, no
+worker is served and the old wake on outbox and coordinate work returns, so the
+cycle stays the fallback.
 
 ### Turn accounting and the relay log owner (W461)
 

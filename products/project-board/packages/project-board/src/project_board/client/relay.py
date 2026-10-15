@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import functools
 import hashlib
 import json
 import logging
@@ -7782,7 +7781,7 @@ class ProblemBoardRelaySupervisor:
         field_root: Path,
         *,
         worker_names: Sequence[str] = (),
-        side_served: bool = False,
+        served_workers: frozenset[str] = frozenset(),
     ) -> tuple:
         """What locally raised work looks like right now, cheaply.
 
@@ -7795,13 +7794,16 @@ class ProblemBoardRelaySupervisor:
         """
 
         control = field_root / ".problem-board"
-        # W875 (A4): while the outbox and coordinate servers run beside the cycle, their rows are served there and
-        # are not a reason to run every channel's full turn (each with board pulls).
-        signature: list[tuple] = (
-            []
-            if side_served
-            else [("outbox-ready", OutboxStore(control).ready_signature(worker_names=worker_names))]
-        )
+        # W875 (A4): rows of a worker the side servers will serve (both servers up and that worker's session open)
+        # are served beside the cycle and are no reason to run every channel's full turn (each with board pulls).
+        # Rows of every other worker keep waking the cycle, which opens the session and drains them.
+        unserved = [name for name in worker_names if name not in served_workers]
+        cycle_drains = unserved if served_workers else list(worker_names)
+        signature: list[tuple] = []
+        if cycle_drains or not served_workers:
+            signature.append(
+                ("outbox-ready", OutboxStore(control).ready_signature(worker_names=cycle_drains))
+            )
         response_directory = control / "operator-responses"
         try:
             response_entries = sorted(response_directory.iterdir())
@@ -7817,12 +7819,12 @@ class ProblemBoardRelaySupervisor:
             signature.append(
                 ("operator-responses", len(response_entries), newest)
             )
-        if not side_served:
+        if cycle_drains or not served_workers:
             signature.append(
                 (
                     "coordinate",
                     *CoordinateQueue(field_root).work_signature(
-                        worker_names=worker_names
+                        worker_names=cycle_drains
                     ),
                 )
             )
@@ -7882,7 +7884,7 @@ class ProblemBoardRelaySupervisor:
         timeout_seconds: float,
         *,
         worker_names: Sequence[str] = (),
-        side_served: bool = False,
+        served_workers: Callable[[], frozenset[str]] | None = None,
     ) -> bool:
         """Wake on work raised on this machine, the way push wakes on the board.
 
@@ -7897,15 +7899,16 @@ class ProblemBoardRelaySupervisor:
         coordinate_queue, outbox, outbox_key = await self._local_work_handles(field_root)
         scanned = (str(field_root), tuple(sorted(worker_names)))
         scan = self._local_work_scanner.scan
-        if side_served:
-            # W875 (A4): the coordinate and outbox servers already serve those rows beside the cycle; only other
-            # local work (operator responses, listener state, relay faults) starts a full cycle here.
-            initial = await scan(
-                ("local-work-side-served", *scanned),
-                functools.partial(self._local_work_signature, side_served=True),
-                field_root,
-                worker_names=worker_names,
-            )
+        served = served_workers() if served_workers is not None else frozenset()
+        if served:
+            # W875 (A4): the coordinate and outbox servers serve these workers' rows beside the cycle; only other
+            # local work (other workers' rows, operator responses, listener state, relay faults) starts a full
+            # cycle. A change in who is served (a server stopped, a session closed or opened) wakes the cycle once.
+            def side_signature(*args: Any, **kwargs: Any) -> tuple:
+                return self._local_work_signature(*args, served_workers=served, **kwargs)
+
+            key = ("local-work-side-served", *scanned, tuple(sorted(served)))
+            initial = await scan(key, side_signature, field_root, worker_names=worker_names)
             loop = asyncio.get_running_loop()
             deadline = loop.time() + max(0.0, float(timeout_seconds))
             while True:
@@ -7913,12 +7916,9 @@ class ProblemBoardRelaySupervisor:
                 if remaining <= 0:
                     return False
                 await asyncio.sleep(min(0.25, remaining))
-                if await scan(
-                    ("local-work-side-served", *scanned),
-                    functools.partial(self._local_work_signature, side_served=True),
-                    field_root,
-                    worker_names=worker_names,
-                ) != initial:
+                if served_workers is not None and served_workers() != served:
+                    return True
+                if await scan(key, side_signature, field_root, worker_names=worker_names) != initial:
                     return True
         if await scan(
             ("coordinate-ready", *scanned),
@@ -8100,7 +8100,7 @@ class ProblemBoardRelaySupervisor:
                     host.field_root,
                     float(timeout_seconds),
                     worker_names=relay_worker_names,
-                    side_served=self._side_servers_running(),
+                    served_workers=self._side_served_workers,
                 )
             )
         )
@@ -8277,6 +8277,20 @@ class ProblemBoardRelaySupervisor:
                     exc_info=True,
                 )
             await asyncio.sleep(self.LOCAL_STATE_MAINTENANCE_INTERVAL_SECONDS)
+
+    def _side_served_workers(self) -> frozenset[str]:
+        """W875 (A4): workers whose outbox and coordinate rows the side servers serve right now.
+
+        Both servers must run, and the worker must have an open, non-closing session: the servers skip a worker
+        without one and leave it to the cycle (outbox_drain.py; ``serve_coordinate_once``).
+        """
+
+        if not self._side_servers_running():
+            return frozenset()
+        return frozenset(
+            name for name, session in self._sessions.items()
+            if session is not None and not getattr(session, "closing", False)
+        )
 
     def _side_servers_running(self) -> bool:
         """W875 (A4): both beside-the-cycle servers are up, so outbox and coordinate rows need no full cycle."""
