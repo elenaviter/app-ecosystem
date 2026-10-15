@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import functools
 import hashlib
 import json
 import logging
@@ -7781,6 +7782,7 @@ class ProblemBoardRelaySupervisor:
         field_root: Path,
         *,
         worker_names: Sequence[str] = (),
+        side_served: bool = False,
     ) -> tuple:
         """What locally raised work looks like right now, cheaply.
 
@@ -7793,12 +7795,13 @@ class ProblemBoardRelaySupervisor:
         """
 
         control = field_root / ".problem-board"
-        signature: list[tuple] = [
-            (
-                "outbox-ready",
-                OutboxStore(control).ready_signature(worker_names=worker_names),
-            )
-        ]
+        # W875 (A4): while the outbox and coordinate servers run beside the cycle, their rows are served there and
+        # are not a reason to run every channel's full turn (each with board pulls).
+        signature: list[tuple] = (
+            []
+            if side_served
+            else [("outbox-ready", OutboxStore(control).ready_signature(worker_names=worker_names))]
+        )
         response_directory = control / "operator-responses"
         try:
             response_entries = sorted(response_directory.iterdir())
@@ -7814,14 +7817,15 @@ class ProblemBoardRelaySupervisor:
             signature.append(
                 ("operator-responses", len(response_entries), newest)
             )
-        signature.append(
-            (
-                "coordinate",
-                *CoordinateQueue(field_root).work_signature(
-                    worker_names=worker_names
-                ),
+        if not side_served:
+            signature.append(
+                (
+                    "coordinate",
+                    *CoordinateQueue(field_root).work_signature(
+                        worker_names=worker_names
+                    ),
+                )
             )
-        )
         for worker_name in sorted(set(worker_names)):
             worker_path = control / "workers" / f"{worker_name}.json"
             signature.append(
@@ -7878,6 +7882,7 @@ class ProblemBoardRelaySupervisor:
         timeout_seconds: float,
         *,
         worker_names: Sequence[str] = (),
+        side_served: bool = False,
     ) -> bool:
         """Wake on work raised on this machine, the way push wakes on the board.
 
@@ -7892,6 +7897,29 @@ class ProblemBoardRelaySupervisor:
         coordinate_queue, outbox, outbox_key = await self._local_work_handles(field_root)
         scanned = (str(field_root), tuple(sorted(worker_names)))
         scan = self._local_work_scanner.scan
+        if side_served:
+            # W875 (A4): the coordinate and outbox servers already serve those rows beside the cycle; only other
+            # local work (operator responses, listener state, relay faults) starts a full cycle here.
+            initial = await scan(
+                ("local-work-side-served", *scanned),
+                functools.partial(self._local_work_signature, side_served=True),
+                field_root,
+                worker_names=worker_names,
+            )
+            loop = asyncio.get_running_loop()
+            deadline = loop.time() + max(0.0, float(timeout_seconds))
+            while True:
+                remaining = deadline - loop.time()
+                if remaining <= 0:
+                    return False
+                await asyncio.sleep(min(0.25, remaining))
+                if await scan(
+                    ("local-work-side-served", *scanned),
+                    functools.partial(self._local_work_signature, side_served=True),
+                    field_root,
+                    worker_names=worker_names,
+                ) != initial:
+                    return True
         if await scan(
             ("coordinate-ready", *scanned),
             coordinate_queue.has_ready_work,
@@ -8072,6 +8100,7 @@ class ProblemBoardRelaySupervisor:
                     host.field_root,
                     float(timeout_seconds),
                     worker_names=relay_worker_names,
+                    side_served=self._side_servers_running(),
                 )
             )
         )
@@ -8248,6 +8277,16 @@ class ProblemBoardRelaySupervisor:
                     exc_info=True,
                 )
             await asyncio.sleep(self.LOCAL_STATE_MAINTENANCE_INTERVAL_SECONDS)
+
+    def _side_servers_running(self) -> bool:
+        """W875 (A4): both beside-the-cycle servers are up, so outbox and coordinate rows need no full cycle."""
+
+        coordinate = self._coordinate_task
+        outbox = getattr(self._outbox_server, "task", None)
+        return (
+            coordinate is not None and not coordinate.done()
+            and outbox is not None and not outbox.done()
+        )
 
     # -- outbox rows, served beside the channel cycle -----------------------
 

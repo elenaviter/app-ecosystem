@@ -527,6 +527,18 @@ server closed every socket of the host).
   it fails. `recorded_at` says when the relay last wrote the record.
 
 
+### Local work does not wake every channel (W875)
+
+The relay serves outbox rows and coordinate requests beside its cycle, as they
+arrive (W316, W459). While both of those servers run, a new outbox row or
+coordinate request no longer ends the cycle wait. Before W875 it did: every
+`pb coordinate` call and every reply an agent sent woke a full turn of every
+channel on the host, each with two `control.pull` to the board. On spark1, one
+agent's three coordinate requests in 9 seconds produced seven turns of another
+channel within 150 ms. An operator response, a listener state change, a relay
+fault and a Data Bus push still wake the cycle. If either server is down, the
+old wake on outbox and coordinate work returns, so the cycle stays the fallback.
+
 ### Turn accounting and the relay log owner (W461)
 
 On 2026-10-03 a 31.7 s channel turn could not be explained. Its slow-turn line
