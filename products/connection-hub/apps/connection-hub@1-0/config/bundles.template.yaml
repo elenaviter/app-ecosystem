@@ -110,6 +110,26 @@ bundles:
             connections_settings:
               visibility: *default_visibility
 
+      # W374: named authorities. A non-empty `authorities` block replaces the
+      # `project_membership.provider` block below entirely (the two are never
+      # mixed); without one, the legacy block is read exactly as before. Names:
+      # membership, agent_card, control_card, credential_release. Kind
+      # app_operation (bundle_id + operation); kind https is reserved and is
+      # refused by name until implemented. The same host, as named authorities:
+      #
+      # authorities:
+      #   membership:
+      #     kind: app_operation
+      #     bundle_id: "problem-board@1-0"
+      #     operation: "project_membership_resolve"
+      #     administrative_roles: [owner, admin]
+      #   agent_card: {kind: app_operation, bundle_id: "problem-board@1-0", operation: "project_agent_card_authorize"}
+      #   control_card: {kind: app_operation, bundle_id: "problem-board@1-0", operation: "project_control_card_authorize"}
+      #   credential_release:
+      #     kind: app_operation
+      #     bundle_id: "problem-board@1-0"
+      #     operation: "project_agent_github_authorize"
+      #     peer_proof_secret_ref: "project_membership.peer_proof_secret"
       project_membership:
         provider:
           bundle_id: "problem-board@1-0"
