@@ -115,7 +115,7 @@ def encode_reply(snapshot: dict[str, Any], *, protocol: Any, scope: Mapping[str,
     if protocol != REPLY_PROTOCOL or not required_scope.issubset(scope) or any(not scope[key] for key in required_scope):
         return snapshot
     try:
-        scope_id = digest({"protocol": REPLY_PROTOCOL, **scope})
+        scope_id = digest({**scope, "protocol": REPLY_PROTOCOL})
         revision = digest(snapshot)
         marker = {"protocol": REPLY_PROTOCOL, "scope": scope_id, "revision": revision}
         if not _valid_known(known, scope_id):

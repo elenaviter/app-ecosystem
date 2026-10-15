@@ -1,6 +1,8 @@
 """Pure wire-contract tests; the relay/Board integration gates are separate."""
 from copy import deepcopy
+from concurrent.futures import ThreadPoolExecutor
 import json
+from types import SimpleNamespace
 import unittest
 
 from project_board.contract.heartbeat_reply import (
@@ -268,6 +270,209 @@ class HeartbeatReplySnapshotTests(unittest.TestCase):
         owner.apply(request, encode_reply(snapshot(), protocol=REPLY_PROTOCOL, scope=SCOPE),
                     context=self.context, materialize=lambda value: owner.retain_projects(set()))
         self.assertNotIn("known_reply", owner.begin("p", self.context).payload())
+
+
+class HeartbeatReplyRelayTests(unittest.IsolatedAsyncioTestCase):
+    """Real request/reconstruction/republish methods with synthetic I/O edges."""
+
+    async def asyncSetUp(self):
+        from project_board.client.relay import ProblemBoardHostRelayAdapter
+        self.executor = ThreadPoolExecutor(max_workers=1)
+        self.client = SimpleNamespace(connected=True, connection_generation=1, partition_ref="test-partition")
+        config = SimpleNamespace(project_id="attendance", worker_name="test-worker", worker_identity="test-viewer",
+                                 connection_hub_profile="test-profile", journal_workspace=lambda: None)
+        self.adapter = ProblemBoardHostRelayAdapter(config=config, field=SimpleNamespace(), client=self.client,
+                                                   store_executor=self.executor)
+        self.calls, self.seen = [], []
+        self.value = {"attendances": [], "self": {"worker_name": "test-worker"}, "heartbeat_at": STAMP}
+
+        async def action(**kwargs):
+            self.calls.append(deepcopy(kwargs))
+            payload = kwargs["payload"]
+            return {"object": encode_reply(deepcopy(self.value), protocol=payload.get("reply_protocol"),
+                                           known=payload.get("known_reply"), scope=SCOPE)}
+
+        async def account_action(payload, call):
+            return await call()
+
+        async def no_account(payload):
+            pass
+
+        self.client.action = action
+        self.adapter._account_action = account_action
+        self.adapter._add_runtime_account = no_account
+
+    async def asyncTearDown(self):
+        self.executor.shutdown(wait=True)
+
+    async def beat(self, materialize=None):
+        return await self.adapter._heartbeat_with_republish(
+            {"availability": "available"}, materialize=materialize or self.seen.append)
+
+    async def test_discovery_wire_is_reconstructed_before_materialization(self):
+        first, registration = await self.beat()
+        self.assertEqual(first, self.value)
+        self.assertIsNone(registration)
+        self.assertNotIn("known_reply", self.calls[0]["payload"])
+        self.value["heartbeat_at"] = NEXT
+        second, _ = await self.beat()
+        self.assertEqual(second, self.value)
+        self.assertEqual(self.seen, [first, second])
+        self.assertIn("known_reply", self.calls[1]["payload"])
+        self.assertNotIn("heartbeat_reply", second)
+
+    async def test_discovery_reconnect_and_rebuilt_adapter_require_coherent_pair(self):
+        await self.beat()
+        from project_board.client.relay import ProblemBoardHostRelayAdapter
+        child = ProblemBoardHostRelayAdapter(config=self.adapter.config, field=self.adapter.field,
+                                             client=self.client, store_executor=self.executor,
+                                             reply_snapshots=self.adapter._heartbeat_replies())
+        request, payload = child._prepare_reply_request("", {})
+        self.assertIn("known_reply", payload)
+        self.client.connection_generation += 1
+        await self.beat()
+        self.assertNotIn("known_reply", self.calls[-1]["payload"])
+        with self.assertRaises(Exception) as raised:
+            child._materialize_heartbeat_reply(request, {"heartbeat_at": NEXT}, self.seen.append)
+        self.assertEqual(raised.exception.code, "work_heartbeat_reply_obsolete")
+
+    async def test_failed_materialization_forces_full_and_preserves_exception(self):
+        await self.beat()
+        error = OSError("synthetic field failure")
+        def fail(value):
+            raise error
+        with self.assertRaises(OSError) as raised:
+            await self.beat(fail)
+        self.assertIs(raised.exception, error)
+        await self.beat()
+        self.assertNotIn("known_reply", self.calls[-1]["payload"])
+
+    async def test_invalid_delta_requires_full_without_materializing(self):
+        await self.beat()
+        self.value["heartbeat_at"] = NEXT
+        original = self.client.action
+        async def corrupt(**kwargs):
+            result = await original(**kwargs)
+            result["object"]["heartbeat_reply"]["revision"] = "f" * 64
+            return result
+        self.client.action = corrupt
+        with self.assertRaises(Exception) as raised:
+            await self.beat()
+        self.assertEqual(raised.exception.code, "work_heartbeat_reply_full_required")
+        self.assertEqual(len(self.seen), 1)
+        self.client.action = original
+        await self.beat()
+        self.assertNotIn("known_reply", self.calls[-1]["payload"])
+
+    async def test_republish_drops_project_knowledge_and_retries_discovery_full(self):
+        from project_board.contract.errors import DomainError
+        await self.beat()
+        project_request = self.adapter._heartbeat_replies().begin("p", self.adapter._team_context())
+        self.adapter._materialize_heartbeat_reply(project_request,
+            encode_reply(snapshot(), protocol=REPLY_PROTOCOL, scope=SCOPE), lambda value: None)
+        original = self.client.action
+        refused = False
+        async def missing(**kwargs):
+            nonlocal refused
+            if not refused:
+                refused = True
+                raise DomainError("work_worker_unavailable", "Synthetic missing registration")
+            return await original(**kwargs)
+        published = []
+        async def publish(**kwargs):
+            published.append(kwargs)
+            return {"remote": {"pool_status": "active"}}
+        self.client.action = missing
+        self.adapter._published_interval = 30
+        self.adapter._publish_worker = publish
+        value, registration = await self.beat()
+        self.assertEqual(value, self.value)
+        self.assertEqual(registration, {"remote": {"pool_status": "active"}})
+        self.assertEqual(published, [{"reconcile_ceiling_seconds": 30}])
+        self.assertNotIn("known_reply", self.calls[-1]["payload"])
+        self.assertNotIn("known_reply", self.adapter._heartbeat_replies().begin("p", self.adapter._team_context()).payload())
+
+    async def test_legacy_server_rollback_is_materialized_and_forgets_echo(self):
+        await self.beat()
+        async def legacy(**kwargs):
+            return {"object": deepcopy(self.value)}
+        self.client.action = legacy
+        value, _ = await self.beat()
+        self.assertEqual(value, self.value)
+        self.assertEqual(self.seen[-1], self.value)
+        self.assertNotIn("known_reply", self.adapter._prepare_reply_request("", {})[1])
+
+    async def test_project_poll_consumers_receive_full_values_on_full_and_delta(self):
+        from contextlib import nullcontext
+        import asyncio
+        adapter = self.adapter
+        adapter.config.project_id = "test"
+        self.value = {**snapshot(), "assignments": [{"task": "complete synthetic task"}],
+                      "mail_recipients": [{"worker_name": "test-recipient"}]}
+        for name, value in {"_session_report_delta": (None, "s"), "_assignment_files_delta": (None, "f"),
+                            "_store_reads_delta": (None, "r"), "_worker_info": ({}, False),
+                            "_alias_request": ({}, False), "_workspace_report": ({}, False)}.items():
+            setattr(adapter, name, lambda *args, _value=value, **kwargs: _value)
+        for name in ("_add_worker_info", "_add_alias_request", "_add_project_record", "_add_workspace_report",
+                     "_record_project_heartbeat", "_record_session_report", "_acknowledge_worker_info",
+                     "_acknowledge_alias_request", "_acknowledge_workspace_report", "_record_attendance_observation",
+                     "_materialize_attended_project", "_report_dead_notification_path"):
+            setattr(adapter, name, lambda *args, **kwargs: None)
+        consumers = {}
+        def record(name, value):
+            consumers.setdefault(name, []).append(deepcopy(value))
+        adapter.field.sync_project_team = lambda project, rows: record("team", rows)
+        adapter.field.sync_project_coordinator = lambda project, value: record("coordinator", value)
+        adapter.field.sync_project_roles = lambda project, value: record("roles", value)
+        async def journal(value):
+            record("journal", value)
+            return {"state": "unchanged"}
+        async def recipients(value):
+            record("recipients", value)
+            return {"state": "ok"}
+        def assignments(value):
+            record("assignments", value["assignments"])
+            return 0, []
+        async def no_controls(*args, **kwargs):
+            return {}
+        adapter._add_disk_usage = adapter._add_runtime_account
+        adapter._trace_stage = lambda *args, **kwargs: nullcontext()
+        adapter._reconcile_journal_binding_background = journal
+        adapter._run_startup_recovery = recipients
+        adapter._reconcile_assignments = assignments
+        adapter._pull_controls = adapter._flush_outbox = no_controls
+        lock = asyncio.Lock()
+        adapter._pull_lock = lambda: lock
+        adapter._next_project_heartbeat_seconds = lambda **kwargs: 30
+        for stamp in (STAMP, NEXT):
+            self.value["team"][0]["runtime_account"]["observed_at"] = stamp
+            result = await adapter._poll_project_once(agent_sessions=[], force_heartbeat=True)
+            self.assertTrue(result["heartbeat_sent"])
+            self.assertEqual(consumers["team"][-1], self.value["team"])
+            self.assertEqual(consumers["assignments"][-1], self.value["assignments"])
+            self.assertEqual(consumers["recipients"][-1], self.value["mail_recipients"])
+            self.assertEqual(consumers["journal"][-1], self.value)
+        self.assertIn("known_reply", self.calls[-1]["payload"])
+        # Later consumers are part of materialization too, not just TEAM.
+        error = OSError("synthetic journal failure")
+        async def failed_journal(value):
+            raise error
+        adapter._reconcile_journal_binding_background = failed_journal
+        with self.assertRaises(OSError) as raised:
+            await adapter._poll_project_once(agent_sessions=[], force_heartbeat=True)
+        self.assertIs(raised.exception, error)
+        self.assertNotIn("known_reply", adapter._prepare_reply_request("work:project:test", {})[1])
+        adapter._reconcile_journal_binding_background = journal
+        from project_board.contract.errors import DomainError
+        async def failed_directory(value):
+            raise DomainError("project_not_found", "Synthetic directory race")
+        adapter._run_startup_recovery = failed_directory
+        await adapter._poll_project_once(agent_sessions=[], force_heartbeat=True)
+        self.assertNotIn("known_reply", adapter._prepare_reply_request("work:project:test", {})[1])
+        adapter._run_startup_recovery = recipients
+        adapter._reconcile_assignments = lambda value: (0, [{"code": "synthetic_assignment_failure"}])
+        await adapter._poll_project_once(agent_sessions=[], force_heartbeat=True)
+        self.assertNotIn("known_reply", adapter._prepare_reply_request("work:project:test", {})[1])
 
 
 if __name__ == "__main__":

@@ -11,6 +11,10 @@ from ..contract.heartbeat_reply import (
 )
 
 
+class ReplyDecodeError(ValueError):
+    """A response cannot be safely materialized; the next request must be full."""
+
+
 @dataclass(frozen=True)
 class ReplyRequest:
     project_ref: str
@@ -85,8 +89,11 @@ class ReplySnapshots:
                 return None
             try:
                 if request.baseline is not None and digest(request.baseline) != request.revision:
-                    raise ValueError("Local heartbeat request baseline changed")
-                snapshot, scope = decode_reply(response, baseline=request.baseline, scope=request.scope)
+                    raise ReplyDecodeError("Local heartbeat request baseline changed")
+                try:
+                    snapshot, scope = decode_reply(response, baseline=request.baseline, scope=request.scope)
+                except (TypeError, ValueError, KeyError, IndexError, OverflowError, RecursionError) as exc:
+                    raise ReplyDecodeError("Heartbeat reconstruction requires a full reply") from exc
                 candidate = deepcopy(snapshot)
                 materialize(deepcopy(snapshot))
             except BaseException:
