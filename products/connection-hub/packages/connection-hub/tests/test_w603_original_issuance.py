@@ -115,8 +115,15 @@ async def _world(tmp_path, *, postgres_handles: bool = False, with_policies: boo
                                       catalog_resolver=_Catalog(connections), grant_store=grants,
                                       card_persistence=persistence, invocation_policy_service=policies)
     service.notify_change = AsyncMock()
-    service.bind_card_coordinator(Coordinator(decisions, {PARTICIPANT: hub}, HubLocalReceiptVerifier(store)),
+    coordinator = Coordinator(decisions, {PARTICIPANT: hub}, HubLocalReceiptVerifier(store))
+    service.bind_card_coordinator(coordinator,
                                   intents=intents, decisions=decisions, intent_ttl_seconds=60)
+    if policies is not None:
+        from connection_hub.delegated_credentials.cards.policy_marker_settlement import CardPolicyMarkerSettler
+
+        policies.bind_transaction_settler(CardPolicyMarkerSettler(
+            card_store=store, coordinator=coordinator, callers={},
+        ))
     service.bind_oauth_issuance_store(authority)
     service.bind_card_credential_handles(handles)
     try:

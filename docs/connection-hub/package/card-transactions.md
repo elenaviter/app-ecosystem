@@ -55,6 +55,13 @@ Operators should recover the named Card transaction at its decision authority,
 then retry the policy save. A direct save's earlier `PREPARED` marker follows
 the separate direct-save supersession rule and needs no Card recovery.
 
+Hosts composing policy effects must bind `InvocationPolicyService` to their
+durable recovery route with `bind_transaction_settler`, as the Hub application
+does. This also applies to test hosts that compose OAuth issuance with policy
+effects. An already-finished transaction is replay-safe through that route;
+without it, a transaction-owned marker fails closed, because `COMMITTED` alone
+cannot distinguish a completed FINISH from an unacknowledged effect.
+
 **How the Hub calls a host's signed operation.** This applies to plan
 authorization, the transaction authority fetch (`cards/authority_transport.py`)
 and the managed Card edit forward:

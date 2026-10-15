@@ -98,6 +98,63 @@ async def test_committed_card_is_finished_before_new_direct_policy_write(tmp_pat
 @pytest.mark.asyncio
 @pytest.mark.parametrize("next_change", ("set", "prepare"))
 @pytest.mark.parametrize("caller_staged", (False, True))
+async def test_finished_card_marker_allows_the_next_policy_change(
+    tmp_path, next_change, caller_staged,
+):
+    policies, authority, before, store, coordinator, decisions, row = await _staged(
+        tmp_path, decision="committed", caller_staged=caller_staged,
+    )
+    await coordinator.finish(row.transaction_id)
+    receipt = await read_receipt(store, row.transaction_id)
+    assert receipt["intent_finished"] is True
+    assert not await tx.pending_effects(store, receipt)
+    finished = (await decisions.read(row.transaction_id)).finished
+    assert finished
+
+    if next_change == "set":
+        saved = await policies.set_policy(
+            owner_subject=before.grantor_subject, authority=authority,
+            mode=POLICY_ALWAYS, expected_revision=1,
+        )
+        assert (saved.mode, saved.revision) == (POLICY_ALWAYS, 2)
+    else:
+        prepared = await policies.prepare_policy_change(
+            owner_subject=before.grantor_subject, authority=authority,
+            mode=POLICY_ALWAYS, change_id="next-direct", expected_revision=1,
+        )
+        assert prepared.change_id == "next-direct"
+        assert prepared.state == POLICY_CHANGE_PREPARED
+    assert (await decisions.read(row.transaction_id)).finished == finished
+    assert (await store.read_current_authority(
+        subject_hash=SUBJECT_HASH, access_id=before.access_id,
+    ))[1].card_revision == before.card_revision + 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("next_change", ("set", "prepare"))
+async def test_committed_marker_without_recovery_binding_stays_closed(tmp_path, next_change):
+    policies, authority, before, _store, coordinator, _decisions, row = await _staged(
+        tmp_path, decision="committed",
+    )
+    await coordinator.finish(row.transaction_id)
+    # The marker alone cannot distinguish completed FINISH from a crash before
+    # effect acknowledgement. A host must supply its durable recovery route.
+    unbound = _service(tmp_path / "policies")
+    with pytest.raises(InvocationPolicyConflict, match="invocation_policy_change_in_progress"):
+        if next_change == "set":
+            await unbound.set_policy(owner_subject=before.grantor_subject, authority=authority,
+                                     mode=POLICY_ALWAYS)
+        else:
+            await unbound.prepare_policy_change(
+                owner_subject=before.grantor_subject, authority=authority,
+                mode=POLICY_ALWAYS, change_id="next-direct",
+            )
+    assert (await policies.get(owner_subject=before.grantor_subject, authority=authority)).revision == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("next_change", ("set", "prepare"))
+@pytest.mark.parametrize("caller_staged", (False, True))
 async def test_crash_after_policy_commit_before_effect_ack_finishes_card_first(
     tmp_path, monkeypatch, next_change, caller_staged,
 ):
