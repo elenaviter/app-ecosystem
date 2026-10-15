@@ -635,12 +635,21 @@ _NO_CONTROLS: dict[str, int] = {"controls_materialized": 0, "controls_refused": 
 
 
 def _pushed_control_refs(event: Mapping[str, Any]) -> Mapping[str, Any] | None:
-    """The refs of a ``control.available`` push, or None for any other event."""
+    """The refs of a push that names a queued control, or None for any other event.
+
+    The board pushes most new controls as ``mail.available`` or ``plan.command.available`` (or an assignment
+    notice), each with the control's ``control_ref``, and only some as ``control.available``. Any event that names
+    a control is claimed (W875 B, live 2026-10-15: with only ``control.available`` claimed, every mail waited about
+    65 s for the board's re-push sweep). ``control.available`` without a ref still asks for the scope pull (W794).
+    """
 
     data = event.get("data") if isinstance(event.get("data"), Mapping) else event
-    if str(data.get("kind") or "") != "control.available":
-        return None
-    return data.get("refs") if isinstance(data.get("refs"), Mapping) else {}
+    refs = data.get("refs") if isinstance(data.get("refs"), Mapping) else {}
+    if str(refs.get("control_ref") or ""):
+        return refs
+    if str(data.get("kind") or "") == "control.available":
+        return refs
+    return None
 
 
 def _object_result(response: Mapping[str, Any]) -> dict[str, Any]:

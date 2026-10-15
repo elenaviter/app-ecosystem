@@ -549,8 +549,10 @@ cycle stays the fallback.
 
 Operator, 2026-10-15 (W875), verbatim: "this pulling is wrong. we have data bus. why its pull if this must be push."
 
-- **A push is claimed, not answered with a pull.** The board's `control.available` push names the control
-  (`control_ref`). The relay claims exactly that control with `control.pull` plus `control_ref` (EMain, 2026-10-15:
+- **A push is claimed, not answered with a pull.** A board push names the control (`control_ref`). That is
+  `control.available`, and also `mail.available`, `plan.command.available` and assignment notices, which the board
+  uses for most new controls: any event that carries a `control_ref` is claimed, whatever its kind (live on
+  2026-10-15 only `control.available` was, and every mail waited about 65 s for the board's re-push sweep). The relay claims exactly that control with `control.pull` plus `control_ref` (EMain, 2026-10-15:
   "GO with (i)") and serves it through the same code as a pulled control. Pushes that arrive during a claim are
   queued and claimed one by one after it. A push without a `control_ref` pulls the scope, as W794 did.
 - **Direct controls have their own hook.** Discards and attendance notices carry no `project_ref`. The attendance
