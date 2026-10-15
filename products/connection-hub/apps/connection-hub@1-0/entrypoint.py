@@ -2363,6 +2363,22 @@ async def _bootstrap_descriptor_authenticators(entrypoint: Any) -> int:
     return count
 
 
+async def _ensure_request_authenticators(entrypoint: Any) -> int:
+    """The request-authenticator schema, then the descriptor's authenticators, on every Hub load (W880).
+
+    A failed schema setup fails the load visibly (the platform retries it): before W880 it was only logged, and
+    a Hub that lost a concurrent-load race served without bootstrapping its request authenticators. A failing
+    descriptor bootstrap is logged, as before.
+    """
+
+    await _authenticator_store(entrypoint).ensure_schema()
+    try:
+        return await _bootstrap_descriptor_authenticators(entrypoint)
+    except Exception:
+        LOGGER.exception("[connection-hub] on_bundle_load: failed to bootstrap request authenticators")
+        return 0
+
+
 
 
 def _same_origin_return_link(*, origin: str, candidate: str) -> str:
@@ -3548,15 +3564,11 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
         if await _activate_card_rows(self, pg_pool):
             LOGGER.info("[connection-hub] on_bundle_load: Card pointer/marker rows active (W661 option P)")
         if pg_pool is not None:
-            try:
-                await _authenticator_store(self).ensure_schema()
-                bootstrapped = await _bootstrap_descriptor_authenticators(self)
-                LOGGER.info(
-                    "[connection-hub] on_bundle_load: bootstrapped request authenticators count=%s",
-                    bootstrapped,
-                )
-            except Exception:
-                LOGGER.exception("[connection-hub] on_bundle_load: failed to ensure/bootstrap authenticator schema")
+            bootstrapped = await _ensure_request_authenticators(self)
+            LOGGER.info(
+                "[connection-hub] on_bundle_load: bootstrapped request authenticators count=%s",
+                bootstrapped,
+            )
         else:
             LOGGER.warning("[connection-hub] on_bundle_load: no pg_pool; request authenticator metadata store unavailable")
         # P0 (10 Oct 2026): bind legacy project Cards the way new Cards are bound, once, on reload.

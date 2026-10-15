@@ -23,15 +23,18 @@ from connection_hub.delegated_credentials.admission_replay import PostgresAdmiss
 from connection_hub.delegated_credentials.authority_cutover import PostgresAuthorityCutoverStore
 from connection_hub.delegated_credentials.cards.handle_authority import PostgresCardHandleMetadataStore
 from connection_hub.delegated_credentials.oauth.authority_store import PostgresOAuthAuthorityStore
+from connection_hub.hub.authenticator_store import AuthenticatorStore
 
 LOADERS = 6
 ROUNDS = 8
-# The stores durable_authority.prepare bootstraps, in its order (card handles via their metadata store).
+# What one Hub load bootstraps, in order: the stores durable_authority.prepare runs (card handles via their
+# metadata store), then the request-authenticator store on_bundle_load runs on every load (review of #828).
 PREPARE_ORDER = (
     PostgresOAuthAuthorityStore,
     PostgresCardHandleMetadataStore,
     PostgresAdmissionReplayClaimStore,
     PostgresAuthorityCutoverStore,
+    AuthenticatorStore,
 )
 
 
