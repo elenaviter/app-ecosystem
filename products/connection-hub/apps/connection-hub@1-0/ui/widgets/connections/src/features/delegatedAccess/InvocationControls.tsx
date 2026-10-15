@@ -9,52 +9,66 @@
  * focused grant transaction. The two never render for the same operation.
  */
 import type { DelegatedInvocationPolicy } from '../../api/types';
-import { INVOCATION_MODE_TEXT, type InvocationMode } from './invocationChoice';
+import { INVOCATION_MODE_TEXT, policySwitchView, type InvocationMode } from './invocationChoice';
+
+/** W872: a click saves the mode at once (no Save needed); the person is told so. */
+export const POLICY_SAVED_ON_CLICK = 'Saved as soon as you click; no Save needed.';
 
 export function InvocationPolicyControl({
   operation,
   policy,
+  pendingMode,
   busy,
   onceDisabled = false,
   onSet,
 }: {
   operation: string;
   policy?: DelegatedInvocationPolicy;
+  /** W872: the mode a click is writing now; shown at once, before Connection Hub answers. */
+  pendingMode?: InvocationMode;
   busy: boolean;
   onceDisabled?: boolean;
   onSet: (mode: InvocationMode, expectedRevision: number) => void;
 }) {
-  const mode = policy?.mode || null;
-  const effectiveMode = mode || 'always';
-  const onceAvailable = mode === 'once' && policy?.remaining === 1;
+  const { shown, saving, alwaysDisabled, onceDisabled: onceOff, used } = policySwitchView(
+    policy, pendingMode, busy, onceDisabled,
+  );
+  const onceAvailable = !saving && policy?.mode === 'once' && policy?.remaining === 1;
   return (
     <span className="operation-policy" data-operation={operation}>
-      <span className="invocation-policy-control" role="group" aria-label={`Invocation policy for ${operation}`}>
+      <span
+        className={`invocation-policy-control${saving ? ' invocation-policy-control--saving' : ''}`}
+        role="group"
+        aria-label={`Invocation policy for ${operation}`}
+        aria-busy={saving}
+      >
         <button
           type="button"
-          className={effectiveMode === 'always' ? 'active' : ''}
-          aria-pressed={effectiveMode === 'always'}
+          className={shown === 'always' ? 'active' : ''}
+          aria-pressed={shown === 'always'}
           aria-label={`${operation}: always`}
-          title={`Allow every ${operation} call while the card is active`}
-          disabled={busy || effectiveMode === 'always'}
+          title={`Allow every ${operation} call while the card is active. ${POLICY_SAVED_ON_CLICK}`}
+          disabled={alwaysDisabled}
           onClick={() => onSet('always', policy?.revision || 0)}
         >
           Every time
         </button>
         <button
           type="button"
-          className={mode === 'once' ? 'active' : ''}
-          aria-pressed={mode === 'once'}
+          className={shown === 'once' ? 'active' : ''}
+          aria-pressed={shown === 'once'}
           aria-label={`${operation}: once`}
           title={onceDisabled
             ? 'Namespace and all-scope secret authority is reusable; choose Always or grant one exact key'
-            : (onceAvailable ? `One ${operation} invocation remains` : `Allow the next ${operation} invocation once`)}
-          disabled={busy || onceAvailable || onceDisabled}
+            : `${onceAvailable ? `One ${operation} invocation remains` : `Allow the next ${operation} invocation once`}. ${POLICY_SAVED_ON_CLICK}`}
+          disabled={onceOff}
           onClick={() => onSet('once', policy?.revision || 0)}
         >
           Once
         </button>
-        {mode === 'once' && policy?.remaining === 0 ? (
+        {saving ? (
+          <small className="invocation-policy-control__saving" aria-live="polite">saving…</small>
+        ) : used ? (
           <small>used</small>
         ) : null}
       </span>

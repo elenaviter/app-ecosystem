@@ -1669,6 +1669,22 @@ code {
   cursor: default;
 }
 
+/* W872: the mode not in effect looks like the button it is. */
+.invocation-policy-control button:not(:disabled):not(.active) {
+  color: var(--kind);
+  text-decoration: underline dotted;
+}
+
+.invocation-policy-control button:not(:disabled):not(.active):hover,
+.invocation-policy-control button:not(:disabled):not(.active):focus-visible {
+  background: rgba(var(--kind-rgb), 0.08);
+  text-decoration: underline;
+}
+
+.invocation-policy-control > small.invocation-policy-control__saving {
+  color: var(--text-2);
+}
+
 .invocation-policy-control > small {
   position: absolute;
   top: 100%;
