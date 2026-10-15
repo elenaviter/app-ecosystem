@@ -1520,6 +1520,17 @@ def _invocation_policy_service(entrypoint: Any) -> Any:
         from connection_hub.delegated_credentials.cards.policy_marker_settlement import CardPolicyMarkerSettler
 
         try:
+            if (change.change_id.endswith(":" + change.authority.key)
+                    and recovery_transaction_ref(change) is None):
+                # CardVersion PUBLISH has its own completion proof. Do not
+                # require a legacy decision authority before trying it.
+                store = _guarded_card_store(
+                    _storage_root_or_error(entrypoint), entrypoint=entrypoint,
+                    lifecycle_lock_scope=_lifecycle_lock_scope(entrypoint),
+                )
+                return await CardPolicyMarkerSettler(
+                    card_store=store, coordinator=None, callers={},
+                )(change, owner_subject)
             config = _delegated_authority_config(entrypoint)
             pg_pool = getattr(entrypoint, "pg_pool", None)
             if not config.uses_postgresql or pg_pool is None:

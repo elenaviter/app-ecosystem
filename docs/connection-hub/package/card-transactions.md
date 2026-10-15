@@ -75,6 +75,11 @@ existing decision authority remains available.
 A host that never enabled transactions has no such markers and is unaffected.
 
 CardVersion Saves use their own completion proof, not legacy Card receipts.
+The Hub binds this path directly to its guarded Card store, including the
+scope's activated PostgreSQL pointer/marker rows. It runs before constructing
+legacy persistence, participant callers or a decision coordinator: unavailable
+legacy authority must not block a completed CardVersion Save. Bare 64-hex
+legacy transaction ids still use their original decision-authority route.
 For a `COMMITTED` policy marker, the settler follows at most 64 immutable
 `version_record.base` links from that Card's current version, by exact name,
 to find the marker's transaction. It derives OUTCOME's exact link, time and
