@@ -256,3 +256,26 @@ def test_pb_worker_inspect_says_not_recorded_without_a_snapshot(tmp_path):
     result, lines = _inspect(tmp_path, scanner=None)
     assert result["channel"]["local_work_scanner"] == {}
     assert "local-work scanner: not recorded yet" in lines
+
+
+def test_a_scanner_counts_only_its_own_thread_beside_another_scanner():
+    """Two scanners in one process (a second relay object, or pytest -n workers) share the thread name."""
+
+    first_release, first_started, first_scan = _held()
+    second_release, second_started, second_scan = _held()
+
+    async def scenario():
+        first, second = LocalWorkScanner(), LocalWorkScanner()
+        running = [asyncio.create_task(first.scan("field", first_scan)),
+                   asyncio.create_task(second.scan("field", second_scan))]
+        await _until(first_started)
+        await _until(second_started)
+        counted = (first.stats()["scanner_threads_alive"], second.stats()["scanner_threads_alive"])
+        first_release.set()
+        second_release.set()
+        await asyncio.gather(*running)
+        first.close()
+        second.close()
+        return counted
+
+    assert asyncio.run(scenario()) == (1, 1)
