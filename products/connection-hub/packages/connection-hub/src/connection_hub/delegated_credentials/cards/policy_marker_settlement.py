@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2026 Elena Viter
 
-"""Finish the transaction that owns a prepared invocation-policy marker.
+"""Finish the transaction that owns an invocation-policy marker.
 
 A marker is never evidence of ABORT. The recorded intent selects the decision
 authority; only that authority can decide, and a committed decision is always

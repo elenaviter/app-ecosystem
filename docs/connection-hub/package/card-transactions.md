@@ -30,7 +30,11 @@ An invocation-policy effect places a `PREPARED` marker at STAGE. A later policy
 save for the same authority first validates its requested mode and expected
 revision, then resolves that marker through the exact Card transaction named by
 `<transaction id>:<authority key>`. A recorded COMMIT is FINISHed so its earlier
-policy takes effect before the new save. For a Hub-owned transaction without a
+policy takes effect before the new save. A `COMMITTED` policy marker alone does
+not prove that FINISH completed: the process may have stopped after publishing
+the policy but before recording its Card effect. The next save replays FINISH
+before replacing that marker, so the Card's serving fence is cleared only after
+its effect is acknowledged. For a Hub-owned transaction without a
 terminal decision, the Hub may record ABORT only when its decision store says
 the transaction expired; FINISH then releases the marker. For a transaction
 staged by another application, the Hub reads that caller's configured decision

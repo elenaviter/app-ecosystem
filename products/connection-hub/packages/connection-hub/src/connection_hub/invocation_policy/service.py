@@ -66,7 +66,7 @@ class InvocationPolicyConflict(RuntimeError):
 
 
 def recovery_transaction_ref(change: InvocationPolicyChange | None) -> dict[str, str] | None:
-    """Name only a bounded Card transaction id from a prepared policy marker."""
+    """Name only a bounded Card transaction id from a policy marker."""
 
     if change is None:
         return None
@@ -96,8 +96,8 @@ def invocation_policy_conflict_response(exc: InvocationPolicyConflict) -> dict[s
 def _transaction_owned(change: InvocationPolicyChange) -> bool:
     """A Card transaction's marker: its change id is ``<transaction>:<authority key>`` (effect_targets).
 
-    Its transaction may still COMMIT and apply it. Any other PREPARED marker is
-    a direct save's: only its own request can commit it (W749).
+    A COMMITTED marker may still have an unacknowledged Card effect. Any other
+    PREPARED marker is a direct save's: only its own request can commit it (W749).
     """
     return change.change_id.endswith(":" + change.authority.key)
 
@@ -226,11 +226,17 @@ class InvocationPolicyService:
                         "invocation_policy_revision_moved", current_revision=current_revision
                     )
                 stuck = change is not None and change.state == POLICY_CHANGE_PREPARED
-                if stuck and _transaction_owned(change) and settling is None:
+                if change is not None and _transaction_owned(change) and settling is None:
+                    # A COMMITTED policy marker can still belong to a Card
+                    # whose effect acknowledgement and FINISH were interrupted.
                     settling = change
-                elif stuck and settling is not None:
-                    # A concurrent writer may have placed a *different* marker while FINISH ran.
-                    # Neither marker is ours to delete under this lock.
+                elif settling is not None and change is not None and (
+                    stuck or change.change_id != settling.change_id
+                    or change.mode != settling.mode
+                    or change.expected_policy_revision != settling.expected_policy_revision
+                ):
+                    # FINISH must have moved this exact marker out of PREPARED.
+                    # Preserve any marker another writer placed meanwhile.
                     raise InvocationPolicyConflict(
                         "invocation_policy_earlier_change_undecided",
                         transaction_ref=recovery_transaction_ref(change),
@@ -288,9 +294,15 @@ class InvocationPolicyService:
                         "invocation_policy_revision_moved", current_revision=current_revision
                     )
                 stuck = existing is not None and existing.state == POLICY_CHANGE_PREPARED
-                if stuck and _transaction_owned(existing) and settling is None:
+                if existing is not None and _transaction_owned(existing) and settling is None:
+                    # The policy may be committed while the Card still has an
+                    # unacknowledged effect and cannot yet be served.
                     settling = existing
-                elif stuck and settling is not None:
+                elif settling is not None and existing is not None and (
+                    stuck or existing.change_id != settling.change_id
+                    or existing.mode != settling.mode
+                    or existing.expected_policy_revision != settling.expected_policy_revision
+                ):
                     raise InvocationPolicyConflict(
                         "invocation_policy_earlier_change_undecided",
                         transaction_ref=recovery_transaction_ref(existing),

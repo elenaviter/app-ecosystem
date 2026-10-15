@@ -20,6 +20,8 @@ from connection_hub.delegated_credentials.cards.effect_targets import compose_ca
 from connection_hub.delegated_credentials.cards.participant_operation import RoutedDecisionPort, ScopeBinding
 from connection_hub.delegated_credentials.cards.policy_marker_settlement import CardPolicyMarkerSettler
 from connection_hub.delegated_credentials.cards.transaction_store import read_receipt
+from connection_hub.delegated_credentials.cards.service import CardServingUnavailable
+from connection_hub.delegated_credentials.cards.store import CardStorageError
 from connection_hub.invocation_policy import InvocationPolicyConflict, POLICY_ALWAYS, POLICY_ONCE
 from connection_hub.invocation_policy.models import POLICY_CHANGE_COMMITTED, POLICY_CHANGE_PREPARED
 from test_card_coordinated_writes import _host, _pg_host
@@ -91,6 +93,62 @@ async def test_committed_card_is_finished_before_new_direct_policy_write(tmp_pat
     assert (await decisions.read(row.transaction_id)).finished
     marker = await policies.get_policy_change(owner_subject=before.grantor_subject, authority=authority)
     assert marker.state == POLICY_CHANGE_COMMITTED and marker.policy_revision == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("next_change", ("set", "prepare"))
+@pytest.mark.parametrize("caller_staged", (False, True))
+async def test_crash_after_policy_commit_before_effect_ack_finishes_card_first(
+    tmp_path, monkeypatch, next_change, caller_staged,
+):
+    policies, authority, before, store, coordinator, decisions, row = await _staged(
+        tmp_path, decision="committed", caller_staged=caller_staged,
+    )
+    original_write = tx.write_json_atomic
+    failed = False
+
+    async def fail_effect_ack(path, payload):
+        nonlocal failed
+        if path == tx.effects_path(store, row.transaction_id) and not failed:
+            failed = True
+            raise OSError("injected_after_policy_commit")
+        return await original_write(path, payload)
+
+    monkeypatch.setattr(tx, "write_json_atomic", fail_effect_ack)
+    with pytest.raises(CardServingUnavailable, match="card_effects_pending"):
+        await coordinator.finish(row.transaction_id)
+    assert failed
+    marker = await policies.get_policy_change(owner_subject=before.grantor_subject, authority=authority)
+    assert marker.state == POLICY_CHANGE_COMMITTED
+    receipt = await read_receipt(store, row.transaction_id)
+    assert receipt["state"] == "committed"
+    assert len(await tx.pending_effects(store, receipt)) == 1
+    assert not (await decisions.read(row.transaction_id)).finished
+    with pytest.raises(CardStorageError, match="card_effects_pending"):
+        await store.read_current_authority(subject_hash=SUBJECT_HASH, access_id=before.access_id)
+
+    if next_change == "set":
+        saved = await policies.set_policy(owner_subject=before.grantor_subject, authority=authority,
+                                          mode=POLICY_ALWAYS)
+        assert saved.revision == 2 and saved.mode == POLICY_ALWAYS
+    else:
+        prepared = await policies.prepare_policy_change(
+            owner_subject=before.grantor_subject, authority=authority,
+            mode=POLICY_ALWAYS, change_id="next-direct", expected_revision=1,
+        )
+        assert prepared.change_id == "next-direct" and prepared.state == POLICY_CHANGE_PREPARED
+    # The new operation itself must FINISH the old Card; an explicit replay
+    # after the fact must not be needed to make its authority readable.
+    if not caller_staged:
+        assert (await decisions.read(row.transaction_id)).finished
+    assert (await store.read_current_authority(
+        subject_hash=SUBJECT_HASH, access_id=before.access_id))[1].card_revision == before.card_revision + 1
+    assert await tx.list_in_doubt(store) == []
+    await coordinator.finish(row.transaction_id)
+    current = await policies.get(owner_subject=before.grantor_subject, authority=authority)
+    receipt = await read_receipt(store, row.transaction_id)
+    assert not await tx.pending_effects(store, receipt)
+    assert current.revision == (2 if next_change == "set" else 1)
 
 
 @pytest.mark.asyncio
