@@ -62,16 +62,17 @@ effects. An already-finished transaction is replay-safe through that route;
 without it, a transaction-owned marker fails closed, because `COMMITTED` alone
 cannot distinguish a completed FINISH from an unacknowledged effect.
 
-Disabling `card_transactions` also disables the application's recovery binding;
-it does not retire transaction-owned policy markers. Before turning it off on
-a host that used transactions, resolve its outstanding transaction work. Even
-a fully finished transaction can retain a `COMMITTED` policy marker: without
-the recovery binding, later policy changes for that authority still refuse
-`invocation_policy_change_in_progress`. Restore the enabled feature and its
-decision authority to recover; neither the flag being off nor the marker's
-state proves that its effects finished. A host that never enabled transactions
-has no such markers and is unaffected. Recovery or readiness while the feature
-is disabled is not implemented by this change.
+Disabling `card_transactions` stops new Card transactions but leaves the Hub's
+recovery binding available for transaction-owned policy markers. On the next
+policy change, the Hub checks the marker's exact owner, authority, mode and
+revision against the durable Card effect, replays a terminal FINISH if needed,
+and retires only that marker after the effect and FINISH are proved. A missing
+or unreachable persistence or decision authority returns
+`invocation_policy_earlier_change_undecided` and keeps the marker; the flag and
+the marker's `COMMITTED` state alone never prove that its effects finished.
+Turning the flag off no longer requires a manual marker settle when the
+existing decision authority remains available.
+A host that never enabled transactions has no such markers and is unaffected.
 
 **How the Hub calls a host's signed operation.** This applies to plan
 authorization, the transaction authority fetch (`cards/authority_transport.py`)

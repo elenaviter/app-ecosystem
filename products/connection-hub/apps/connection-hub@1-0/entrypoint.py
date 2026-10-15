@@ -1513,41 +1513,43 @@ def _invocation_policy_service(entrypoint: Any) -> Any:
     service = build_invocation_policy_service(
         storage_root=_storage_root_or_error(entrypoint)
     )
-    if card_transactions_enabled(_connections_config(entrypoint)):
-        async def settle(change: Any, owner_subject: str) -> None:
-            from connection_hub.delegated_credentials.cards.policy_marker_settlement import CardPolicyMarkerSettler
+    # Recovery remains available for transaction-owned markers when new Card
+    # transactions are disabled. The callback is lazy, so marker-free writes
+    # never construct the transaction authority.
+    async def settle(change: Any, owner_subject: str) -> bool:
+        from connection_hub.delegated_credentials.cards.policy_marker_settlement import CardPolicyMarkerSettler
 
-            try:
-                config = _delegated_authority_config(entrypoint)
-                pg_pool = getattr(entrypoint, "pg_pool", None)
-                if not config.uses_postgresql or pg_pool is None:
-                    raise CardTransactionsUnavailable("card_transactions_unavailable")
-                redis = getattr(entrypoint, "redis", None) or get_async_redis_client(get_settings().REDIS_URL)
-                persistence = await _delegated_card_persistence(entrypoint, redis)
-                if persistence is None:
-                    raise CardTransactionsUnavailable("card_transactions_unavailable")
-                built = await _card_participant_callers(entrypoint, persistence)
-                decisions = await _card_decision_store(entrypoint, pg_pool)
-                coordinator, _ = card_transaction_coordinator(
-                    persistence=persistence, decisions=decisions,
-                    grant_store=await _oauth_grant_store(entrypoint), policies=service,
-                    authorities=built.authorities, catalog_store=_delegated_catalog_store(entrypoint),
-                    accounts_for=lambda owner: _delegated_to_kdcube_store(entrypoint, owner),
-                    issuance_store=_durable_authority(entrypoint).oauth,
-                    credential_handles=_durable_authority(entrypoint).card_handles,
-                )
-                await CardPolicyMarkerSettler(
-                    card_store=persistence.card_store, coordinator=coordinator, callers=built.callers,
-                )(change, owner_subject)
-            except InvocationPolicyConflict:
-                raise
-            except Exception as exc:
-                raise InvocationPolicyConflict(
-                    "invocation_policy_earlier_change_undecided",
-                    transaction_ref=recovery_transaction_ref(change),
-                ) from exc
+        try:
+            config = _delegated_authority_config(entrypoint)
+            pg_pool = getattr(entrypoint, "pg_pool", None)
+            if not config.uses_postgresql or pg_pool is None:
+                raise CardTransactionsUnavailable("card_transactions_unavailable")
+            redis = getattr(entrypoint, "redis", None) or get_async_redis_client(get_settings().REDIS_URL)
+            persistence = await _delegated_card_persistence(entrypoint, redis)
+            if persistence is None:
+                raise CardTransactionsUnavailable("card_transactions_unavailable")
+            built = await _card_participant_callers(entrypoint, persistence)
+            decisions = await _card_decision_store(entrypoint, pg_pool)
+            coordinator, _ = card_transaction_coordinator(
+                persistence=persistence, decisions=decisions,
+                grant_store=await _oauth_grant_store(entrypoint), policies=service,
+                authorities=built.authorities, catalog_store=_delegated_catalog_store(entrypoint),
+                accounts_for=lambda owner: _delegated_to_kdcube_store(entrypoint, owner),
+                issuance_store=_durable_authority(entrypoint).oauth,
+                credential_handles=_durable_authority(entrypoint).card_handles,
+            )
+            return await CardPolicyMarkerSettler(
+                card_store=persistence.card_store, coordinator=coordinator, callers=built.callers,
+            )(change, owner_subject)
+        except InvocationPolicyConflict:
+            raise
+        except Exception as exc:
+            raise InvocationPolicyConflict(
+                "invocation_policy_earlier_change_undecided",
+                transaction_ref=recovery_transaction_ref(change),
+            ) from exc
 
-        service.bind_transaction_settler(settle)
+    service.bind_transaction_settler(settle)
     return service
 
 
