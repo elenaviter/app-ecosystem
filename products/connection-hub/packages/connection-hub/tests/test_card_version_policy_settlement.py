@@ -95,7 +95,7 @@ async def test_unproved_card_version_marker_stays_refused(tmp_path, monkeypatch,
             authority = replace(authority, access_id="another-card")
             marker = replace(marker, authority=authority, change_id=f"{TXN}:{authority.key}")
         else:
-            marker = replace(marker, policy_revision=2)
+            marker = replace(marker, expected_policy_revision=1, policy_revision=2)
         await policies._store.write_policy_change(owner_hash=owner_hash_for(owner), change=marker)
     elif bad == "pending_txn":
         await store.write_marker_document(TXN, {
