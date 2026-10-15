@@ -86,6 +86,8 @@ def entrypoint(monkeypatch):
         return service
 
     monkeypatch.setattr(module, "_automation_access_service", _access_service)
+    # W389: the authorize operations read through the lean service.
+    monkeypatch.setattr(module, "_project_authorization_service", lambda _entrypoint: _access_service())
     monkeypatch.setattr(
         module,
         "_platform_user_payload",
@@ -676,6 +678,8 @@ async def test_project_authorization_runs_through_request_bound_bundle_operation
         return service
 
     monkeypatch.setattr(module, "_automation_access_service", _access_service)
+    # W389: the authorize operations read through the lean service.
+    monkeypatch.setattr(module, "_project_authorization_service", lambda _entrypoint: _access_service())
     monkeypatch.setattr(
         module,
         "_platform_user_payload",
@@ -865,6 +869,8 @@ async def test_project_control_create_resolves_membership_through_bundle_operati
         return _CreateService()
 
     monkeypatch.setattr(module, "_automation_access_service", _access_service)
+    # W389: the authorize operations read through the lean service.
+    monkeypatch.setattr(module, "_project_authorization_service", lambda _entrypoint: _access_service())
     monkeypatch.setattr(
         module,
         "_platform_user_payload",
