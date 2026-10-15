@@ -452,9 +452,29 @@ automatic runs only report what they would remove
   closed. Its installed packages (for example a widget's `node_modules`) go with it
   when you declared them with `--generated`, unless another tree still links
   into them.
-- The first real sweep on a host with an existing pile is the operator's
-  decision, and so is turning automatic removal on; until then, `--sweep`
-  without `--apply` shows what would go.
+- **Dispose of your own unused trees and old backups yourself, without asking
+  the operator (W753).** That includes a pile left from earlier work: run
+  `--sweep`, then `--apply` for what passes the checks above, and remove by
+  hand (`git worktree remove`, never forced) a tree the sweep keeps only for a
+  reason you have resolved. Resolve, never delete blind:
+  - something unique in the tree (an uncommitted change, an unpushed commit,
+    an ignored file not declared regenerable): push it, publish it on the
+    item, or declare it with `--generated`, then remove the tree;
+  - a tree whose job you cannot name, another agent's tree, a live runtime's
+    or a pinned release's tree, or a live database: leave it, and list it with
+    its path and reason on your item;
+  - a disposal command that would need force: stop and report it.
+
+  Turning automatic removal on for the host stays a host setting
+  (`pb host configure --workspace-sweep-auto-apply`), the operator's like all
+  host configuration. The operator, about 19:30Z on 2026-10-11, relayed by
+  Main (`work:mail:20261011T193630126458Z:mail_dd7b889b17424ba68edf9a8cf82d0868:operator-rule-verbatim-dispose-of-unused-worktrees-and-old`):
+
+  > "of course you need to manage disk space bu twhy it grows eveyr time? you must dispose unused worktrees and db backups"
+
+  > "then delete old backups"
+
+  > "Review worktrees: every review leaves a full copy of the repositories behind. << then why they are not get cleaned"
 
 Runtime-window database backups follow the same lifetime rule: they live in
 the host's managed backup folder, never in a workspace or scratch folder, and
