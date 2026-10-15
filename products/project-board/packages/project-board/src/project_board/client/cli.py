@@ -8320,8 +8320,9 @@ def _automatic_sweep(field: Any, identity: Any, args: argparse.Namespace, trigge
 
     try:
         _workspace, config = _sweep_host(args)
-        # W423: the first real sweep on a host is the operator's decision. Until
-        # the host turns auto-apply on, the triggers only report.
+        # W423, W753: the automatic triggers apply only once the operator turns
+        # auto-apply on for the host (a host setting); until then they report.
+        # An agent's own `--sweep --apply` needs no operator decision.
         auto_apply = bool(getattr(config, "workspace_sweep_auto_apply", False))
         result = _workspace_sweep(field, identity, args, apply=auto_apply, only_ended=True)
     except Exception as exc:  # noqa: BLE001 - housekeeping must not break the real command

@@ -319,7 +319,11 @@ def test_the_procedure_owns_registration_the_sweep_and_its_triggers():
     assert "Being merged never ends a job" in workspace
     assert "a folder name (`build`, `dist`, a cache) proves nothing" in workspace
     assert "its item is Done or Cancelled on the board (an open item, or a state the sweep cannot read, keeps it)" in workspace
-    assert "The first real sweep on a host with an existing pile is the operator's decision" in workspace
+    # W753 (operator, 2026-10-11: "you must dispose unused worktrees and db backups"): an agent sweeps its own pile
+    # without asking; only turning automatic removal on for the host stays the operator's setting.
+    assert "**Dispose of your own unused trees and old backups yourself, without asking the operator (W753).**" in workspace
+    assert "Turning automatic removal on for the host stays a host setting" in workspace
+    assert "The first real sweep on a host with an existing pile is the operator's decision" not in workspace
     assert "Never `rm -rf` a worktree folder" in workspace
     skill = reference_text(procedures / "SKILL.md")
     assert skill.count("a sweep removes finished, clean, fully pushed trees at session start, on idle and after a review decision") == 1
