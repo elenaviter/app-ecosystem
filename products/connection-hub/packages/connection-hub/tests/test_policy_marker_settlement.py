@@ -23,7 +23,10 @@ from connection_hub.delegated_credentials.cards.transaction_store import read_re
 from connection_hub.delegated_credentials.cards.service import CardServingUnavailable
 from connection_hub.delegated_credentials.cards.store import CardStorageError
 from connection_hub.invocation_policy import InvocationPolicyConflict, POLICY_ALWAYS, POLICY_ONCE
-from connection_hub.invocation_policy.models import POLICY_CHANGE_COMMITTED, POLICY_CHANGE_PREPARED
+from connection_hub.invocation_policy.models import (
+    InvocationPolicy, POLICY_AVAILABLE, POLICY_CHANGE_COMMITTED, POLICY_CHANGE_PREPARED,
+)
+from connection_hub.invocation_policy.store import owner_hash_for
 from test_card_coordinated_writes import _host, _pg_host
 from test_card_participant import _Store, _Verifier
 from test_invocation_policy import _authority, _service
@@ -92,7 +95,7 @@ async def test_committed_card_is_finished_before_new_direct_policy_write(tmp_pat
     assert saved.mode == POLICY_ALWAYS and saved.revision == 2
     assert (await decisions.read(row.transaction_id)).finished
     marker = await policies.get_policy_change(owner_subject=before.grantor_subject, authority=authority)
-    assert marker.state == POLICY_CHANGE_COMMITTED and marker.policy_revision == 1
+    assert marker is None
 
 
 @pytest.mark.asyncio
@@ -128,6 +131,135 @@ async def test_finished_card_marker_allows_the_next_policy_change(
     assert (await store.read_current_authority(
         subject_hash=SUBJECT_HASH, access_id=before.access_id,
     ))[1].card_revision == before.card_revision + 1
+
+
+@pytest.mark.asyncio
+async def test_finished_marker_is_retired_only_in_its_exact_owner_and_authority(tmp_path):
+    policies, authority, before, store, coordinator, _decisions, row = await _staged(
+        tmp_path, decision="committed",
+    )
+    await coordinator.finish(row.transaction_id)
+    other_owner = "other-owner"
+    other_authority = replace(authority, operation="other-operation")
+    other_owner_marker = await policies.prepare_policy_change(
+        owner_subject=other_owner, authority=authority, mode=POLICY_ONCE,
+        change_id=f"{'b' * 64}:{authority.key}",
+    )
+    other_authority_marker = await policies.prepare_policy_change(
+        owner_subject=before.grantor_subject, authority=other_authority, mode=POLICY_ONCE,
+        change_id=f"{'c' * 64}:{other_authority.key}",
+    )
+
+    saved = await policies.set_policy(
+        owner_subject=before.grantor_subject, authority=authority, mode=POLICY_ALWAYS,
+        expected_revision=1,
+    )
+    assert saved.revision == 2
+    assert await policies.get_policy_change(
+        owner_subject=before.grantor_subject, authority=authority,
+    ) is None
+    assert await policies.get_policy_change(
+        owner_subject=other_owner, authority=authority,
+    ) == other_owner_marker
+    assert await policies.get_policy_change(
+        owner_subject=before.grantor_subject, authority=other_authority,
+    ) == other_authority_marker
+
+
+@pytest.mark.asyncio
+async def test_finished_marker_retires_but_a_newer_marker_during_replay_is_preserved(tmp_path):
+    policies, authority, before, _store, coordinator, _decisions, row = await _staged(
+        tmp_path / "first", decision="committed",
+    )
+    await coordinator.finish(row.transaction_id)
+    await policies.set_policy(
+        owner_subject=before.grantor_subject, authority=authority, mode=POLICY_ALWAYS,
+        expected_revision=1,
+    )
+    assert await policies.get_policy_change(
+        owner_subject=before.grantor_subject, authority=authority,
+    ) is None
+
+    racing, race_authority, race_before, _store, race_coordinator, _decisions, race_row = await _staged(
+        tmp_path / "race", decision="committed",
+    )
+    await race_coordinator.finish(race_row.transaction_id)
+    original_settler = racing._transaction_settler
+    newer = None
+
+    async def replace_during_settlement(change, owner):
+        nonlocal newer
+        proof = await original_settler(change, owner)
+        newer = replace(change, change_id=f"{'d' * 64}:{race_authority.key}",
+                        state=POLICY_CHANGE_PREPARED, expected_policy_revision=1,
+                        policy_revision=0, committed_at=0)
+        await racing._store.write_policy_change(owner_hash=owner_hash_for(owner), change=newer)
+        return proof
+
+    racing.bind_transaction_settler(replace_during_settlement)
+    with pytest.raises(InvocationPolicyConflict, match="invocation_policy_earlier_change_undecided"):
+        await racing.set_policy(
+            owner_subject=race_before.grantor_subject, authority=race_authority,
+            mode=POLICY_ALWAYS, expected_revision=1,
+        )
+    assert await racing.get_policy_change(
+        owner_subject=race_before.grantor_subject, authority=race_authority,
+    ) == newer
+
+
+@pytest.mark.asyncio
+async def test_aborted_receipt_cannot_retire_a_committed_marker(tmp_path):
+    policies, authority, before, _store, coordinator, _decisions, row = await _staged(
+        tmp_path, decision="aborted",
+    )
+    prepared = await policies.get_policy_change(
+        owner_subject=before.grantor_subject, authority=authority,
+    )
+    await coordinator.finish(row.transaction_id)
+    owner_hash = owner_hash_for(before.grantor_subject)
+    await policies._store.write_policy(
+        owner_hash=owner_hash,
+        policy=InvocationPolicy(authority=authority, mode=POLICY_ONCE, revision=1,
+                                state=POLICY_AVAILABLE),
+    )
+    committed = replace(prepared, state=POLICY_CHANGE_COMMITTED,
+                        policy_revision=1, committed_at=prepared.prepared_at + 1)
+    await policies._store.write_policy_change(owner_hash=owner_hash, change=committed)
+    with pytest.raises(InvocationPolicyConflict, match="invocation_policy_earlier_change_undecided"):
+        await policies.set_policy(
+            owner_subject=before.grantor_subject, authority=authority,
+            mode=POLICY_ALWAYS, expected_revision=1,
+        )
+    assert await policies.get_policy_change(
+        owner_subject=before.grantor_subject, authority=authority,
+    ) == committed
+
+
+@pytest.mark.asyncio
+async def test_replay_preserves_a_newer_commit_with_the_same_change_id(tmp_path):
+    policies, authority, before, _store, coordinator, _decisions, row = await _staged(
+        tmp_path, decision="committed",
+    )
+    await coordinator.finish(row.transaction_id)
+    original_settler = policies._transaction_settler
+    newer = None
+
+    async def replace_during_settlement(change, owner):
+        nonlocal newer
+        proof = await original_settler(change, owner)
+        newer = replace(change, committed_at=change.committed_at + 1)
+        owner_hash = owner_hash_for(owner)
+        await policies._store.write_policy_change(owner_hash=owner_hash, change=newer)
+        return proof
+
+    policies.bind_transaction_settler(replace_during_settlement)
+    with pytest.raises(InvocationPolicyConflict, match="invocation_policy_earlier_change_undecided"):
+        await policies.set_policy(
+            owner_subject=before.grantor_subject, authority=authority, mode=POLICY_ALWAYS,
+        )
+    assert await policies.get_policy_change(
+        owner_subject=before.grantor_subject, authority=authority,
+    ) == newer
 
 
 @pytest.mark.asyncio

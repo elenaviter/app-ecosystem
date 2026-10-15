@@ -108,14 +108,14 @@ class InvocationPolicyService:
         *,
         store: InvocationPolicyStore,
         mutation_lock: InvocationPolicyMutationLock,
-        transaction_settler: Callable[[InvocationPolicyChange, str], Awaitable[None]] | None = None,
+        transaction_settler: Callable[[InvocationPolicyChange, str], Awaitable[bool]] | None = None,
     ) -> None:
         self._store = store
         self._mutation_lock = mutation_lock
         self._transaction_settler = transaction_settler
 
     def bind_transaction_settler(
-        self, settler: Callable[[InvocationPolicyChange, str], Awaitable[None]]
+        self, settler: Callable[[InvocationPolicyChange, str], Awaitable[bool]]
     ) -> None:
         """Bind the host's durable Card-transaction recovery route."""
         self._transaction_settler = settler
@@ -216,6 +216,7 @@ class InvocationPolicyService:
         owner_hash = owner_hash_for(owner)
         moment = int(now if now is not None else time.time())
         settling: InvocationPolicyChange | None = None
+        settled = False
         for _ in range(2):
             async with self._critical_section(owner_hash=owner_hash, authority=authority):
                 change = await self._store.read_policy_change(owner_hash=owner_hash, authority=authority)
@@ -232,8 +233,12 @@ class InvocationPolicyService:
                     settling = change
                 elif settling is not None and change is not None and (
                     stuck or change.change_id != settling.change_id
+                    or change.authority != settling.authority
                     or change.mode != settling.mode
                     or change.expected_policy_revision != settling.expected_policy_revision
+                    or change.prepared_at != settling.prepared_at
+                    or (settling.state == POLICY_CHANGE_COMMITTED
+                        and change.committed_at != settling.committed_at)
                 ):
                     # FINISH must have moved this exact marker out of PREPARED.
                     # Preserve any marker another writer placed meanwhile.
@@ -242,6 +247,19 @@ class InvocationPolicyService:
                         transaction_ref=recovery_transaction_ref(change),
                     )
                 else:
+                    if change is not None and settling is not None:
+                        # This read and delete use the same owner-hash/authority path
+                        # under its mutation lock. A newer marker is never retired.
+                        if (not settled or change.state != POLICY_CHANGE_COMMITTED
+                                or current is None or current.revision != change.policy_revision
+                                or current.mode != change.mode):
+                            raise InvocationPolicyConflict(
+                                "invocation_policy_earlier_change_undecided",
+                                transaction_ref=recovery_transaction_ref(change),
+                            )
+                        await self._store.delete_policy_change(
+                            owner_hash=owner_hash, authority=authority,
+                        )
                     if stuck:
                         # W749 direct save: validation precedes superseding its marker.
                         await self._store.delete_policy_change(owner_hash=owner_hash, authority=authority)
@@ -253,7 +271,12 @@ class InvocationPolicyService:
                     return policy
             if self._transaction_settler is None:
                 raise InvocationPolicyConflict("invocation_policy_change_in_progress")
-            await self._transaction_settler(settling, owner)
+            settled = await self._transaction_settler(settling, owner) is True
+            if not settled:
+                raise InvocationPolicyConflict(
+                    "invocation_policy_earlier_change_undecided",
+                    transaction_ref=recovery_transaction_ref(settling),
+                )
         raise InvocationPolicyConflict(
             "invocation_policy_earlier_change_undecided",
             transaction_ref=recovery_transaction_ref(settling),
@@ -280,6 +303,7 @@ class InvocationPolicyService:
         owner_hash = owner_hash_for(owner)
         moment = int(now if now is not None else time.time())
         settling: InvocationPolicyChange | None = None
+        settled = False
         for _ in range(2):
             async with self._critical_section(owner_hash=owner_hash, authority=authority):
                 existing = await self._store.read_policy_change(owner_hash=owner_hash, authority=authority)
@@ -300,14 +324,31 @@ class InvocationPolicyService:
                     settling = existing
                 elif settling is not None and existing is not None and (
                     stuck or existing.change_id != settling.change_id
+                    or existing.authority != settling.authority
                     or existing.mode != settling.mode
                     or existing.expected_policy_revision != settling.expected_policy_revision
+                    or existing.prepared_at != settling.prepared_at
+                    or (settling.state == POLICY_CHANGE_COMMITTED
+                        and existing.committed_at != settling.committed_at)
                 ):
                     raise InvocationPolicyConflict(
                         "invocation_policy_earlier_change_undecided",
                         transaction_ref=recovery_transaction_ref(existing),
                     )
                 else:
+                    if existing is not None and settling is not None:
+                        # The exact owner/authority path is locked and the
+                        # durable Card effect was proved before this re-read.
+                        if (not settled or existing.state != POLICY_CHANGE_COMMITTED
+                                or current is None or current.revision != existing.policy_revision
+                                or current.mode != existing.mode):
+                            raise InvocationPolicyConflict(
+                                "invocation_policy_earlier_change_undecided",
+                                transaction_ref=recovery_transaction_ref(existing),
+                            )
+                        await self._store.delete_policy_change(
+                            owner_hash=owner_hash, authority=authority,
+                        )
                     # W749 direct save: a different PREPARED id is replaced only after validation.
                     change = InvocationPolicyChange(
                         authority=authority, change_id=clean_change_id, mode=selected_mode,
@@ -318,7 +359,12 @@ class InvocationPolicyService:
                     return change
             if self._transaction_settler is None:
                 raise InvocationPolicyConflict("invocation_policy_change_in_progress")
-            await self._transaction_settler(settling, owner)
+            settled = await self._transaction_settler(settling, owner) is True
+            if not settled:
+                raise InvocationPolicyConflict(
+                    "invocation_policy_earlier_change_undecided",
+                    transaction_ref=recovery_transaction_ref(settling),
+                )
         raise InvocationPolicyConflict(
             "invocation_policy_earlier_change_undecided",
             transaction_ref=recovery_transaction_ref(settling),

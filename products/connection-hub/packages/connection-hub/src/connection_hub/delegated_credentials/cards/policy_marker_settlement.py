@@ -16,7 +16,7 @@ from typing import Any, Awaitable, Callable, Mapping
 
 from service_foundation.coordination.durable_decision_log import DecisionRefused
 
-from connection_hub.invocation_policy.models import InvocationPolicyChange
+from connection_hub.invocation_policy.models import InvocationPolicyChange, POLICY_CHANGE_PREPARED
 from connection_hub.invocation_policy.service import (
     InvocationPolicyConflict,
     recovery_transaction_ref,
@@ -24,7 +24,7 @@ from connection_hub.invocation_policy.service import (
 
 from ..issuer_gate import MAX_DECISION_SECONDS
 from .card_participant import PARTICIPANT, LocalCardIntentSource
-from .transaction_store import read_receipt
+from .transaction_store import effect_outcomes, pending_effects, read_receipt
 
 
 class CardPolicyMarkerSettler:
@@ -49,15 +49,69 @@ class CardPolicyMarkerSettler:
         self._max_wait_seconds = max_wait_seconds
         self._poll_seconds = poll_seconds
 
-    async def __call__(self, change: InvocationPolicyChange, owner_subject: str) -> None:
+    @staticmethod
+    def _policy_effect_index(
+        receipt: Mapping[str, Any], change: InvocationPolicyChange, owner_subject: str,
+    ) -> int | None:
+        for index, effect in enumerate(receipt.get("effects", ())):
+            if not isinstance(effect, Mapping) or not isinstance(effect.get("payload"), Mapping):
+                continue
+            payload = effect["payload"]
+            if (effect.get("kind") == "invocation_policy"
+                    and effect.get("key") == change.authority.key
+                    and payload.get("owner_subject") == owner_subject
+                    and payload.get("authority") == change.authority.to_dict()
+                    and payload.get("mode") == change.mode
+                    and type(payload.get("expected_revision")) is int
+                    and payload["expected_revision"] == change.expected_policy_revision):
+                return index
+        return None
+
+    async def _finished_receipt(
+        self, change: InvocationPolicyChange, owner_subject: str, member_id: str,
+        *, state: str,
+    ) -> bool:
+        """Verify the exact effect and the terminal intent's durable FINISH witness."""
+        receipt = await read_receipt(self._card_store, member_id)
+        if receipt is None or receipt.get("state") != state:
+            return False
+        effect_index = self._policy_effect_index(receipt, change, owner_subject)
+        if effect_index is None:
+            return False
+        group = receipt.get("group")
+        decision_id = group.get("transaction_id") if isinstance(group, Mapping) else member_id
+        terminal = receipt if decision_id == member_id else await read_receipt(self._card_store, decision_id)
+        if (terminal is None or terminal.get("state") != state
+                or terminal.get("intent_finished") is not True
+                or terminal.get("intent_digest") != receipt.get("intent_digest")
+                or terminal.get("participant") != PARTICIPANT):
+            return False
+        if state == "aborted":
+            # ABORT can release only a PREPARED marker. A COMMITTED marker
+            # requires COMMIT's exact applied effect and FINISH witness.
+            return change.state == POLICY_CHANGE_PREPARED
+        if await pending_effects(self._card_store, receipt):
+            return False
+        outcome = (await effect_outcomes(self._card_store, member_id)).get(str(effect_index))
+        return isinstance(outcome, str) and bool(outcome)
+
+    async def __call__(self, change: InvocationPolicyChange, owner_subject: str) -> bool:
         suffix = ":" + change.authority.key
         recovery = recovery_transaction_ref(change)
-        if not change.change_id.endswith(suffix):
+        if not change.change_id.endswith(suffix) or recovery is None:
             raise InvocationPolicyConflict(
                 "invocation_policy_earlier_change_undecided", transaction_ref=recovery,
             )
         member_id = change.change_id[:-len(suffix)]
         deadline = time.monotonic() + self._max_wait_seconds
+        try:
+            if await asyncio.wait_for(
+                self._finished_receipt(change, owner_subject, member_id, state="committed"),
+                timeout=max(0, deadline - time.monotonic()),
+            ):
+                return True
+        except Exception:  # noqa: BLE001 - missing/corrupt evidence cannot clear the marker
+            pass
         if recovery is not None:
             # A group member's marker names its member receipt. Recovery must
             # also name the group's distinct durable decision identity.
@@ -94,13 +148,24 @@ class CardPolicyMarkerSettler:
             if finish is not None:
                 try:
                     await finish()
+                    # FINISH may replay after the policy was committed but
+                    # before its Card effect was acknowledged. Require the
+                    # durable outcome before the caller retires the marker.
+                    if not (await asyncio.wait_for(
+                        self._finished_receipt(change, owner_subject, member_id, state="committed"),
+                        timeout=MAX_DECISION_SECONDS,
+                    ) or await asyncio.wait_for(
+                        self._finished_receipt(change, owner_subject, member_id, state="aborted"),
+                        timeout=MAX_DECISION_SECONDS,
+                    )):
+                        raise ValueError("card_effect_unverified")
                 except Exception as exc:
                     # A failed FINISH keeps its marker; the next request can
                     # replay the same durable decision without guessing.
                     raise InvocationPolicyConflict(
                         "invocation_policy_earlier_change_undecided", transaction_ref=recovery,
                     ) from exc
-                return
+                return True
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 raise InvocationPolicyConflict(
@@ -116,15 +181,7 @@ class CardPolicyMarkerSettler:
             return None
         # The policy marker must name this exact staged effect, not merely a
         # different transaction whose id happens to share the marker prefix.
-        if not any(
-            effect.get("kind") == "invocation_policy"
-            and effect.get("key") == change.authority.key
-            and isinstance(effect.get("payload"), Mapping)
-            and effect["payload"].get("owner_subject") == owner_subject
-            and effect["payload"].get("mode") == change.mode
-            for effect in receipt.get("effects", ())
-            if isinstance(effect, Mapping)
-        ):
+        if self._policy_effect_index(receipt, change, owner_subject) is None:
             return None
         group = receipt.get("group")
         transaction_id = group.get("transaction_id") if isinstance(group, Mapping) else member_id
