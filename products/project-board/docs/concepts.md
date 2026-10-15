@@ -95,10 +95,14 @@ catalog change.
   worker identity is not deleted; leaving the project changes its attendance
   like any unlink.
 
-The project's own Control Card and the owner's Control and My Card stay in
-Connection Hub after a deletion until they are retired by a follow-up step
-(W863); the deletion record names them. A person who joins between step 2
-and step 3 keeps their Cards until that follow-up sweeps them.
+The deletion then retires the project's own Control Card and the owner's
+Control and My Card in Connection Hub, on the same kind of Card save as
+removing a person, authorized by the deletion record: only the person who
+deleted the project, and only the Cards that record names. If Connection Hub
+cannot be reached, the deletion still stands and the record keeps the
+retirement pending; the same person finishes it by deleting the project again.
+A person who joins between step 2 and step 3 keeps their Cards; they are not
+in the record.
 
 ## People: members and project admins
 
