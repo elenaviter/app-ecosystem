@@ -111,11 +111,10 @@ class CardPolicyMarkerSettler:
 
         The committed policy marker is the policy-side effect witness. It is
         insufficient alone: derive OUTCOME's exact link, time and binding from
-        that Card's immutable version, never a request or a directory scan.
+        that Card's immutable version, never a request or a name alone.
         Follow at most 64 immutable base links. A broken historical chain may
         use a bounded, one-Card names inventory (256 directory entries).
-        PREPARED,
-        an in-progress txn or missing/over-bound evidence stays undecided.
+        PREPARED, an in-progress txn or missing/over-bound evidence stays undecided.
         The policy service rechecks the marker and policy under its own lock.
         A change id can be request-supplied: retiring an already-applied
         COMMITTED marker applies no undecided effect, even for a forged id.
