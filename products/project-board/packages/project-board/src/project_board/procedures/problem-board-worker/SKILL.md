@@ -318,6 +318,7 @@ move status ([ownership](references/identity-and-authorization.md)).
   prints `pb worker outbox-status --outbox-id <id>`; the request may already
   have applied. Read that row, then retry the same report unchanged. Changed
   content or an invented source event is a different report, not recovery.
+- Before an item with repository work moves to Done, whoever moves it (you, for your own item, included) confirms its merge commit is an ancestor of a freshly fetched `main`, and of the live head when live is claimed, and records that on the item: [source and review](references/source-and-review.md), "Before Done" (W685, a soft rule).
 - A `project.report` request reaches only the coordinator: before answering one, read [project-report](references/project-report.md).
 - Journal what the work taught the project (why this and not that, failures and their mechanism, wrong assumptions, limits) only when the project declares role `journal`; where the work stands goes on the item, not in the journal; no role means no journal work. The role is repository agnostic and every change is item-scoped. Before you write, index or search an entry, read [journaling](references/journaling.md): it owns when an entry is worth writing, its front matter and `entry_ref`, and `pb worker journal-index`, its resume and its status. Each signal of this skill and the test that pins it: [signals](references/signals.md).
 - Your estimate is visible state. After planning, `pb worker busy-until <UTC> --note <one line>`

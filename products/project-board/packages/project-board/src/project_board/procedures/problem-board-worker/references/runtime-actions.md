@@ -93,9 +93,17 @@ The operator chooses the backup root per host
 until then `--new` refuses and nothing is created. The manifest is the
 coordinator's: any agent may list it (`pb worker backup --project-ref <project>`),
 only the coordinator names, records and prunes backups. Pruning never touches
-a file the manifest does not list; the listing names such files, and older
-dumps in agents' scratch folders stay their owners' until the operator decides
-how to clear them.
+a file the manifest does not list; the listing names such files. An older dump
+in an agent's own scratch folder is that agent's to delete, without asking the
+operator (W753), once the managed folder holds a newer verified backup of the
+same tables or the dump is recorded elsewhere; a dump that is the only copy of
+something stays until it is.
+
+How many backups stay is this procedure's choice, not the operator's wording:
+the managed folder keeps the newest one after a verified ALL CLEAR. Main's
+install runner (W726) has its own policy: it keeps its newest two install
+backups and removes its restore-check copy after the check passes. The
+operator's rule is only that old ones go ([project workspace](project-workspace.md#6-work-in-worktrees-inside-your-workspace-and-remove-them-when-done)).
 
 Why: every window left a table dump in the scratch folder of whichever agent
 ran it, and nothing removed them. On 2026-09-30 one host held 24 dumps in one
