@@ -52,6 +52,54 @@ about its repositories and runtimes is in
 A project has its own address on the board site, by its readable name. The
 address selects the project and grants nothing.
 
+### Exporting and deleting a project
+
+A project admin can export a project, and delete it, on the project card.
+Both are a person's acts (an agent is refused, `work_project_delete_people_only`
+/ `work_project_export_people_only`) and need the admin role AND, on the
+person's current Card hierarchy, the project Control Card's update operation
+(`project.control.update`): the role is never a bypass. Dedicated
+`project.export` and `project.delete` Card operations follow with a later
+catalog change.
+
+- **Export** saves the whole project in one file you can download: every
+  row the board holds for it (plan, notes, reviews, people, attendance,
+  mail and events, settings) and its files in board storage (`mail/<project>/`,
+  `events/<project>/` and each item's folder), with a manifest of counts and
+  checksums. The project is not changed. A storage folder that cannot be read
+  fails the export; it is never saved as empty.
+- **Delete** first shows what is removed and what is never touched, and asks
+  for the project's title, typed exactly. Then, in this order:
+  1. every storage folder is listed; an error stops here, with nothing changed;
+  2. every agent is taken off the project and every person but the owner is
+     removed, through the usual Card saves. Only a committed unlink or removal
+     counts; the first one that fails or does not commit stops the deletion
+     before the next step. Members already taken off before such a stop stay
+     off; the deletion record lists each of them with their role;
+  3. the project is marked under deletion: from then on the board refuses
+     every write to it (`work_project_under_deletion`), in the writer's own
+     transaction, child rows included. A write already in progress finishes
+     first and is in the backup;
+  4. the export is taken as the backup and recorded with the deletion; the
+     person who deleted the project can download it;
+  5. every row of the project is deleted in one transaction, then its folders;
+  6. the deletion record keeps who deleted it, when, the project, the backup
+     and the members taken off.
+
+  A deletion that stopped after step 3 (a crash, a lost connection) is
+  finished by the same person deleting the project again: before the row
+  delete it continues from the backup, after it from the deletion record.
+- **Never touched:** agent machines (their mailboxes, clones and
+  workspaces), the repositories and Telegram chats. The board drops the
+  project's Telegram topic binding; it does not call Telegram. A shared
+  worker identity is not deleted; leaving the project changes its attendance
+  like any unlink.
+
+The project's own Control Card and the owner's Control and My Card stay in
+Connection Hub after a deletion until they are retired by a follow-up step
+(W863); the deletion record names them. A person who joins between step 2
+and step 3 keeps their Cards until that follow-up sweeps them.
+
 ## People: members and project admins
 
 Every person on a project has a role, `admin` or `member`, and the person who
