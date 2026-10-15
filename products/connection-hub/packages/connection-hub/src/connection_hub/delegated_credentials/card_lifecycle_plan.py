@@ -1070,7 +1070,7 @@ async def plan_card_lifecycle(
                 # W661 (EMain 18:16Z): a role change's Card side. PB sends a fixed policy delta, never Card
                 # content; the Hub applies it to the Card it just read and builds through the reselect builder.
                 from connection_hub.delegated_credentials.existing_card_selection_plan import (
-                    build_existing_card_selection_update,
+                    _target_identity, build_existing_card_selection_update,
                 )
                 from connection_hub.delegated_credentials.role_selection_plan import (
                     role_selection, role_update_shape_valid,
@@ -1086,17 +1086,11 @@ async def plan_card_lifecycle(
                     )
                     if raw["remove_operations"] or raw["operation_grants"] is not None:
                         raise CardLifecyclePlanRefused("card_plan_agent_follow_add_only", 400)
-                    from connection_hub.delegated_credentials.cards.identity import CARD_KIND_AGENT, CARD_KIND_AUTOMATION
                     try:
+                        # A person's C is also bound under P: the target check takes only an agent's own Card.
                         managed_target_kind(original, project_ref=scope, kind="agent_card")
                     except DecisionRefused:
                         raise CardLifecyclePlanRefused("card_plan_update_scope_invalid") from None
-                    # A person's C is also bound under P: only an agent's own Card follows a role (W639's check).
-                    if (original.card_kind not in {CARD_KIND_AGENT, CARD_KIND_AUTOMATION}
-                            or not original.delegate_subject.startswith("integration:")
-                            or original.delegate_subject == original.grantor_subject
-                            or original.source not in {"oauth", "agent"}):
-                        raise CardLifecyclePlanRefused("card_plan_update_scope_invalid")
                     if raw["resource"] not in (original.resource_grants or {}):
                         raise CardLifecyclePlanRefused("card_plan_update_scope_invalid")
                     selection = role_selection(original, raw)
@@ -1117,6 +1111,10 @@ async def plan_card_lifecycle(
                     members.append(built["member"])
                     originals[(subject_hash, access_id)] = original.to_dict()
                     continue
+                # The delta can answer already-applied or unknown-operation from
+                # stored grants. Bind the loaded C/My before even that read-only
+                # answer, using the same pure identity check as an actual edit.
+                _target_identity(original, scope, target)
                 selection = role_selection(original, raw)
                 if selection is None:
                     already_applied += 1  # unchanged: the Card stays a read, never a synthetic revision

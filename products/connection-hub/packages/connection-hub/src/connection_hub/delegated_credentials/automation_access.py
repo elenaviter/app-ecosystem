@@ -107,6 +107,7 @@ from connection_hub.delegated_credentials.application_operation_policy import (
     validate_application_operation_role_policy,
 )
 from connection_hub.delegated_credentials.agent_capability_control import (
+    AGENT_DESCRIPTOR_CARD_EDIT_PROVENANCE_KEY,
     AGENT_DESCRIPTOR_ISSUER_KIND,
     align_resident_selection_to_card_authority,
     preserve_descriptor_acceptance,
@@ -6623,7 +6624,15 @@ class AutomationAccessService:
                     accepted_operations=accepted_operations,
                 ),
             ),
-            provenance=copy.deepcopy(dict(existing.provenance or {})),
+            provenance={
+                **copy.deepcopy(dict(existing.provenance or {})),
+                **(
+                    {AGENT_DESCRIPTOR_CARD_EDIT_PROVENANCE_KEY: True}
+                    if existing.issuer_kind == AGENT_DESCRIPTOR_ISSUER_KIND
+                    and not _application_write
+                    else {}
+                ),
+            },
             client_metadata=copy.deepcopy(dict(existing.client_metadata or {})),
             control_card=existing.control_card,
             issuer_ref=existing.issuer_ref,

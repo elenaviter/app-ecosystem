@@ -72,6 +72,7 @@ CARD_SAVE_CODES = frozenset({
     "card_plan_role_operation_unknown",
     "card_plan_role_unchanged",
     "card_plan_agent_follow_add_only",  # W850: an agent Card's role follow never removes
+    "card_plan_agent_card_target_not_agent",  # W852: an agent-Card edit names a Card that is not an agent's own
     "card_plan_already_applied",
     "card_plan_accepted_operations_invalid",  # W723: a malformed "Accept update" set
     "card_plan_catalog_moved",  # W723: the catalog an acceptance was reviewed under is no longer active

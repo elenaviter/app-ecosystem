@@ -13,6 +13,7 @@ from typing import Any, Iterable, Mapping
 from urllib.parse import unquote
 
 from connection_hub.delegated_credentials.agent_capability_control import (
+    AGENT_DESCRIPTOR_CARD_EDIT_PROVENANCE_KEY,
     AGENT_DESCRIPTOR_ACCEPTANCE_KIND,
     AGENT_DESCRIPTOR_ISSUER_KIND,
     descriptor_acceptance,
@@ -32,6 +33,7 @@ from connection_hub.delegated_credentials.agent_capability_policy import (
 )
 from connection_hub.delegated_credentials.application_operation_policy import (
     APPLICATION_API_RESOURCE,
+    APPLICATION_OPERATIONS_PROPERTY,
     ApplicationOperationPolicyError,
     application_operation_role_policy,
     validate_application_operation_role_policy,
@@ -83,6 +85,9 @@ from connection_hub.delegated_credentials.catalog.resolver import CatalogUnavail
 from connection_hub.delegated_credentials.controls.effective import (
     ControlCardMismatch,
     effective_card_authority,
+)
+from connection_hub.delegated_credentials.conversation_target_policy import (
+    CONVERSATION_TARGETS_PROPERTY,
 )
 from connection_hub.delegated_credentials.controls.model import (
     control_card_id_for_issuer,
@@ -1127,6 +1132,85 @@ async def sync_agent_capability_control(
         and existing_descriptor.kind == AGENT_DESCRIPTOR_ACCEPTANCE_KIND
         and existing_descriptor.revision == descriptor_revision
     )
+    if (
+        existing_control is not None
+        and not descriptor_is_current
+        and dict(existing_control.provenance or {}).get(
+            AGENT_DESCRIPTOR_CARD_EDIT_PROVENANCE_KEY
+        ) is True
+    ):
+        # Descriptor props seed the first Control Card. A later human Save is
+        # one Card transaction, so replaying the old props seed on a descriptor
+        # refresh would silently undo that committed choice. Keep the Card's
+        # editable fields, constrained by the refreshed capability authority
+        # and active catalog, while replacing descriptor-owned evidence.
+        edited_properties = copy.deepcopy(dict(existing_control.properties or {}))
+        refreshed_properties = {
+            **edited_properties,
+            **descriptor_properties,
+        }
+        for name in (APPLICATION_OPERATIONS_PROPERTY,):
+            if name in edited_properties:
+                refreshed_properties[name] = edited_properties[name]
+        allowed_targets = set(descriptor_properties.get(CONVERSATION_TARGETS_PROPERTY) or ())
+        refreshed_properties[CONVERSATION_TARGETS_PROPERTY] = [
+            target
+            for target in edited_properties.get(CONVERSATION_TARGETS_PROPERTY) or ()
+            if target in allowed_targets
+        ]
+        raw_edited_defaults = edited_properties.get(AGENT_CAPABILITY_DEFAULTS_PROPERTY)
+        if raw_edited_defaults is None:
+            refreshed_properties.pop(AGENT_CAPABILITY_DEFAULTS_PROPERTY, None)
+        else:
+            try:
+                edited_defaults = AgentCapabilityPolicy.from_property(
+                    raw_edited_defaults
+                )
+                refreshed_properties[AGENT_CAPABILITY_DEFAULTS_PROPERTY] = (
+                    edited_defaults.intersection(authority).to_property()
+                )
+            except AgentCapabilityPolicyError as exc:
+                return {"ok": False, "error": exc.reason, "status": 409}
+        bounded_grants = {
+            resource: sorted(set(grants) & set(resolved.resource_grants.get(resource, ())))
+            for resource, grants in existing_control.resource_grants.items()
+        }
+        bounded_operations = {
+            resource: sorted(
+                set(operations) & set(resolved.resource_operations.get(resource, ()))
+            )
+            for resource, operations in existing_control.resource_operations.items()
+        }
+        saved_named = existing_control.named_service_operations
+        allowed_named = resolved.named_service_operations
+        if allowed_named.is_all:
+            bounded_named = saved_named
+        elif saved_named.is_all:
+            bounded_named = allowed_named
+        elif saved_named.is_exact and allowed_named.is_exact:
+            bounded_named_map: dict[str, dict[str, list[str]]] = {}
+            for resource, namespaces in saved_named.operations.items():
+                for namespace, operations in namespaces.items():
+                    common = sorted(
+                        set(operations)
+                        & set(allowed_named.operations.get(resource, {}).get(namespace, ()))
+                    )
+                    if common:
+                        bounded_named_map.setdefault(resource, {})[namespace] = common
+            bounded_named = NamedServiceSelection.exact(bounded_named_map)
+        else:
+            bounded_named = NamedServiceSelection.none()
+        resolved = await resolve_agent_descriptor_standard_authority(
+            service,
+            active=active,
+            owner_subject=grantor_subject,
+            resource_grants=bounded_grants,
+            resource_operations=bounded_operations,
+            named_service_operations=bounded_named.to_stored(),
+            properties=refreshed_properties,
+        )
+        if resolved.error is not None:
+            return resolved.error
     if descriptor_is_current:
         control_authority = card_authority_from_record(existing_control)
         control_changed = False

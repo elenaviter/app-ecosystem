@@ -8,6 +8,7 @@ import pytest
 from connection_hub.delegated_credentials import agent_capability_sync
 from connection_hub.delegated_credentials.agent_capability_control import (
     AGENT_DESCRIPTOR_ACCEPTANCE_KIND,
+    AGENT_DESCRIPTOR_CARD_EDIT_PROVENANCE_KEY,
 )
 from connection_hub.delegated_credentials.agent_capability_sync import (
     AGENT_CAPABILITY_CARD_LEASE_SECONDS,
@@ -1711,6 +1712,133 @@ async def test_same_descriptor_sync_preserves_the_administrator_preset() -> None
     assert control.named_service_operations.to_stored() == {
         NAMED_RESOURCE: {"slack": ["object.list"]},
     }
+    assert control.provenance[AGENT_DESCRIPTOR_CARD_EDIT_PROVENANCE_KEY] is True
+
+    edited_revision = control.card_revision
+
+    refreshed = await service.sync_agent_capability_control(
+        {"user_id": OWNER},
+        application=APPLICATION,
+        agent_id=AGENT,
+        descriptor_revision="descriptor-r2",
+        descriptor_payload={"revision": "descriptor-r2"},
+        capability_authority=_policy_with_named_operations(
+            "object.list",
+            "object.action.post_message",
+        ),
+        resource_grants={
+            NAMED_RESOURCE: [
+                "named_services:use",
+                "slack:read",
+                "slack:post",
+            ]
+        },
+        named_service_operations=descriptor_operations,
+    )
+    assert refreshed["ok"] is True, refreshed
+    assert refreshed["control_changed"] is True
+    control = persistence.records[control_id][0]
+    assert control.card_revision == edited_revision + 1
+    assert control.resource_grants == {
+        NAMED_RESOURCE: ("named_services:use", "slack:read"),
+    }
+    assert control.named_service_operations.to_stored() == {
+        NAMED_RESOURCE: {"slack": ["object.list"]},
+    }
+    assert control.provenance[AGENT_DESCRIPTOR_CARD_EDIT_PROVENANCE_KEY] is True
+
+    narrowed = await service.sync_agent_capability_control(
+        {"user_id": OWNER},
+        application=APPLICATION,
+        agent_id=AGENT,
+        descriptor_revision="descriptor-r3",
+        descriptor_payload={"revision": "descriptor-r3"},
+        capability_authority=_policy_with_named_operations(
+            "object.action.post_message",
+        ),
+        resource_grants={NAMED_RESOURCE: ["named_services:use", "slack:post"]},
+        named_service_operations={
+            NAMED_RESOURCE: {"slack": ["object.action.post_message"]},
+        },
+    )
+    assert narrowed["ok"] is True, narrowed
+    control = persistence.records[control_id][0]
+    assert control.resource_grants == {
+        NAMED_RESOURCE: ("named_services:use",),
+    }
+    assert control.named_service_operations.is_none
+
+
+@pytest.mark.asyncio
+async def test_cleared_control_default_stays_cleared_after_descriptor_revision() -> None:
+    service, persistence = _service(named_services=True)
+    descriptor_default = _policy("tool.old")
+    descriptor_operations = {NAMED_RESOURCE: {"slack": ["object.list"]}}
+    descriptor_grants = {NAMED_RESOURCE: ["named_services:use", "slack:read"]}
+    created = await service.sync_agent_capability_control(
+        {"user_id": OWNER},
+        application=APPLICATION,
+        agent_id=AGENT,
+        descriptor_revision="descriptor-r1",
+        descriptor_payload={
+            "revision": "descriptor-r1",
+            "capability_defaults": descriptor_default,
+        },
+        capability_authority=_policy("tool.old", "tool.new"),
+        capability_catalog=_policy("tool.old", "tool.new"),
+        selected_capabilities=descriptor_default,
+        resource_grants=descriptor_grants,
+        named_service_operations=descriptor_operations,
+    )
+    assert created["ok"] is True, created
+    control_id = created["control_card"]["access_id"]
+    assert created["control_card"]["properties"][AGENT_CAPABILITY_DEFAULTS_PROPERTY][
+        "capabilities"
+    ] == {"tools": ["tool.old"]}
+    properties = dict(created["control_card"]["properties"])
+    properties[AGENT_CAPABILITY_DEFAULTS_PROPERTY] = _policy()
+    prior_writes = len(persistence.persisted)
+
+    saved = await service.update_access(
+        {"user_id": OWNER, "roles": ["kdcube:role:super-admin"]},
+        access_id=control_id,
+        resource_grants=descriptor_grants,
+        resource_operations={},
+        named_service_operations=descriptor_operations,
+        account_scope={},
+        expected_card_revision=created["control_card"]["card_revision"],
+        expected_catalog_version=created["control_card"]["catalog_version"],
+        composition_mode="and",
+        properties=properties,
+    )
+    assert saved["ok"] is True, saved
+    assert persistence.persisted[prior_writes:] == [control_id]
+    control = persistence.records[control_id][0]
+    assert control.provenance[AGENT_DESCRIPTOR_CARD_EDIT_PROVENANCE_KEY] is True
+    assert control.properties[AGENT_CAPABILITY_DEFAULTS_PROPERTY][
+        "capabilities"
+    ].get("tools", []) == []
+
+    refreshed = await service.sync_agent_capability_control(
+        {"user_id": OWNER},
+        application=APPLICATION,
+        agent_id=AGENT,
+        descriptor_revision="descriptor-r2",
+        descriptor_payload={
+            "revision": "descriptor-r2",
+            "capability_defaults": descriptor_default,
+        },
+        capability_authority=_policy("tool.old", "tool.new"),
+        capability_catalog=_policy("tool.old", "tool.new"),
+        selected_capabilities=descriptor_default,
+        resource_grants=descriptor_grants,
+        named_service_operations=descriptor_operations,
+    )
+    assert refreshed["ok"] is True, refreshed
+    control = persistence.records[control_id][0]
+    assert control.properties[AGENT_CAPABILITY_DEFAULTS_PROPERTY][
+        "capabilities"
+    ].get("tools", []) == []
 
 
 @pytest.mark.asyncio

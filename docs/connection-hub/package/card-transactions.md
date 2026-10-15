@@ -132,6 +132,30 @@ nothing back during the save. It has the same peer authentication and
 only `op`, `request_echo`, `scope` and `txn`. Its `request_digest` binds the
 whole request, so no edit value is repeated.
 
+**Scope binds the target, not a second entitlement registry.** One configured
+participant may serve multiple projects. The descriptor prefix admits a
+namespace; it is not a per-caller list of projects. Every signed-scope operation
+still binds its targets to the requested scope using the existing verified
+intent, loaded Card identity, or scope-derived storage key:
+
+| Operation/path | Existing target binding |
+| --- | --- |
+| `card_version` STAGE and `card_lifecycle_plan` | The shared planner checks C/My person identity, P's application issuer, an agent's stored P binding, or an invitation's identity. Creation derives the new identity from scope and validates any named parent. |
+| `card_version` replay, PUBLISH, ROLLBACK, OUTCOME and COMPENSATE | Caller plus scope must equal the STAGE marker's binding. With the marker removed, linked published versions carry that same binding; the store verifies it before returning their outcome or restoring content. |
+| `card_transaction_participant` | The authority-verified intent's configured scope field and the locally recorded caller/scope binding must match. Prepared-list results and cursors are partitioned by that caller/scope. |
+| `card_census_read` | C and My ids derive from scope plus person; a complete chain follows only validated stored bindings. |
+| `card_invitation_census_read` | The storage partition derives from scope; every returned invitation identity must name that project. |
+| `card_read_collection_register` | Uses the census's derived targets. Its collection id binds caller/scope/request/deadline; the sealed header retains the scope, actor and request. |
+
+A person `role_selection` checks the loaded C/My identity **before** computing
+its delta: an unchanged or invalid delta must not disclose another project's
+stored policy through an `already_applied` or `card_plan_role_operation_unknown`
+answer. The existing planner refusal is `card_plan_update_scope_invalid`;
+STAGE keeps its established `edit_invalid` mapping. This is a pure check over
+the Card already read, with no added Redis/DB read, remote call or callback.
+An authenticated scope refusal consumes the operation's existing single-use
+nonce, as other authenticated refusals do; no Card, marker or effect is written.
+
 - **`op: stage`.** The request carries `txn`, `request_id`, `at` (the
   request's own time, ISO 8601 with an offset; a retry sends the same), the `catalog`
   (`version`, `content_hash`) PB authorized under, the actor, PB's
@@ -230,9 +254,9 @@ whole request, so no edit value is repeated.
   member defaults a Card misses). PB sends a fixed policy delta, never Card
   content. An operation is never both removed and added, and any removal carries
   `operation_grants`.
-  - The Hub reads the current Card (its version becomes the base), applies the
-    delta to that one resource, and builds the candidate with the ordinary
-    reselect builder.
+  - The Hub reads the current Card (its version becomes the base), binds its
+    project and person identity even for a no-op, applies the delta to that one
+    resource, and builds the candidate with the ordinary reselect builder.
   - With a removal, the operations become (current minus removed) plus added,
     and the Hub recomputes the resource's grants over that whole set through
     PB's map. An operation missing from it is refused
@@ -542,7 +566,12 @@ under a Control. Only its selection travels; a changed label, composition or
 properties refuses before anything is sent. The host plans it with
 `reselect_agent_card` (`managed_card_selection_plan.py`), which accepts only a
 Card bound directly under the scope's project Control, and its display kind is
-`agent_card`. `reselect_project_control` plans an edit of the project Control
+`agent_card`. The binding alone never decides it (W852): `managed_target_kind`
+also requires an agent's own Card (kind agent or automation, an `integration:`
+delegate that is not its owner, source oauth or agent), read from the Card the
+plan already loaded, so a person's C or My Card, whatever binding row the host
+sends, refuses `card_plan_agent_card_target_not_agent` with no extra read and no
+write. W850's role follow of an agent Card goes through the same check. `reselect_project_control` plans an edit of the project Control
 itself under `project.control.update`.
 
 **Removing a person from the Hub's Cards screen (W728).** While enabled, `project_person_control_revoke`

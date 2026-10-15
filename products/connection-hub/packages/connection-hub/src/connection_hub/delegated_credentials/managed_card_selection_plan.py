@@ -26,6 +26,7 @@ from .agent_capability_control import preserve_descriptor_acceptance
 from .caller_writer_gate import candidate_shape_refusal
 from .card_lifecycle_plan import _with_selection
 from .cards.card_group import group_member
+from .cards.identity import CARD_KIND_AGENT, CARD_KIND_AUTOMATION
 from .cards.model import CARD_STATE_ACTIVE, CardAuthority, authority_is_credentialless
 from .catalog.descriptors import next_resource_acceptance
 from .controls.model import control_card_id_for_issuer
@@ -52,6 +53,14 @@ def _is_project_control(card: CardAuthority, project_ref: str) -> bool:
                                                               grantor_subject=card.grantor_subject))
 
 
+def is_agent_own_card(card: CardAuthority) -> bool:
+    """An agent's own Card (W639's check): a person's C and My Card are bound under P too, but are not this."""
+    return (card.card_kind in {CARD_KIND_AGENT, CARD_KIND_AUTOMATION}
+            and card.delegate_subject.startswith("integration:")
+            and card.delegate_subject != card.grantor_subject
+            and card.source in {"oauth", "agent"})
+
+
 def managed_target_kind(original: CardAuthority, *, project_ref: str, kind: str) -> str:
     """The exact managed kind of this Card in this project, or a refusal."""
     if not isinstance(original, CardAuthority) or original.state != CARD_STATE_ACTIVE or original.card_revision < 1:
@@ -74,6 +83,10 @@ def managed_target_kind(original: CardAuthority, *, project_ref: str, kind: str)
             and binding.issuer_ref == project_ref
             and binding.control_id == control_card_id_for_issuer(
                 "application", project_ref, grantor_subject=binding.holder_subject or original.grantor_subject)):
+        # W852: the binding row PB sends never decides alone that the target is an agent's Card; the Card
+        # this plan already read does, so every agent_card path refuses a person's Card with no extra read.
+        if not is_agent_own_card(original):
+            raise _refuse("card_plan_agent_card_target_not_agent")
         return kind
     raise _refuse("card_plan_update_scope_invalid")
 
