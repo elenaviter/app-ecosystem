@@ -323,6 +323,17 @@ or `operator`; `reason`; `due_at`: at most 14 days ahead), and an empty
 `waiting_on` clears it. The coordinator checks for reviews that sit without a
 decision (W537).
 
+The CLI's `project.plan.item --format brief` shows the current `review.hold`
+beside the item's status and revision: the whole `waiting_on` identity,
+`due_at`, `set_at` when recorded, and the reason. A past due time is marked
+`overdue` against the client's UTC clock; this display does not change the hold
+or item state.
+An absent hold is shown as `none`. Long reasons are labelled as clipped
+previews, with the full-review read command in the item footer. Use
+`pb worker item-read --project-ref <project-ref> --item-key <Wn> --field review`
+when the complete reason or checklist is needed. A hold retained on a Done
+item does not supersede that item's status.
+
 Return and cancel take a reason. Each decision is fenced by the item
 revision the reviewer read and carries an idempotency key: a retry with the
 same key and content returns the same receipt, and a retry with different
