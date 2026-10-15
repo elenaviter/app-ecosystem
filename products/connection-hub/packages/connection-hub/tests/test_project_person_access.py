@@ -1628,6 +1628,24 @@ async def test_each_batched_decision_equals_its_single_decision() -> None:
 
 
 @pytest.mark.asyncio
+async def test_a_batch_logs_where_its_decision_waited_with_fixed_fields_only(caplog) -> None:
+    # W389: after the lean service, the decide half is what remains; one line names its Card-chain and catalog reads.
+    import logging
+
+    service, _ = await _authorized_service()
+    with caplog.at_level(logging.INFO, logger="kdcube.connection_hub.project_authorize"):
+        await service.project_operations_authorize(
+            {"user_id": TARGET}, project_ref=PROJECT_REF, resource=RESOURCE,
+            operations=[{"operation": OPERATION, "required_grants": [GRANT]}] * 2)
+    lines = [record.getMessage() for record in caplog.records
+             if record.getMessage().startswith("[connection-hub.project-authorize.decide]")]
+    assert len(lines) == 1
+    assert lines[0].startswith("[connection-hub.project-authorize.decide] operations=2 resolve_ms=")
+    assert "catalog_ms=" in lines[0]
+    assert TARGET not in lines[0] and PROJECT_REF not in lines[0]
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("operations", [None, [], "review.accept", [1], [{}] * 2001])
 async def test_a_malformed_or_oversized_batch_is_refused(operations) -> None:
     service, reads = await _authorized_service()
