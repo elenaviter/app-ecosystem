@@ -65,6 +65,10 @@ PLAN_ITEM_CREATE_FIELDS: dict[str, Any] = {
     for name in ("title", "description", "acceptance", "tags", "keywords", "depends_on", "attachment_refs")
 }
 PLAN_ITEM_CREATE_FIELDS["status"] = "string: initial lifecycle status (optional)"
+PLAN_ITEM_CREATE_FIELDS["item_key"] = (
+    "never send: create without item_key; the board assigns the next free W number "
+    "(work_item_key_allocated_by_board)"
+)
 
 PROBLEM_BOARD_OPERATION_SHAPES: dict[str, dict[str, Any]] = {   'project.register': {   'description': 'Register a logical project ref and its signed-in '
                                            "owner; optionally bind the owner's canonical "
@@ -1336,7 +1340,8 @@ def _plan_item_create_problems(item: Mapping[str, Any]) -> list[dict[str, str]]:
 
     problems: list[dict[str, str]] = []
     for name, description in PLAN_ITEM_CREATE_FIELDS.items():
-        if name not in item:
+        if name not in item or name == "item_key":
+            # The existing allocated_by_board guard owns this refusal.
             continue
         value = item[name]
         is_list = description.startswith("list of")
