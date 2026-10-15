@@ -26,7 +26,9 @@ the thread without scanning, so no scan starts after the close.
 W459 C4 asks whether the live relay keeps one scan thread and joins, rather than
 multiplies, a running scan when waits are cancelled. ``stats`` answers it read-only:
 plain counters updated on the event loop (no lock, thread or I/O), written with the
-relay's channel status snapshot.
+relay's channel status snapshot. Its thread count is of the threads that ran this
+scanner's own scans, recorded from inside them under a small lock, so another scanner
+in the same process (a second relay object, a test) is never counted.
 """
 
 from __future__ import annotations
@@ -61,6 +63,8 @@ class LocalWorkScanner:
         self._counts = dict.fromkeys(COUNTERS, 0)
         self._last_scan_ms = 0.0
         self._max_scan_ms = 0.0
+        self._threads: set[threading.Thread] = set()
+        self._threads_lock = threading.Lock()
 
     @property
     def closed(self) -> bool:
@@ -97,6 +101,8 @@ class LocalWorkScanner:
     def _unless_closed(self, call: Callable[..., T], args: tuple, kwargs: dict) -> T:
         """In the scanner thread: a scan queued before close() never runs."""
 
+        with self._threads_lock:
+            self._threads.add(threading.current_thread())
         if self._closed:
             raise LocalWorkScannerClosed("The relay closed its local-work scanner.")
         return call(*args, **kwargs)
@@ -119,13 +125,12 @@ class LocalWorkScanner:
     def stats(self) -> dict[str, int | float | bool]:
         """W459 C4: what the scanner did since the relay started; numbers only, never a value it read."""
 
-        prefix = self._thread_name + "_"
+        with self._threads_lock:
+            threads = tuple(self._threads)
         return {
             **self._counts,
             "in_flight": sum(1 for future in self._in_flight.values() if not future.done()),
-            "scanner_threads_alive": sum(
-                1 for thread in threading.enumerate() if thread.name.startswith(prefix) and thread.is_alive()
-            ),
+            "scanner_threads_alive": sum(1 for thread in threads if thread.is_alive()),
             "last_scan_ms": round(self._last_scan_ms, 1),
             "max_scan_ms": round(self._max_scan_ms, 1),
             "closed": self._closed,
