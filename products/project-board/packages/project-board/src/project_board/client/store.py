@@ -10,6 +10,7 @@ mimetypes.add_type("text/markdown", ".md")
 import logging
 import os
 import re
+import time
 import uuid
 from contextlib import ExitStack, nullcontext
 from datetime import datetime, timedelta, timezone
@@ -5715,25 +5716,46 @@ class SharedFieldStore:
         moment old; it never changes delivery state.
         """
 
+        # W448: wall time per phase and this thread's CPU time, logged only for a call of 1 s or more. The
+        # store-thread holds measured on dev-main (1-2 s) are not file reading (4-7 ms for 163 files); CPU
+        # time well below wall time says the thread waited (GIL, fsync, lock syscall) rather than worked.
+        started, started_cpu = time.monotonic(), time.thread_time()
+        phases = dict.fromkeys(("worker", "lock", "lock_free", "recover", "scan"), 0.0)
+        files = 0
+
+        def timed(phase: str, mark: float) -> float:
+            now = time.monotonic()
+            phases[phase] += now - mark
+            return now
+
         worker = self.read_worker(worker_name)
+        timed("worker", started)
         clean_name = str(worker.get("worker_name") or "")
         refs: list[str] = []
 
         def collect(project_id: str, root: Path) -> None:
+            nonlocal files
             with ExitStack() as held:
                 lock_path = root.parent / ".mail.lock"
+                mark = time.monotonic()
                 try:
                     held.enter_context(exclusive_lock(lock_path, wait=wait))
                 except FileLockBusy:
+                    mark = timed("lock", mark)
                     _log_busy_mail_lock(lock_path)
                     refs.extend(self._pending_mail_refs_lock_free(project_id, clean_name))
+                    timed("lock_free", mark)
                     return
+                mark = timed("lock", mark)
                 self._recover_expired_mail(project_id, clean_name)
+                mark = timed("recover", mark)
                 for path in sorted(root.glob("*.json")):
+                    files += 1
                     row = read_json(path)
                     message_ref = str(row.get("message_ref") or "")
                     if message_ref:
                         refs.append(message_ref)
+                timed("scan", mark)
 
         collect("", self._mail_root("", clean_name) / "inbox")
         for project_ref in worker.get("attended_project_refs") or []:
@@ -5741,6 +5763,14 @@ class SharedFieldStore:
             if parsed.kind != "project":
                 continue
             collect(parsed.object_id, self._mail_root(parsed.object_id, clean_name) / "inbox")
+        wall = time.monotonic() - started
+        if wall >= SLOW_LOCK_SECONDS:
+            _LOGGER.info(
+                "Problem Board slow pending mail refs: worker=%s wait=%s seconds=%.3f cpu_seconds=%.3f "
+                "worker_read=%.3f lock=%.3f lock_free=%.3f recover=%.3f scan=%.3f files=%d refs=%d",
+                clean_name, wait, wall, time.thread_time() - started_cpu, phases["worker"], phases["lock"],
+                phases["lock_free"], phases["recover"], phases["scan"], files, len(refs),
+            )
         return refs
 
     def inbox_refs_not_in(self, worker_name: str, known_refs: Sequence[str]) -> list[str]:
