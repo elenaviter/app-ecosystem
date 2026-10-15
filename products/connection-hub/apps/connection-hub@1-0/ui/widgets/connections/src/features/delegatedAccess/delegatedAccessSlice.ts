@@ -35,6 +35,7 @@ import type {
   ProjectAgentCardGetResult,
   ProjectPersonControlViewer,
 } from '../../api/types';
+import { withInvocationPolicy } from './invocationChoice';
 
 export interface DelegatedAccessState {
   platformUserId: string;
@@ -729,13 +730,12 @@ const delegatedAccessSlice = createSlice({
         state.busy = false;
         const policy = action.payload.policy;
         if (!policy) return;
-        state.items = state.items.map((item) => {
-          if (item.access_id !== policy.authority.access_id) return item;
-          const policies = (item.invocation_policies || []).filter(
-            (existing) => existing.policy_id !== policy.policy_id,
-          );
-          return { ...item, invocation_policies: [...policies, policy] };
-        });
+        const withPolicy = (item: DelegatedAccessRecord): DelegatedAccessRecord => withInvocationPolicy(item, policy);
+        state.items = state.items.map(withPolicy);
+        // W872: the editor shows the focused read when its card_revision equals the listed one, and a policy
+        // write does not move card_revision. Updating only the list left the switch on its old mode until the
+        // Card was read again.
+        if (state.focusedCard) state.focusedCard = withPolicy(state.focusedCard);
       })
       .addCase(setDelegatedInvocationPolicy.rejected, (state, action) => {
         state.busy = false;

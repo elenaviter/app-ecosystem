@@ -324,6 +324,11 @@ function PendingStatus({ status }: { status: PendingSelectionStatus }) {
   return <span className="pending-selection-status" data-state={state}>{status}</span>;
 }
 
+/** W872: one key per held operation whose mode a click is writing. */
+export function policyModeKey(accessId: string, resource: string, operation: string): string {
+  return `${accessId}\n${resource}\n${operation}`;
+}
+
 function invocationPolicyFor(
   item: DelegatedAccessRecord,
   resource: string,
@@ -1233,6 +1238,8 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
   // focused transaction (see invocationChoice.ts): set afterwards, the
   // operation would run as "always" until the policy call landed.
   const [editInvocationModes, setEditInvocationModes] = useState<Record<string, InvocationMode>>({});
+  // W872: the mode a click on a held operation is writing, shown at once; cleared when Connection Hub answers.
+  const [pendingPolicyModes, setPendingPolicyModes] = useState<Record<string, InvocationMode>>({});
   // Resources this edit adds to or removes from the card, and the changed
   // descriptors it accepts. All three are submitted with Save; nothing
   // changes authority until then.
@@ -2976,13 +2983,29 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
     mode: 'always' | 'once',
     expectedRevision: number,
   ) => {
-    await dispatch(setDelegatedInvocationPolicy({
-      accessId: item.access_id,
-      resource,
-      operation,
-      mode,
-      expectedRevision,
-    })).unwrap().catch(() => undefined);
+    // W872: the switch commits on click (no Save). It shows the chosen mode at once, and a refusal is shown,
+    // never swallowed: before, a refused or slow write looked like a dead switch and Save said "Nothing to save".
+    const key = policyModeKey(item.access_id, resource, operation);
+    setPendingPolicyModes((current) => ({ ...current, [key]: mode }));
+    setEditActionError('');
+    try {
+      await dispatch(setDelegatedInvocationPolicy({
+        accessId: item.access_id,
+        resource,
+        operation,
+        mode,
+        expectedRevision,
+      })).unwrap();
+    } catch (error) {
+      setEditActionError(`${operation} was not switched to ${mode === 'once' ? 'Once' : 'Every time'}: `
+        + `Connection Hub did not apply it (${String(error || 'request refused')}).`);
+    } finally {
+      setPendingPolicyModes((current) => {
+        const next = { ...current };
+        delete next[key];
+        return next;
+      });
+    }
   };
 
   const toggleEditNamedServiceOperation = (
@@ -4583,6 +4606,7 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
                       <InvocationPolicyControl
                         operation={operation.name}
                         policy={policy}
+                        pendingMode={pendingPolicyModes[policyModeKey(item.access_id, resource, operation.name)]}
                         busy={busy}
                         onceDisabled={isBroadSecretResource(resource)}
                         onSet={(mode, expectedRevision) => {

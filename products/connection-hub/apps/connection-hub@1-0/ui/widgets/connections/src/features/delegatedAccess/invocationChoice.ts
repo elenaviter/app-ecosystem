@@ -233,3 +233,35 @@ export function submittedInvocationModes(
     ])),
   ]));
 }
+
+
+/** W872: what the held-operation switch shows and allows. The mode a click is writing (pending) is shown at once,
+ *  before Connection Hub answers, and both buttons wait for that answer. */
+export function policySwitchView(
+  policy: { mode?: InvocationMode | null; remaining?: number | null } | null | undefined,
+  pendingMode: InvocationMode | undefined,
+  busy: boolean,
+  onceBlocked = false,
+): { shown: InvocationMode; saving: boolean; alwaysDisabled: boolean; onceDisabled: boolean; used: boolean } {
+  const mode = policy?.mode || null;
+  const shown: InvocationMode = pendingMode || mode || 'always';
+  const saving = Boolean(pendingMode);
+  const onceAvailable = !saving && mode === 'once' && policy?.remaining === 1;
+  return {
+    shown,
+    saving,
+    alwaysDisabled: busy || saving || shown === 'always',
+    onceDisabled: busy || saving || onceAvailable || onceBlocked,
+    used: !saving && mode === 'once' && policy?.remaining === 0,
+  };
+}
+
+/** W872: a written policy replaces its row on every copy of the Card the page holds: the listed one and the
+ *  focused read. The editor shows the focused read when the revisions are equal, and a policy write does not
+ *  move card_revision. */
+export function withInvocationPolicy<T extends { access_id: string; invocation_policies?: P[] },
+  P extends { policy_id: string; authority: { access_id: string } }>(item: T, policy: P): T {
+  if (item.access_id !== policy.authority.access_id) return item;
+  const policies = (item.invocation_policies || []).filter((existing) => existing.policy_id !== policy.policy_id);
+  return { ...item, invocation_policies: [...policies, policy] };
+}
