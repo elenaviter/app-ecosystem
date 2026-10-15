@@ -288,3 +288,10 @@ export function withInvocationPolicy<T extends { access_id: string; invocation_p
   const policies = (item.invocation_policies || []).filter((existing) => existing.policy_id !== policy.policy_id);
   return { ...item, invocation_policies: [...policies, policy] };
 }
+
+
+/** W872 (live, 2026-10-15): the Hub refused the Save because an earlier change to a policy is not settled yet. */
+export function undecidedPolicyMessage(operations: string[]): string {
+  const named = operations.length ? operations.join(', ') : 'this permission';
+  return `An earlier change to ${named} is not settled yet; nothing was saved. Your draft is kept; try Save again in a moment.`;
+}

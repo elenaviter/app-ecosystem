@@ -89,6 +89,7 @@ import {
   withDefaultInvocationModes,
   type InvocationMode,
   heldModeChanges,
+  undecidedPolicyMessage,
 } from './invocationChoice';
 import {
   isBroadSecretResource,
@@ -3476,7 +3477,9 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
         ? `Save was not applied: ${BOARD_RESTARTING_MESSAGE} Your draft is kept.`
         : updated?.error === 'invocation_mode_required'
           ? 'Save was not applied: choose Once or Every time for each operation you added. Your draft is kept.'
-          : updated?.message || `Save was not applied: ${updated?.error || 'request refused'}`);
+          : String(updated?.error || '').includes('invocation_policy_earlier_change_undecided')
+            ? undecidedPolicyMessage(editHeldModeChanges(item).map(({ operation }) => operation))
+            : updated?.message || `Save was not applied: ${updated?.error || 'request refused'}`);
       return;
     }
     if (isNothingToSave(updated)) {
