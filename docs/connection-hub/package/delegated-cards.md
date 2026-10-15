@@ -1528,34 +1528,13 @@ authority from platform roles.
 
 The standard resolver-backed port asks an application-owned membership
 operation for typed evidence for the actor and target. The Connection Hub
-descriptor names that operation and the project roles that may administer
-per-person Control Cards:
-
-```yaml
-project_membership:
-  provider:
-    bundle_id: problem-board@1-0
-    operation: project_membership_resolve
-  administrative_roles: [owner, admin]
-```
-
-The call runs through the request-bound bundle-operation bridge under the same
-signed-in person's session. Its request is
-`{"project_ref": "...", "subject": "..."}`. A successful answer contains
-`{"ok": true, "membership": null}` for no membership, or a membership object
-with matching `project_ref` and `subject`, a non-empty `role`, the actor's
-`delegable_grants`, and optional non-secret `evidence`. A provider refusal,
-malformed response, or mismatched project or subject is a named denial. When
-the descriptor names no provider, authorization returns
-`project_membership_resolver_missing`; platform roles remain outside this
-project-membership decision.
-
-**Named authorities (W374).** The same four questions can be configured by
-name instead, in a top-level `authorities` block: `membership` (roles in a
-scope, plus its `administrative_roles`), `agent_card`, `control_card`, and
+descriptor names who it asks, by name, in its `authorities` block (W374):
+`membership` (roles in a scope, plus the `administrative_roles` that may
+administer per-person Control Cards), `agent_card`, `control_card`, and
 `credential_release` (which carries the `peer_proof_secret_ref`, because no
-person session travels with it). Each names an in-platform `bundle_id` and
-`operation` (`kind: app_operation`, the default):
+person session travels with it). Each is an in-platform app operation,
+`kind: app_operation`, the default, and names both its `bundle_id` and
+`operation`:
 
 ```yaml
 authorities:
@@ -1571,18 +1550,47 @@ authorities:
     peer_proof_secret_ref: project_membership.peer_proof_secret
 ```
 
-A non-empty `authorities` block replaces `project_membership.provider` for all
-four ports; the two are never mixed, so a name the block omits is unconfigured
-even when the legacy block has it. Without the block (or with an empty one),
-the legacy block is read exactly as before. `kind: https` is reserved for an
-external authority and refused as `authority_kind_unsupported` until it is
-implemented. An unknown name, kind, field, or role list is refused as
-`authority_name_unknown`, `authority_kind_invalid`, `authority_config_invalid`,
-or `authority_administrative_roles_invalid`. A named `agent_card`,
-`control_card` or `credential_release` authority must name both `bundle_id`
-and `operation`; one missing either is refused as `authority_target_incomplete`.
-The legacy block's default operation names are never applied to a named
-authority.
+The membership call runs through the request-bound bundle-operation bridge under the same
+signed-in person's session. Its request is
+`{"project_ref": "...", "subject": "..."}`. A successful answer contains
+`{"ok": true, "membership": null}` for no membership, or a membership object
+with matching `project_ref` and `subject`, a non-empty `role`, the actor's
+`delegable_grants`, and optional non-secret `evidence`. A provider refusal,
+malformed response, or mismatched project or subject is a named denial. When
+the descriptor names no membership authority, authorization returns
+`project_membership_resolver_missing`; platform roles remain outside this
+project-membership decision.
+
+A name the `authorities` block leaves out is unconfigured, and its port
+refuses by name. `kind: https` is reserved for an external authority and
+refused as `authority_kind_unsupported` until it is implemented. An unknown
+name, kind, field, or role list is refused as `authority_name_unknown`,
+`authority_kind_invalid`, `authority_config_invalid`, or
+`authority_administrative_roles_invalid`. An `agent_card`, `control_card` or
+`credential_release` authority missing its `bundle_id` or `operation` is
+refused as `authority_target_incomplete`; no default operation name is ever
+applied to a named authority.
+
+**Deprecated: `project_membership.provider`.** Descriptors written before
+W374 name the same host in one legacy block:
+
+```yaml
+project_membership:
+  provider:
+    bundle_id: problem-board@1-0
+    operation: project_membership_resolve
+    agent_card_operation: project_agent_card_authorize
+    control_card_operation: project_control_card_authorize
+    github_authorize_operation: project_agent_github_authorize
+    peer_proof_secret_ref: project_membership.peer_proof_secret
+  administrative_roles: [owner, admin]
+```
+
+It is still read exactly as before, legacy default operation names included,
+but only when the descriptor has no `authorities` block (or an empty one). A
+non-empty `authorities` block replaces it for all four ports, and the two are
+never mixed. New descriptors, including the shipped template, use
+`authorities`.
 
 Missing actor membership, a non-administrative project role, mismatched
 evidence, and an unbound resolver return named denials. Live-person create,

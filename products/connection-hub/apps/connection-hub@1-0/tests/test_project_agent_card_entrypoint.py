@@ -90,9 +90,11 @@ def test_the_descriptor_names_the_operation_and_fails_closed_without_a_provider(
     assert isinstance(port, module.BundleOperationAgentCardAuthorizer)
     assert isinstance(module.descriptor_agent_card_port(SimpleNamespace(bundle_props={})), RefusingAgentCardAuthorizationPort)
 
+    # W374: the template configures this port through its named agent_card authority.
     template = yaml.safe_load((BUNDLE_ROOT / "config" / "bundles.template.yaml").read_text())
-    text = yaml.safe_dump(template)
-    assert "agent_card_operation: project_agent_card_authorize" in text
+    from_template = module.descriptor_agent_card_port(SimpleNamespace(bundle_props=template["bundles"]["items"][0]["config"]))
+    assert isinstance(from_template, module.BundleOperationAgentCardAuthorizer)
+    assert from_template._operation == "project_agent_card_authorize"
 
 
 def test_the_three_operations_are_csrf_protected_posts():

@@ -119,8 +119,10 @@ def test_the_descriptor_names_the_operation_and_fails_closed_without_a_provider(
     refusing = module.descriptor_control_card_port(SimpleNamespace(bundle_props={}))
     assert isinstance(refusing, RefusingProjectControlCardAuthorizationPort)
 
+    # W374: the template configures this port through its named control_card authority.
     template = yaml.safe_load((BUNDLE_ROOT / "config" / "bundles.template.yaml").read_text())
-    assert "control_card_operation: project_control_card_authorize" in yaml.safe_dump(template)
+    from_template = module.descriptor_control_card_port(SimpleNamespace(bundle_props=template["bundles"]["items"][0]["config"]))
+    assert from_template._operation == "project_control_card_authorize"
 
 
 def test_the_two_operations_are_csrf_protected_posts_hidden_from_menus():

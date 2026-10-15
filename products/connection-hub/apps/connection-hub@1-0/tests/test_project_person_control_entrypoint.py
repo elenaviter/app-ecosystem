@@ -141,19 +141,21 @@ def test_template_names_project_membership_provider() -> None:
     )
     config = template["bundles"]["items"][0]["config"]
 
-    assert config["project_membership"] == {
-        "provider": {
-            "bundle_id": "problem-board@1-0",
-            "operation": "project_membership_resolve",
-            # W319: the agent Card question goes to the same host.
-            "agent_card_operation": "project_agent_card_authorize",
-            "control_card_operation": "project_control_card_authorize",
-            # W371: the agent GitHub question, signed with a shared secret.
-            "github_authorize_operation": "project_agent_github_authorize",
-            "peer_proof_secret_ref": "project_membership.peer_proof_secret",
-        },
-        "administrative_roles": ["owner", "admin"],
+    # W374: the template names its authorities; the legacy project_membership block is only a comment.
+    board = {"kind": "app_operation", "bundle_id": "problem-board@1-0"}
+    assert config["authorities"] == {
+        "membership": {**board, "operation": "project_membership_resolve", "administrative_roles": ["owner", "admin"]},
+        # W319: the agent Card question goes to the same host.
+        "agent_card": {**board, "operation": "project_agent_card_authorize"},
+        "control_card": {**board, "operation": "project_control_card_authorize"},
+        # W371: the agent GitHub question, signed with a shared secret.
+        "credential_release": {**board, "operation": "project_agent_github_authorize",
+                               "peer_proof_secret_ref": "project_membership.peer_proof_secret"},
     }
+    assert "project_membership" not in config
+    _name, membership = load_dynamic_module_for_path(bundle_root / "services" / "project_membership.py")
+    template_config = membership.project_membership_config(SimpleNamespace(bundle_props=config))
+    assert template_config.provider_configured and template_config.administrative_roles == ("admin", "owner")
     assert config["project_invitation_binding"] == {
         "provider": {
             "bundle_id": "problem-board@1-0",

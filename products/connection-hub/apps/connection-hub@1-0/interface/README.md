@@ -141,23 +141,25 @@ All are authenticated (`PlatformAuth`) and visibility-gated by
 > `delegated_to_kdcube_oauth_callback`; non-OAuth providers use
 > `delegated_to_kdcube_connect_credential`.
 
-### Project membership provider
+### Membership authority
 
-Project-person Control Card administration uses the descriptor-owned
-`project_membership` block:
+Project-person Control Card administration asks the descriptor's named
+`membership` authority (W374):
 
 ```yaml
-project_membership:
-  provider:
+authorities:
+  membership:
     bundle_id: problem-board@1-0
     operation: project_membership_resolve
-  administrative_roles: [owner, admin]
+    administrative_roles: [owner, admin]
 ```
 
 Connection Hub calls the named operation through the request-bound local
 bundle bridge with the current platform session and validates its canonical
-membership response. An unconfigured provider returns the named
-`project_membership_resolver_missing` refusal. The Card and identity-edge
+membership response. An unconfigured authority returns the named
+`project_membership_resolver_missing` refusal. The legacy
+`project_membership.provider` block is deprecated: it is still read, but only
+when the descriptor has no `authorities` block. The Card and identity-edge
 lifecycle, provider response contract, and enforcement order are canonical in
 [Delegated Access Cards](../../../../../docs/connection-hub/package/delegated-cards.md#project-held-control-cards-for-people).
 
