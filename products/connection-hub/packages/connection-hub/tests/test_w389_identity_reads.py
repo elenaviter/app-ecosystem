@@ -10,6 +10,7 @@ and nothing is kept between requests (codex-infra's conditions on W389).
 from __future__ import annotations
 
 import asyncio
+import collections
 import dataclasses
 import gc
 
@@ -37,6 +38,7 @@ class _Gated(_Host):
         self.failures: dict[str, BaseException] = {}
         self.cancelled: list[str] = []
         self.after_first: dict[str, tuple] = {}
+        self.failed: dict[str, asyncio.Event] = collections.defaultdict(asyncio.Event)
 
     async def _load_record_any_state(self, access_id, *, grantor_subject):
         self.started.append(access_id)
@@ -47,6 +49,7 @@ class _Gated(_Host):
             self.cancelled.append(access_id)
             raise
         if access_id in self.failures:
+            self.failed[access_id].set()
             raise self.failures[access_id]
         loaded = self.records.get((grantor_subject, access_id))
         if access_id in self.after_first and self.started.count(access_id) > 1:
@@ -99,14 +102,22 @@ async def _no_unhandled(run):
     previous = loop.get_exception_handler()
     loop.set_exception_handler(lambda _loop, context: seen.append(context))
     try:
-        result = await run()
+        return await run()
     finally:
         await asyncio.sleep(0)
         gc.collect()
         await asyncio.sleep(0)
         loop.set_exception_handler(previous)
-    assert seen == [], seen
-    return result
+        assert seen == [], seen  # also when run() raised
+
+
+def _my_waits_for_the_control_failure(host, my_id, control_id):
+    """My Card's read finishes only after the early Control read has started and failed (codex-infra)."""
+    async def release():
+        await host.failed[control_id].wait()
+        host.gates[my_id].set()
+    host.gates[my_id] = asyncio.Event()
+    return asyncio.ensure_future(release())
 
 
 def _own_tasks():
@@ -136,7 +147,10 @@ async def test_a_missing_my_card_is_missing_even_when_the_control_card_read_fail
     _project, control_id, my_id = _ids()
     del host.records[(TARGET, my_id)]
     host.failures[control_id] = RuntimeError("synthetic control store failure")
-    resolution = await _no_unhandled(lambda: _resolve(identities))
+    releaser = _my_waits_for_the_control_failure(host, my_id, control_id)
+    resolution = await _no_unhandled(lambda: asyncio.wait_for(_resolve(identities), timeout=2))
+    await releaser
+    assert host.failed[control_id].is_set(), "the Control read really failed before My finished"
     assert resolution.edge is None
     assert resolution.my_card.authority is None and resolution.control_card.authority is None
 
@@ -160,8 +174,11 @@ async def test_an_invalid_my_card_gives_its_own_reason_not_the_control_card_fail
                   if k != PROJECT_IDENTITY_EDGE_PROVENANCE}
     host.records[(TARGET, my_id)] = (_Record(dataclasses.replace(record.authority, provenance=provenance)), state)
     host.failures[control_id] = RuntimeError("synthetic control store failure")
+    releaser = _my_waits_for_the_control_failure(host, my_id, control_id)
     with pytest.raises(ProjectIdentityLifecycleError, match="project_identity_edge_marker_missing"):
-        await _no_unhandled(lambda: _resolve(identities))
+        await _no_unhandled(lambda: asyncio.wait_for(_resolve(identities), timeout=2))
+    await releaser
+    assert host.failed[control_id].is_set(), "the Control read really failed before My finished"
 
 
 async def test_a_valid_my_card_reports_the_control_card_read_failure_as_before():
@@ -232,3 +249,20 @@ async def test_a_parent_changed_during_the_fence_is_refused():
         _Record(dataclasses.replace(parent.authority, card_revision=parent.authority.card_revision + 1)), state)
     resolution = await _resolve(identities)
     assert resolution.control_card.reason == "control_card_dependency_changed"
+
+
+async def test_a_my_card_naming_other_control_coordinates_is_refused_without_another_read(monkeypatch):
+    """No alternate-Control read (codex-infra): coordinates other than the deterministic ones refuse."""
+    from connection_hub.delegated_credentials import project_identity_lifecycle as module
+
+    host, identities = await _rig()
+    _project, control_id, my_id = _ids()
+    real = module.ProjectPersonCardIdentity.from_my_card
+
+    def other_coordinates(authority):
+        return dataclasses.replace(real(authority), control_id="person-control-elsewhere")
+
+    monkeypatch.setattr(module.ProjectPersonCardIdentity, "from_my_card", staticmethod(other_coordinates))
+    with pytest.raises(ProjectIdentityLifecycleError, match="project_identity_edge_conflict"):
+        await _no_unhandled(lambda: _resolve(identities))
+    assert "person-control-elsewhere" not in host.started

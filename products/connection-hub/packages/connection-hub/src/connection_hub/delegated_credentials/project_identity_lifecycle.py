@@ -564,13 +564,9 @@ class ProjectIdentityLifecycle:
             if identity.edge_ref != expected.edge_ref:
                 raise ProjectIdentityLifecycleError("project_identity_edge_conflict")
 
-            if (identity.project_subject, identity.control_id) == (expected.project_subject, expected.control_id):
-                loaded_control = await early_control
-            else:
-                loaded_control = await self._host._load_record_any_state(
-                    identity.control_id,
-                    grantor_subject=identity.project_subject,
-                )
+            if (identity.project_subject, identity.control_id) != (expected.project_subject, expected.control_id):
+                raise ProjectIdentityLifecycleError("project_identity_edge_conflict")
+            loaded_control = await early_control
         finally:
             await _discard(early_control)
         control_authority: CardAuthority | None = None
