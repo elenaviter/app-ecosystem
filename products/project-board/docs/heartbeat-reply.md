@@ -59,16 +59,24 @@ paths to exact primitive values. Observation keys are `observed_at`,
 `reported_at`, `runtime_account_observed_at`, `last_inbox_check_at`,
 `relay_heartbeat_at`, `heartbeat_age_seconds`, `relay_heartbeat_age_seconds`,
 and `at` underneath `store_reads` (including when `store_reads` is itself the
-top-level section). This includes the Board's per-heartbeat disk report time
-and projected session ages. Other fields remain part of the body, including
-unknown future fields, usage resets, semantic session state, workspace size,
-and store-read durations. No value is removed, rounded, suppressed or coarsened.
+top-level section). In normalized store-read entries, primitive `ms` and `op`
+are observations only at `store_reads.<store>`, `self.store_reads.<store>` and
+`team[i].store_reads.<store>`. The TEAM classifier starts at each row. The same
+names at other paths, or structured dict/list values, stay in the body. Existing
+timestamp classification is unchanged. This includes the Board's per-heartbeat
+disk report time and projected session ages. Other fields remain part of the
+body, including unknown future fields, usage windows/resets, semantic session
+state, workspace size, and store-read counts, keys and ranges. No value is
+removed, rounded, suppressed or coarsened.
 
 The body identity binds both its values and its exact observation layout.
 Reordering/removing rows, adding/removing observation paths, or changing stable
 values replaces the whole section. Absent, null, empty string, object and list
 remain distinct. Observation-path indices are reused only with that same body
 and layout. A timestamp change inside a group sends the entire current group.
+Old and new classifiers have different body/layout identities for summaries
+with `ms`/`op`, so mixed versions replace the complete section in either
+direction using the existing protocol; no new negotiation or layout is added.
 
 ## Identity and trust
 
@@ -136,6 +144,8 @@ protocol.
 
 Classification uses the same existing body/layout identities and recovery
 contract as before. Qualification includes the Board's actual response paths,
-not only a hand-written subset of TEAM fields. The real-shaped 13-member test
-preserves whole-row groups under a 7 KB synthetic-frame budget; actual live
-SDK-envelope size remains a separate measurement.
+not only a hand-written subset of TEAM fields. The original real-shaped
+13-member test preserves whole-row groups under a 7 KB synthetic-frame budget.
+Broader normalized store-read churn is tested separately without treating that
+smaller fixture as a universal size bound; actual live SDK-envelope size remains
+a separate measurement.

@@ -4,6 +4,9 @@ from concurrent.futures import ThreadPoolExecutor
 import json
 from types import SimpleNamespace
 import unittest
+from unittest.mock import patch
+
+import project_board.contract.heartbeat_reply as heartbeat_contract
 
 from project_board.contract.heartbeat_reply import (
     REPLY_PROTOCOL, MAX_KNOWN_BYTES, canonical_bytes, decode_reply, digest,
@@ -107,10 +110,11 @@ class HeartbeatReplyContractTests(unittest.TestCase):
                                          heartbeat_age_seconds=31, relay_heartbeat_age_seconds=1)
         marker = self.delta(before, after)
         self.assertFalse("set" in marker, sorted(marker.get("set", {})))
-        self.assertEqual(marker["observations"]["store_reads"][""], {"/x~1y~0/at": NEXT})
+        self.assertEqual(marker["observations"]["store_reads"][""], {
+            "/x~1y~0/at": NEXT, "/x~1y~0/ms": 2, "/x~1y~0/op": "read"})
         frame = {"operation": "worker.heartbeat", "state": "ok", "object": {"heartbeat_reply": marker}}
         size = len(json.dumps(frame, ensure_ascii=False, sort_keys=True).encode())
-        # The real-shaped 13-member whole-group fixture is 6,564 bytes.
+        # This original 13-member fixture is not a bound for all telemetry.
         # Keep complete observation groups intact under an explicit 7 KB
         # synthetic-frame budget; the live SDK envelope is a separate gate.
         self.assertLess(size, 7000)
@@ -145,7 +149,7 @@ class HeartbeatReplyContractTests(unittest.TestCase):
             ("team", (0, "limit_state"), "resets_at", NEXT),
             ("agent_sessions", (0,), "state", "detached"),
             ("disk_usage", (), "workspace_bytes", 4567),
-            ("store_reads", ("x/y~",), "ms", 3),
+            ("store_reads", ("x/y~",), "records", 3),
         ):
             with self.subTest(section=name, key=key):
                 before = board_shaped_snapshot()
@@ -271,6 +275,140 @@ class HeartbeatReplyContractTests(unittest.TestCase):
         self.assertLess(size(echo) + size(frame), size(before) // 2)
         self.assertNotIn("team", response["heartbeat_reply"].get("set", {}))
         print(f"W877 synthetic bytes: full={size(before)} request_echo={size(echo)} reply_frame={size(frame)}")
+
+
+class StoreReadObservationTests(unittest.TestCase):
+    """Normalized summaries only; counts, keys and off-path names stay semantic."""
+
+    full = HeartbeatReplyContractTests.full
+    delta = HeartbeatReplyContractTests.delta
+
+    def value(self):
+        entry = {"at": STAMP, "ms": 2, "op": "read", "records": 3,
+                 "partitions": 1, "range": "current", "key": "synthetic-key"}
+        reads = {"x/y~": entry}
+        return {"store_reads": deepcopy(reads), "self": {"store_reads": deepcopy(reads)},
+                "team": [{"worker_name": "synthetic", "store_reads": deepcopy(reads)}]}
+
+    def entry(self, value, section):
+        node = value[section]
+        if section == "team":
+            node = node[0]
+        return (node if section == "store_reads" else node["store_reads"])["x/y~"]
+
+    def test_store_read_ms_and_op_are_exact_lossless_observations(self):
+        for section in ("store_reads", "self", "team"):
+            for key, replacement in (("ms", 3), ("ms", .25), ("ms", None), ("ms", ""),
+                                     ("op", "write"), ("op", None), ("op", "")):
+                with self.subTest(section=section, key=key, replacement=replacement):
+                    before = self.value()
+                    after = deepcopy(before)
+                    self.entry(after, section)[key] = replacement
+                    marker = self.delta(before, after)
+                    self.assertNotIn(section, marker.get("set", {}))
+                    group = "0" if section == "team" else ""
+                    prefix = "" if section == "store_reads" else "/store_reads"
+                    self.assertEqual(marker["observations"][section][group], {
+                        prefix + "/x~1y~0/at": STAMP,
+                        prefix + "/x~1y~0/ms": self.entry(after, section)["ms"],
+                        prefix + "/x~1y~0/op": self.entry(after, section)["op"]})
+
+    def test_counts_keys_ranges_and_unknown_fields_replace_whole_sections(self):
+        for section in ("store_reads", "self", "team"):
+            for key, replacement in (("records", 4), ("partitions", 2), ("range", "changed"),
+                                     ("key", "different-key"), ("future", "unknown")):
+                with self.subTest(section=section, key=key):
+                    before = self.value()
+                    after = deepcopy(before)
+                    self.entry(after, section)[key] = replacement
+                    self.assertEqual(self.delta(before, after)["set"][section], after[section])
+
+    def test_ms_op_names_outside_exact_summary_paths_remain_semantic(self):
+        for value in ({"ms": 1, "op": "read"}, {"store_reads": {"ms": 1, "op": "read"}},
+                      {"nested": {"store_reads": {"x": {"ms": 1, "op": "read"}}}},
+                      {"store_reads": {"x": {"nested": {"ms": 1, "op": "read"}}}},
+                      {"store_reads": [{"ms": 1, "op": "read"}]}):
+            for section in ("self", "team", "unknown"):
+                with self.subTest(section=section, value=value):
+                    before = {section: [deepcopy(value)] if section == "team" else deepcopy(value)}
+                    after = deepcopy(before)
+                    def change(node):
+                        if isinstance(node, dict):
+                            for key, child in node.items():
+                                if key == "ms":
+                                    node[key] = 2
+                                elif key == "op":
+                                    node[key] = "write"
+                                else:
+                                    change(child)
+                        elif isinstance(node, list):
+                            for child in node:
+                                change(child)
+                    change(after[section])
+                    self.assertEqual(self.delta(before, after)["set"][section], after[section])
+        for value in ({"ms": 1}, {"op": "read"}):
+            after = {"store_reads": {key: "changed" for key in value}}
+            self.assertEqual(self.delta({"store_reads": value}, after)["set"], after)
+
+    def test_structured_absent_and_added_ms_op_replace_section(self):
+        for section in ("store_reads", "self", "team"):
+            for key in ("ms", "op"):
+                for replacement in ({"nested": 4}, [4], "absent", "added"):
+                    with self.subTest(section=section, key=key, replacement=replacement):
+                        before = self.value()
+                        after = deepcopy(before)
+                        if replacement == "absent":
+                            del self.entry(after, section)[key]
+                        elif replacement == "added":
+                            del self.entry(before, section)[key]
+                        else:
+                            self.entry(after, section)[key] = replacement
+                        self.assertEqual(self.delta(before, after)["set"][section], after[section])
+
+    def test_mixed_classifiers_fall_back_to_whole_sections_in_both_directions(self):
+        before = self.value()
+        after = deepcopy(before)
+        for section in before:
+            self.entry(after, section).update(ms=4, op="write", at=NEXT)
+        saved, scope = self.full(before)
+        for old_sender in (False, True):
+            with self.subTest(old_sender=old_sender):
+                if old_sender:
+                    known = knowledge(saved, scope)
+                    with patch.object(heartbeat_contract, "_STORE_READ_TELEMETRY", frozenset()):
+                        response = encode_reply(after, protocol=REPLY_PROTOCOL, scope=SCOPE, known=known)
+                else:
+                    with patch.object(heartbeat_contract, "_STORE_READ_TELEMETRY", frozenset()):
+                        known = knowledge(saved, scope)
+                    response = encode_reply(after, protocol=REPLY_PROTOCOL, scope=SCOPE, known=known)
+                self.assertEqual(response["heartbeat_reply"]["set"], after)
+                self.assertEqual(decode_reply(response, baseline=saved, scope=scope)[0], after)
+                self.assertEqual(saved, before)
+
+    def test_thirteen_rows_all_store_read_groups_refresh_losslessly(self):
+        before = self.value()
+        row = before["team"][0]
+        row["info_text"] = "synthetic display " * 150
+        entry = row["store_reads"]["x/y~"]
+        row["store_reads"] = {f"synthetic-{i}": deepcopy(entry) for i in range(5)}
+        before["team"] = [{**deepcopy(row), "worker_name": f"synthetic-{i}"} for i in range(13)]
+        after = deepcopy(before)
+        for member in after["team"]:
+            for summary in member["store_reads"].values():
+                summary.update(at=NEXT, ms=4, op="lookup")
+        for section in ("store_reads", "self"):
+            self.entry(after, section).update(at=NEXT, ms=4, op="lookup")
+        marker = self.delta(before, after)
+        self.assertNotIn("set", marker)
+        self.assertEqual(set(marker["observations"]["team"]), {str(i) for i in range(13)})
+        self.assertTrue(all(len(group) == 15 for group in marker["observations"]["team"].values()))
+        # Compare the exact previous classifier, not a rewritten encoder.
+        with patch.object(heartbeat_contract, "_STORE_READ_TELEMETRY", frozenset()):
+            old = self.delta(before, after)
+        frame = lambda value: len(json.dumps({"operation": "worker.heartbeat", "state": "ok",
+            "object": {"heartbeat_reply": value}}, ensure_ascii=False, sort_keys=True).encode())
+        self.assertLess(frame(marker), frame(old))
+        print(f"W877 13-row five-store synthetic frame: old={frame(old)} narrow={frame(marker)}; not a live bound")
 
 
 class HeartbeatReplySnapshotTests(unittest.TestCase):

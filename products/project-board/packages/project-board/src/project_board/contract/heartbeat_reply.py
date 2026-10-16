@@ -23,6 +23,9 @@ _OBSERVATIONS = frozenset({
     "last_inbox_check_at", "relay_heartbeat_at", "heartbeat_age_seconds",
     "relay_heartbeat_age_seconds",
 })
+# Only normalized store-read summaries at the three producer-owned paths.
+# Other fields named ms/op (and summary counts, keys and ranges) stay body.
+_STORE_READ_TELEMETRY = frozenset({"ms", "op"})
 
 
 def canonical_bytes(value: Any) -> bytes:
@@ -41,6 +44,9 @@ def _pointer(path: tuple[str, ...]) -> str:
 
 def _split(value: Any, *, section: str = "") -> tuple[Any, dict[str, Any]]:
     observations: dict[str, Any] = {}
+    read_root = value if section == "store_reads" else (
+        value.get("store_reads") if section in {"self", "team"} and isinstance(value, dict) else None
+    )
 
     def walk(node: Any, path: tuple[str, ...]) -> Any:
         if isinstance(node, dict):
@@ -49,8 +55,15 @@ def _split(value: Any, *, section: str = "") -> tuple[Any, dict[str, Any]]:
                 if not isinstance(key, str):
                     raise ValueError("Heartbeat object keys must be strings")
                 leaf = not isinstance(child, (dict, list))
+                store_read_entry = isinstance(read_root, dict) and (
+                    (section == "store_reads" and len(path) == 1) or (
+                        section in {"self", "team"} and len(path) == 2 and path[0] == "store_reads"
+                    )
+                )
                 observed = key in _OBSERVATIONS or (
                     key == "at" and (section == "store_reads" or "store_reads" in path)
+                ) or (
+                    key in _STORE_READ_TELEMETRY and store_read_entry
                 )
                 if observed and leaf:
                     observations[_pointer((*path, key))] = child
