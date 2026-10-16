@@ -51,7 +51,8 @@ def test_the_agent_card_question_goes_to_the_project_host_under_the_session():
     port = module.BundleOperationAgentCardAuthorizer(bundle_id="problem-board@1-0", caller=caller)
     decision = asyncio.run(port.authorize_agent_card(access_id="aut_a", project_ref="work:project:one", action="write"))
     assert calls == [{"bundle_id": "problem-board@1-0", "operation": "project_agent_card_authorize",
-                      "data": {"access_id": "aut_a", "project_ref": "work:project:one", "action": "write"}}]
+                      "data": {"access_id": "aut_a", "scope_ref": "work:project:one",
+                               "project_ref": "work:project:one", "action": "write"}}]
     assert decision.allowed and decision.via == "project_admin" and decision.grantor_subject == "owner-one"
 
 

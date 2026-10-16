@@ -89,6 +89,32 @@ def _legacy_provider(entrypoint: Any) -> Mapping[str, Any]:
     provider = raw.get("provider") if isinstance(raw, Mapping) else None
     return provider if isinstance(provider, Mapping) else {}
 
+
+def _scope_fields(scope_ref: str) -> dict[str, str]:
+    """W374 (b): the authority's scope, sent both ways for one transition.
+
+    ``scope_ref`` is the generic name and ``project_ref`` the one older hosts
+    read; both carry the same value. The Hub never parses it: only the host
+    knows what a scope looks like.
+    """
+
+    return {"scope_ref": scope_ref, "project_ref": scope_ref}
+
+
+def _echoed_scope(answer: Mapping[str, Any]) -> Any:
+    """The scope a host's answer names: ``scope_ref`` or ``project_ref``, never a choice between two.
+
+    An answer carrying both with different values is refused as
+    ``scope_ref_mismatch``; the value it names is then checked exactly against
+    the one asked for, as before.
+    """
+
+    scope_ref, project_ref = answer.get("scope_ref"), answer.get("project_ref")
+    if scope_ref is not None and project_ref is not None and scope_ref != project_ref:
+        raise ProjectAuthorizationError("scope_ref_mismatch")
+    return scope_ref if scope_ref is not None else project_ref
+
+
 LOGGER = logging.getLogger("kdcube.connection_hub.project_membership")
 
 
@@ -154,7 +180,7 @@ class BundleOperationProjectMembershipResolver:
             response = await self._caller(
                 bundle_id=self._bundle_id,
                 operation=self._operation,
-                data={"project_ref": project_ref, "subject": subject},
+                data={**_scope_fields(project_ref), "subject": subject},
             )
         except Exception as exc:
             # W587 follow-up C: the host application still starting (a board
@@ -188,7 +214,7 @@ class BundleOperationProjectMembershipResolver:
                 "project_membership_provider_response_invalid"
             )
         return ProjectMembershipEvidence.build(
-            project_ref=membership.get("project_ref"),
+            project_ref=_echoed_scope(membership),
             subject=membership.get("subject"),
             role=membership.get("role"),
             delegable_grants=membership.get("delegable_grants", ()),
@@ -230,7 +256,7 @@ class BundleOperationAgentCardAuthorizer:
             response = await self._caller(
                 bundle_id=self._bundle_id,
                 operation=self._operation,
-                data={"access_id": access_id, "project_ref": project_ref, "action": action},
+                data={"access_id": access_id, **_scope_fields(project_ref), "action": action},
             )
         except Exception as exc:
             _log_provider_failure(
@@ -307,7 +333,7 @@ class BundleOperationControlCardAuthorizer:
     async def authorize_project_control_card(
         self, *, control_id: str, project_ref: str, action: str, access_id: str = ""
     ) -> ProjectControlCardDecision:
-        data = {"control_id": control_id, "project_ref": project_ref, "action": action}
+        data = {"control_id": control_id, **_scope_fields(project_ref), "action": action}
         if clean_text(access_id):
             # The agent Card an attach or detach binds (owner linking vias).
             data["access_id"] = clean_text(access_id)
