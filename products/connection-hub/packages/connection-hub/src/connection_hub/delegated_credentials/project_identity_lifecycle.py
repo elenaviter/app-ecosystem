@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import copy
 import dataclasses
 import hashlib
@@ -395,6 +396,30 @@ class ProjectIdentityResolution:
     my_card: ProjectCardResolution
 
 
+
+def _observe_discarded(task: asyncio.Future) -> None:
+    """A discarded early read's failure is retrieved, so it is never reported as unhandled."""
+    if not task.cancelled():
+        task.exception()
+
+
+async def _discard(task: asyncio.Future) -> None:
+    """End an early read that was not used: cancel it and wait until it has stopped.
+
+    A cancellation of the request while waiting does not end the wait early; it is raised once the
+    read has stopped, so the request never returns with its read still running."""
+    if task.done():
+        return
+    task.cancel()
+    cancelled = False
+    while not task.done():
+        try:
+            await asyncio.wait({task})
+        except asyncio.CancelledError:
+            cancelled = True
+    if cancelled:
+        raise asyncio.CancelledError
+
 class ProjectIdentityLifecycle:
     """Persist and resolve the cross-owner project identity relationship."""
 
@@ -525,26 +550,36 @@ class ProjectIdentityLifecycle:
             project_ref=project_ref,
             person_subject=person_subject,
         )
-        loaded_my = await self._host._load_record_any_state(
-            expected.my_card_id,
-            grantor_subject=expected.person_subject,
-        )
-        if loaded_my is None:
-            return ProjectIdentityResolution(
-                edge=None,
-                control_card=ProjectCardResolution.missing(),
-                my_card=ProjectCardResolution.missing(),
+        # W389: the person's Control Card has known coordinates, so it is read while My Card is.
+        # Request-local only; My Card is still decided first and the early read is discarded on
+        # any refusal or exit.
+        early_control = asyncio.ensure_future(self._host._load_record_any_state(
+            expected.control_id,
+            grantor_subject=expected.project_subject,
+        ))
+        early_control.add_done_callback(_observe_discarded)
+        try:
+            loaded_my = await self._host._load_record_any_state(
+                expected.my_card_id,
+                grantor_subject=expected.person_subject,
             )
-        my_record, my_state = loaded_my
-        my_authority = self._authority(my_record, my_state)
-        identity = ProjectPersonCardIdentity.from_my_card(my_authority)
-        if identity.edge_ref != expected.edge_ref:
-            raise ProjectIdentityLifecycleError("project_identity_edge_conflict")
+            if loaded_my is None:
+                return ProjectIdentityResolution(
+                    edge=None,
+                    control_card=ProjectCardResolution.missing(),
+                    my_card=ProjectCardResolution.missing(),
+                )
+            my_record, my_state = loaded_my
+            my_authority = self._authority(my_record, my_state)
+            identity = ProjectPersonCardIdentity.from_my_card(my_authority)
+            if identity.edge_ref != expected.edge_ref:
+                raise ProjectIdentityLifecycleError("project_identity_edge_conflict")
 
-        loaded_control = await self._host._load_record_any_state(
-            identity.control_id,
-            grantor_subject=identity.project_subject,
-        )
+            if (identity.project_subject, identity.control_id) != (expected.project_subject, expected.control_id):
+                raise ProjectIdentityLifecycleError("project_identity_edge_conflict")
+            loaded_control = await early_control
+        finally:
+            await _discard(early_control)
         control_authority: CardAuthority | None = None
         control_resolution = ProjectCardResolution.missing()
         if loaded_control is not None:
