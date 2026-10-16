@@ -404,10 +404,21 @@ def _observe_discarded(task: asyncio.Future) -> None:
 
 
 async def _discard(task: asyncio.Future) -> None:
-    """End an early read that was not used: cancel it and wait until it has stopped."""
-    if not task.done():
-        task.cancel()
-        await asyncio.wait({task})
+    """End an early read that was not used: cancel it and wait until it has stopped.
+
+    A cancellation of the request while waiting does not end the wait early; it is raised once the
+    read has stopped, so the request never returns with its read still running."""
+    if task.done():
+        return
+    task.cancel()
+    cancelled = False
+    while not task.done():
+        try:
+            await asyncio.wait({task})
+        except asyncio.CancelledError:
+            cancelled = True
+    if cancelled:
+        raise asyncio.CancelledError
 
 class ProjectIdentityLifecycle:
     """Persist and resolve the cross-owner project identity relationship."""

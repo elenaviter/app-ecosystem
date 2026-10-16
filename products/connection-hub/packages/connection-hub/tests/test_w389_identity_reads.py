@@ -39,6 +39,8 @@ class _Gated(_Host):
         self.cancelled: list[str] = []
         self.after_first: dict[str, tuple] = {}
         self.failed: dict[str, asyncio.Event] = collections.defaultdict(asyncio.Event)
+        self.cleanup_gates: dict[str, asyncio.Event] = {}
+        self.stopped: list[str] = []
 
     async def _load_record_any_state(self, access_id, *, grantor_subject):
         self.started.append(access_id)
@@ -47,6 +49,10 @@ class _Gated(_Host):
                 await self.gates[access_id].wait()
         except asyncio.CancelledError:
             self.cancelled.append(access_id)
+            if access_id in self.cleanup_gates:
+                # A read that needs time to stop after it is cancelled.
+                await self.cleanup_gates[access_id].wait()
+                self.stopped.append(access_id)
             raise
         if access_id in self.failures:
             self.failed[access_id].set()
@@ -266,3 +272,27 @@ async def test_a_my_card_naming_other_control_coordinates_is_refused_without_ano
     with pytest.raises(ProjectIdentityLifecycleError, match="project_identity_edge_conflict"):
         await _no_unhandled(lambda: _resolve(identities))
     assert "person-control-elsewhere" not in host.started
+
+
+async def test_a_second_cancellation_while_the_early_read_stops_still_waits_for_it():
+    """codex-infra's schedule: the request is cancelled again while the early read is still stopping."""
+    host, identities = await _rig()
+    _project, control_id, my_id = _ids()
+    host.gates = {my_id: asyncio.Event(), control_id: asyncio.Event()}
+    host.cleanup_gates[control_id] = asyncio.Event()
+    pending = asyncio.ensure_future(_resolve(identities))
+    for _ in range(5):
+        await asyncio.sleep(0)
+    pending.cancel()
+    for _ in range(5):
+        await asyncio.sleep(0)
+    assert control_id in host.cancelled and host.stopped == []
+    pending.cancel()
+    for _ in range(5):
+        await asyncio.sleep(0)
+    assert not pending.done(), "the request still owns its early read"
+    host.cleanup_gates[control_id].set()
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(pending, timeout=2)
+    assert host.stopped == [control_id]
+    assert _own_tasks() == set()
