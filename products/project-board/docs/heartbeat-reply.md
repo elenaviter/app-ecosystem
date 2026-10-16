@@ -13,6 +13,16 @@ still performs fresh admission, records observations, reads state, and builds th
 complete result on every call. This reduces repeated wire data, not authority
 reads or server response construction.
 
+The Board's heartbeat-specific TEAM view omits other members' store-read and
+disk-usage summaries, which the relay's local TEAM materializer already drops.
+The reporter's own TEAM row, self/root values and all members' scheduling,
+model/effort, account/provenance, usage/limit/reset and wake evidence remain.
+Stored worker data, the common TEAM producer, attendance notices and the
+Board/widget worker APIs retain their read/disk diagnostics. Complete replies
+and reconstruction are lossless for this declared heartbeat view, not a copy
+of the separate Board UI worker view. View changes replace complete sections
+under the existing body/layout contract; there is no row-level replacement.
+
 The shared implementation is `project_board.contract.heartbeat_reply`. The
 Board supplies the admitted scope; `project_board.client.heartbeat_reply` owns
 the relay's process-memory snapshot pairs. There is no server-side client cache,
