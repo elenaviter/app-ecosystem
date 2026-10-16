@@ -1360,6 +1360,8 @@ class ProblemBoardHostRelayAdapter:
         uploader: Callable[..., Any] | None = None,
         downloader: Callable[..., Any] | None = None,
         session_report_signatures: dict[str, str] | None = None,
+        assignment_files_signatures: dict[str, str] | None = None,
+        store_reads_signatures: dict[str, str] | None = None,
         attendance_cache: dict[str, Any] | None = None,
         heartbeat_sent_at: dict[str, float] | None = None,
         monotonic: Callable[[], float] | None = None,
@@ -1410,8 +1412,16 @@ class ProblemBoardHostRelayAdapter:
         self._published_interval: int | None = None
         # W278 part B: per project, the signature of the files in flight last
         # published, so an unchanged set rides no heartbeat.
-        self._assignment_files_signatures: dict[str, str] = {}
-        self._store_reads_signatures: dict[str, str] = {}
+        # W875: the child adapters rebuilt every cycle share these with the
+        # channel, like the session projection below. Unshared, a worker with
+        # files in flight found no signature each cycle, so files_changed made
+        # every relay cycle a heartbeat (4-5 a minute on a busy host).
+        self._assignment_files_signatures: dict[str, str] = (
+            assignment_files_signatures if assignment_files_signatures is not None else {}
+        )
+        self._store_reads_signatures: dict[str, str] = (
+            store_reads_signatures if store_reads_signatures is not None else {}
+        )
         # Both live as long as the relay, not as long as this adapter:
         # poll_attendances_once builds a new adapter per project on every
         # poll, so state kept here alone reset each poll, and every heartbeat
@@ -5485,6 +5495,42 @@ class ProblemBoardHostRelayAdapter:
         self._acknowledge_alias_request(alias_request, discovery)
         self._record_attendance_observation(discovery)
 
+    def _attended_project_adapter(self, project_id: str) -> "ProblemBoardHostRelayAdapter":
+        """This cycle's child adapter for one attended project.
+
+        Rebuilt every cycle; everything that must outlive the cycle (session
+        and files signatures, the heartbeat clock, caches) is the channel's
+        own, shared here (W875: an unshared files signature made every cycle
+        a heartbeat for a worker with files in flight).
+        """
+
+        return ProblemBoardHostRelayAdapter(
+            config=RelayConfig(
+                **{
+                    **self.config.__dict__,
+                    "project_id": project_id,
+                }
+            ),
+            field=self.field,
+            client=self.client,
+            session_report_signatures=self._session_report_signatures,
+            assignment_files_signatures=self._assignment_files_signatures,
+            store_reads_signatures=self._store_reads_signatures,
+            attendance_cache=self._attendance_cache,
+            heartbeat_sent_at=self._heartbeat_sent_at,
+            monotonic=self._monotonic,
+            trace=self._trace,
+            runtime_account_reader=self._runtime_account_reader,
+            runtime_account_error_state=self._runtime_account_error_state,
+            outbox_drain_lock=self._outbox_drain_lock,
+            journal_refresh_worker=self._journal_refresh_worker,
+            workspace_sizes=self._workspace_sizes,
+            worktree_observer=self._worktree_observer,
+            store_executor=self._store_thread(),
+            team_snapshots=self._heartbeat_teams(),
+            reply_snapshots=self._heartbeat_replies(),
+        )
+
     async def poll_attendances_once(self) -> dict[str, Any]:
         """Discover and poll the current project of this session-bound worker."""
 
@@ -5550,30 +5596,7 @@ class ProblemBoardHostRelayAdapter:
             parsed = parse_ref(str(attendance["project_ref"]))
             if parsed.kind != "project":
                 continue
-            adapter = ProblemBoardHostRelayAdapter(
-                config=RelayConfig(
-                    **{
-                        **self.config.__dict__,
-                        "project_id": parsed.object_id,
-                    }
-                ),
-                field=self.field,
-                client=self.client,
-                session_report_signatures=self._session_report_signatures,
-                attendance_cache=self._attendance_cache,
-                heartbeat_sent_at=self._heartbeat_sent_at,
-                monotonic=self._monotonic,
-                trace=self._trace,
-                runtime_account_reader=self._runtime_account_reader,
-                runtime_account_error_state=self._runtime_account_error_state,
-                outbox_drain_lock=self._outbox_drain_lock,
-                journal_refresh_worker=self._journal_refresh_worker,
-                workspace_sizes=self._workspace_sizes,
-                worktree_observer=self._worktree_observer,
-                store_executor=self._store_thread(),
-                team_snapshots=self._heartbeat_teams(),
-                reply_snapshots=self._heartbeat_replies(),
-            )
+            adapter = self._attended_project_adapter(parsed.object_id)
             project = await adapter._poll_project_once(agent_sessions=sessions)
             if project.get("attendance") == "linked":
                 projects.append(project)
