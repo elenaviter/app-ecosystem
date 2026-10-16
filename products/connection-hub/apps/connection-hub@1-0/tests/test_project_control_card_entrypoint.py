@@ -52,7 +52,7 @@ def test_the_control_card_question_goes_to_the_project_host_under_the_session():
     port = module.BundleOperationControlCardAuthorizer(bundle_id="problem-board@1-0", caller=caller)
     decision = asyncio.run(port.authorize_project_control_card(**REQUEST))
     assert calls == [{"bundle_id": "problem-board@1-0", "operation": "project_control_card_authorize",
-                      "data": REQUEST}]
+                      "data": {**REQUEST, "scope_ref": REQUEST["project_ref"]}}]  # W374 (b): both fields
     assert decision.allowed and decision.via == "project_admin" and decision.grantor_subject == "owner-one"
     assert decision.evidence == {"role": "admin", "operation": "project.control.update"}
 
@@ -70,7 +70,8 @@ def test_an_attach_question_names_the_agent_card():
     port = module.BundleOperationControlCardAuthorizer(bundle_id="problem-board@1-0", caller=caller)
     asyncio.run(port.authorize_project_control_card(**attach, access_id=" aut_agent "))
     asyncio.run(port.authorize_project_control_card(**attach))
-    assert calls == [{**attach, "access_id": "aut_agent"}, attach]
+    wire = {**attach, "scope_ref": attach["project_ref"]}  # W374 (b): both fields
+    assert calls == [{**wire, "access_id": "aut_agent"}, wire]
 
 
 def test_host_refusals_and_failures():

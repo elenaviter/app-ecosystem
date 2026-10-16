@@ -426,6 +426,7 @@ async def test_descriptor_port_calls_configured_membership_operation() -> None:
             "bundle_id": "problem-board@1-0",
             "operation": "project_membership_resolve",
             "data": {
+                "scope_ref": "work:project:quickstart",
                 "project_ref": "work:project:quickstart",
                 "subject": "authenticated-admin",
             },
@@ -434,6 +435,7 @@ async def test_descriptor_port_calls_configured_membership_operation() -> None:
             "bundle_id": "problem-board@1-0",
             "operation": "project_membership_resolve",
             "data": {
+                "scope_ref": "work:project:quickstart",
                 "project_ref": "work:project:quickstart",
                 "subject": "platform-user-2",
             },

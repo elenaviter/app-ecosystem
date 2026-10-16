@@ -1552,7 +1552,7 @@ authorities:
 
 The membership call runs through the request-bound bundle-operation bridge under the same
 signed-in person's session. Its request is
-`{"project_ref": "...", "subject": "..."}`. A successful answer contains
+`{"scope_ref": "...", "project_ref": "...", "subject": "..."}`. A successful answer contains
 `{"ok": true, "membership": null}` for no membership, or a membership object
 with matching `project_ref` and `subject`, a non-empty `role`, the actor's
 `delegable_grants`, and optional non-secret `evidence`. A provider refusal,
@@ -1560,6 +1560,19 @@ malformed response, or mismatched project or subject is a named denial. When
 the descriptor names no membership authority, authorization returns
 `project_membership_resolver_missing`; platform roles remain outside this
 project-membership decision.
+
+**Scope fields, one transition (W374 slice b).** Every unsigned authority call
+(`membership`, `agent_card`, `control_card`) names its scope twice, as `scope_ref`
+and as `project_ref`, with one value. `scope_ref` is the generic name; `project_ref`
+is what older hosts read. Connection Hub never parses the value: only the host
+knows what its scopes look like. A host reads `scope_ref`, else `project_ref`, and
+refuses a request naming both with different values. In the membership answer
+the host may echo either field, or both; an answer naming both with different
+values is refused as `scope_ref_mismatch` (never one chosen), and the value it names
+must equal the one asked for exactly, as before
+(`project_membership_project_ref_mismatch`). Once every host reads `scope_ref`, a
+later slice stops sending `project_ref`. The signed `credential_release` question
+still signs `project_ref` until its proof v2 slice.
 
 A name the `authorities` block leaves out is unconfigured, and its port
 refuses by name. `kind: https` is reserved for an external authority and
