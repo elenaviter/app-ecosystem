@@ -884,6 +884,37 @@ _MINTED_MAIL_ID = re.compile(
 )
 
 
+# W448: the message ref of every inbox file this process has read, by inbox directory. An inbox file is named by
+# its message id and that message's ref never changes, so a mailbox whose files are unchanged is listed, not
+# re-read. On dev-main one worker's 163 set-aside messages were re-opened on every wake decision, and each read
+# waited for the busy relay's interpreter lock: 1-2 s of wall time for 0.05 s of work.
+_INBOX_REFS: dict[str, dict[str, str]] = {}
+
+
+def _inbox_refs(inbox: Path) -> tuple[list[str], int, int]:
+    """Every message ref in ``inbox`` in file-name order, the files listed, and the files opened.
+
+    Only files this process has not read before are opened; the caller holds the mailbox lock.
+    """
+
+    key = str(inbox)
+    try:
+        names = sorted(entry.name for entry in os.scandir(inbox) if entry.name.endswith(".json"))
+    except FileNotFoundError:
+        _INBOX_REFS.pop(key, None)
+        return [], 0, 0
+    known = _INBOX_REFS.get(key, {})
+    current: dict[str, str] = {}
+    opened = 0
+    for name in names:
+        message_ref = known.get(name)
+        if message_ref is None:
+            opened += 1
+            message_ref = str(read_json(inbox / name).get("message_ref") or "")
+        current[name] = message_ref
+    _INBOX_REFS[key] = current
+    return [ref for ref in current.values() if ref], len(names), opened
+
 
 def _log_busy_mail_lock(path: Path) -> None:
     """Say who holds a busy mailbox lock, when it has held it a while (W448)."""
@@ -5721,7 +5752,7 @@ class SharedFieldStore:
         # time well below wall time says the thread waited (GIL, fsync, lock syscall) rather than worked.
         started, started_cpu = time.monotonic(), time.thread_time()
         phases = dict.fromkeys(("worker", "lock", "lock_free", "recover", "scan"), 0.0)
-        files = 0
+        files = opened = 0
 
         def timed(phase: str, mark: float) -> float:
             now = time.monotonic()
@@ -5734,7 +5765,7 @@ class SharedFieldStore:
         refs: list[str] = []
 
         def collect(project_id: str, root: Path) -> None:
-            nonlocal files
+            nonlocal files, opened
             with ExitStack() as held:
                 lock_path = root.parent / ".mail.lock"
                 mark = time.monotonic()
@@ -5749,12 +5780,10 @@ class SharedFieldStore:
                 mark = timed("lock", mark)
                 self._recover_expired_mail(project_id, clean_name)
                 mark = timed("recover", mark)
-                for path in sorted(root.glob("*.json")):
-                    files += 1
-                    row = read_json(path)
-                    message_ref = str(row.get("message_ref") or "")
-                    if message_ref:
-                        refs.append(message_ref)
+                inbox_refs, listed, opened_now = _inbox_refs(root)
+                files += listed
+                opened += opened_now
+                refs.extend(inbox_refs)
                 timed("scan", mark)
 
         collect("", self._mail_root("", clean_name) / "inbox")
@@ -5767,9 +5796,9 @@ class SharedFieldStore:
         if wall >= SLOW_LOCK_SECONDS:
             _LOGGER.info(
                 "Problem Board slow pending mail refs: worker=%s wait=%s seconds=%.3f cpu_seconds=%.3f "
-                "worker_read=%.3f lock=%.3f lock_free=%.3f recover=%.3f scan=%.3f files=%d refs=%d",
+                "worker_read=%.3f lock=%.3f lock_free=%.3f recover=%.3f scan=%.3f files=%d opened=%d refs=%d",
                 clean_name, wait, wall, time.thread_time() - started_cpu, phases["worker"], phases["lock"],
-                phases["lock_free"], phases["recover"], phases["scan"], files, len(refs),
+                phases["lock_free"], phases["recover"], phases["scan"], files, opened, len(refs),
             )
         return refs
 
