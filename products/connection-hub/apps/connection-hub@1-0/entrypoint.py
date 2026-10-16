@@ -9195,11 +9195,12 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
         raw_credential = payload.get("credential") or {}
         if not isinstance(raw_credential, Mapping) or not raw_credential:
             return {"ok": False, "error": "delegated_identity_scope_requires_credential"}
-        grantor_authority = payload.get("grantor_authority")
+        # This public operation resolves data-owner scope. Payload fields are
+        # not platform authority; managed admission supplies economics locally
+        # to trusted consumers from the grantor's current platform record.
         return resolve_delegated_identity_scope(
             _edge_store(self),
             credential=raw_credential,
-            grantor_authority=grantor_authority if isinstance(grantor_authority, Mapping) else {},
         )
 
     @api(method="GET", alias="authorities_describe", route="operations", **_api_visibility("authorities_describe"))

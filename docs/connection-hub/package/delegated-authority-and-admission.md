@@ -176,6 +176,15 @@ Card reuse, ordinary edits, and Control Card seeding. Without the marker, the
 application-operation gate retains the pre-policy behavior; after the user
 reviews the Application APIs section, even an empty selection is authoritative.
 
+At each KDCube invocation boundary, the chosen Card role is also bounded by a
+typed cast to the target platform identity's current native roles. The host
+reads the native bundle-session user record, never a derived delegated session;
+unwired providers/missing identities are unresolved 403 and store outages are
+503. Consent snapshots, scope-resolver payloads and refresh records are not
+role or billing proof. Source provenance, freshness, legacy handling and the
+consumer contract are defined in
+[Delegation Edges](https://github.com/kdcube/kdcube/blob/main/app/ai-app/docs/sdk/solutions/connections/delegated-credentials/delegation-edges-README.md#runtime-use).
+
 ## Direct Card Admission To Data Bus
 
 A client that already holds a delegated Card can present that bearer directly

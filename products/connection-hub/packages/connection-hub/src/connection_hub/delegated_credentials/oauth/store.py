@@ -16,6 +16,8 @@ import secrets
 import time
 from typing import Any, Dict, List, Mapping, Optional
 
+from connection_hub.authority_inventory import delegation_edges_provenance, delegation_provenance
+
 from connection_hub.delegated_credentials.oauth.authority_store import (
     OAuthAuthorityStore,
     RefreshCardIncarnationMoved,
@@ -235,8 +237,8 @@ class GrantStore:
             "card_kind": str(card_kind or "").strip(),
             "identity_scope": identity_scope or "",
             "credential": credential or {},
-            "grantor_authority": grantor_authority or {},
-            "delegation_edges": list(delegation_edges or []),
+            "grantor_authority": delegation_provenance(grantor_authority),
+            "delegation_edges": delegation_edges_provenance(delegation_edges),
             "named_services": named_services or {},
             # The operator's operation choice and the catalog generation it was
             # made against; carried to token exchange so the card is born with
@@ -346,8 +348,8 @@ class GrantStore:
             "resource": resource or "",
             "identity_scope": identity_scope or "",
             "credential": credential or {},
-            "grantor_authority": grantor_authority or {},
-            "delegation_edges": list(delegation_edges or []),
+            "grantor_authority": delegation_provenance(grantor_authority),
+            "delegation_edges": delegation_edges_provenance(delegation_edges),
             "named_services": named_services or {},
             "client_metadata": dict(client_metadata or {}),
         }
@@ -804,8 +806,8 @@ class GrantStore:
             ),
             "identity_scope": rec.get("identity_scope") or "",
             "credential": rec.get("credential") or {},
-            "grantor_authority": rec.get("grantor_authority") or {},
-            "delegation_edges": list(rec.get("delegation_edges") or []),
+            "grantor_authority": delegation_provenance(rec.get("grantor_authority")),
+            "delegation_edges": delegation_edges_provenance(rec.get("delegation_edges")),
             "named_services": rec.get("named_services") or {},
             "client_metadata": dict(rec.get("client_metadata") or {}),
         }
@@ -982,8 +984,8 @@ class GrantStore:
                 ).items()
             },
             "credential": credential or {},
-            "grantor_authority": grantor_authority or {},
-            "delegation_edges": list(delegation_edges or []),
+            "grantor_authority": delegation_provenance(grantor_authority),
+            "delegation_edges": delegation_edges_provenance(delegation_edges),
             "named_services": named_services or {},
         }
         if str(registry_access_id or "").strip():

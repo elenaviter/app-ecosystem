@@ -23,6 +23,39 @@ DELEGATION_EDGE_SCHEMA = "connection_hub.delegation_edge.v1"
 PLATFORM_AUTHORITY_ID = "platform"
 
 
+_ENTITLEMENT_SNAPSHOT_FIELDS = frozenset({
+    "roles", "platform_roles", "grantor_roles",
+    "permissions", "platform_permissions", "grantor_permissions",
+    "economics_budget_bypass", "budget_bypass",
+})
+
+
+def delegation_edges_provenance(values: Any) -> list[dict[str, Any]]:
+    """Serialize selected identity links and grants without entitlement facts."""
+    if not isinstance(values, (list, tuple)):
+        return []
+    return [
+        {key: item for key, item in edge.items() if key not in _ENTITLEMENT_SNAPSHOT_FIELDS}
+        for edge in values if isinstance(edge, Mapping)
+    ]
+
+
+def delegation_provenance(value: Mapping[str, Any] | None) -> dict[str, Any]:
+    """Carry identity/edge facts while dropping consent-time entitlements.
+
+    Apply at every protocol write, including rotation of legacy refresh state.
+    Current roles are resolved by the target authority at admission, never by
+    reusing one of these serialized fields.
+    """
+    if not isinstance(value, Mapping):
+        return {}
+    out = {key: item for key, item in value.items() if key not in _ENTITLEMENT_SNAPSHOT_FIELDS}
+    edges = out.get("delegation_edges")
+    if isinstance(edges, (list, tuple)):
+        out["delegation_edges"] = delegation_edges_provenance(edges)
+    return out
+
+
 def _clean(value: Any) -> str:
     return str(value or "").strip()
 
@@ -196,15 +229,11 @@ class AuthorityDelegationEdge:
             "identity_ref": self.identity_ref,
             "user_id": self.user_id,
             "grants": list(self.grants),
-            "roles": list(self.roles),
-            "permissions": list(self.permissions),
             "provider": self.provider,
             "integration_id": self.integration_id,
             "label": self.label,
             "metadata": dict(self.metadata),
         }
-        if self.economics_budget_bypass is not None:
-            payload["economics_budget_bypass"] = bool(self.economics_budget_bypass)
         return {key: value for key, value in payload.items() if value not in ("", [], {})}
 
 
@@ -304,26 +333,14 @@ def selected_delegation_edge(
     grants = tuple(sorted(grant for grant in selected if grant in available))
     if not grants:
         return None
-    permissions: set[str] = set()
-    roles: set[str] = set()
-    for grant in grants:
-        item = available[grant]
-        permissions.update(item.matched_permissions)
-        roles.update(item.matched_roles)
-    # Preserve the authority identity's roles because economics/legacy guards may
-    # still derive bypass from roles; keep permissions narrowed to selected grants.
-    roles.update(inventory.identity.roles)
     return AuthorityDelegationEdge(
         authority_id=inventory.authority_id,
         identity_ref=inventory.identity.identity_ref,
         user_id=inventory.identity.user_id,
         grants=grants,
-        roles=tuple(sorted(roles)),
-        permissions=tuple(sorted(permissions)),
         provider=inventory.identity.provider,
         integration_id=inventory.identity.integration_id,
         label=inventory.identity.label,
-        economics_budget_bypass=economics_budget_bypass,
     )
 
 
@@ -338,5 +355,7 @@ __all__ = [
     "DelegableAuthorityGrant",
     "PlatformAuthorityInventoryProvider",
     "platform_identity_from_user",
+    "delegation_provenance",
+    "delegation_edges_provenance",
     "selected_delegation_edge",
 ]
