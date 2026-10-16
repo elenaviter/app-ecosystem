@@ -19,7 +19,9 @@ _SHORT = re.compile(r"[A-Za-z0-9_-]{22}\Z")
 _FULL = re.compile(r"[0-9a-f]{64}\Z")
 _OBSERVATIONS = frozenset({
     "observed_at", "heartbeat_at", "updated_at", "store_reads_observed_at",
-    "host_free_bytes",
+    "host_free_bytes", "reported_at", "runtime_account_observed_at",
+    "last_inbox_check_at", "relay_heartbeat_at", "heartbeat_age_seconds",
+    "relay_heartbeat_age_seconds",
 })
 
 
@@ -37,7 +39,7 @@ def _pointer(path: tuple[str, ...]) -> str:
     return "/" + "/".join(part.replace("~", "~0").replace("/", "~1") for part in path)
 
 
-def _split(value: Any) -> tuple[Any, dict[str, Any]]:
+def _split(value: Any, *, section: str = "") -> tuple[Any, dict[str, Any]]:
     observations: dict[str, Any] = {}
 
     def walk(node: Any, path: tuple[str, ...]) -> Any:
@@ -47,7 +49,9 @@ def _split(value: Any) -> tuple[Any, dict[str, Any]]:
                 if not isinstance(key, str):
                     raise ValueError("Heartbeat object keys must be strings")
                 leaf = not isinstance(child, (dict, list))
-                observed = key in _OBSERVATIONS or (key == "at" and "store_reads" in path)
+                observed = key in _OBSERVATIONS or (
+                    key == "at" and (section == "store_reads" or "store_reads" in path)
+                )
                 if observed and leaf:
                     observations[_pointer((*path, key))] = child
                     body[key] = None
@@ -65,9 +69,9 @@ def _section(name: str, value: Any) -> tuple[Any, dict[str, dict[str, Any]]]:
     if name in _OBSERVATIONS and not isinstance(value, (dict, list)):
         return None, {"": {"": value}}
     if name == "team" and isinstance(value, list):
-        parts = [_split(row) for row in value]
+        parts = [_split(row, section=name) for row in value]
         return [part[0] for part in parts], {str(i): part[1] for i, part in enumerate(parts) if part[1]}
-    body, observations = _split(value)
+    body, observations = _split(value, section=name)
     return body, {"": observations} if observations else {}
 
 

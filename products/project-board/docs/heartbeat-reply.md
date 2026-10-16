@@ -55,9 +55,14 @@ An unchanged section body may carry changed **whole observation groups**, not
 changed-leaf tuples. Each TEAM row is one group, indexed by its list position;
 each other section has one group named `""`. The group maps escaped JSON Pointer
 paths to exact primitive values. Observation keys are `observed_at`,
-`heartbeat_at`, `updated_at`, `store_reads_observed_at`, `host_free_bytes`, and
-`at` underneath `store_reads`. Other fields remain part of the body, including
-unknown future fields. No value is removed, rounded, suppressed or coarsened.
+`heartbeat_at`, `updated_at`, `store_reads_observed_at`, `host_free_bytes`,
+`reported_at`, `runtime_account_observed_at`, `last_inbox_check_at`,
+`relay_heartbeat_at`, `heartbeat_age_seconds`, `relay_heartbeat_age_seconds`,
+and `at` underneath `store_reads` (including when `store_reads` is itself the
+top-level section). This includes the Board's per-heartbeat disk report time
+and projected session ages. Other fields remain part of the body, including
+unknown future fields, usage resets, semantic session state, workspace size,
+and store-read durations. No value is removed, rounded, suppressed or coarsened.
 
 The body identity binds both its values and its exact observation layout.
 Reordering/removing rows, adding/removing observation paths, or changing stable
@@ -128,3 +133,9 @@ backend reads or build cost is claimed. Cold start, recovery and genuine
 section changes may legitimately send large full values. Heartbeat cadence,
 control delivery, wake retry and Data Bus transport are unchanged by this
 protocol.
+
+Classification uses the same existing body/layout identities and recovery
+contract as before. Qualification includes the Board's actual response paths,
+not only a hand-written subset of TEAM fields. The real-shaped 13-member test
+preserves whole-row groups under a 7 KB synthetic-frame budget; actual live
+SDK-envelope size remains a separate measurement.
