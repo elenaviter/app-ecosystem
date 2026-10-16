@@ -46,6 +46,20 @@ An alias is not an address. If a remote refusal reports `work_worker_not_found`,
 correct the recipient to the stable worker name and replay from the sender's
 durable outbox with the same semantic idempotency key.
 
+`pb worker replay-delivery` can change only the recipient (`--recipient`) and
+the kind (`--kind`) of a retained delivery. A `delivery_failed` notice names
+the recovery for its code:
+
+- `work_worker_not_found`, or a refused recipient: replay with the stable
+  worker name.
+- `work_mail_kind_invalid`, or a refused kind: replay with `--kind`.
+- `work_project_context_required`: worker-to-worker mail needs a project both
+  workers attend, and replay cannot add one. Send again with
+  `pb worker send --project-ref <project>` and a new idempotency key. No
+  project is inferred for you.
+- Any other refused field: send again with the corrected value and a new
+  idempotency key.
+
 ## Runtime Notification Paths
 
 Codex and Claude Code use different native notification paths. Each path only
