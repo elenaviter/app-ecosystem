@@ -114,7 +114,8 @@ def _echoed_scope(answer: Mapping[str, Any]) -> Any:
         raise ProjectAuthorizationError("scope_ref_mismatch")
     return scope_ref if scope_ref is not None else project_ref
 
-LOGGER =logging.getLogger("kdcube.connection_hub.project_membership")
+
+LOGGER = logging.getLogger("kdcube.connection_hub.project_membership")
 
 
 def _log_provider_failure(reason: str, bundle_id: str, operation: str, exc: BaseException) -> None:
