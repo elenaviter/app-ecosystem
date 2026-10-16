@@ -180,6 +180,41 @@ _ADAPTER_EXECUTORS = ChannelExecutors(thread_name_prefix="problem-board-adapter"
 # held per path by WorkspaceSizes, which the per-poll adapters share).
 DISK_USAGE_REMEASURE_SECONDS = REMEASURE_SECONDS
 
+# W458: replay-delivery can change only the recipient and the kind. A refusal of any other
+# field is recovered by a fresh send, so the notice must not promise a replay that cannot help.
+_REPLAY_CORRECTABLE_FIELDS = ("recipient", "kind")
+_RECIPIENT_REFUSAL_CODES = frozenset({"work_worker_not_found"})
+_KIND_REFUSAL_CODES = frozenset({"work_mail_kind_invalid"})
+
+
+def mail_delivery_failure_guidance(code: str, details: Any = None, *, outbox_id: str = "") -> str:
+    """The recovery a delivery_failed notice names for one refusal code: one the tools can do."""
+    field = str(details.get("field") or "") if isinstance(details, Mapping) else ""
+    outbox = outbox_id or "<outbox-id>"
+    if code == "work_project_context_required":
+        return (
+            "The message was never delivered: worker-to-worker mail needs a project both workers "
+            "attend, and replay-delivery cannot add one. Send it again with pb worker send "
+            "--project-ref <a project you both attend> and a new idempotency key. No project is "
+            "chosen for you."
+        )
+    if code in _RECIPIENT_REFUSAL_CODES or field == "recipient":
+        return (
+            "The message was never delivered. Correct the recipient to the stable worker name and "
+            f"replay it: pb worker replay-delivery --outbox-id {outbox} --recipient <stable name>."
+        )
+    if code in _KIND_REFUSAL_CODES or field == "kind":
+        return (
+            "The message was never delivered. Replay it with a corrected kind: pb worker "
+            f"replay-delivery --outbox-id {outbox} --recipient <stable name> --kind <kind>."
+        )
+    return (
+        "The message was never delivered. replay-delivery can change only the recipient and the "
+        "kind; to correct any other field, send the message again with the corrected value and a "
+        "new idempotency key."
+    )
+
+
 def _sweep_summary_of(workspace: str) -> dict[str, Any] | None:
     """The agent's latest sweep counts (W547): one small file read, never a walk."""
 
@@ -4280,10 +4315,10 @@ class ProblemBoardHostRelayAdapter:
                             error_code=exc.code,
                             error_message=str(exc),
                             error_details=exc.details,
-                            guidance=(
-                                "The message was never delivered. Correct the "
-                                "rejected field and replay the retained outbox "
-                                "delivery."
+                            guidance=mail_delivery_failure_guidance(
+                                exc.code,
+                                exc.details,
+                                outbox_id=str(row.get("outbox_id") or ""),
                             ),
                             executor=self._store_thread(),
                         )
