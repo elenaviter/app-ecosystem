@@ -564,7 +564,10 @@ class ProjectIdentityLifecycle:
                 return self._authority(*loaded) if loaded is not None else None
 
             try:
-                hierarchy = await compose_control_hierarchy(my_authority, load_control=load_control)
+                # W389: the walk's first Card is the Control Card just read; the re-read still checks it.
+                hierarchy = await compose_control_hierarchy(
+                    my_authority, load_control=load_control,
+                    preloaded={(control_authority.grantor_subject, control_authority.access_id): control_authority})
                 control_resolution = ProjectCardResolution.current(
                     hierarchy.control_card, control_dependencies=hierarchy.dependencies[1:])
             except ControlCardMismatch as exc:
