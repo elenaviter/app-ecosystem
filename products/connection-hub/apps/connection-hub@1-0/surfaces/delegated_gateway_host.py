@@ -668,6 +668,7 @@ async def build_hosted_gateway_binding(
         cast is None or cast.subject != view.grantor_user_id
         or cast.edge_id != view.registry_access_id
         or cast.edge_revision != view.card_revision
+        or cast.edge_revision != card.card_revision
     ):
         raise DelegatedGatewayError("target_authority_identity_unresolved")
     requestable = HostedRequestableResources(

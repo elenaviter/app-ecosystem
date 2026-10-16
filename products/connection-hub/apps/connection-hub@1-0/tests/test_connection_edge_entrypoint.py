@@ -98,6 +98,47 @@ def _entrypoint_module():
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("invocation", ["direct", "data", "nested_data"])
+async def test_delegated_identity_scope_ignores_forged_authority(
+    tmp_path, monkeypatch, invocation
+):
+    module = _entrypoint_module()
+    instance = module.ConnectionHubEntrypoint.__new__(module.ConnectionHubEntrypoint)
+    store = ConnectionEdgeStore(tmp_path)
+    monkeypatch.setattr(module, "_edge_store", lambda _entrypoint: store)
+    credential = {
+        "credential_kind": "delegated_client_access",
+        "issuer_authority_id": "delegated_client",
+        "subject": "integration:client-1:owner-1",
+        "attrs": {
+            "grantor_subject": "owner-1",
+            "identity_scope": "grantor",
+        },
+    }
+    forged = {
+        "grantor_roles": ["kdcube:role:super-admin"],
+        "grantor_permissions": ["kdcube:*"],
+        "economics_budget_bypass": True,
+    }
+    baseline = await instance.delegated_identity_scope_resolve(credential=credential)
+    payload = {"credential": credential, "grantor_authority": forged}
+    if invocation == "direct":
+        result = await instance.delegated_identity_scope_resolve(**payload)
+    elif invocation == "data":
+        result = await instance.delegated_identity_scope_resolve(data=payload)
+    else:
+        result = await instance.delegated_identity_scope_resolve(data={"data": payload})
+
+    assert result == baseline
+    assert result["ok"] is True
+    assert result["memory_user_ids"] == ["owner-1"]
+    assert result["delegate_identity"] == "integration:client-1:owner-1"
+    assert not {"roles", "permissions", "budget_bypass"}.intersection(
+        result["economics"]
+    )
+
+
+@pytest.mark.asyncio
 async def test_edge_operations_update_the_shared_principal_projection(
     tmp_path,
     monkeypatch,
