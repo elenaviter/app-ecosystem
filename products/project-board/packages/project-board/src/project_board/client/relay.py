@@ -48,6 +48,9 @@ from .worktree_files import (
     observe_assignments,
 )
 from ..contract.errors import PERMANENT_CREDENTIAL_CODES, DomainError
+from ..contract.heartbeat_reply import (
+    SESSION_TIME_FIELDS, SESSION_TIMES_FEATURE, STORE_READS_CHANGED_FEATURE, reply_features,
+)
 from ..contract.operation_identity import transport_request_hash
 from ..contract.operation_outcomes import require_successful_operation_envelope
 from ..contract.worker_operation_contract import operation_is_read
@@ -317,6 +320,27 @@ def session_with_wake_recovery(session: Mapping[str, Any]) -> dict[str, Any]:
     else:
         row["wake_recovery"] = {}
     return row
+
+
+def _reply_resend(response: Mapping[str, Any]) -> frozenset[str]:
+    """Fields the Board could not apply from a compact form and asks in full."""
+
+    marker = response.get("heartbeat_reply") if isinstance(response, Mapping) else None
+    resend = marker.get("resend") if isinstance(marker, Mapping) else None
+    return frozenset(name for name in resend if isinstance(name, str)) if isinstance(resend, list) else frozenset()
+
+
+def _store_read_stable(summaries: Mapping[str, Mapping[str, Any]]) -> dict[str, dict[str, Any]]:
+    """A store-read summary without its per-read telemetry (``ms``, ``at``)."""
+
+    return {
+        store: {key: value for key, value in summary.items() if key not in {"ms", "at"}}
+        for store, summary in summaries.items()
+    }
+
+
+def _store_read_signatures(summaries: Mapping[str, Mapping[str, Any]]) -> dict[str, str]:
+    return {store: content_hash(stable) for store, stable in _store_read_stable(summaries).items()}
 
 
 def _heartbeat_session_projection(value: Mapping[str, Any]) -> dict[str, Any]:
@@ -1362,6 +1386,7 @@ class ProblemBoardHostRelayAdapter:
         session_report_signatures: dict[str, str] | None = None,
         assignment_files_signatures: dict[str, str] | None = None,
         store_reads_signatures: dict[str, str] | None = None,
+        compact_baselines: dict[tuple[str, str], Any] | None = None,
         attendance_cache: dict[str, Any] | None = None,
         heartbeat_sent_at: dict[str, float] | None = None,
         monotonic: Callable[[], float] | None = None,
@@ -1421,6 +1446,13 @@ class ProblemBoardHostRelayAdapter:
         )
         self._store_reads_signatures: dict[str, str] = (
             store_reads_signatures if store_reads_signatures is not None else {}
+        )
+        # W827 S2b: per project, what the Board last acknowledged of the
+        # session projection ("sessions", project_ref) and of each store's
+        # read summary ("store_reads", project_ref), so a heartbeat can carry
+        # only what changed. Shared with the rebuilt child adapters.
+        self._compact_baselines: dict[tuple[str, str], Any] = (
+            compact_baselines if compact_baselines is not None else {}
         )
         # Both live as long as the relay, not as long as this adapter:
         # poll_attendances_once builds a new adapter per project on every
@@ -1616,14 +1648,66 @@ class ProblemBoardHostRelayAdapter:
         """
 
         summaries = last_read_summaries(self.config.worker_name)
-        stable = {
-            store: {key: value for key, value in summary.items() if key not in {"ms", "at"}}
-            for store, summary in summaries.items()
-        }
-        signature = content_hash(stable)
+        signature = content_hash(_store_read_stable(summaries))
         if not summaries or self._store_reads_signatures.get(project_ref) == signature:
             return None, signature
         return summaries, signature
+
+    def _compact_baseline_map(self) -> dict[tuple[str, str], Any]:
+        # Narrow tests/one-shot adapters may be built without __init__.
+        baselines = getattr(self, "_compact_baselines", None)
+        if baselines is None:
+            baselines = self._compact_baselines = {}
+        return baselines
+
+    def _forget_compact_baselines(self, project_ref: str) -> None:
+        baselines = self._compact_baseline_map()
+        baselines.pop(("sessions", project_ref), None)
+        baselines.pop(("store_reads", project_ref), None)
+
+    def _session_times(
+        self, *, project_ref: str, projected: Sequence[Mapping[str, Any]]
+    ) -> list[dict[str, Any]] | None:
+        """The times-only form of a session report, or None when more changed (W827 S2b).
+
+        Against the projection the Board last acknowledged: the same sessions
+        in the same order, each differing at most in ``SESSION_TIME_FIELDS``
+        (present in both or absent in both). Anything else is a full report.
+        """
+
+        previous = self._compact_baseline_map().get(("sessions", project_ref))
+        if not isinstance(previous, list) or len(previous) != len(projected) or not projected:
+            return None
+
+        def stable(row: Mapping[str, Any]) -> tuple[dict[str, Any], tuple[bool, ...]]:
+            return ({key: value for key, value in row.items() if key not in SESSION_TIME_FIELDS},
+                    tuple(key in row for key in SESSION_TIME_FIELDS))
+
+        times = []
+        for old, new in zip(previous, projected):
+            if stable(old) != stable(new):
+                return None
+            times.append({"session_id": new.get("session_id"),
+                          **{key: new[key] for key in SESSION_TIME_FIELDS if key in new}})
+        return times
+
+    def _store_reads_changed(
+        self, *, project_ref: str, summaries: Mapping[str, Mapping[str, Any]]
+    ) -> dict[str, dict[str, Any]] | None:
+        """Only the stores whose read summary changed, or None for the full map (W827 S2b).
+
+        Changed means what ``_store_reads_delta`` compares: everything but the
+        ``ms``/``at`` telemetry. A store the Board never acknowledged, or one
+        that disappeared, needs the full map, which replaces the stored one.
+        """
+
+        previous = self._compact_baseline_map().get(("store_reads", project_ref))
+        if not isinstance(previous, dict) or not set(previous) <= set(summaries):
+            return None
+        signatures = _store_read_signatures(summaries)
+        changed = {store: dict(summaries[store]) for store, signature in signatures.items()
+                   if previous.get(store) != signature}
+        return changed or None
 
     def _assignment_files_delta(
         self, *, project_ref: str, fresh: bool = False
@@ -1822,6 +1906,7 @@ class ProblemBoardHostRelayAdapter:
             and str(item.get("project_ref") or "") != project_ref
         ]
         self._session_report_signatures.pop(project_ref, None)
+        self._forget_compact_baselines(project_ref)
         self._heartbeat_sent_at.pop(project_ref, None)
 
     def _active_poll_interval(
@@ -4814,6 +4899,7 @@ class ProblemBoardHostRelayAdapter:
         heartbeat_payload: dict[str, Any] = {}
         team_request = None
         reply_request = None
+        session_form = store_reads_form = ""
         if heartbeat_sent:
             # The complete reply protocol supersedes TEAM v1 negotiation. The
             # legacy team materializer still receives a full reconstructed list.
@@ -4824,12 +4910,35 @@ class ProblemBoardHostRelayAdapter:
                 "project_ref": project_ref,
                 **reply_request.payload(),
             }
+            # W827 S2b: when to send is decided above and unchanged (W875);
+            # only the form shrinks, and only for a Board whose last reply for
+            # this project accepted it. Otherwise the full forms as before.
             if session_delta is not None:
-                heartbeat_payload["agent_sessions"] = session_delta
+                times = (
+                    self._session_times(project_ref=project_ref, projected=session_delta)
+                    if SESSION_TIMES_FEATURE in reply_request.features else None
+                )
+                if times is not None:
+                    heartbeat_payload["agent_session_times"] = times
+                    session_form = SESSION_TIMES_FEATURE
+                else:
+                    heartbeat_payload["agent_sessions"] = session_delta
+                    # Until this full report is acknowledged, the Board may
+                    # hold either projection: no times-only form against one.
+                    self._compact_baseline_map().pop(("sessions", project_ref), None)
             if assignment_files_delta is not None:
                 heartbeat_payload["assignment_files"] = assignment_files_delta
             if store_reads_delta is not None:
-                heartbeat_payload["store_reads"] = store_reads_delta
+                changed = (
+                    self._store_reads_changed(project_ref=project_ref, summaries=store_reads_delta)
+                    if STORE_READS_CHANGED_FEATURE in reply_request.features else None
+                )
+                if changed is not None:
+                    heartbeat_payload["store_reads_changed"] = changed
+                    store_reads_form = STORE_READS_CHANGED_FEATURE
+                else:
+                    heartbeat_payload["store_reads"] = store_reads_delta
+                    self._compact_baseline_map().pop(("store_reads", project_ref), None)
             self._add_worker_info(heartbeat_payload, worker_info)
             self._add_alias_request(heartbeat_payload, alias_request)
             self._add_project_record(heartbeat_payload, project_ref)
@@ -4847,6 +4956,8 @@ class ProblemBoardHostRelayAdapter:
             "heartbeat_payload": heartbeat_payload,
             "team_request": team_request,
             "reply_request": reply_request,
+            "session_form": session_form,
+            "store_reads_form": store_reads_form,
         }
 
     def _heartbeat_replies(self) -> ReplySnapshots:
@@ -4908,6 +5019,7 @@ class ProblemBoardHostRelayAdapter:
         self._assignment_files_signatures[project_ref] = files_signature
         if store_reads_delta is not None:
             self._store_reads_signatures[project_ref] = store_reads_signature
+        self._record_compact_baselines(project_ref=project_ref, prepared=prepared)
         self._acknowledge_worker_info(worker_info, heartbeat_result)
         self._acknowledge_alias_request(alias_request, heartbeat_result)
         self._acknowledge_workspace_report(project_ref, workspace_report, heartbeat_result)
@@ -4957,6 +5069,30 @@ class ProblemBoardHostRelayAdapter:
                 )
             except DomainError:
                 self._heartbeat_replies().forget(project_ref)
+
+    def _record_compact_baselines(self, *, project_ref: str, prepared: Mapping[str, Any]) -> None:
+        """What the Board now holds, for the next compact form (W827 S2b).
+
+        A compact form the answering Board did not accept (a rollback between
+        two heartbeats, or a session row it no longer has) was not applied:
+        drop the baselines and the signature, so the next heartbeat is full.
+        """
+
+        baselines = self._compact_baseline_map()
+        features = prepared.get("reply_features") or frozenset()
+        resend = prepared.get("reply_resend") or frozenset()
+        session_form = prepared.get("session_form") or ""
+        if session_form and (session_form not in features or "agent_sessions" in resend):
+            baselines.pop(("sessions", project_ref), None)
+            self._session_report_signatures.pop(project_ref, None)
+        elif prepared.get("session_delta") is not None:
+            baselines[("sessions", project_ref)] = [dict(row) for row in prepared["session_delta"]]
+        store_reads_form = prepared.get("store_reads_form") or ""
+        if store_reads_form and store_reads_form not in features:
+            baselines.pop(("store_reads", project_ref), None)
+            self._store_reads_signatures.pop(project_ref, None)
+        elif prepared.get("store_reads_delta") is not None:
+            baselines[("store_reads", project_ref)] = _store_read_signatures(prepared["store_reads_delta"])
 
     async def _poll_project_once(
         self,
@@ -5033,6 +5169,9 @@ class ProblemBoardHostRelayAdapter:
                     "journal_workspace": {"state": "waiting_for_link"},
                 }
             heartbeat_result = _object_result(heartbeat_response)
+            # W827 S2b: which compact forms the answering Board accepted.
+            prepared["reply_features"] = reply_features(heartbeat_result)
+            prepared["reply_resend"] = _reply_resend(heartbeat_result)
             reply_request = prepared.get("reply_request")
             if isinstance(reply_request, ReplyRequest):
                 heartbeat_result = await run_off_loop(
@@ -5516,6 +5655,7 @@ class ProblemBoardHostRelayAdapter:
             session_report_signatures=self._session_report_signatures,
             assignment_files_signatures=self._assignment_files_signatures,
             store_reads_signatures=self._store_reads_signatures,
+            compact_baselines=self._compact_baselines,
             attendance_cache=self._attendance_cache,
             heartbeat_sent_at=self._heartbeat_sent_at,
             monotonic=self._monotonic,
