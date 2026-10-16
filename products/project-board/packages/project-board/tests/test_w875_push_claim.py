@@ -43,9 +43,9 @@ class RecordingBoard(FilesBoard):
             hook()
         return await super().action(object_ref=object_ref, action=action, payload=payload)
 
-    def push(self, project_ref: str | None, control_ref: str) -> None:
+    def push(self, project_ref: str | None, control_ref: str, *, kind: str = "control.available") -> None:
         refs = {"control_ref": control_ref, **({} if project_ref is None else {"project_ref": project_ref})}
-        event = {"type": "problem_board.worker.event.v1", "data": {"kind": "control.available", "refs": refs}}
+        event = {"type": "problem_board.worker.event.v1", "data": {"kind": kind, "refs": refs}}
         for hook in list(self.hooks.values()):
             hook(event)
 
@@ -181,3 +181,43 @@ def test_a_push_without_a_control_ref_pulls_the_scope_as_w794_did(tmp_path, monk
         "project_ref": "", "lease_owner": adapter.config.relay_id,
         "lease_seconds": max(60, adapter.config.reconcile_ceiling_seconds * 3), "limit": 20,
     }]
+
+
+def test_a_mail_or_plan_command_push_with_a_control_ref_is_claimed_at_once(tmp_path, monkeypatch):
+    """W875 B, live 2026-10-15 23:27Z: the board pushes most new controls as ``mail.available`` or
+    ``plan.command.available`` (each with its ``control_ref``). The #825 relay claimed only ``control.available``,
+    so every mail waited about 65 s for the board's re-push sweep."""
+
+    adapter, board = _settled(tmp_path, monkeypatch)
+    project_key = f"problem-board.controls:{PROJECT_REF.rsplit(':', 1)[1]}"
+
+    async def scenario():
+        board.push(PROJECT_REF, CONTROL_REF, kind="mail.available")
+        await board.hooks[project_key].__self__._immediate_pull  # noqa: SLF001
+        board.push(PROJECT_REF, OTHER_REF, kind="plan.command.available")
+        await board.hooks[project_key].__self__._immediate_pull  # noqa: SLF001
+
+    asyncio.run(scenario())
+    assert [(payload["project_ref"], payload.get("control_ref")) for payload in board.pulls()] == [
+        (PROJECT_REF, CONTROL_REF), (PROJECT_REF, OTHER_REF),
+    ]
+
+
+def test_a_direct_mail_push_with_a_control_ref_is_claimed_in_the_direct_scope(tmp_path, monkeypatch):
+    adapter, board = _settled(tmp_path, monkeypatch)
+
+    async def scenario():
+        board.push(None, CONTROL_REF, kind="mail.available")
+        await adapter._immediate_pull  # noqa: SLF001
+
+    asyncio.run(scenario())
+    assert [(payload["project_ref"], payload.get("control_ref")) for payload in board.pulls()] == [("", CONTROL_REF)]
+
+
+def test_an_event_without_a_control_ref_claims_nothing(tmp_path, monkeypatch):
+    adapter, board = _settled(tmp_path, monkeypatch)
+    event = {"type": "problem_board.worker.event.v1",
+             "data": {"kind": "project.linked", "refs": {"project_ref": PROJECT_REF}}}
+    for hook in list(board.hooks.values()):
+        hook(event)
+    assert board.pulls() == []
