@@ -428,9 +428,16 @@ the global workforce panel before treating the UI as acceptance evidence.
 
 In the board:
 
-1. Create a project and select its first published worker.
-2. Link any additional workers that should attend it.
-3. Configure the portable repository and journal-home references.
+1. Create a project: **New project** asks for a title and an optional goal,
+   and nothing else.
+2. Add its first agent as coordinator: **Team > Agents > Add agent** starts
+   at **Coordinator** for a project with no agent. Press **Fit to role** on
+   its row and read the receipts: a part that failed or was not attempted is
+   not success. Then add any further workers the same way, with role
+   **worker**.
+3. Configure the portable repositories and, only when wanted, the project
+   files. A journal is optional: when the project keeps one, its repository
+   has role `journal` and a **Path**, and that pair is the journal home.
    When the journal home is first bound, follow
    [Starting a project](./problem-board-worker/references/coordinator.md#starting-a-project)
    to create the facts and environment pages that accumulate from day one.

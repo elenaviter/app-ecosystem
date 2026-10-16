@@ -35,9 +35,10 @@ PROFILE_PLACEHOLDER = "<profile>"
 # A project admin refreshes the Card to its role's current defaults; replacing
 # the Card is a separate, deliberate act, not the answer to a missing operation.
 CARD_REFRESH_FIX = (
-    "A project admin presses Refresh worker Card on this agent's row in Team > Agents "
-    "(Refresh coordinator Card for the coordinator); the Card, its client and this "
-    "session stay the same."
+    "A project admin presses Fit to role on this agent's row in Team > Agents "
+    "(for a worker it sets the Card's Problem Board permissions to the worker defaults; "
+    "for the coordinator it applies the coordinator profile again); the Card, its client "
+    "and this session stay the same."
 )
 
 

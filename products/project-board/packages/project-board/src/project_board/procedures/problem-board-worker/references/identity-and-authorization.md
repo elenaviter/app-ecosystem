@@ -129,9 +129,10 @@ operations by default: `review.accept`, `review.assign`, `review.cancel`,
 independent setters `work.status.set` and `work.assignee.set` (operator,
 2026-10-01). The worker profile lists each of them, and the coordinator
 profile selects every Problem Board operation. The Card's owner applies them
-with **Refresh worker Card**, or **Refresh coordinator Card** for a
-coordinator, which reapply the role's default profile under the project's
-ceiling and keep the same identity. One product step is still open (W420): a
+with **Fit to role** on the agent's row in **Team > Agents** (formerly
+Refresh worker Card and Refresh coordinator Card), which reapplies the
+role's default profile under the project's ceiling and keeps the same
+identity. One product step is still open (W420): a
 refresh reapplies the profile by name, so another service on the same Card
 that declares the same profile name can be changed too, until W420's
 resource-scoped apply is live. An agent never edits a Card

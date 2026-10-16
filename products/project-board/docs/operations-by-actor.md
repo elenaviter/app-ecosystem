@@ -173,9 +173,9 @@ operation the project Control Card does not include is refused with
 Card, whatever the agent's own Card holds. Re-consent does not help. A project
 admin adds the operation to the project Control Card in Connection Hub (reached
 from Manage project access), then the
-agent's Card is refreshed (Refresh coordinator Card, Make coordinator or Make
+agent's Card is refreshed (Fit to role, Make coordinator or Make
 worker). On 2026-09-26 new coordinator operations reached the catalog, and
-`project.coordinator.note.write` stayed refused after Refresh until the operator
+`project.coordinator.note.write` stayed refused after the refresh (then named Refresh coordinator Card) until the operator
 ticked it on the project Control Card; the refusal then still read "written
 at consent", which sent the team to the catalog.
 
