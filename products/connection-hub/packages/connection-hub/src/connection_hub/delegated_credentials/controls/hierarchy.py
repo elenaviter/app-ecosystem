@@ -5,8 +5,9 @@
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass, replace
-from typing import Awaitable, Callable
+from typing import Awaitable, Callable, Mapping
 
 from connection_hub.delegated_credentials.cards.model import CardAuthority
 from connection_hub.delegated_credentials.controls.effective import (
@@ -72,6 +73,7 @@ async def compose_control_hierarchy(
     card: CardAuthority, *,
     load_control: Callable[..., Awaitable[CardAuthority | None]],
     max_depth: int = 32,
+    preloaded: Mapping[tuple[str, str], CardAuthority] | None = None,
 ) -> ControlHierarchy:
     """Resolve exact current coordinates and compose the downstream subtree.
 
@@ -79,6 +81,10 @@ async def compose_control_hierarchy(
     exact-identity cross-owner edges. Dependencies are re-read before return;
     any concurrent change refuses this attempt, never serves a stale snapshot.
     This is read validation, not an atomic business-transaction commit gate.
+
+    ``preloaded`` (W389) holds Cards the caller has just read, by
+    ``(grantor_subject, access_id)``. The walk uses one instead of reading it again;
+    the dependency re-read below still reads every Card, so a changed one refuses.
     """
 
     chain = [card]
@@ -95,10 +101,12 @@ async def compose_control_hierarchy(
         coordinate = (subject, binding.control_id)
         if coordinate in seen:
             raise ControlCardMismatch("control_card_chain_cycle")
-        try:
-            parent = await load_control(binding.control_id, grantor_subject=subject)
-        except Exception as exc:
-            raise ControlCardMismatch("control_card_lookup_unavailable") from exc
+        parent = (preloaded or {}).get(coordinate)
+        if parent is None:
+            try:
+                parent = await load_control(binding.control_id, grantor_subject=subject)
+            except Exception as exc:
+                raise ControlCardMismatch("control_card_lookup_unavailable") from exc
         if parent is None:
             raise ControlCardMismatch("control_card_unresolvable")
         if parent.grantor_subject != subject or parent.access_id != binding.control_id:
@@ -116,11 +124,17 @@ async def compose_control_hierarchy(
         seen.add(coordinate)
 
     result = compose_resolved_control_hierarchy(card, tuple(chain[1:]))
-    for (subject, access_id), observed_hash in zip(coordinates[1:], observed_hashes):
-        try:
-            current = await load_control(access_id, grantor_subject=subject)
-        except Exception as exc:
-            raise ControlCardMismatch("control_card_lookup_unavailable") from exc
+    # W389: the dependency re-reads are independent, so they run together; the first
+    # failure in chain order decides the refusal, as it did when they ran one by one.
+    currents = await asyncio.gather(
+        *(load_control(access_id, grantor_subject=subject) for subject, access_id in coordinates[1:]),
+        return_exceptions=True,
+    )
+    for current, observed_hash in zip(currents, observed_hashes):
+        if isinstance(current, BaseException):
+            if not isinstance(current, Exception):
+                raise current
+            raise ControlCardMismatch("control_card_lookup_unavailable") from current
         if current is None or current.content_hash() != observed_hash:
             raise ControlCardMismatch("control_card_dependency_changed")
     return result
