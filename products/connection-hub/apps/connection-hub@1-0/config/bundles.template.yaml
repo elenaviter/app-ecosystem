@@ -110,47 +110,53 @@ bundles:
             connections_settings:
               visibility: *default_visibility
 
-      # W374: named authorities. A non-empty `authorities` block replaces the
-      # `project_membership.provider` block below entirely (the two are never
-      # mixed); without one, the legacy block is read exactly as before. Names:
-      # membership, agent_card, control_card, credential_release. Kind
-      # app_operation (bundle_id + operation); kind https is reserved and is
-      # refused by name until implemented. The same host, as named authorities:
-      #
-      # authorities:
-      #   membership:
-      #     kind: app_operation
-      #     bundle_id: "problem-board@1-0"
-      #     operation: "project_membership_resolve"
-      #     administrative_roles: [owner, admin]
-      #   agent_card: {kind: app_operation, bundle_id: "problem-board@1-0", operation: "project_agent_card_authorize"}
-      #   control_card: {kind: app_operation, bundle_id: "problem-board@1-0", operation: "project_control_card_authorize"}
-      #   credential_release:
-      #     kind: app_operation
-      #     bundle_id: "problem-board@1-0"
-      #     operation: "project_agent_github_authorize"
-      #     peer_proof_secret_ref: "project_membership.peer_proof_secret"
-      project_membership:
-        provider:
+      # W374: who Connection Hub asks, configured by name. Each authority is an
+      # in-platform app operation (kind app_operation: bundle_id + operation,
+      # both required); kind https is reserved and refused by name until it is
+      # implemented. A name left out is unconfigured, and its port refuses by
+      # name. See docs/connection-hub/package/delegated-cards.md.
+      authorities:
+        membership:
+          kind: app_operation
           bundle_id: "problem-board@1-0"
           operation: "project_membership_resolve"
-          # W319: "may this person open or change this agent's Card", asked
-          # of the same host under the person's session.
-          agent_card_operation: "project_agent_card_authorize"
-          # W260: "may this person read or change this project's Control Card",
-          # asked of the same host under the person's session; the host names
-          # the Card's creator, under whose key the Card is stored.
-          control_card_operation: "project_control_card_authorize"
-          # W371: "may this agent use GitHub for this repository", asked for
-          # an agent (no person session), so Connection Hub signs it with a
-          # secret shared with the host alone (bundles.secrets:
-          # project_membership.peer_proof_secret). Without it, GitHub tokens
-          # are refused by name.
-          github_authorize_operation: "project_agent_github_authorize"
+          administrative_roles: [owner, admin]
+        # W319: "may this person open or change this agent's Card", asked of
+        # the same host under the person's session.
+        agent_card:
+          kind: app_operation
+          bundle_id: "problem-board@1-0"
+          operation: "project_agent_card_authorize"
+        # W260: "may this person read or change this project's Control Card",
+        # asked of the same host under the person's session; the host names
+        # the Card's creator, under whose key the Card is stored.
+        control_card:
+          kind: app_operation
+          bundle_id: "problem-board@1-0"
+          operation: "project_control_card_authorize"
+        # W371: "may this agent use GitHub for this repository", asked for an
+        # agent (no person session), so Connection Hub signs it with a secret
+        # shared with the host alone (bundles.secrets:
+        # project_membership.peer_proof_secret). Without it, GitHub tokens are
+        # refused by name.
+        credential_release:
+          kind: app_operation
+          bundle_id: "problem-board@1-0"
+          operation: "project_agent_github_authorize"
           peer_proof_secret_ref: "project_membership.peer_proof_secret"
-        administrative_roles:
-        - owner
-        - admin
+      # Deprecated (W374): the legacy block. It is still read, exactly as
+      # before, but only when the descriptor has no `authorities` block; the
+      # two are never mixed. New descriptors use `authorities` above.
+      #
+      # project_membership:
+      #   provider:
+      #     bundle_id: "problem-board@1-0"
+      #     operation: "project_membership_resolve"
+      #     agent_card_operation: "project_agent_card_authorize"
+      #     control_card_operation: "project_control_card_authorize"
+      #     github_authorize_operation: "project_agent_github_authorize"
+      #     peer_proof_secret_ref: "project_membership.peer_proof_secret"
+      #   administrative_roles: [owner, admin]
 
       project_invitation_binding:
         provider:
