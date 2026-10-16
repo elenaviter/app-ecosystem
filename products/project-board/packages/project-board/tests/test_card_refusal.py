@@ -5,7 +5,7 @@ issued before that refused it with `work_worker_operation_not_granted` and a
 list of what the Card holds. The operator chose re-approval over a grant
 fallback, so the refusal itself has to say which operation, which permission
 group, and the fix. Since W420 (2026-09-30) the fix is the normal Card refresh
-on the same Card (Refresh worker Card), never a replacement Card.
+on the same Card (Fit to role), never a replacement Card.
 """
 
 from __future__ import annotations
@@ -39,7 +39,7 @@ def test_a_card_whose_list_predates_an_operation_it_holds_the_group_for_gets_the
     assert "worker.heartbeat" in row["held_via"]
     assert "predates this operation" in row["why"]
     assert row["fix"] == CARD_REFRESH_FIX
-    assert "Refresh worker Card" in row["fix"] and "--replace-card" not in row["fix"]
+    assert "Fit to role" in row["fix"] and "--replace-card" not in row["fix"]
 
 
 def test_the_service_named_group_wins_and_a_card_without_the_group_still_gets_the_command():

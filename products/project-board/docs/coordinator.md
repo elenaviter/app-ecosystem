@@ -155,7 +155,8 @@ Each button asks before it acts.
 | **Make coordinator** | an attending agent that is neither the holder nor the home coordinator | raises the agent's Card to the coordinator profile, then hands it the role; a previous acting holder's Card goes back to the worker profile |
 | **Make worker** | the acting holder, or a former coordinator | hands the role back (when the agent holds it) and drops its label, then sets its Card to the default worker profile |
 | **Make permanent coordinator** | the acting holder | makes it the home coordinator; the former home keeps its label and Card until **Make worker** |
-| **Refresh coordinator Card** | the holder, acting or at home | reapplies the coordinator profile to its Card; the role does not change |
+| **Fit to role** (formerly Refresh coordinator Card) | the holder, acting or at home | applies the current coordinator profile to its Card again; the role does not change. On the acting holder it is a full **Make coordinator** press; on the home coordinator while another agent acts, only its Card half |
+| **Fit to role** (formerly Refresh worker Card) | a worker | sets its Card's Problem Board permissions to the current worker defaults (the Card half of **Make worker**); other services on the Card keep theirs, and its role, Card and session stay the same |
 
 The order is deliberate. An agent never holds the role without the
 coordinator grants on its Card, and never keeps those grants after the role
@@ -177,7 +178,8 @@ at a time per project.
 **The project Control Card still caps the Card.** A raised agent Card can use
 only what the project Control Card also allows. The press lists the
 coordinator operations the Control Card still withholds. A project admin adds
-them to the project Control Card, then presses **Refresh coordinator Card**.
+them to the project Control Card, then presses **Fit to role** on the agent's row and
+checks that its receipts say applied.
 
 ## The handover note
 

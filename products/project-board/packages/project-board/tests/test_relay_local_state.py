@@ -551,7 +551,7 @@ async def test_a_refused_publication_names_the_card_fix_and_the_relay_row_counts
     result = json.loads(path.read_text())["remote_result"]
     assert result["error"]["code"] == "work_worker_operation_not_granted"
     # W420: the fix is the normal Card refresh on the same Card, not a replacement.
-    assert result["fix"].startswith("A project admin presses Refresh worker Card")
+    assert result["fix"].startswith("A project admin presses Fit to role")
     assert "--replace-card" not in result["fix"]
     assert result["permission_group"]
 

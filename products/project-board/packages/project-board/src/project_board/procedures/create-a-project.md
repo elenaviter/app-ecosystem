@@ -3,7 +3,7 @@ id: app-ecosystem.project-board.procedure.create-a-project
 title: Create A Project And Connect Your Agents
 summary: An enrolled agent guides a person from "I want to create a project and connect you and other agents to it" to a working project, with its repositories, this machine's access to them, a second agent as worker, and a first reviewed item.
 tags: [procedure, problem-board, project, onboarding, repositories, coordinator]
-keywords: [new project, first worker, coordinator, project repositories, deploy keys, grant sheet, add agent, first item, shared machine]
+keywords: [new project, add agent as coordinator, Fit to role, coordinator, project repositories, deploy keys, grant sheet, add agent, first item, shared machine]
 see_also:
   - ./enroll-an-agent.md
   - ./add-a-worker-host.md
@@ -12,6 +12,8 @@ see_also:
   - ./problem-board-worker/references/coordinator.md
   - repo:app-ecosystem/products/project-board/docs/concepts.md
   - repo:app-ecosystem/products/project-board/docs/cards.md
+  - repo:app-ecosystem/products/project-board/docs/coordinator.md
+  - repo:app-ecosystem/products/project-board/docs/add-a-machine.md
 ---
 
 # Create A Project And Connect Your Agents
@@ -35,20 +37,23 @@ start with [enroll an agent](enroll-an-agent.md) and come back here.
 The agent asks for these, one message, and repeats them back as one short
 proposal before anything changes:
 
-- the project's **title** and a one-sentence **goal**;
+- the project's **title**, and a one-sentence **goal** if they want one (it
+  is optional);
 - its **repositories**: for each, a short **alias** (letters, digits, `-`),
   the **URL**, and its **role**: `work` (code the agents change), `journal`
   (where the project's journal lives), or `artifact`;
-- its **project files**, the project's shared, current knowledge that every
-  agent reads first: the three purpose files, each a repository alias and a
-  path, **Instructions** (default `instructions.md`: what the project is, its
-  rules and conventions, how work is done there), **Facts** (default
-  `facts.md`: the decisions and rulings in force now) and **Environment**
-  (default `environment.md`: machines, runtimes, how to test and deploy),
-  and any further files, each with a one-line description;
-- a **journal home**, only if the project keeps a journal (it is optional:
-  history, not the current truth), `repo:<journal alias>/<path>`, for example
-  `repo:journals/projects/<project-name>`;
+- its **project files**, only those the person wants now (any can be added
+  later, and a project may start with none): the project's shared, current
+  knowledge that every agent reads first. There are three purpose files, each
+  a repository alias and a path, **Instructions** (default `instructions.md`:
+  what the project is, its rules and conventions, how work is done there),
+  **Facts** (default `facts.md`: the decisions and rulings in force now) and
+  **Environment** (default `environment.md`: machines, runtimes, how to test
+  and deploy), and any further files, each with a one-line description;
+- a **journal**, only if the project keeps one (it is optional: history, not
+  the current truth): the repository that holds it (role `journal`) and the
+  **Path** inside it, for example `projects/<project-name>`. The board makes
+  the journal home `repo:<journal alias>/<path>` from that pair;
 - the **agents**: this one becomes the coordinator; name the second one (the
   worker) and the machine it runs on.
 
@@ -58,24 +63,33 @@ The person answers or corrects. Nothing changes until they say yes.
 
 *The person, on the board.*
 
-Press **New project**. Fill in the title and the goal (and the **Journal home
-ref** from step 0 if the project keeps a journal), and choose this agent as
-**First worker**. Press create.
+Press **New project**. It asks for the **title** and, optionally, the
+**goal** from step 0, and nothing else. Press create: the project exists at
+once, with no agent on it and an empty plan.
+
+Then make this agent its coordinator, on the same board:
+
+1. **Team > Agents > Add agent**, pick this agent. For a project with no
+   agent yet the role starts at **Coordinator**; keep it, then **Add to
+   project**.
+2. Press **Fit to role** on this agent's row in **Team > Agents**. It gives
+   this agent's Card the coordinator shape (the coordinator profile); the
+   role stays with this agent.
+3. Read the receipts it shows: each part says applied, unchanged, failed,
+   not attempted or not needed. A part that failed or was not attempted is
+   not success: press its **Retry**, and read the receipts again.
 
 What happens:
 
 - the person becomes the project's owner and its first project admin;
-- this agent is linked to the project as its **coordinator**. The person then
-  presses **Refresh coordinator Card** on this agent's row in **Team >
-  Agents**: it gives its Card the coordinator shape (the coordinator profile);
-- the board sends this agent a "materialize" instruction: to create the
-  project's field and draft a first plan from the goal.
+- this agent attends the project as its **coordinator**, with a Card that
+  can do the coordinator's work under the project's Control Card.
 
 *The agent* then confirms it with `pb worker context --project-ref
-<project-ref>`: it attends the project, and its role is coordinator. It
-handles the materialize instruction as ordinary addressed work: a short plan
-of first items from the goal, which the person reads and may change. It tells
-the person it has joined, and what it drafted.
+<project-ref>`: it attends the project, and its role is coordinator. It tells
+the person it has joined. Nothing is drafted on its own: when the person asks,
+the agent proposes a short plan of first items from the goal, which the person
+reads and may change.
 
 ## 2. Tell the project its repositories
 
@@ -85,7 +99,8 @@ The project's card decides which repositories every agent on it can reach.
 
 - **On the board:** the person opens **Project** (the board's header), goes
   to **Repositories**, and adds each one from step 0: Alias, Repository URL,
-  Role, and Branch (usually `main`). Then **Save**. Only a project admin can
+  Role, Branch (usually `main`) and, for the journal repository, its **Path**.
+  Then **Save**. Only a project admin can
   edit repositories.
 - **Or by the agent:** when its Card holds `project.set_repositories` and the
   person said yes to the exact list, the agent sets it with
@@ -93,15 +108,16 @@ The project's card decides which repositories every agent on it can reach.
   person.
 
 Then the **project files** from step 0, the same way: on the board, under
-**Project files**, the three purpose files and each further file (repository,
-path, one-line description); or by the agent with `pb coordinate
+**Project files**, each purpose file and each further file the person chose
+(repository, path, one-line description); or by the agent with `pb coordinate
 project.set_files` when its Card holds it and the person said yes to the
 exact list. *The agent* creates any listed file that does not exist yet in
 its repository, each section with its fact or `Not known yet`, and commits
 it; `pb worker connect-project` then names any listed file still missing.
 
-A journal is optional. When the project keeps one, the journal home's alias
-must be one of these repositories, with role `journal`.
+A journal is optional. A project without one works fully. When the
+project keeps one, its repository is one of these, with role `journal` and
+the **Path** from step 0: that pair is the project's journal home.
 
 ## 3. Give this machine access to exactly those repositories
 
@@ -144,7 +160,9 @@ named, with the grant block to add; repeat until none is left.
    its Card is active.
 3. **Add it to the project.** *The person*, on the board: **Team > Agents >
    Add agent**, pick the new agent, role **worker**, **Add to project**.
-   When the role is coordinator instead, press **Refresh coordinator Card** on its row in **Team > Agents**: it gives its Card the coordinator shape (the coordinator profile).
+   When the role is coordinator instead, press **Fit to role** on its row in
+   **Team > Agents** and read its receipts as in step 1: it gives its Card the
+   coordinator shape (the coordinator profile).
 4. **It sets up its workspace.** *The new agent* clones the project's
    repositories into its own folder and reports them. On another machine,
    step 3 runs there too: that machine needs its own deploy keys.
