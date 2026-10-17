@@ -23,6 +23,8 @@ from datetime import datetime, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
+import importlib.util
+
 import pytest
 
 from connection_hub.delegated_credentials.automation_access import AutomationAccessService
@@ -68,7 +70,9 @@ class _Grants:
 
 @pytest.fixture
 async def redis_client():
-    redis_asyncio = pytest.importorskip("redis.asyncio", reason="the redis client is not installed")
+    if importlib.util.find_spec("redis") is None:  # only an absent package skips; a broken install still fails
+        pytest.skip("the redis client is not installed")
+    import redis.asyncio as redis_asyncio
 
     client = redis_asyncio.from_url(os.environ["REDIS_URL"])
     try:

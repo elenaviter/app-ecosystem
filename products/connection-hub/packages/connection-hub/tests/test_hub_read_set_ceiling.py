@@ -15,6 +15,8 @@ import resource
 import sys
 from pathlib import Path
 
+import importlib.util
+
 import pytest
 
 from connection_hub.delegated_credentials.cards import card_read_set as rs
@@ -84,11 +86,11 @@ async def _real_lock_setup(tmp_path):
     could not exercise this ceiling (CodeApp's review, 2026-10-08). Each section here still enters
     the SDK's own ``_kdcube_card_mutation_lock`` (one flock, one descriptor); ``_Held`` only counts it.
     """
-    sdk_service = pytest.importorskip(
-        "kdcube_ai_app.apps.chat.sdk.integrations.connection_hub.delegated_credentials.cards.service",
-        reason="the production mutation lock lives in the KDCube SDK, which is not installed",
+    if importlib.util.find_spec("kdcube_ai_app") is None:  # only an absent SDK skips; a broken install still fails
+        pytest.skip("the production mutation lock lives in the KDCube SDK, which is not installed")
+    from kdcube_ai_app.apps.chat.sdk.integrations.connection_hub.delegated_credentials.cards.service import (
+        _kdcube_card_mutation_lock,
     )
-    _kdcube_card_mutation_lock = sdk_service._kdcube_card_mutation_lock
     from connection_hub.delegated_credentials.cards.service import DelegatedCardService
     from connection_hub.delegated_credentials.cards.store import BundleStorageDelegatedCardStore
 
