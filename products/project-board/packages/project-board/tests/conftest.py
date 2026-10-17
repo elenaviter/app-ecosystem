@@ -37,6 +37,24 @@ def _no_host_git_config(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _no_host_machine_configuration(monkeypatch, tmp_path_factory):
+    """The machine's own Problem Board configuration never reaches a test.
+
+    `resolve_host_config_path` falls back to `PROBLEM_BOARD_CONFIG` and then to the
+    default pointer under the client runtime root (`~/.kdcube/client-runtime`). On a
+    machine where pb is set up, `pb procedure install` in a test then found the real
+    host and tried to switch it to the package under test; in the pb-set release
+    gate (project-board installed from its wheel, not a checkout) that refused with
+    `work_client_install_not_a_commit` and three install tests failed only on such
+    hosts. Each test starts with an empty client runtime root and no config override;
+    a test that needs either sets it with ``monkeypatch.setenv``.
+    """
+
+    monkeypatch.delenv("PROBLEM_BOARD_CONFIG", raising=False)
+    monkeypatch.setenv("KDCUBE_CLIENT_RUNTIME_HOME", str(tmp_path_factory.mktemp("client-runtime")))
+
+
+@pytest.fixture(autouse=True)
 def _no_session_claude_profile(monkeypatch):
     """A test never sees the Claude profile of the session that runs it (W763).
 
