@@ -450,6 +450,12 @@ PROBLEM_BOARD_OPERATION_POLICIES: dict[str, dict[str, Any]] = {
             "and negotiates lossless complete-reply sections and exact observation "
             "groups; the client reconstructs and verifies the full result before "
             "consuming it. Missing or invalid knowledge gets a full reply."
+            " W827: after a reply whose marker lists them in features, "
+            "known_reply_digest replaces known_reply, agent_session_times "
+            "(session_id, heartbeat_at, last_inbox_check_at) replaces an "
+            "agent_sessions change in those times only, and store_reads_changed "
+            "carries only the changed stores; resend names a full form the "
+            "Board could not apply."
         ),
     },
     "worker.estimate": {

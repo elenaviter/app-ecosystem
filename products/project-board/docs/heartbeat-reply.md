@@ -25,8 +25,10 @@ under the existing body/layout contract; there is no row-level replacement.
 
 The shared implementation is `project_board.contract.heartbeat_reply`. The
 Board supplies the admitted scope; `project_board.client.heartbeat_reply` owns
-the relay's process-memory snapshot pairs. There is no server-side client cache,
-new durable store, generation counter, cursor or cross-request barrier.
+the relay's process-memory snapshot pairs. There is no new durable store,
+generation counter, cursor or cross-request barrier. The one server-side state
+is the short-lived Redis copy of the identities a reply implied, kept so the
+relay can echo a digest instead of them ([request compaction](#request-compaction-w827-s2b)).
 
 ## Negotiation and wire shape
 
@@ -133,6 +135,67 @@ old or rolled-back Board's full legacy reply materializes it and clears its
 conditional knowledge. Unsupported requests or an unhashable server result
 fall back to legacy full replies. The Board and shared package are installed
 as a tested pair; independently installed worker clients may be old or new.
+
+## Request compaction (W827 S2b)
+
+On the live Data Bus message stream (2026-10-16, 6-hour window, Redis 8.10)
+`worker.heartbeat` was 52% of the entries and about 76% of the bytes, 13.3 KB
+per request at the median. Of its inner payload, `known_reply` was 4,825 bytes
+at the median and in every request, `store_reads` 2,442 bytes in 31 of 50, and
+`agent_sessions` 1,470 bytes in 40 of 50. The Data Bus keeps each request for
+the message window (`DATA_BUS_MESSAGE_RETENTION_SECONDS`, six hours), so the
+request size, not the reply, sets the stream's memory. Three compact forms
+replace the full ones; **when** a heartbeat is sent is unchanged (W875).
+
+| Full form | Compact form | Used when |
+| --- | --- | --- |
+| `known_reply` (every section's identities) | `known_reply_digest`: the SHA-256 (64 hex) of the canonical `known_reply` | the Board's previous reply for this scope offered exactly that digest as `known_digest` |
+| `agent_sessions` (the session projection) | `agent_session_times`: per session only `session_id`, `heartbeat_at`, `last_inbox_check_at` | the same sessions, in the same order, changed in nothing but those two times since the projection the Board acknowledged |
+| `store_reads` (every store's last read) | `store_reads_changed`: only the stores whose summary changed (all but `ms`/`at`, the existing comparison) | every store the Board acknowledged is still reported |
+
+The observation groups change on every heartbeat (heartbeat, inbox, disk,
+account times), so the identities the relay holds are new every time; a relay
+cannot just say "unchanged". After building a reply the Board therefore keeps
+`knowledge(snapshot, scope)`, exactly what the relay computes from the
+snapshot it reconstructs, in Redis under its SHA-256
+(`problem-board:heartbeat-known:v1:<bundle scope>:<digest>`, TTL 15 minutes,
+longer than the 60 s active and 120 s idle relay ceilings). The reply marker
+names it as `known_digest`. The relay echoes the digest only when it equals
+the digest of its own knowledge; on the Board a missing, expired, corrupt or
+foreign-scope entry is no echo at all, so a full reply, as before. A
+mismatching digest cannot select a delta: the record is verified against the
+digest and the scope before use. Redis being unavailable means nothing is kept
+and no `known_digest` is offered. The cache is display data, never authority:
+admission and the complete reply are built afresh on every call, as above.
+
+The Board stores a times-only session report by updating those two columns of
+the session's existing row; an older `heartbeat_at` never moves a session
+back, as for a full report. `store_reads_changed` is merged into the stored
+map, within the bound a full report has (32 stores): the check and the write
+are one statement, so concurrent merges cannot pass it either. What it cannot
+apply (a session with no row, an unreadable report, a merge past the store
+bound) it does not apply, and it names the full form in the marker's
+`resend` (`agent_sessions`, `store_reads`); the heartbeat succeeds and the
+relay's next heartbeat carries that full form.
+
+**Mixed versions.** The marker's `features` lists the compact forms the Board
+reads (`known_digest`, `agent_session_times`, `store_reads_changed`). A relay
+uses a compact form only when the previous reply for that project listed it,
+and only in place of the full form, never with it.
+
+- *Old relay, new Board:* the relay sends the full forms; the Board answers as
+  before and adds `features`/`known_digest` to the marker, which the old
+  `decode_reply` does not read.
+- *New relay, old Board:* the old marker has no `features`, so the relay keeps
+  sending the full forms.
+- *Rollback between two heartbeats:* a compact request reaches a Board that
+  ignores the compact fields. The digest is then no echo, so a full reply.
+  The reply names no features, so the relay drops its compact baselines and
+  session/store-read signatures and the next heartbeat is full. Only in this
+  case can a session change force that one extra heartbeat.
+
+Every relay restart, reconnect, changed context or forgotten reply knowledge
+also starts from the full forms.
 
 ## Verification and limits
 

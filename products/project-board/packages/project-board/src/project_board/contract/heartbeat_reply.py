@@ -23,6 +23,15 @@ _OBSERVATIONS = frozenset({
     "last_inbox_check_at", "relay_heartbeat_at", "heartbeat_age_seconds",
     "relay_heartbeat_age_seconds",
 })
+# W827 S2b: request-side compaction a Board advertises in its reply marker.
+# A relay uses a compact request form only after the Board's previous reply for
+# that scope named the feature; an absent marker or feature means full forms.
+KNOWN_DIGEST_FEATURE = "known_digest"
+STORE_READS_CHANGED_FEATURE = "store_reads_changed"
+SESSION_TIMES_FEATURE = "agent_session_times"
+REQUEST_FEATURES = frozenset({KNOWN_DIGEST_FEATURE, STORE_READS_CHANGED_FEATURE, SESSION_TIMES_FEATURE})
+# The session fields a times-only report may carry; any other change is full.
+SESSION_TIME_FIELDS = ("heartbeat_at", "last_inbox_check_at")
 # Only normalized store-read summaries at the three producer-owned paths.
 # Other fields named ms/op (and summary counts, keys and ranges) stay body.
 _STORE_READ_TELEMETRY = frozenset({"ms", "op"})
@@ -125,14 +134,74 @@ def _valid_known(value: Any, scope: str) -> bool:
     return len(canonical_bytes(value)) <= MAX_KNOWN_BYTES
 
 
+_REQUIRED_SCOPE = frozenset({"tenant", "platform_project", "bundle", "viewer", "authority", "view"})
+
+
+def reply_scope_id(scope: Mapping[str, str]) -> str:
+    """The scope digest a reply carries, or "" when the scope is incomplete."""
+    if not _REQUIRED_SCOPE.issubset(scope) or any(not scope[key] for key in _REQUIRED_SCOPE):
+        return ""
+    return digest({**scope, "protocol": REPLY_PROTOCOL})
+
+
+def valid_known_digest(value: Any) -> bool:
+    return isinstance(value, str) and _FULL.fullmatch(value) is not None
+
+
+def known_record(snapshot: Mapping[str, Any], scope_id: str) -> tuple[str, bytes] | None:
+    """The digest and canonical bytes of the knowledge a relay holds after this reply.
+
+    A relay that reconstructed ``snapshot`` computes exactly this knowledge, so
+    the Board can keep it under its digest and the relay can echo only the
+    digest (W827 S2b). None when the knowledge would not be sent at all.
+    """
+    try:
+        value = knowledge(snapshot, scope_id)
+        raw = canonical_bytes(value)
+    except (TypeError, ValueError, OverflowError, RecursionError):
+        return None
+    if len(raw) > MAX_KNOWN_BYTES:
+        return None
+    return hashlib.sha256(raw).hexdigest(), raw
+
+
+def known_from_record(raw: Any, expected_digest: str, scope_id: str) -> dict[str, Any] | None:
+    """Knowledge kept under ``expected_digest``, verified, or None (a full reply follows)."""
+    if isinstance(raw, (bytes, bytearray)):
+        raw = bytes(raw)
+    elif isinstance(raw, str):
+        raw = raw.encode("utf-8")
+    else:
+        return None
+    if not valid_known_digest(expected_digest) or hashlib.sha256(raw).hexdigest() != expected_digest:
+        return None
+    try:
+        value = json.loads(raw)
+    except ValueError:
+        return None
+    return value if _valid_known(value, scope_id) else None
+
+
+def reply_marker(response: Any) -> Mapping[str, Any]:
+    marker = response.get("heartbeat_reply") if isinstance(response, Mapping) else None
+    return marker if isinstance(marker, Mapping) and marker.get("protocol") == REPLY_PROTOCOL else {}
+
+
+def reply_features(response: Any) -> frozenset[str]:
+    """The request features this reply's Board accepts; empty for an old Board."""
+    features = reply_marker(response).get("features")
+    if not isinstance(features, list):
+        return frozenset()
+    return frozenset(name for name in features if isinstance(name, str) and name in REQUEST_FEATURES)
+
+
 def encode_reply(snapshot: dict[str, Any], *, protocol: Any, scope: Mapping[str, str],
                  known: Any = None) -> dict[str, Any]:
     """Select fresh wire data without retaining a server baseline or cursor."""
-    required_scope = {"tenant", "platform_project", "bundle", "viewer", "authority", "view"}
-    if protocol != REPLY_PROTOCOL or not required_scope.issubset(scope) or any(not scope[key] for key in required_scope):
+    if protocol != REPLY_PROTOCOL or not reply_scope_id(scope):
         return snapshot
     try:
-        scope_id = digest({**scope, "protocol": REPLY_PROTOCOL})
+        scope_id = reply_scope_id(scope)
         revision = digest(snapshot)
         marker = {"protocol": REPLY_PROTOCOL, "scope": scope_id, "revision": revision}
         if not _valid_known(known, scope_id):

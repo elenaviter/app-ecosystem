@@ -7,7 +7,8 @@ from threading import RLock
 from typing import Any, Callable, Mapping
 
 from ..contract.heartbeat_reply import (
-    REPLY_PROTOCOL, MAX_KNOWN_BYTES, canonical_bytes, decode_reply, digest, knowledge,
+    KNOWN_DIGEST_FEATURE, REPLY_PROTOCOL, MAX_KNOWN_BYTES, canonical_bytes, decode_reply, digest, knowledge,
+    known_record, reply_features, reply_marker, valid_known_digest,
 )
 
 
@@ -23,10 +24,19 @@ class ReplyRequest:
     baseline: dict[str, Any] | None = None
     scope: str = ""
     revision: str = ""
+    # W827 S2b: the digest of this baseline's knowledge the Board said it kept,
+    # and the request features its last reply for this project accepted.
+    known_digest: str = ""
+    features: frozenset[str] = frozenset()
 
     def payload(self) -> dict[str, Any]:
         result: dict[str, Any] = {"reply_protocol": REPLY_PROTOCOL}
         if self.context is not None and self.baseline is not None and digest(self.baseline) == self.revision:
+            if self.known_digest and KNOWN_DIGEST_FEATURE in self.features:
+                # The Board resolves the digest to the identities it sent; a
+                # miss there is a full reply, never a wrong delta.
+                result["known_reply_digest"] = self.known_digest
+                return result
             known = knowledge(self.baseline, self.scope)
             if len(canonical_bytes(known)) <= MAX_KNOWN_BYTES:
                 result["known_reply"] = known
@@ -38,6 +48,8 @@ class _Saved:
     scope: str
     revision: str
     snapshot: dict[str, Any]
+    known_digest: str = ""
+    features: frozenset[str] = frozenset()
 
 
 class ReplySnapshots:
@@ -69,7 +81,9 @@ class ReplySnapshots:
                     saved = None
             return ReplyRequest(project_ref, context, self._sequence,
                                 deepcopy(saved.snapshot) if saved else None,
-                                saved.scope if saved else "", saved.revision if saved else "")
+                                saved.scope if saved else "", saved.revision if saved else "",
+                                saved.known_digest if saved else "",
+                                saved.features if saved else frozenset())
 
     def forget(self, project_ref: str) -> None:
         with self._lock:
@@ -102,7 +116,13 @@ class ReplySnapshots:
             # A reentrant materializer may have invalidated attendance. Never
             # revive a discarded scope after it returns.
             if self._latest.get(request.project_ref) == request.sequence and context is not None and scope:
-                self._saved[request.project_ref] = _Saved(scope, digest(candidate), candidate)
+                features = reply_features(response)
+                # Echo a digest only when it names exactly the knowledge this
+                # relay would otherwise send in full.
+                offered = reply_marker(response).get("known_digest")
+                record = known_record(candidate, scope) if valid_known_digest(offered) else None
+                known_digest = offered if record is not None and record[0] == offered else ""
+                self._saved[request.project_ref] = _Saved(scope, digest(candidate), candidate, known_digest, features)
             else:
                 self._saved.pop(request.project_ref, None)
             return deepcopy(candidate)
