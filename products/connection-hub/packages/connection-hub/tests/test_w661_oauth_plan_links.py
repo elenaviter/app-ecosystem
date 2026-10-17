@@ -664,7 +664,7 @@ async def test_begin_holds_no_connection_across_its_calls(tmp_path, monkeypatch,
     concurrent planners of one request at max_size=k neither hang nor store more than one plan and file."""
     import asyncio
 
-    import asyncpg
+    asyncpg = pytest.importorskip("asyncpg", reason="asyncpg is not installed")
 
     real_create_pool = asyncpg.create_pool
 

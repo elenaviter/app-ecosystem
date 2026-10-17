@@ -68,7 +68,7 @@ class _Grants:
 
 @pytest.fixture
 async def redis_client():
-    import redis.asyncio as redis_asyncio
+    redis_asyncio = pytest.importorskip("redis.asyncio", reason="the redis client is not installed")
 
     client = redis_asyncio.from_url(os.environ["REDIS_URL"])
     try:
