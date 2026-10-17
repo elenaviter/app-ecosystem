@@ -26,6 +26,27 @@ import uuid
 
 import pytest
 
+# The W661 option-P infrastructure tests import asyncpg, redis and the KDCube SDK at module level, before
+# their own skipif can apply, so a clean `pip install -e .[test]` (the release gate) cannot even collect them.
+# Without their owned PostgreSQL (and Redis) they are left uncollected, exactly as their skipif would skip them.
+_W661_PG = bool(os.environ.get("W661_TEST_PG_DSN"))
+_W661_PG_REDIS = _W661_PG and bool(os.environ.get("W661_TEST_REDIS_URL"))
+collect_ignore = [
+    name
+    for name, available in (
+        ("test_w661_p_delayed_claim_read_infra.py", _W661_PG_REDIS),
+        ("test_w661_p_fence_order_ops.py", _W661_PG_REDIS),
+        ("test_w661_p_marker_actual_r_gap_infra.py", _W661_PG_REDIS),
+        ("test_w661_p_marker_late_hint_infra.py", _W661_PG),
+        ("test_w661_p_public_marker_aba_infra.py", _W661_PG_REDIS),
+        ("test_w661_p_public_pointer_actual_r_infra.py", _W661_PG_REDIS),
+        ("test_w661_p_row_fence_after_owner_guard_infra.py", _W661_PG_REDIS),
+        ("test_w661_p_row_late_claim_ordered_fence.py", _W661_PG_REDIS),
+        ("test_w661_p_row_write_owner_guard.py", _W661_PG_REDIS),
+    )
+    if not available
+]
+
 _R_MODE = os.environ.get("W661_CARD_LOCK_R_MODE") == "1" and bool(os.environ.get("W661_TEST_REDIS_URL"))
 _PG_MODE = os.environ.get("W661_BCORE_PG_MODE") == "1" and bool(os.environ.get("W661_TEST_PG_DSN"))
 
