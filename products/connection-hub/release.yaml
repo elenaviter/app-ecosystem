@@ -1,11 +1,18 @@
 product:
   id: connection-hub
-  ref: "2026.10.03.0811"
+  ref: "2026.10.17.2026"
   description: |
-    - Attachments: a file the platform would refuse for its type and size (text over 10 MiB, SVG over 2 MiB) is refused when it is sent, not after it was queued. PDF and ZIP content is never held to the text or SVG ceiling.
-    - Attachments: an upload the platform refuses permanently (413, 415, 422, or 400 with an attachment refusal code) is refused once and reported, instead of being retried. The error carries only the status, an allowlisted code and the platform's fixed reasons, never the response body. A response body of an unexpected shape no longer changes how the refusal is classified.
-    - Host relay: the second, authoritative pending-mail read of a wake, and the hold writes after it, run in the channel's own store thread instead of on the shared event loop, so a slow mailbox no longer stalls every other channel.
-    - Project journal: the local journal search index follows the worker's local checkout automatically, so a merge pulled into the clone is searchable without a manual reindex. The check runs in the background on its own worker, so a heartbeat never waits for Git or index work, and it never fetches. Search now reports a stale, partial or unavailable index explicitly instead of returning an empty result. Only the finished result's incident and record writes use the channel's store thread.
+    - Cards: one Save is one transaction. A Card save, its policy switches and its held-operation modes are written together, a pending policy marker is settled (or recovered) before the next change, and the editor shows an undecided earlier change instead of overwriting it. My Card and the Control Card resolve in one Hub call.
+    - Roles and authority: delegated roles are authorized natively by Connection Hub; retired role aliases no longer reach the mutation policy; a project-bound agent Card's role selection adds and removes in one entry and binds the signed scope to the loaded target before any change. Connection Hub asks named authorities, configured by name, as the documented default.
+    - Invocation policy: an operation can be granted Every time or Once; Once is consumed by one request, and the Card shows its saved mode at once.
+    - Membership lifecycle: invitations upsert the person's Card on its stable id; person removal, rejoin with fresh Cards, disconnect and revoke run as planned, bounded transactions that refuse direct writers and resume after interruption.
+    - OAuth and credentials: Hub intents and issuance plans hold Card links only, refresh rotation is transactional, and no bearer is kept in custody. GitHub access is bound to the Card's GitHub identity; pushes go through the owner key and fail closed.
+    - Configuration export/import: the Connection Hub catalog grants the user-props import operation used by `kdcube config import --include-user-data`.
+    - Host relay and heartbeat: heartbeat replies and requests carry only the sections that changed; the relay claims any pushed control and pulls a scope once per connection; local work runs beside the cycle without waking every channel; mailbox scans are cached and a wake never waits on the mail lock.
+    - Worker procedure: the managed procedure is a modular package at revision 2026.10.17.1 (create a project as the board does it, items filed with their description, always-on rules kept as revision-tagged memory). Workspace AGENTS.md / CLAUDE.md come only from project files. A resumed session self-checks the keyring and states the fix.
+    - Mail and plan: selective receive and an inbox of headers; delivery failures name a recovery the tools can perform; item briefs show a review hold; plan item creation validates list fields; project deletion and export are in the operation catalog.
+    - Hub storage: schema setup is serialized with advisory locks; Card reads use bounded read sets and per-Card locks.
+    - Packaging: `connection-hub` declares its `service-foundation` dependency (its Card decisions use `service_foundation.coordination`), so it installs and imports on its own; the release gate also runs cleanly on hosts without the Hub test infrastructure or with Problem Board already configured.
   documentation: docs/connection-hub
 
 components:
@@ -17,16 +24,16 @@ components:
     distribution: connection-hub
     import_name: connection_hub
     path: products/connection-hub/packages/connection-hub
-    version: "2026.10.03.0811"
+    version: "2026.10.17.2026"
     version_source: products/connection-hub/packages/connection-hub/pyproject.toml
     workflow: .github/workflows/publish-python-package.yml
   cli_package:
     distribution: connection-hub-cli
     import_name: connection_hub_cli
     path: products/connection-hub/packages/connection-hub-cli
-    version: "2026.10.03.0811"
+    version: "2026.10.17.2026"
     version_source: products/connection-hub/packages/connection-hub-cli/pyproject.toml
     workflow: .github/workflows/publish-python-package.yml
 
 config:
-  version: "2026.10.03.0811"
+  version: "2026.10.17.2026"

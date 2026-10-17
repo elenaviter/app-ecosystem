@@ -73,7 +73,7 @@ authenticated MCP connection (`build_caller_services`,
 `connect_profile_tools`). It needs no KDCube package. The `connection-hub`
 command line is a thin shell over it.
 
-Current release: `2026.10.03.0811`.
+Current release: `2026.10.17.2026`.
 
 The current release supports owner-configured OAuth for external MCP
 connectors. The browser flow uses MCP protected-resource and
