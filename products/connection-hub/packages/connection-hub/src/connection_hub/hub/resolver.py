@@ -297,6 +297,8 @@ def resolve_delegated_authority_projection(
     economics are still platform-owned, so the currently supported projection
     charges the grantor platform user while keeping delegate provenance explicit.
     Future custom authorities can extend this shape without changing consumers.
+    This is a pure projection: its mapping argument must be host-established
+    current target-authority facts. It verifies no credential or role source.
     """
 
     envelope = CredentialEnvelope.coerce(credential)
@@ -365,7 +367,6 @@ def resolve_delegated_identity_scope(
     delegation = _delegation_identity(envelope, grantor_user_id=grantor_user_id, identity_scope=identity_scope)
     projection = resolve_delegated_authority_projection(
         credential=envelope,
-        grantor_authority=grantor_authority,
     )
 
     if not grantor_user_id:

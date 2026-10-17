@@ -272,9 +272,6 @@ class DelegatedCredentialView:
             if len(parts) >= 4 and parts[0] == "integration" and parts[1] == AGENT_CLIENT_PREFIX.rstrip(":"):
                 client_id = ":".join(parts[1:4])
 
-        grantor_authority = grant_record.get("grantor_authority")
-        grantor_authority = grantor_authority if isinstance(grantor_authority, Mapping) else {}
-
         return cls(
             client_id=client_id,
             subject=subject,
@@ -298,7 +295,9 @@ class DelegatedCredentialView:
             operations=operation_union(resource_operations),
             resource_operations=resource_operations,
             tools=_as_list(grant_record.get("tools")),
-            grantor_roles=_as_list(grantor_authority.get("grantor_roles")),
+            # Legacy field retained for shape compatibility. A stored grant is
+            # identity/grant provenance, never current target-role authority.
+            grantor_roles=(),
             named_services=(
                 dict(grant_record.get("named_services"))
                 if isinstance(grant_record.get("named_services"), Mapping)

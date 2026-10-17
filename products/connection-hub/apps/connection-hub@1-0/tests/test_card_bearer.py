@@ -12,7 +12,8 @@ stays the only thing a person grants.
 Real guard code throughout: the platform's application-operation check and
 its delegated bearer verification and identity boundary, with the bearer
 authenticator and the grant store faked as the platform's own guard tests fake
-them, and the live-Card restoration standing in only to name the Card.
+them, an independently specified current native grantor record, and the
+live-Card restoration standing in only to name the Card.
 """
 
 from __future__ import annotations
@@ -32,7 +33,12 @@ from kdcube_ai_app.apps.chat.sdk.application_operations import (
     application_operation_ref,
 )
 from kdcube_ai_app.apps.chat.sdk.integrations.connection_hub.delegated_credentials.oauth import (
+    current_grantor,
     surface_guard,
+)
+from kdcube_ai_app.apps.chat.sdk.identity_authority import (
+    NativePlatformIdentity,
+    PlatformAuthorityResolutionError,
 )
 from kdcube_ai_app.apps.chat.sdk.integrations.connection_hub.delegated_credentials.oauth.tests.helpers import (
     bind_delegated_catalog,
@@ -106,7 +112,28 @@ def _worker_card() -> dict:
     }
 
 
-def _client(monkeypatch) -> TestClient:
+def _client(monkeypatch, *, native_resolved: bool = True) -> TestClient:
+    async def native_identity(*, tenant, project, platform_user_id, target_authority_id):
+        # This native authority fixture is independent of the delegated
+        # bearer, Card role selections, and any captured grantor metadata.
+        assert (tenant, project, platform_user_id, target_authority_id) == (
+            "home", "demo", GRANTOR, "platform"
+        )
+        if not native_resolved:
+            raise PlatformAuthorityResolutionError("target_authority_identity_unresolved")
+        return NativePlatformIdentity(
+            authority_id="kdcube.platform",
+            user_id=GRANTOR,
+            roles=("kdcube:role:registered",),
+            permissions=(),
+            source="bundle_session_native_user",
+            updated_at=100,
+        )
+
+    monkeypatch.setattr(
+        current_grantor, "resolve_native_platform_identity", native_identity
+    )
+
     async def fake_authenticate(token: str):
         if token != "card-bearer":
             return None
@@ -213,6 +240,19 @@ def test_a_bearer_prefix_is_accepted_and_a_dead_bearer_is_refused(monkeypatch):
     assert prefixed.status_code == 200
     assert dead.status_code == 401
     assert missing.status_code == 401
+
+
+@pytest.mark.parametrize(
+    "header", ["Authorization", "X-Connection-Hub-Card-Bearer"]
+)
+def test_a_card_cannot_replace_unresolved_native_grantor_authority(monkeypatch, header):
+    response = _client(monkeypatch, native_resolved=False).post(
+        "/issue", headers={header: "Bearer card-bearer"}
+    )
+
+    assert response.status_code == 403
+    assert response.json()["reason"] == "target_authority_identity_unresolved"
+    assert "access_id" not in response.json()
 
 
 def test_the_board_is_asked_as_connection_hub_not_under_the_agents_card(monkeypatch):

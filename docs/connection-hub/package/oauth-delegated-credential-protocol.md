@@ -341,8 +341,8 @@ kdcube:role:delegated-client
 <approved resource grants, for example memories:read>
 ```
 
-Admin roles remain platform roles resolved by the existing platform session and
-role resolver. OAuth tokens do not invent admin privileges. For ordinary user
+Admin roles are resolved from the target platform authority's native record at
+each managed admission. OAuth tokens do not invent admin privileges. For ordinary user
 resources, such as `user-memories@2026-06-26/public/mcp/memories`, the token is
 issued with generic delegated-client authority and the concrete approved grant,
 for example `memories:read`.
@@ -914,11 +914,11 @@ store, normally Redis.
 | Valid CIMD cache entry | Stores one validated public client snapshot. Errors and malformed documents are not cached. | Response cache policy, capped by descriptor TTL. |
 | CSRF token | Single-use consent POST protection bound to grantor subject plus client metadata digest. | Short TTL. |
 | Bundle operation CSRF token | Protects cookie-authenticated state-changing bundle operations; binds subject, tenant, project, bundle, operation, and method. Connection Hub keeps an exhaustive protected-or-exempt inventory of every effective POST surface. | Ten minutes, single use. |
-| Authorization code | Stores client, redirect URI, PKCE challenge, grantor subject, resource, final scopes, selected operations, delegation edges, and grantor authority facts captured at consent. | Short TTL, single use. |
+| Authorization code | Stores client, redirect URI, PKCE challenge, grantor subject, resource, final scopes, selected operations and identity/grant edge provenance, without entitlement snapshots. | Short TTL, single use. |
 | Device request | Stores digests, client and requested Card binding, consent context, polling interval, expiry, and after approval the Card authority needed by the common token issuer. It never stores the raw device/user code or an issued token. | Ten minutes by default, one terminal decision and one token consumer. |
 | Device user-code pointer and guess limiter | Resolves a public user-code digest to one pending device digest and limits incorrect code attempts per authenticated subject. | Request TTL for the pointer; bounded attempt window for the limiter. |
-| Access grant | Binds an access token to selected operations, the `delegated_client` credential envelope, delegation edges, and server-side grantor authority facts. | Same TTL as access token. |
-| Refresh token | Stores client, grantor subject, resource, scopes, selected operations, credential envelope, delegation edges, grantor authority facts, and rotation state. | Long-lived, rotating. |
+| Access grant | Binds an access token to selected operations, the `delegated_client` credential envelope and identity/grant edge provenance. Current target entitlements are resolved at admission. | Same TTL as access token. |
+| Refresh token | Stores client, grantor subject, resource, scopes, selected operations, credential envelope, identity/grant edge provenance and rotation state. Successors strip legacy role/permission/bypass snapshots. | Long-lived, rotating. |
 | KDCube `kst1` session record | The issued access token is a session for the integration identity, stored through KDCube's `BundleSessionAuthority`. | Access-token TTL. |
 
 Redis loss is safe but product-visible: missing records fail closed, but
@@ -1260,8 +1260,9 @@ roles and the row was closed there, a regression of W155). A save that names a g
 approver holds. With only the `super-admin` grant, as above, a non-admin
 therefore does not see it. On the admin REST entrance, the request-auth
 surface accepts `*` only when the server-side resource-grant map assigns
-`kdcube:role:super-admin` to it and the stored grantor authority projects the
-grantor with platform admin privilege; a non-admin's `*` Card is refused there.
+`kdcube:role:super-admin` to it and the current native target-authority cast
+proves the grantor still holds that privilege; a demoted grantor is refused on
+the next call. Captured consent roles and derived sessions supply no proof.
 Application operations reached through `*` are checked one by one against the
 roles the Card carries, and each must be selected on the Card, so an operation
 the catalog adds later is never gained automatically. The role is the

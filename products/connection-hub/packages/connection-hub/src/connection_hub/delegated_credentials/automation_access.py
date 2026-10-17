@@ -596,23 +596,14 @@ def _grantor_authority(
     grants: Iterable[str],
     inventory: AuthorityGrantInventory,
 ) -> dict[str, Any]:
-    roles = sorted(set(_as_list(user.get("roles"))))
-    has_privilege = authority_has_platform_privilege(roles)
     edge = selected_delegation_edge(
         inventory,
         grants,
-        economics_budget_bypass=has_privilege,
     )
     edges = [edge.to_dict()] if edge is not None else []
-    permissions = sorted(set(edge.permissions if edge is not None else ()))
     out: dict[str, Any] = {
         "schema": "connection_hub.grantor_authority.v1",
-        "economics_budget_bypass": has_privilege,
     }
-    if roles:
-        out["grantor_roles"] = roles
-    if permissions:
-        out["grantor_permissions"] = permissions
     if edges:
         out["delegation_edges"] = edges
     return out

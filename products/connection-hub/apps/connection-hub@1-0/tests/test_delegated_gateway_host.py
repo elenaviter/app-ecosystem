@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import sys
+from dataclasses import asdict, replace
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -23,6 +24,9 @@ from connection_hub.delegated_gateway import (
     GatewayProviderContext,
     InvocationPolicyView,
     ProviderCallResult,
+)
+from kdcube_ai_app.apps.chat.sdk.integrations.connection_hub.delegated_credentials.oauth.current_grantor import (
+    CurrentGrantorAuthority,
 )
 
 
@@ -91,6 +95,7 @@ class _AccessService:
     def __init__(self, card):
         self.card = card
         self.reads = []
+        self.resource_option_users = []
 
     async def card_for_access_id(self, *, grantor_subject, access_id):
         self.reads.append((grantor_subject, access_id))
@@ -98,12 +103,32 @@ class _AccessService:
 
     async def resource_options(self, user):
         assert user["user_id"] == "owner-1"
+        self.resource_option_users.append(dict(user))
         return []
+
+
+def _current_grantor():
+    return CurrentGrantorAuthority(
+        tenant="tenant-1",
+        project="project-1",
+        subject="owner-1",
+        source_authority="delegated_client",
+        actor="integration:client-1:owner-1",
+        target_authority="platform",
+        edge_id="access-1",
+        edge_revision=3,
+        roles=("kdcube:role:registered",),
+        permissions=("knowledge:read",),
+        source="bundle_session_native_user",
+        updated_at=1,
+        freshness="last_native_sign_in_or_admin_write",
+    )
 
 
 def _request(*, client_id: str = "client-1"):
     return SimpleNamespace(
         state=SimpleNamespace(
+            _delegated_current_grantor_authority=_current_grantor(),
             delegated_credential={
                 "credential": {
                     "subject": "integration:client-1:owner-1",
@@ -117,19 +142,34 @@ def _request(*, client_id: str = "client-1"):
                     "client_id": client_id,
                     "registry_access_id": "access-1",
                     "card_revision": 3,
-                    "grantor_authority": {"grantor_roles": ["kdcube:role:registered"]},
+                    "grantor_authority": {
+                        "grantor_roles": ["kdcube:role:super-admin"],
+                        "grantor_permissions": ["kdcube:*"],
+                        "economics_budget_bypass": True,
+                    },
                 },
             }
         )
     )
 
 
-@pytest.mark.asyncio
-async def test_hosted_binding_uses_exact_request_card_and_reloads_live_authority():
-    module = _module()
-    access = _AccessService(_read_card())
-    binding = await module.build_hosted_gateway_binding(
-        request=_request(),
+async def _binding(module, *, request, access):
+    async def dispatch(**kwargs):
+        assert kwargs["message"]["method"] == "tools/list"
+        return {
+            "status_code": 200,
+            "body": json.dumps({
+                "jsonrpc": "2.0",
+                "id": "connection-hub-gateway",
+                "result": {"tools": [{
+                    "name": "search",
+                    "inputSchema": {"type": "object"},
+                }]},
+            }).encode(),
+        }
+
+    return await module.build_hosted_gateway_binding(
+        request=request,
         access_service=access,
         remote_mcp_service=SimpleNamespace(),
         invocation_policy_service=SimpleNamespace(),
@@ -142,7 +182,18 @@ async def test_hosted_binding_uses_exact_request_card_and_reloads_live_authority
                 }
             }
         },
-        managed_dispatch=lambda **_kwargs: None,
+        managed_dispatch=dispatch,
+    )
+
+
+@pytest.mark.asyncio
+async def test_hosted_binding_uses_exact_request_card_and_reloads_live_authority():
+    module = _module()
+    access = _AccessService(_read_card())
+    binding = await _binding(
+        module,
+        request=_request(),
+        access=access,
     )
 
     assert binding.caller.access_id == "access-1"
@@ -151,6 +202,66 @@ async def test_hosted_binding_uses_exact_request_card_and_reloads_live_authority
     current = await binding.gateway._cards.read_current(binding.caller)
     assert current.resources[0].provider_metadata["bundle_id"] == "knowledge@1-0"
     assert access.reads == [("owner-1", "access-1"), ("owner-1", "access-1")]
+
+
+@pytest.mark.asyncio
+async def test_requestable_discovery_uses_current_cast_roles_and_permissions():
+    module = _module()
+    access = _AccessService(_read_card())
+    binding = await _binding(module, request=_request(), access=access)
+
+    result = await binding.gateway.describe_access(
+        binding.caller, include_requestable=True
+    )
+
+    assert result["requestable_discovery"] == "permitted"
+    assert result["resources"][0]["unavailable_reason"] == ""
+    assert access.resource_option_users == [{
+        "user_id": "owner-1",
+        "roles": ["kdcube:role:registered"],
+        "permissions": ["knowledge:read"],
+    }]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "cast_case", ["missing", "plain_dict", "subject", "edge_id", "edge_revision"]
+)
+async def test_hosted_binding_requires_a_typed_cast_for_the_exact_card(cast_case):
+    module = _module()
+    access = _AccessService(_read_card())
+    request = _request()
+    cast = _current_grantor()
+    if cast_case == "missing":
+        del request.state._delegated_current_grantor_authority
+    else:
+        request.state._delegated_current_grantor_authority = {
+            "plain_dict": asdict(cast),
+            "subject": replace(cast, subject="other-owner"),
+            "edge_id": replace(cast, edge_id="other-access"),
+            "edge_revision": replace(cast, edge_revision=2),
+        }[cast_case]
+
+    with pytest.raises(
+        module.DelegatedGatewayError, match="target_authority_identity_unresolved"
+    ):
+        await _binding(module, request=request, access=access)
+
+    assert access.resource_option_users == []
+
+
+@pytest.mark.asyncio
+async def test_hosted_binding_refuses_a_cast_before_the_live_card_revision():
+    module = _module()
+    access = _AccessService(replace(_read_card(), card_revision=4))
+
+    with pytest.raises(
+        module.DelegatedGatewayError, match="target_authority_identity_unresolved"
+    ):
+        await _binding(module, request=_request(), access=access)
+
+    assert access.reads == [("owner-1", "access-1")]
+    assert access.resource_option_users == []
 
 
 @pytest.mark.asyncio

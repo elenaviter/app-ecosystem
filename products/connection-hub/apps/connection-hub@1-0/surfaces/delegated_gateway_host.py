@@ -659,11 +659,24 @@ async def build_hosted_gateway_binding(
             ),
         )
     )
+    from kdcube_ai_app.apps.chat.sdk.integrations.connection_hub.delegated_credentials.oauth.current_grantor import (
+        current_grantor_authority,
+    )
+
+    cast = current_grantor_authority(request)
+    if (
+        cast is None or cast.subject != view.grantor_user_id
+        or cast.edge_id != view.registry_access_id
+        or cast.edge_revision != view.card_revision
+        or cast.edge_revision != card.card_revision
+    ):
+        raise DelegatedGatewayError("target_authority_identity_unresolved")
     requestable = HostedRequestableResources(
         access_service=access_service,
         grantor_user={
             "user_id": view.grantor_user_id,
-            "roles": list(view.grantor_roles),
+            "roles": list(cast.roles),
+            "permissions": list(cast.permissions),
         },
         tenant=tenant,
         project=project,
