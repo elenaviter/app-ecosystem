@@ -3833,6 +3833,12 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
                                 "delegable_roles": ["kdcube:role:super-admin"],
                             },
                             {
+                                "grant": "kdcube.management.user_props.import",
+                                "label": "Import KDCube user props",
+                                "description": "Insert exported user props into the deployment, never overwriting a stored one.",
+                                "delegable_roles": ["kdcube:role:super-admin"],
+                            },
+                            {
                                 "grant": "conversations:read",
                                 "label": "Read your conversations",
                                 "description": "Read the approving user's own KDCube conversations through delegated named-service tools.",
@@ -3967,6 +3973,22 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
                                 },
                             },
                             {
+                                "resource": "urn:kdcube:management:user-props:*:*",
+                                "label": "KDCube user props",
+                                "description": "Import exported user props into the deployment (W890).",
+                                "admin_only": True,
+                                "resource_selection": True,
+                                "operations": {
+                                    "kdcube.management.user_props.import": {
+                                        "label": "Import user props",
+                                        "description": "Insert exported user props, never overwriting; counts only.",
+                                        "grants": [
+                                            "kdcube.management.user_props.import"
+                                        ],
+                                    },
+                                },
+                            },
+                            {
                                 "resource": "*/api/integrations/bundles/*/*/user-memories@2026-06-26/public/mcp/memories*",
                                 "label": "User memories MCP",
                                 "tools": {
@@ -4036,9 +4058,11 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
                                 "resources": [
                                     "urn:kdcube:management:deployment:*:*",
                                     "urn:kdcube:management:secret:*:*:*:*:*",
+                                    "urn:kdcube:management:user-props:*:*",
                                 ],
                                 "request_bound_operations": [
                                     "kdcube.management.application.reload",
+                                    "kdcube.management.user_props.import",
                                 ],
                                 "request_permit_ttl_seconds": 600,
                             }
