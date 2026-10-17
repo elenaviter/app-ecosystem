@@ -481,6 +481,65 @@ def test_a_lost_compact_heartbeat_is_covered_by_the_next_one(monkeypatch):
     assert "store_reads_changed" not in loop.cycle(_session(STAMP.replace("23:00", "23:03")))
 
 
+@pytest.mark.asyncio
+async def test_a_compact_heartbeat_lost_in_the_real_poll_is_followed_by_full_forms(monkeypatch):
+    """The real _poll_project_once path: a transport timeout reaches it as a DomainError.
+
+    The relay forgets the project's reply knowledge on that error, so the next heartbeat carries no compact
+    form at all: the full session projection, the full store map and the full identities.
+    """
+
+    from project_board.contract.errors import DomainError
+
+    loop = ProjectLoop(_channel(monkeypatch, [0.0]), monkeypatch, REQUEST_FEATURES)
+    loop.cycle(_session(STAMP), force=True)
+    loop.reads["mailbox"]["op"] = "lookup"
+    child = loop.channel._attended_project_adapter("project-one")
+    monkeypatch.setattr(relay, "last_read_summaries", lambda worker: deepcopy(loop.reads))
+    for name, result in {"_worker_info": ({}, False), "_alias_request": ({}, False),
+                         "_workspace_report": ({}, False)}.items():
+        monkeypatch.setattr(child, name, lambda *args, _result=result, **kwargs: _result)
+    for name in ("_add_worker_info", "_add_alias_request", "_add_project_record", "_add_workspace_report"):
+        monkeypatch.setattr(child, name, lambda *args, **kwargs: None)
+
+    async def nothing(payload):
+        return None
+
+    async def passthrough(payload, call):
+        return await call()
+
+    sent = []
+
+    async def timeout(**kwargs):
+        sent.append(deepcopy(kwargs["payload"]))
+        raise DomainError("work_data_bus_timeout", "synthetic: no answer within the deadline")
+
+    monkeypatch.setattr(child, "_add_disk_usage", nothing)
+    monkeypatch.setattr(child, "_add_runtime_account", nothing)
+    monkeypatch.setattr(child, "_account_action", passthrough)
+    child.client.action = timeout
+    with pytest.raises(DomainError):
+        await child._poll_project_once(agent_sessions=_session(NEXT), force_heartbeat=True)
+    [lost] = sent
+    assert "agent_session_times" in lost and "store_reads_changed" in lost
+    after = loop.cycle(_session(LATER), force=True)
+    assert "agent_session_times" not in after and "store_reads_changed" not in after
+    assert after["agent_sessions"][0]["heartbeat_at"] == LATER and after["store_reads"] == loop.reads
+    assert "known_reply_digest" not in after
+
+
+def test_a_store_merge_the_board_refused_is_followed_by_the_full_map(monkeypatch):
+    loop = ProjectLoop(_channel(monkeypatch, [0.0]), monkeypatch, REQUEST_FEATURES)
+    loop.cycle(_session(STAMP), force=True)
+    loop.reads["mailbox"]["records"] = 21
+    loop.resend = ["store_reads"]
+    assert "store_reads_changed" in loop.cycle(_session(NEXT))
+    loop.resend = []
+    loop.reads["mailbox"]["records"] = 22
+    after = loop.cycle(_session(LATER))
+    assert after["store_reads"] == loop.reads and "store_reads_changed" not in after
+
+
 def test_invalidated_project_forgets_the_compact_baselines(monkeypatch):
     loop = ProjectLoop(_channel(monkeypatch, [0.0]), monkeypatch, REQUEST_FEATURES)
     loop.cycle(_session(STAMP), force=True)

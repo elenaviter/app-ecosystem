@@ -171,9 +171,12 @@ admission and the complete reply are built afresh on every call, as above.
 The Board stores a times-only session report by updating those two columns of
 the session's existing row; an older `heartbeat_at` never moves a session
 back, as for a full report. `store_reads_changed` is merged into the stored
-map. What it cannot apply (a session with no row, an unreadable report) it
-does not apply, and it names the full form in the marker's `resend`; the
-heartbeat succeeds.
+map, within the bound a full report has (32 stores): the check and the write
+are one statement, so concurrent merges cannot pass it either. What it cannot
+apply (a session with no row, an unreadable report, a merge past the store
+bound) it does not apply, and it names the full form in the marker's
+`resend` (`agent_sessions`, `store_reads`); the heartbeat succeeds and the
+relay's next heartbeat carries that full form.
 
 **Mixed versions.** The marker's `features` lists the compact forms the Board
 reads (`known_digest`, `agent_session_times`, `store_reads_changed`). A relay

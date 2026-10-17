@@ -5074,8 +5074,9 @@ class ProblemBoardHostRelayAdapter:
         """What the Board now holds, for the next compact form (W827 S2b).
 
         A compact form the answering Board did not accept (a rollback between
-        two heartbeats, or a session row it no longer has) was not applied:
-        drop the baselines and the signature, so the next heartbeat is full.
+        two heartbeats, a session row it no longer has, or a store merge past
+        its stored-map bound) was not applied: drop the baselines and the
+        signature, so the next heartbeat is full.
         """
 
         baselines = self._compact_baseline_map()
@@ -5088,7 +5089,7 @@ class ProblemBoardHostRelayAdapter:
         elif prepared.get("session_delta") is not None:
             baselines[("sessions", project_ref)] = [dict(row) for row in prepared["session_delta"]]
         store_reads_form = prepared.get("store_reads_form") or ""
-        if store_reads_form and store_reads_form not in features:
+        if store_reads_form and (store_reads_form not in features or "store_reads" in resend):
             baselines.pop(("store_reads", project_ref), None)
             self._store_reads_signatures.pop(project_ref, None)
         elif prepared.get("store_reads_delta") is not None:
