@@ -12,6 +12,8 @@ from __future__ import annotations
 import json
 from datetime import datetime, timezone
 
+import importlib.util
+
 import pytest
 
 from connection_hub.delegated_credentials.cards import version_link as links
@@ -664,6 +666,8 @@ async def test_begin_holds_no_connection_across_its_calls(tmp_path, monkeypatch,
     concurrent planners of one request at max_size=k neither hang nor store more than one plan and file."""
     import asyncio
 
+    if importlib.util.find_spec("asyncpg") is None:  # only an absent package skips; a broken install still fails
+        pytest.skip("asyncpg is not installed")
     import asyncpg
 
     real_create_pool = asyncpg.create_pool
