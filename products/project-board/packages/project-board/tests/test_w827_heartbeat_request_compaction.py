@@ -461,6 +461,26 @@ def test_a_lost_full_store_map_is_followed_by_the_full_map(monkeypatch):
     assert "store_reads" in loop.cycle(_session(LATER))
 
 
+def test_a_lost_compact_heartbeat_is_covered_by_the_next_one(monkeypatch):
+    """A compact request whose answer never arrived (the Board may or may not have applied it).
+
+    Nothing is committed, so the same changed stores go again (the Board's merge is idempotent) and the next
+    times-only report carries the newer times (the Board never moves a session back).
+    """
+
+    loop = ProjectLoop(_channel(monkeypatch, [0.0]), monkeypatch, REQUEST_FEATURES)
+    loop.cycle(_session(STAMP), force=True)
+    loop.reads["mailbox"]["op"] = "lookup"
+    lost = loop.cycle(_session(NEXT), lose_reply=True)
+    assert lost["agent_session_times"][0]["heartbeat_at"] == NEXT
+    assert set(lost["store_reads_changed"]) == {"mailbox"}
+    after = loop.cycle(_session(LATER))
+    assert after["agent_session_times"] == [{"session_id": "s1", "heartbeat_at": LATER, "last_inbox_check_at": LATER}]
+    assert after["store_reads_changed"] == {"mailbox": loop.reads["mailbox"]}
+    # Once acknowledged, an unchanged store is not sent again.
+    assert "store_reads_changed" not in loop.cycle(_session(STAMP.replace("23:00", "23:03")))
+
+
 def test_invalidated_project_forgets_the_compact_baselines(monkeypatch):
     loop = ProjectLoop(_channel(monkeypatch, [0.0]), monkeypatch, REQUEST_FEATURES)
     loop.cycle(_session(STAMP), force=True)
