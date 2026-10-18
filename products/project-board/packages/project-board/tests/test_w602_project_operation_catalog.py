@@ -62,7 +62,7 @@ def test_descriptions_state_the_role_and_card_rule_and_no_problem_board_card_wri
         assert "owner or admin role" in text and "current effective Cards" in text
         assert "on both" not in text  # the upstream AND/OR rule decides, never a blanket both-Cards tick
     assert "administrative Control minimum" in manage
-    assert "writes no Card in Problem Board" in manage
+    assert "writes no Card in Project Board" in manage
 
 
 def test_the_retired_card_editor_says_so_and_the_role_does_not_set_card_operations():

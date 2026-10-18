@@ -379,7 +379,7 @@ async def authorize_worker_profile(
     except ImportError as exc:
         raise DomainError(
             "connection_hub_client_not_installed",
-            "The Problem Board host command requires the connection-hub[client] package.",
+            "The Project Board host command requires the connection-hub[client] package.",
             status=500,
         ) from exc
 
@@ -391,7 +391,7 @@ async def authorize_worker_profile(
     services = build_caller_services(paths=paths)
     role = "coordinator" if coordinator else "worker"
     sys.stderr.write(
-        f"Authorizing Problem Board {role} "
+        f"Authorizing Project Board {role} "
         f"{channel.worker_alias or channel.worker_name} "
         f"({channel.runtime_kind}:{channel.runtime_session_id}) for "
         f"{config.target_id}.\n"

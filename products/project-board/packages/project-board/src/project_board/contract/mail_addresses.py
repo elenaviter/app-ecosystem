@@ -47,7 +47,7 @@ def resolve_mail_recipient(
     if not address or len(address.encode("utf-8")) > 160:
         raise DomainError(
             f"{error_namespace}_worker_address_invalid",
-            "A worker recipient must be a stable Problem Board worker address.",
+            "A worker recipient must be a stable Project Board worker address.",
             details={"recipient": str(recipient or "")},
         )
 

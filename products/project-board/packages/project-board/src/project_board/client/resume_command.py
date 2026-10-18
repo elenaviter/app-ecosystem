@@ -147,7 +147,7 @@ def build_session_resume_command(
     if runtime not in DOCUMENTED_FLAGS:
         raise DomainError(
             "work_session_resume_runtime_unsupported",
-            "This worker runtime has no Problem Board resume-command adapter.",
+            "This worker runtime has no Project Board resume-command adapter.",
             details={"runtime_kind": runtime},
         )
 

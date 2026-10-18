@@ -135,7 +135,7 @@ def require_applied_operation_outcome(
         value.get("summary")
         or error.get("message")
         or value.get("message")
-        or "Problem Board refused the operation."
+        or "Project Board refused the operation."
     )
     raise DomainError(
         code,

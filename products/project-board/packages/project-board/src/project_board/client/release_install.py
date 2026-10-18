@@ -543,7 +543,7 @@ def ensure_install_launcher(
         )
     elif state == "other_command":
         result["note"] = (
-            f"{launcher} is another program, not a Problem Board launcher, so plain pb does not run this install. "
+            f"{launcher} is another program, not a Project Board launcher, so plain pb does not run this install. "
             f"Remove or rename it, then run this command again with {target}."
         )
     if not on_path:

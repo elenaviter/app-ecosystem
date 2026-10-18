@@ -86,7 +86,7 @@ PROBLEM_BOARD_OPERATION_SHAPES: dict[str, dict[str, Any]] = {   'project.registe
         'payload': {'goal': 'string; empty clears the goal'},
     },
     'project.cards.manage': {
-        'description': 'Check the signed-in person may manage project Cards in Connection Hub. No Problem Board Card write.',
+        'description': 'Check the signed-in person may manage project Cards in Connection Hub. No Project Board Card write.',
         'object_ref': 'work:project:<project_id>',
         'payload': {},
     },
@@ -740,7 +740,7 @@ PROBLEM_BOARD_OPERATION_SHAPES: dict[str, dict[str, Any]] = {   'project.registe
                           'object_ref': 'work:worker:<runtime-kind>:<native-session-id>',
                           'payload': {'project_ref': 'string', 'worker_name': 'string'}},
     'worker.retire': {   'description': 'Permanently close one exact coding-agent session in '
-                                        'Problem Board while retaining historical attribution, and '
+                                        'Project Board while retaining historical attribution, and '
                                         'revoke the Connection Hub Card that session was enrolled '
                                         'with. A failed revocation is recorded on the worker and '
                                         'retried by retiring it again.',

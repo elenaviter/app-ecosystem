@@ -184,7 +184,7 @@ def _undeliverable_reason(
         return (
             "receive_envelope_exceeds_budget",
             "The message fits the receive limit, but this receive's own envelope "
-            "was too large to carry it. This is a Problem Board fault, not the "
+            "was too large to carry it. This is a Project Board fault, not the "
             "sender's. Ask the sender to resend it unchanged.",
         )
     return None
@@ -1868,7 +1868,7 @@ class SharedFieldStore:
             kind="assignment_reconciliation_failed",
             subject="Assignment could not be retrieved",
             body=(
-                "Problem Board assigned work to this worker, but the local relay "
+                "Project Board assigned work to this worker, but the local relay "
                 "could not retrieve a usable assignment record.\n\n"
                 f"Assignment: {assignment_ref}\n"
                 f"Work item: {work_ref}\n"
@@ -3581,7 +3581,7 @@ class SharedFieldStore:
             if worker.get("pool_status") == "retired":
                 raise DomainError(
                     "field_worker_retired",
-                    "This coding-agent session is retired from Problem Board.",
+                    "This coding-agent session is retired from Project Board.",
                     status=410,
                 )
             raise DomainError(
@@ -8784,9 +8784,9 @@ class SharedFieldStore:
         if outbox_id:
             failure["outbox_id"] = outbox_id
         field_line, value_line = delivery_failure_target_lines(clean_target)
-        subject = "Problem Board did not deliver a message"
+        subject = "Project Board did not deliver a message"
         body_lines = [
-            f"Problem Board did not deliver {source_ref} to {clean_failed_recipient}.",
+            f"Project Board did not deliver {source_ref} to {clean_failed_recipient}.",
             f"Disposition: {failure['code']}",
         ]
         if original_subject:
@@ -8842,7 +8842,7 @@ class SharedFieldStore:
                             "sender": "control-plane",
                             "sender_identity": {
                                 "kind": "system",
-                                "label": "Problem Board",
+                                "label": "Project Board",
                                 "worker_name": "",
                             },
                         }

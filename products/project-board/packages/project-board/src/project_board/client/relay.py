@@ -3212,7 +3212,7 @@ class ProblemBoardHostRelayAdapter:
         if parse_ref(view_ref).kind != "journal_view":
             raise DomainError(
                 "work_journal_view_ref_invalid",
-                "Expected a Problem Board journal-view reference.",
+                "Expected a Project Board journal-view reference.",
             )
         mode = str(payload.get("mode") or "")
         kind = str(control.get("kind") or "")
@@ -3492,7 +3492,7 @@ class ProblemBoardHostRelayAdapter:
         if parse_ref(view_ref).kind != "journal_view" or str(payload.get("mode") or "") != "file":
             raise DomainError(
                 "work_journal_view_ref_invalid",
-                "Expected a Problem Board journal-view reference in file mode.",
+                "Expected a Project Board journal-view reference in file mode.",
             )
         alias = str(payload.get("alias") or "")
         path = str(payload.get("path") or "")
@@ -3596,7 +3596,7 @@ class ProblemBoardHostRelayAdapter:
         if parse_ref(view_ref).kind != "session_resume":
             raise DomainError(
                 "work_session_resume_ref_invalid",
-                "Expected a Problem Board session-resume reference.",
+                "Expected a Project Board session-resume reference.",
             )
         generated = build_session_resume_command(
             runtime_kind=self.config.runtime_kind,
@@ -4750,7 +4750,7 @@ class ProblemBoardHostRelayAdapter:
                         error=dict(reconciliation.get("error") or {}),
                         sender_identity={
                             "kind": "control-plane",
-                            "label": "Problem Board",
+                            "label": "Project Board",
                         },
                     )
                 except Exception as report_exc:  # noqa: BLE001
@@ -4785,7 +4785,7 @@ class ProblemBoardHostRelayAdapter:
                     recipient=self.config.worker_name,
                     sender_identity={
                         "kind": "control-plane",
-                        "label": "Problem Board",
+                        "label": "Project Board",
                     },
                     # W406: the board's view of the item now, which decides
                     # whether the notice asks for work or only informs.
@@ -4803,7 +4803,7 @@ class ProblemBoardHostRelayAdapter:
                             error=exc.to_dict(),
                             sender_identity={
                                 "kind": "control-plane",
-                                "label": "Problem Board",
+                                "label": "Project Board",
                             },
                         )
                     )
@@ -7722,7 +7722,7 @@ class ProblemBoardRelaySupervisor:
             local = field.retire_worker(
                 channel.worker_name,
                 actor="control-plane",
-                reason=reason or "Retired by the Problem Board operator.",
+                reason=reason or "Retired by the Project Board operator.",
             )
         except DomainError as exc:
             if exc.code != "field_record_not_found":

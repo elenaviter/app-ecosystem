@@ -243,7 +243,7 @@ def _validate_runner_root(runner_root: Path, base_python: Path) -> None:
         )
     if "client-runtime" in root.parts:
         raise RunnerError(
-            "The test runner root must be separate from the Problem Board client runtime."
+            "The test runner root must be separate from the Project Board client runtime."
         )
 
 

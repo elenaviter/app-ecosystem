@@ -75,7 +75,7 @@ def _read_source_package() -> dict[str, Any]:
     if manifest_path.is_symlink():
         raise DomainError(
             "work_agent_procedure_manifest_invalid",
-            "The Problem Board worker procedure package manifest must be a regular file.",
+            "The Project Board worker procedure package manifest must be a regular file.",
             details={"path": str(manifest_path)},
         )
     try:
@@ -83,13 +83,13 @@ def _read_source_package() -> dict[str, Any]:
     except (OSError, UnicodeError, json.JSONDecodeError) as exc:
         raise DomainError(
             "work_agent_procedure_manifest_unreadable",
-            "The Problem Board worker procedure package manifest could not be read.",
+            "The Project Board worker procedure package manifest could not be read.",
             details={"path": str(manifest_path), "error": str(exc)},
         ) from exc
     if not isinstance(definition, Mapping) or definition.get("schema") != SOURCE_SCHEMA:
         raise DomainError(
             "work_agent_procedure_manifest_invalid",
-            "The Problem Board worker procedure package manifest has an unsupported schema.",
+            "The Project Board worker procedure package manifest has an unsupported schema.",
             details={"path": str(manifest_path)},
         )
     expected_definition_fields = {
@@ -614,7 +614,7 @@ def _verify_destination(
             **base,
             "state": "conflict",
             "installed_format": "foreign",
-            "errors": ["SKILL.md is not owned by Problem Board."],
+            "errors": ["SKILL.md is not owned by Project Board."],
         }
 
     errors: list[str] = []
@@ -1042,7 +1042,7 @@ def install_agent_procedure(
         if conflict is not None:
             raise DomainError(
                 "work_agent_procedure_conflict",
-                "The destination already contains a procedure not owned by Problem Board.",
+                "The destination already contains a procedure not owned by Project Board.",
                 status=409,
                 details={"path": str(conflict[1])},
             )
