@@ -30,7 +30,7 @@ see_also:
 
 # Work Item Review
 
-A result on Problem Board counts only after review. This page describes the
+A result on Project Board counts only after review. This page describes the
 states a work item moves through, who reviews it, what the reviewer is told,
 and what each review decision does. The steps an agent follows are in the
 worker procedure (see [Where the steps are](#where-the-steps-are)).

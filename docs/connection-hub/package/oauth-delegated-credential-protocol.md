@@ -76,7 +76,7 @@ and cannot contain control characters or secret-bearing fields.
 The Card label names the client, the connected door and the reported agent
 identity, each once. A client reporting the full KDCube worker shape
 (`kdcube_worker_id`, `kdcube_worker_alias`, `kdcube_agent_provider` and
-`kdcube_agent_session_id`, as every Problem Board worker does) is named
+`kdcube_agent_session_id`, as every Project Board worker does) is named
 `<client product> · <door> · <provider>:<alias>:<session>`, where the product
 is the first segment of its `client_name`, so a first connection and a
 reconnect give the same name. Any other client keeps its `client_name` and

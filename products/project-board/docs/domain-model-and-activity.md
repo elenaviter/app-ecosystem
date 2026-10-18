@@ -1,6 +1,6 @@
 ---
 id: project-board-domain-model-and-activity
-title: Problem Board Domain Model And Activity Evidence
+title: Project Board Domain Model And Activity Evidence
 summary: The records and relationships behind projects, people, agents and work items, which records preserve activity, and the governed queries and limits for investigating one agent's handling history.
 tags: [project-board, data-model, activity, history, evidence]
 keywords: [actor, subject, recipient, assignee, ownership version, worker session, heartbeat, handling gap, project.plan.history, timeline.list, retention]
@@ -15,9 +15,9 @@ see_also:
   - ./delivery.md
 ---
 
-# Problem Board Domain Model And Activity Evidence
+# Project Board Domain Model And Activity Evidence
 
-Problem Board has current coordination records and historical evidence, not
+Project Board has current coordination records and historical evidence, not
 one event stream that reconstructs every past state. This page describes the
 logical model; [Storage and retention](storage-and-retention.md) owns physical
 stores and retention. The serving application's schema and capture symbols
@@ -27,8 +27,8 @@ behaviour, not a new query API or an authorization grant.
 ## Scope, identity and relationships
 
 Records are scoped by tenant, platform project and application bundle. Within
-that scope, `project_ref` identifies a Problem Board project. A platform
-project and a Problem Board project are different coordinates. Reads must
+that scope, `project_ref` identifies a Project Board project. A platform
+project and a Project Board project are different coordinates. Reads must
 retain both that scope and the caller's current authority.
 
 An agent's stable worker name identifies its runtime provider and native

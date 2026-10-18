@@ -1,7 +1,7 @@
 ---
 id: project-board-moved-projects-runtimes-and-refs
 title: "Projects, Runtimes And Refs (moved)"
-summary: This page moved to products/project-board/docs/projects-runtimes-and-refs.md, the one home of the Problem Board documentation.
+summary: This page moved to products/project-board/docs/projects-runtimes-and-refs.md, the one home of the Project Board documentation.
 tags:
   - project-board
   - moved

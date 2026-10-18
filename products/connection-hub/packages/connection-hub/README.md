@@ -60,7 +60,7 @@ This also installs `service-foundation` at the same release: the Hub's Card
 decisions use its coordination layer (`service_foundation.coordination`).
 
 A caller that signs in to a Connection Hub resource and keeps its credentials
-on its own machine (a desktop tool, a coding-agent host such as Problem Board's
+on its own machine (a desktop tool, a coding-agent host such as Project Board's
 `pb`) installs the caller side:
 
 ```bash

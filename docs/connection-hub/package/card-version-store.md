@@ -1,6 +1,6 @@
 # Card version store (W661, piece 1)
 
-How the Hub's Card store keeps a Card version for Problem Board's save: STAGE, PUBLISH and ROLLBACK
+How the Hub's Card store keeps a Card version for Project Board's save: STAGE, PUBLISH and ROLLBACK
 (contract v6.2 with EMain's K4 amendment and decisions D1-D5, 10 October 2026). Piece 2's
 `card_version` endpoint calls it through `ServiceCardVersionStore` (`cards/card_version_port.py`).
 

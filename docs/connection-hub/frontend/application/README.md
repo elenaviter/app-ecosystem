@@ -275,7 +275,7 @@ account at call time.
   shows neither that the Card is missing nor that it exists. Every other
   failure keeps "does not exist or is not visible to this account" with
   Connection Hub's reason. The widget does not retry on its own. What the
-  board side costs is in the [Problem Board
+  board side costs is in the [Project Board
   architecture](../../../../products/project-board/docs/architecture.md).
 - **A provider sign-in tab opens inside the click (W435).** Every Connect asks
   Connection Hub to start the sign-in (a one-time token, then the start call)
@@ -331,14 +331,14 @@ account at call time.
   - A deployment without a project host answers 503
     `project_control_card_authorization_unavailable` (reason
     `project_control_card_provider_not_configured`), not a denial.
-- **Who edits which Card in a project.** Cards held by a Problem Board project
+- **Who edits which Card in a project.** Cards held by a Project Board project
   (the project Control Card, each person's Control Card, each agent's project
-  Card) are changed by that Problem Board project's admins (the project's own
+  Card) are changed by that Project Board project's admins (the project's own
   admin role, not a KDCube user role), here in Connection Hub, which is the
   only Card editor: the board links to each Card and builds no editor of its
   own. A member changes only their own My Card, within their Control Card.
-  Every other Control Card keeps its normal editing here. The full Problem Board
-  page comes with the public Problem Board documentation (W340). The mechanics
+  Every other Control Card keeps its normal editing here. The full Project Board
+  page comes with the public Project Board documentation (W340). The mechanics
   on this side:
   - `project_person_control_get` (W260) answers `viewer: {can_edit, reason}`
     from the same policy question an edit asks. A project admin gets

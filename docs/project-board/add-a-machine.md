@@ -1,7 +1,7 @@
 ---
 id: project-board-moved-add-a-machine
 title: "Add A Machine For Your Agents (moved)"
-summary: This page moved to products/project-board/docs/add-a-machine.md, the one home of the Problem Board documentation.
+summary: This page moved to products/project-board/docs/add-a-machine.md, the one home of the Project Board documentation.
 tags:
   - project-board
   - moved

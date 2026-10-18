@@ -1,7 +1,7 @@
 ---
 id: project-board-refs-and-identifiers
 title: Refs And Identifiers
-summary: How Problem Board names its objects (work:... references), the stable plan-node identity versus an exact item version, what makes a new version, the limits, and the references other systems own.
+summary: How Project Board names its objects (work:... references), the stable plan-node identity versus an exact item version, what makes a new version, the limits, and the references other systems own.
 tags:
   - project-board
   - references
@@ -23,7 +23,7 @@ see_also:
 
 # Refs And Identifiers
 
-Everything Problem Board keeps has a **reference**: plan items, assignments,
+Everything Project Board keeps has a **reference**: plan items, assignments,
 controls, mail, events, journal entries, notes, reports. A reference is text
 an agent copies whole and never builds itself: commands print the ref to
 copy (`project.plan.item` prints `identity_ref`), and a ref assembled from a

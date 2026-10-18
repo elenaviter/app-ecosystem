@@ -1,7 +1,7 @@
 ---
 id: project-board-topology-and-flows
-title: Problem Board Topology And Flows
-summary: The host, relay and worker view of Problem Board as ASCII flows, from the remote control plane and the linked Connection Hub Card through the per-machine relay to session-bound workers, mail, heartbeats, local work, Git handoff and authority changes.
+title: Project Board Topology And Flows
+summary: The host, relay and worker view of Project Board as ASCII flows, from the remote control plane and the linked Connection Hub Card through the per-machine relay to session-bound workers, mail, heartbeats, local work, Git handoff and authority changes.
 tags: [project-board, architecture, topology, data-flow, multi-machine]
 keywords: [control plane, broker, host relay, worker mailbox, project inbox, artifact timeline, worker heartbeat, ownership version]
 see_also:
@@ -13,9 +13,9 @@ see_also:
   - repo:app-ecosystem/products/project-board/packages/project-board/src/project_board/procedures/live-acceptance.md
 ---
 
-# Problem Board Topology And Flows
+# Project Board Topology And Flows
 
-This page is the host, relay and worker view of Problem Board: what runs on
+This page is the host, relay and worker view of Project Board: what runs on
 each machine, how an addressed command reaches one coding-agent session and
 how its reply returns. The application that serves the board owns the
 service-side design (its tables, its user interface, its report ledger) in its
@@ -60,7 +60,7 @@ REMOTE: KDCube deployment
           +-------------------+-------------+
                               v
                  +-------------------------+
-                 | Problem Board control   |
+                 | Project Board control   |
                  | projects + attendance   |
                  | assignments + versions  |
                  | broker + receipts       |
@@ -125,13 +125,13 @@ user chooses a setup session
        target + tenant/project + logical host
        governed PB `problem_board` service endpoint
        approved local roots + repository aliases
-       one machine-local Problem Board workspace + one relay configuration
+       one machine-local Project Board workspace + one relay configuration
   -> pb relay --once
   -> user may approve pb relay-service install
 
 user chooses one existing Claude Code or Codex terminal
   -> says: Use the problem-board-worker skill.
-           Join Problem Board as <alias>.
+           Join Project Board as <alias>.
   -> installed problem-board-worker/SKILL.md owns this selected session
   -> pb worker whoami
        provider/runtime + native resumable session id
@@ -214,7 +214,7 @@ worker question / progress / result / journal receipt
   -> project outbox
   -> machine relay
   -> card-partitioned Data Bus operation
-  -> PB worker handler -> Problem Board control plane
+  -> PB worker handler -> Project Board control plane
   -> supervisor or user
 
 worker-to-worker message on the same machine
@@ -255,7 +255,7 @@ backs up missed wake events, while ordinary work is push-driven.
 Data Bus acceptance and terminal-result envelopes are correlated transport
 receipts. Only a receipt whose `message_id` matches this client's in-flight
 request resolves that request. The client consumes another peer's receipt as
-transport evidence and reserves the application-event queue for Problem Board
+transport evidence and reserves the application-event queue for Project Board
 domain events, which wake reconciliation.
 
 One worker channel owns one Data Bus client at a time. Before the relay opens a
@@ -326,7 +326,7 @@ stream absent + check recent     = local agent recently checked; route impaired
 stream absent + check stale      = no current evidence of either process
 ```
 
-Problem Board never starts or schedules a subscription-backed coding agent.
+Project Board never starts or schedules a subscription-backed coding agent.
 The user starts the session. The selected runtime determines one notification
 adapter: the persistent login relay owns Codex's exact-session native queue,
 while a Claude Code session owns its background inbox attachment. A runtime
@@ -416,7 +416,7 @@ local worker context
   -> fetch and verify base_commit
   -> work in an isolated branch/worktree under repository rules
   -> agent writes the complete journal file in the project's bound Git journal
-  -> Problem Board indexes that file and keeps only a bounded receipt + portable ref
+  -> Project Board indexes that file and keeps only a bounded receipt + portable ref
   -> push source/journal commits
   -> report commit or PR ref with exact assignment ownership_version
         |
@@ -497,8 +497,9 @@ projects that continue for months. The storage and retention contract is in
 ## Operator Scene And Worker Card Authority
 
 ```text
-Problem Board main scene (/sites/problem-board/, a project at
-                          /sites/problem-board/<project name>)
+Project Board main scene (/sites/<alias>/, the descriptor's site
+                          alias, project-board by default; a project at
+                          /sites/<alias>/<project name>)
   |
   +-- Board pane (fills the site at first, on the addressed project)
   |     worker card -> shield action
@@ -524,14 +525,14 @@ command listener is ready. Later close operations hide that same iframe, so a
 new command can reopen it without discarding the current Connection Hub state.
 
 The worker credential is a connected, multi-resource client credential. The
-`problem_board` URL identifies the selected Problem Board service resource; it
+`problem_board` URL identifies the selected Project Board service resource; it
 is not the only resource the owner may add to that Card. Connection Hub applies
 the same live Card and catalog checks at every selected destination. An
 ordinary third-party MCP connection remains bound to the MCP entry it knows.
 
 A linked worker's caller Card may reference the project's credentialless
 Connection Hub Card. The current Cards compose with the Control Card's `and`
-or `or` setting at every guarded operation. Problem Board shows Card status
+or `or` setting at every guarded operation. Project Board shows Card status
 and lets the operator change the project properties and composition rule. Its
 **Manage project access** action opens that exact Card in Connection Hub for
 the concrete resource, operation, account, and claim choices.
@@ -603,7 +604,7 @@ worker retirement in board UI
   -> relay matches both stable name and native-session identity
   -> relay closes its held Data Bus session, marks that LOCAL worker retired,
      and disables only its channel
-  -> same native session cannot publish or join Problem Board again
+  -> same native session cannot publish or join Project Board again
   -> conversations, settlements, journals, and service history remain
 
 retired machine offline

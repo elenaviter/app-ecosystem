@@ -156,7 +156,7 @@ Each button asks before it acts.
 | **Make worker** | the acting holder, or a former coordinator | hands the role back (when the agent holds it) and drops its label, then sets its Card to the default worker profile |
 | **Make permanent coordinator** | the acting holder | makes it the home coordinator; the former home keeps its label and Card until **Make worker** |
 | **Fit to role** (formerly Refresh coordinator Card) | the holder, acting or at home | applies the current coordinator profile to its Card again; the role does not change. On the acting holder it is a full **Make coordinator** press; on the home coordinator while another agent acts, only its Card half |
-| **Fit to role** (formerly Refresh worker Card) | a worker | sets its Card's Problem Board permissions to the current worker defaults (the Card half of **Make worker**); other services on the Card keep theirs, and its role, Card and session stay the same |
+| **Fit to role** (formerly Refresh worker Card) | a worker | sets its Card's Project Board permissions to the current worker defaults (the Card half of **Make worker**); other services on the Card keep theirs, and its role, Card and session stay the same |
 
 The order is deliberate. An agent never holds the role without the
 coordinator grants on its Card, and never keeps those grants after the role

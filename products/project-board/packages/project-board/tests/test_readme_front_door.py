@@ -20,7 +20,7 @@ README = (PACKAGE / "README.md").read_text(encoding="utf-8")
 PUBLIC = "https://github.com/elenaviter/app-ecosystem/blob/main/"
 
 SECTIONS = (
-    "What Problem Board is",
+    "What Project Board is",
     "Why use it",
     "What you need",
     "What gets installed",
@@ -131,7 +131,7 @@ def test_the_architecture_diagram_is_shipped_and_shown_by_an_absolute_url() -> N
     svg = diagram.read_text(encoding="utf-8")
     assert svg.startswith("<svg") and "<title" in svg and "<desc" in svg
     assert '<rect width="1100"' in svg, "an explicit background, readable on light and dark pages"
-    for label in ("Problem Board", "Connection Hub", "pb relay", "native password store", "GitHub", "Telegram"):
+    for label in ("Project Board", "Connection Hub", "pb relay", "native password store", "GitHub", "Telegram"):
         assert f">{label}<" in svg, f"{label} is text, not a path"
     raw = "https://raw.githubusercontent.com/elenaviter/app-ecosystem/main/products/project-board/docs/assets/architecture.svg"
     assert f'<img src="{raw}"' in README, "PyPI renders only an absolute image URL"

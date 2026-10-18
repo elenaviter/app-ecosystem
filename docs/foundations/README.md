@@ -13,8 +13,8 @@ The first implemented slices are independent sibling packages:
 KDCube MCP runtime -------- depends on -------> app-foundation[mcp]
 Connection Hub CLI -------- depends on -------> app-foundation[mcp]
 
-Problem Board host command - depends on ------> Connection Hub CLI
-Problem Board host command - depends on ------> service-foundation
+Project Board host command - depends on ------> Connection Hub CLI
+Project Board host command - depends on ------> service-foundation
 
 app-foundation             - does not import -> service-foundation
 service-foundation         - does not import -> app-foundation
@@ -59,8 +59,8 @@ product composition root
        -> health / retry / stop
 ```
 
-For example, the Problem Board local command composes two siblings. Connection
-Hub resolves a local caller profile and credential; the Problem Board adapter
+For example, the Project Board local command composes two siblings. Connection
+Hub resolves a local caller profile and credential; the Project Board adapter
 translates named-service operations; `service-foundation` runs its lifecycle.
 No foundation knows that complete use case.
 
@@ -76,7 +76,7 @@ been identified and tested independently.
 `app-foundation` must be published before a Connection Hub CLI or KDCube
 release that declares its calendar-version floor. `service-foundation` has no
 dependency on App Foundation and can be released independently; publish it
-before a Problem Board package or procedure relies on its recorded floor.
+before a Project Board package or procedure relies on its recorded floor.
 KDCube maintainer builds can verify coordinated unpublished candidates by
 preinstalling each selected local distribution before normal requirement
 resolution and reapplying the same source afterward. Ordinary package installs

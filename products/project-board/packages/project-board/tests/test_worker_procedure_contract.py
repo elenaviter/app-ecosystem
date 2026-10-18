@@ -1501,7 +1501,7 @@ def test_runtime_actions_orders_a_platform_rebuild_before_a_board_that_moves_ope
     """
 
     runtime = _profile()
-    assert "Problem Board operation policy and handler table differ" in runtime
+    assert "Project Board operation policy and handler table differ" in runtime
     assert "check the approved board commit out in its deploy worktree **without reloading**" in runtime
     assert "a platform rebuild before the board commit is checked out" in runtime
     assert "services/operation_dispatch.py" in runtime
@@ -1603,7 +1603,7 @@ def test_the_profile_client_selection_command_parses_without_a_host_action():
     """The profile teaches the executable AE-only selection contract, without switching it."""
     from project_board.client.cli import build_parser
 
-    step = _profile().split("**The Problem Board client**", 1)[1].split(
+    step = _profile().split("**The Project Board client**", 1)[1].split(
         "Why the deploy worktree:", 1
     )[0]
     commands = re.findall(r"```bash\n(.*?)```", step, re.DOTALL)

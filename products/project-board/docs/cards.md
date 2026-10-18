@@ -1,7 +1,7 @@
 ---
 id: project-board-cards
 title: Cards And Who Edits Them
-summary: Connection Hub Cards in a Problem Board project, who edits which Card and where, and how the project Control Card combines with each agent's Card.
+summary: Connection Hub Cards in a Project Board project, who edits which Card and where, and how the project Control Card combines with each agent's Card.
 tags:
   - project-board
   - cards
@@ -24,7 +24,7 @@ see_also:
 ## The rules
 
 - **Which operations a Card holds is edited in Connection Hub, and only
-  there.** Problem Board links to a Card, optionally with a preselection or a
+  there.** Project Board links to a Card, optionally with a preselection or a
   focus for the purpose the link serves; it builds no editor of Card
   operations of its own. The board writes a person's Card once, with the
   role's preselection, when the Card is created, and keeps no later decision
@@ -37,7 +37,7 @@ see_also:
 - **How operations are grouped** (Review, Work, Plan, People) is declared with
   the operations in the service catalog, so Connection Hub groups them for
   every client.
-- **Who edits which Card in a project.** A project admin (the Problem Board
+- **Who edits which Card in a project.** A project admin (the Project Board
   project's admin role, not a KDCube role) edits every Card the project holds:
   the project Control Card, each person's Control Card (their own and the
   owner's included), and each agent's project Card. A member reads their own Control Card and
@@ -83,7 +83,7 @@ A project holds one **Control Card** in Connection Hub. It carries no
 credential of its own (no token, no expiry) and never calls anything itself.
 When an agent is added to the project, the Control Card is attached to the
 agent's Card, and every call the agent makes is decided by both, resolved live
-at the moment of the call: Problem Board stores no copy of what either Card
+at the moment of the call: Project Board stores no copy of what either Card
 allows.
 
 - **Access rule.** `AND`, the default: an operation runs only if both the

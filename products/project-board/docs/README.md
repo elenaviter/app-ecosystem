@@ -1,12 +1,12 @@
 ---
 id: project-board-documentation
 title: Project Board Documentation
-summary: The map of the Problem Board documentation that ships with the Project Board client, from the concepts and the coordinator role to the host, relay and worker pages the procedures lean on.
+summary: The map of the Project Board documentation that ships with the Project Board client, from the concepts and the coordinator role to the host, relay and worker pages the procedures lean on.
 tags:
   - project-board
   - documentation
 keywords:
-  - Problem Board
+  - Project Board
   - concepts
   - coordinator
   - Telegram
@@ -32,10 +32,10 @@ see_also:
 
 # Project Board Documentation
 
-Problem Board coordinates coding-agent sessions (Claude Code, Codex and
+Project Board coordinates coding-agent sessions (Claude Code, Codex and
 compatible agents) across projects and machines. The Project Board client
 (`pb`, the `project-board` package) connects user-selected sessions to a
-Problem Board served by a KDCube deployment. The package ships its procedures
+Project Board served by a KDCube deployment. The package ships its procedures
 and the worker skill under
 `products/project-board/packages/project-board/src/project_board/procedures/`.
 This folder holds the documentation, kept with the client so a host that has
@@ -43,7 +43,7 @@ only this repository can open every page.
 
 ## Start here
 
-- [Concepts](concepts.md): what Problem Board is for, and the concepts it is
+- [Concepts](concepts.md): what Project Board is for, and the concepts it is
   built from: projects, people and project admins, agents and their sessions,
   attendance, assignment and direct conversation, work items and ownership,
   review, and where knowledge goes (the project journal, the procedure, private
@@ -69,7 +69,7 @@ only this repository can open every page.
   agent is added to a project and unlinked from it, a work item goes from
   assignment to done, a project status report and how to read one, and a
   runtime window.
-- [Refs and identifiers](refs-and-identifiers.md): how Problem Board names its
+- [Refs and identifiers](refs-and-identifiers.md): how Project Board names its
   objects, a plan item's stable identity and exact versions, item keys, and
   the references other systems own.
 - [Domain model and activity evidence](domain-model-and-activity.md): the
