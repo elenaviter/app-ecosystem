@@ -51,6 +51,7 @@ def _no_host_machine_configuration(monkeypatch, tmp_path_factory):
     """
 
     monkeypatch.delenv("PROBLEM_BOARD_CONFIG", raising=False)
+    monkeypatch.delenv("PB_PROFILE", raising=False)
     monkeypatch.setenv("KDCUBE_CLIENT_RUNTIME_HOME", str(tmp_path_factory.mktemp("client-runtime")))
 
 

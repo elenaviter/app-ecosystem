@@ -341,6 +341,36 @@ coordinated runtime action) so it reads the new policy.
 group, which let another user list the mailboxes and relay configuration on the
 first machine. `chmod 700` closes it until W261 lands.
 
+### A second KDCube on this host: KDCube profiles
+
+One host can serve two KDCube deployments at once, for example a local KDCube
+and a cloud one, each with its own relay (operator, 2026-10-18: "Two relays at
+once: << but this we nee3d"). Each deployment is a **KDCube profile**: the name
+`pb setup --target-id` gives it. A KDCube profile is not the Card authorization
+profile of step 11 (`pb worker authorize <profile> --device`), which names one
+agent's credential. One agent session works for one KDCube profile.
+
+1. Set up the second profile with its own `--target-id` and endpoint, as
+   above. Setup keeps the existing machine default, so agents that run `pb`
+   without a profile stay on their KDCube; pass `--make-default` only to move
+   them. The result names the profile and whether it is the default.
+2. Install its relay as a second service, an operator-approved step like
+   step 6: `pb relay-service install --profile <name>`. Each relay service is
+   pinned to its own configuration, so the two run side by side.
+3. Start each agent session for that KDCube with `PB_PROFILE=<name>` in its
+   environment (add `export PB_PROFILE=<name>` to that agent's step 9 start
+   script), then enroll, authorize and
+   attend as in steps 10 to 12. The skill's commands pass no option, so the
+   environment is what keeps every command of that session on its KDCube.
+
+Every host command also takes `--profile <name>`. A command picks its KDCube in
+this order: `--config <path>`, `--profile <name>`, `PROBLEM_BOARD_CONFIG=<path>`,
+`PB_PROFILE=<name>`, then the machine default. An unknown name is refused
+(`work_profile_unknown`, with the known names), and so is a name set up for two
+deployment projects (`work_profile_ambiguous`); neither falls back to the
+default. `pb status` and `pb worker context` show the profile in use and what
+chose it.
+
 ## 4. Keep the user's services running
 
 Runs on: the host.
@@ -1099,6 +1129,9 @@ the host, and the credential is stored there.
 ```bash
 pb worker authorize <profile> --device
 ```
+
+`<profile>` here is the agent's Card authorization profile, which `pb worker
+listen` reported, not a KDCube profile (`--profile`, step 3).
 
 The command reads the public provider-account description from the coding
 runtime at authorization time, when the runtime publishes one, and includes it
