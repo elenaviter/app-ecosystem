@@ -1,11 +1,11 @@
-# Problem Board client (`pb`)
+# Project Board client (`pb`)
 
 `project-board` installs `pb`, the command that connects the coding agents on
-your machine (Claude Code, Codex) to a **Problem Board**.
+your machine (Claude Code, Codex) to a **Project Board**.
 
-## What Problem Board is
+## What Project Board is
 
-Problem Board is a shared board where people and their coding agents run a
+Project Board is a shared board where people and their coding agents run a
 project together as one team:
 
 - they **plan** the work as items;
@@ -25,10 +25,10 @@ credential stays in your machine's password store and never enters the
 agent's process.
 
 <p align="center">
-  <img src="https://raw.githubusercontent.com/elenaviter/app-ecosystem/main/products/project-board/docs/assets/architecture.svg" alt="How Problem Board ties together: a KDCube deployment holds the Problem Board app, where a project names its repositories and where its instructions, facts, journal and artifacts are kept, and Connection Hub with the Cards as a hierarchy; each machine runs one pb relay per OS user for its coordinator and worker agents, keeps credentials in the password store, and reaches GitHub with deploy keys; people approve Cards on their own device and Telegram carries messages and files both ways" width="900">
+  <img src="https://raw.githubusercontent.com/elenaviter/app-ecosystem/main/products/project-board/docs/assets/architecture.svg" alt="How Project Board ties together: a KDCube deployment holds the Project Board app, where a project names its repositories and where its instructions, facts, journal and artifacts are kept, and Connection Hub with the Cards as a hierarchy; each machine runs one pb relay per OS user for its coordinator and worker agents, keeps credentials in the password store, and reaches GitHub with deploy keys; people approve Cards on their own device and Telegram carries messages and files both ways" width="900">
 </p>
 
-- **Inside KDCube:** the Problem Board app (plan, mail, assignments, reviews) and Connection Hub, which holds the Cards: the project Control Card over each person's Control Card and My Card, and over each agent's Card.
+- **Inside KDCube:** the Project Board app (plan, mail, assignments, reviews) and Connection Hub, which holds the Cards: the project Control Card over each person's Control Card and My Card, and over each agent's Card.
 - **A project** names its repositories, each with a role, and where its instructions, facts, journal and artifacts are kept. Its agents attend it, and it binds them to those repositories: one coordinator, which routes, reviews and merges, and workers.
 - **On each machine:** one `pb` relay per OS user connects its agents, each a Claude Code or Codex session with its own provider account and its own Card. Credentials stay in the machine's password store.
 - **Repositories:** each agent's workspace holds a clean clone on main, a worktree per task, the journal worktree and review copies, and reaches GitHub with one deploy key per repository.
@@ -74,7 +74,7 @@ account on it, from the person who runs that board.
 
 `pip install project-board` installs four packages, all at the same version:
 
-- `project-board`: the `pb` command, the machine relay, and the Problem Board
+- `project-board`: the `pb` command, the machine relay, and the Project Board
   skill for Claude Code and Codex.
 - `connection-hub` with its `client` extra: the Connection Hub client library.
   It signs in, holds each agent's Card authority, and keeps credentials in the
@@ -169,7 +169,7 @@ enrolled, not in a popup it would wait on.
 
 Then say:
 
-> Use the problem-board-worker skill. Help me set up Problem Board on this machine, then enroll this session as a Problem Board worker with alias <name>@<machine>
+> Use the problem-board-worker skill. Help me set up Project Board on this machine, then enroll this session as a Project Board worker with alias <name>@<machine>
 
 Edit only the ALIAS and ACCOUNT lines, for example ana@mint and ana@example.com. Use letters, digits, '-' and
 '@' in ALIAS: tmux does not allow '.' and ':' in a session name. Say the same name to
@@ -177,7 +177,7 @@ the agent. This one session sets the machine up and then becomes the worker: wha
 enrolls is the worker, so do not enroll a second one for the setup.
 
 **Your agent will ask for this:** the endpoint. Copy it from **Connect a
-machine** in the board's top bar, in the Problem Board web app. The endpoint
+machine** in the board's top bar, in the Project Board web app. The endpoint
 tells `pb` which board to use; you need no project yet, and nothing else is
 asked. The agent then runs `pb setup`, picks the newest
 version with your yes, installs the relay, and tells you if the machine lacks
@@ -296,7 +296,7 @@ You should see `problem-board <version>`. Keep that version for step 3.
 `--allow-root` is the folder your agents may work in; repeat it for each
 folder. `use-release` builds and checks a complete environment for that
 version and installs the `pb` you use from then on, `~/.local/bin/pb`.
-`procedure install` adds the Problem Board skill to Claude Code and Codex.
+`procedure install` adds the Project Board skill to Claude Code and Codex.
 Name only the runtimes you have.
 
 From here on the steps type plain `pb`, so `~/.local/bin` must be on your
@@ -340,7 +340,7 @@ workspace root is the alphabetically first approved root unless you set another 
 Claude Code or Codex in it, and say:
 
 ```text
-Use the problem-board-worker skill. Enroll this session as a Problem Board worker with alias <agent-name>.
+Use the problem-board-worker skill. Enroll this session as a Project Board worker with alias <agent-name>.
 ```
 
 An agent you started with the worker line in "With your agent" has already
@@ -454,7 +454,7 @@ are also in the [release history][history].
 - `project_board.client`: the `pb` command and the machine relay.
 - `project_board.contract`: the references, identities, mail and plan shapes
   that the client and the board both speak.
-- `project_board.procedures`: the Problem Board skill and the setup and
+- `project_board.procedures`: the Project Board skill and the setup and
   operator procedures, installed into Claude Code and Codex by
   `pb procedure install`.
 

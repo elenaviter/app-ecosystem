@@ -1,7 +1,7 @@
 ---
 id: project-board-architecture
-title: Problem Board Architecture
-summary: The pieces Problem Board is made of (the board served by a KDCube deployment, the pb client and the host relay, Connection Hub Cards, Telegram) and how every worker operation reaches the board through the relay under the worker's own Card, without the agent ever handling a credential.
+title: Project Board Architecture
+summary: The pieces Project Board is made of (the board served by a KDCube deployment, the pb client and the host relay, Connection Hub Cards, Telegram) and how every worker operation reaches the board through the relay under the worker's own Card, without the agent ever handling a credential.
 tags:
   - project-board
   - architecture
@@ -27,9 +27,9 @@ see_also:
   - ./delivery.md
 ---
 
-# Problem Board Architecture
+# Project Board Architecture
 
-Problem Board has four pieces: the board, served by a KDCube deployment; the
+Project Board has four pieces: the board, served by a KDCube deployment; the
 `pb` client and one relay per machine; Connection Hub, which holds every
 Card; and Telegram, the urgent path to the people on a project. This page
 says what each piece owns and how an operation travels between them. The
@@ -40,7 +40,7 @@ person in the browser ----> board site ------+
 supervisor agent --------> Named Services ---+
                                              v
                             +--------------------------------+
-                            | Problem Board control service  |
+                            | Project Board control service  |
                             | one operation catalog          |
                             | live-Card guard on every call  |
                             +--------------------------------+
@@ -119,7 +119,7 @@ machine that hosts agents. It ships the worker procedure and skill.
 - **The relay.** One relay per machine (per target deployment) keeps one
   channel per enrolled coding-agent session. It carries mail and heartbeats
   between the board and the sessions, materializes each session's direct and
-  project mail in the machine-local Problem Board workspace, and wakes the
+  project mail in the machine-local Project Board workspace, and wakes the
   session: a Codex session is woken by the relay through its native queue, a
   Claude Code session keeps one background `pb worker watch`.
 - **One turn per channel.** Each channel runs its own turn: open or reopen,
@@ -164,7 +164,7 @@ record of what a caller may do: which operations, on which resources.
   they select within it). Both apply together.
 
 Every guarded operation resolves the current Cards, composes them, and then
-applies the active catalog. Problem Board stores only the Card reference and
+applies the active catalog. Project Board stores only the Card reference and
 what it observed of the links. Which operation each actor should hold is in
 [Operations by actor](operations-by-actor.md); who edits which Card is in
 [Cards](cards.md).
@@ -189,7 +189,7 @@ coding-agent session
   -> LOCAL request: exact worker identity + operation + object ref + payload
   -> the relay claims it for that worker's own channel
   -> the worker's Card partition on the Data Bus
-  -> live-Card guard + canonical Problem Board handler
+  -> live-Card guard + canonical Project Board handler
   <- correlated LOCAL response
 ```
 

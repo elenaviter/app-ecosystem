@@ -1,7 +1,7 @@
 ---
 id: project-board-moved-README
 title: "Project Board Documentation (moved)"
-summary: This page moved to products/project-board/docs/README.md, the one home of the Problem Board documentation.
+summary: This page moved to products/project-board/docs/README.md, the one home of the Project Board documentation.
 tags:
   - project-board
   - moved

@@ -5,7 +5,7 @@
 `identity_provider_subject_resolve` answers one question for a **registered
 service**: "which account of provider P is platform user U linked to?" It
 returns the provider subject of that one link, for example a Telegram user id,
-and nothing else. Problem Board uses it to post each project member's
+and nothing else. Project Board uses it to post each project member's
 notifications into their own Telegram chat.
 
 It is a first-class Hub operation, not a widened form of an existing one:
@@ -16,7 +16,7 @@ It is a first-class Hub operation, not a widened form of an existing one:
 | `identity_family_resolve` | the signed-in person, **for themselves** | platform user → their identity family | the caller's own family; any other user is refused (`identity_family_cross_user_access_denied`) |
 | **`identity_provider_subject_resolve`** | **a registered admission service, by its own key** | platform user → one provider subject | `{provider, provider_subject}` only |
 
-`identity_family_resolve` stays caller-scoped. Before W609, Problem Board looked
+`identity_family_resolve` stays caller-scoped. Before W609, Project Board looked
 people up through it, so only the person who triggered a notification could be
 found.
 
@@ -50,7 +50,7 @@ HMAC-SHA256(service secret,
 ```
 
 A delegated-admission proof never verifies here, and this proof never verifies
-there. Both Connection Hub and Problem Board pin the same contract vector in
+there. Both Connection Hub and Project Board pin the same contract vector in
 their tests.
 
 ### Who may call it
@@ -105,7 +105,7 @@ connections:
       enabled: true
       services:
         problem-board:
-          label: "Problem Board notification recipients"
+          label: "Project Board notification recipients"
           enabled: true
           secret_ref: "connections.delegated_credentials.admission.services.problem-board.signing_secret"
           resources:
@@ -114,7 +114,7 @@ connections:
 
 **The secret.** Generate one new random value (`openssl rand -hex 32`), never reusing
 another secret. Set the same value in Connection Hub's secret above and in the
-calling service's own secret; for Problem Board that is
+calling service's own secret; for Project Board that is
 `connection_hub.identity_lookup_secret`. Never print it. Reload Connection Hub
 first, then the service.
 
@@ -124,5 +124,5 @@ first, then the service.
   `identity_subject_lookup_signature`, and the `identity_provider_subject_resolve`
   operation.
 - `apps/connection-hub@1-0/tests/test_w609_identity_provider_subject.py`.
-- Problem Board's caller: `services/notify.py` `_chat_id` /
+- Project Board's caller: `services/notify.py` `_chat_id` /
   `telegram_subject_lookup_signature`.

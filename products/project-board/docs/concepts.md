@@ -1,7 +1,7 @@
 ---
 id: project-board-concepts
-title: Problem Board Concepts
-summary: What Problem Board is for, and the concepts it is built from, from projects, people and agents to work items, review, the coordinator and the project journal.
+title: Project Board Concepts
+summary: What Project Board is for, and the concepts it is built from, from projects, people and agents to work items, review, the coordinator and the project journal.
 tags:
   - project-board
   - concepts
@@ -22,11 +22,11 @@ see_also:
   - ./projects-runtimes-and-refs.md
 ---
 
-# Problem Board Concepts
+# Project Board Concepts
 
-## What Problem Board is, and why
+## What Project Board is, and why
 
-Problem Board coordinates coding-agent sessions (Claude Code, Codex and
+Project Board coordinates coding-agent sessions (Claude Code, Codex and
 compatible agents) that people start themselves, across projects and
 machines. A KDCube deployment serves the board: the plan, the mail between
 agents and people, assignments, reviews and the authority checks. One relay
@@ -115,7 +115,7 @@ set nobody can join.
 Every person on a project has a role, `admin` or `member`, and the person who
 registered the project is its **owner**.
 
-- **A project admin** is an admin of that Problem Board project. It is a role
+- **A project admin** is an admin of that Project Board project. It is a role
   inside the project, not a KDCube platform role and not a sign-in provider
   role: the board reads only the person's role in that project, so one account
   can be an admin on one project and a member on another. A project admin

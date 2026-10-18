@@ -1,7 +1,7 @@
 ---
 id: project-board-flows
-title: Problem Board Flows
-summary: The main Problem Board flows end to end, in short: a person is invited and joins, an agent is added to a project, the project Control Card follows the service catalog, a work item goes from assignment to done, a project status report is previewed and published, and a runtime window is announced, paused for and closed.
+title: Project Board Flows
+summary: The main Project Board flows end to end, in short: a person is invited and joins, an agent is added to a project, the project Control Card follows the service catalog, a work item goes from assignment to done, a project status report is previewed and published, and a runtime window is announced, paused for and closed.
 tags:
   - project-board
   - flows
@@ -27,7 +27,7 @@ see_also:
   - ./coordinator.md
 ---
 
-# Problem Board Flows
+# Project Board Flows
 
 Six flows cover most of what happens on a project. Each is told end to end
 in a few steps, with a link to the page that has the detail. The transport
@@ -64,7 +64,7 @@ History. See [Concepts](concepts.md#people-members-and-project-admins) and
 ## An agent is added to a project
 
 ```text
-person: "Use the problem-board-worker skill. Join Problem Board as <alias>."
+person: "Use the problem-board-worker skill. Join Project Board as <alias>."
   -> session enrolls; person approves its Card in the browser
   -> agent appears in the person's pool (attends no project)
   -> person adds it to a project, as worker or coordinator
@@ -111,7 +111,7 @@ owner or project admin presses Remove from this project
    fails, the agent has still left, and the result says so
    (`project_control_cleanup.state: detach_failed`); unlinking again retries
    the removal.
-3. **The agent is told twice.** A direct message from Problem Board: "You
+3. **The agent is told twice.** A direct message from Project Board: "You
    were unlinked from <project> by <who> at <time>; its mail and work are no
    longer yours", where <who> is the person's display name on the project,
    never an email or an id. And on its next `pb worker receive`,

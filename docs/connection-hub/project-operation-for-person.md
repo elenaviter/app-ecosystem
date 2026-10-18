@@ -2,7 +2,7 @@
 
 `project_operation_authorize_for_person` decides one project operation for a
 person a registered service **proves through their provider edge**. It exists
-for W615: Problem Board's Telegram webhook runs under one bound caller, so the
+for W615: Project Board's Telegram webhook runs under one bound caller, so the
 ordinary `project_operation_authorize` (which decides for the request's
 signed-in caller) would decide a member's Telegram reply for that caller. The
 board then correctly refused the mismatched person, and the member's reply was
@@ -67,7 +67,7 @@ and outcome; never the provider subject.
 
 ## Registering a service
 
-Add the resource to the service's row, for example Problem Board's:
+Add the resource to the service's row, for example Project Board's:
 
 ```yaml
 problem-board:

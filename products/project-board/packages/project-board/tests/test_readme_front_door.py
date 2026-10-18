@@ -20,7 +20,7 @@ README = (PACKAGE / "README.md").read_text(encoding="utf-8")
 PUBLIC = "https://github.com/elenaviter/app-ecosystem/blob/main/"
 
 SECTIONS = (
-    "What Problem Board is",
+    "What Project Board is",
     "Why use it",
     "What you need",
     "What gets installed",
@@ -131,7 +131,7 @@ def test_the_architecture_diagram_is_shipped_and_shown_by_an_absolute_url() -> N
     svg = diagram.read_text(encoding="utf-8")
     assert svg.startswith("<svg") and "<title" in svg and "<desc" in svg
     assert '<rect width="1100"' in svg, "an explicit background, readable on light and dark pages"
-    for label in ("Problem Board", "Connection Hub", "pb relay", "native password store", "GitHub", "Telegram"):
+    for label in ("Project Board", "Connection Hub", "pb relay", "native password store", "GitHub", "Telegram"):
         assert f">{label}<" in svg, f"{label} is text, not a path"
     raw = "https://raw.githubusercontent.com/elenaviter/app-ecosystem/main/products/project-board/docs/assets/architecture.svg"
     assert f'<img src="{raw}"' in README, "PyPI renders only an absolute image URL"
@@ -167,14 +167,14 @@ def test_the_agent_guided_path_comes_first_and_the_manual_steps_are_the_fallback
         'tmux new-session -d -s "$ALIAS" "mkdir -p ~/.kdcube/pb/workspaces/$ALIAS \'$HOME/.claude-accounts/$ACCOUNT\' && cd ~/.kdcube/pb/workspaces/$ALIAS && env CLAUDE_CONFIG_DIR=\'$HOME/.claude-accounts/$ACCOUNT\' claude --add-dir ~/.kdcube --dangerously-skip-permissions --disallowedTools AskUserQuestion; exec $SHELL -l"',
         'tmux attach -t "$ALIAS"',
         "Edit only the ALIAS and ACCOUNT lines, for example ana@mint and ana@example.com. Use letters, digits, '-' and '@' in ALIAS: tmux does not allow '.' and ':' in a session name.",
-        "Use the problem-board-worker skill. Help me set up Problem Board on this machine, then enroll this session as a Problem Board worker with alias <name>@<machine>",
+        "Use the problem-board-worker skill. Help me set up Project Board on this machine, then enroll this session as a Project Board worker with alias <name>@<machine>",
         "**Your agent will ask for this:** the endpoint.",
         "**Connect a machine**",
         "`pb worker authorize … --device`",
         "whatever session enrolls is the worker",
     ):
         assert piece in guided, piece
-    assert guided.index("pb procedure install") < guided.index("Help me set up Problem Board"), "install the skill first"
+    assert guided.index("pb procedure install") < guided.index("Help me set up Project Board"), "install the skill first"
 
 
 def test_what_you_need_names_the_headless_linux_prerequisites_and_who_can_fix_them() -> None:

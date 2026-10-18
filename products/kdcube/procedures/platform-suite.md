@@ -21,7 +21,7 @@ missing overlay, and not as a regression.
 
 The KDCube runtime keeps its dependency set in the chat-processor environment
 of the platform checkout, `app/venvs/ai-app/chat-processor/bin/python3.11`
-under the checkout root. Use it for KDCube suites and for the Problem Board
+under the checkout root. Use it for KDCube suites and for the Project Board
 application suite. The `pb` client has its own interpreter, the one `pb
 source status` names, with the client family's dependencies. Use it for the
 `project-board` package suite. A bare system Python lacks the third-party
@@ -75,7 +75,7 @@ reason. Give them disposable containers, never a runtime's database:
 | --- | --- | --- |
 | Connection Hub package | `CONNECTION_HUB_TEST_POSTGRES_DSN`, `REDIS_URL` | PostgreSQL, Redis |
 | KDCube auth, session projections, authority cutover | `KDCUBE_TEST_REDIS_URL`, `KDCUBE_TEST_POSTGRES_DSN` | Redis, PostgreSQL |
-| Problem Board application store | `PB_TEST_POSTGRES_DSN` | PostgreSQL with the `vector` extension (`pgvector/pgvector` image), the store schema creates it |
+| Project Board application store | `PB_TEST_POSTGRES_DSN` | PostgreSQL with the `vector` extension (`pgvector/pgvector` image), the store schema creates it |
 
 ```bash
 docker run -d --name suite-postgres -e POSTGRES_PASSWORD="$(head -c 24 /dev/urandom | base64 | tr -dc 'A-Za-z0-9' | head -c 24)" -e POSTGRES_DB=suite -p 127.0.0.1:55432:5432 pgvector/pgvector:pg16
@@ -99,6 +99,6 @@ and never print it or paste it into a message. A Connection Hub suite reads
   read the run as the offline subset, never as green coverage of the
   real-backend rows.
 
-The Problem Board application suite, with its own seven overlays and the exact
+The Project Board application suite, with its own seven overlays and the exact
 application path, is in
 [the package testing procedure](../../project-board/packages/project-board/src/project_board/procedures/testing.md).

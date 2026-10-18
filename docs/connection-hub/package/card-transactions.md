@@ -1,6 +1,6 @@
 # Card transactions (W502)
 
-A Card edit that must agree with another application's state (Problem Board's
+A Card edit that must agree with another application's state (Project Board's
 project roles, its last usable administrator) commits as one transaction
 across both, through the W581 v2 kernel in `service_foundation.coordination`.
 This page lists what the Hub provides, how it is configured, and what must
@@ -18,7 +18,7 @@ hold before it is switched on. Everything here is **off by default**:
 | Census read | `card_census_read` (route public) | A signed, optimistic read of a project's person Cards, their full Control chains and the active catalog, for the initiator's business check. |
 | Invitation census | `card_invitation_census_read` (route public) | A signed read of ONE managed project's invitation Controls, enumerated by the Hub from the project's partition (the caller names only the scope): each Card's exact revision and state (`pending`, `withdrawn`, `redeemed`), sorted, with a `root` digest. A staged invitation Card or an invitation-issuer Card whose identity does not name this project refuses the whole read. Proves the set as of the read; holding it until a decision is the caller's (its read set, its own invite fence, W578's refusal of direct writes). Same peer authentication and `census_scope_prefix` entitlement as the census read (W814). |
 | Lifecycle plan | `card_lifecycle_plan` (route public) | A signed, non-writing plan of one Card lifecycle change (a new project's P, C and My; a person joining; an invitation's redemption): the exact Card candidates the initiator freezes into its transaction. Same peer authentication as the census read; a caller plans only under its descriptor's `plan_scope_prefix`. |
-| Card version save | `card_version` (route public), `cards/participant_card_version.py` | W661: Problem Board's STAGE, PUBLISH and ROLLBACK of one Card save. See "Saving a Card version" below. |
+| Card version save | `card_version` (route public), `cards/participant_card_version.py` | W661: Project Board's STAGE, PUBLISH and ROLLBACK of one Card save. See "Saving a Card version" below. |
 | Plan authorization | `cards/lifecycle_plan_authorization.py` | Before planning, the Hub asks the calling application's own host (`project_lifecycle_plan_authorize` on its authority bundle) for one decision per step. The body is `actor_subject`, `project_ref`, `request_id`, the plan's `request_digest` and the ordered `steps`, signed with the descriptor's authority request signer under protocol `card-lifecycle-plan-authorize.v1`. A missing, extra, repeated or mismatched step, or a step decision for another plan's digest, refuses the plan. |
 | Managed Card edit forward | `managed_card_edit_forward.py` | A managed edit a direct writer refuses is forwarded, signed, to the project host that plans its scope (`project_card_edit`), which makes it in its own transaction. |
 | Decision routing | `RoutedDecisionPort` | A Card staged by another application's transaction reads its decision from that application's authority. |
@@ -176,7 +176,7 @@ real filesystem policy/coordinator failure-cut checks exist. Productive
 PB/database and browser qualification is still required; these local checks
 do not assert release readiness.
 
-`card_version` serves Problem Board's save. PB calls the Hub, and the Hub calls
+`card_version` serves Project Board's save. PB calls the Hub, and the Hub calls
 nothing back during the save. It has the same peer authentication and
 `plan_scope_prefix` entitlement as `card_lifecycle_plan`. The request schema is
 `card-version-request.v1`, and every authenticated answer is signed
@@ -336,7 +336,7 @@ nonce, as other authenticated refusals do; no Card, marker or effect is written.
     is refused `card_changed` and is never retired at its new revision. The
     host owns that order and its recovery; the PB side is not active until
     project deletion ships (W805).
-- **The host keeps P following the catalog (W807).** Problem Board itself
+- **The host keeps P following the catalog (W807).** Project Board itself
   starts an ordinary `reselect_project_control` STAGE, with no Hub-forwarded
   edit, when an owner's or admin's read of P shows operations new to the
   catalog. Its input is this Hub's drift of P: `catalog_drift.added.outer_operations`
@@ -441,7 +441,7 @@ creator holds at `control_card_id_for_issuer("application", <project>, grantor_s
 The chain is then My -> C -> P, and a project-level AND in P denies what any
 lower OR would allow.
 
-- **The host names P.** Problem Board answers P's `control_id` and
+- **The host names P.** Project Board answers P's `control_id` and
   `holder_subject` from its own stored link, in the membership answer behind
   every project-person decision and in the invitation binding evidence
   (`ProjectControlLocator`). Nothing in a request selects P. The derived id is
@@ -603,7 +603,7 @@ so is the owner's own whole Save of a project-linked agent Card (W727, below).
   the writer keeps refusing `card_transactions_direct_write_refused`.
 
 **The per-service Reset to Control** is not a Hub operation: it is a button
-on the person's own card in Problem Board, and the project host makes it in
+on the person's own card in Project Board, and the project host makes it in
 its own transaction. The Hub supplies only the pure, shared
 `managed_card_reset.managed_card_reset_display`, so the host computes the
 exact shown result with the Hub's own composition and `reset_candidate`.
@@ -876,7 +876,7 @@ connections:
   card_transactions:
     enabled: false                     # true only in an approved activation window
     callers:
-      <peer service id>:               # the admission proof's service_id, e.g. Problem Board's
+      <peer service id>:               # the admission proof's service_id, e.g. Project Board's
         request_secret_ref: <secret path>     # verifies the peer's admission proof
         receipt_secret_ref: <secret path>     # signs the Hub's answers (may be the same key)
         receipt_signer_id: <Hub signer id>
@@ -909,16 +909,16 @@ obligations, not optional checks.
 1. **PostgreSQL authority.** The Hub's delegated authority uses PostgreSQL. The
    decision store (`connection_hub_card_decisions`) is created on first
    authenticated use.
-2. **The peer's side is live and pinned.** Problem Board's writer uses the v2
+2. **The peer's side is live and pinned.** Project Board's writer uses the v2
    authority (`{ok, authority}`), its consumer verifies the shared vectors,
    and its census provider and admin check use the ACTIVE catalog and emit
    the `catalog-active` key.
-3. **End-to-end test passes.** A Problem Board-initiated commit, abort, refused
+3. **End-to-end test passes.** A Project Board-initiated commit, abort, refused
    prepare followed by abort, and crash recovery all succeed through
    `card_transaction_participant` on the deployed Hub.
 4. **Unbound Card stores fail closed.** `RoutedDecisionPort` is bound only where
    `card_transaction_coordinator` runs. A Card store built outside it reads a
-   Card staged by Problem Board as `card_transaction_undecided` until the Hub
+   Card staged by Project Board as `card_transaction_undecided` until the Hub
    finishes it. That is fail closed, not wrong, but it means a reader may see
    "being created / undecided" briefly.
 5. **Catalog publication may wait.** While a transaction holds the active

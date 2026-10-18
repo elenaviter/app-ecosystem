@@ -966,7 +966,7 @@ named-service and managed-MCP authority represented by that selection.
 User-connected MCP resources and account scope remain unchanged. New
 conversations start from the reset selection; existing conversations retain
 their saved positive choices and remain intersected with the live Control Card
-at every governed operation. Problem Board worker Agent Cards do not offer the
+at every governed operation. Project Board worker Agent Cards do not offer the
 action: their linked Control Card is a ceiling, while their owner grant is the
 starting selection. A descriptor-managed hosted Agent Card has a stable
 identity, so Connection Hub refuses direct revocation; the reset action
@@ -1075,11 +1075,11 @@ The declaration lives beside the resource's operation catalog:
 authorization_profiles:
   worker:
     scope: work:profile:worker
-    label: Problem Board worker
+    label: Project Board worker
     operations: [worker.publish, worker.heartbeat]
   coordinator:
     scope: work:profile:coordinator
-    label: Problem Board coordinator
+    label: Project Board coordinator
     operations: ["*"]
 ```
 
@@ -1260,7 +1260,7 @@ badged `client door`, and shows the rest as served through it.
 
 ### Re-apply a profile in place: `delegated_access_apply_profile`
 
-The Card lever (Problem Board W313, operator ruling of 2026-09-24): one action
+The Card lever (Project Board W313, operator ruling of 2026-09-24): one action
 gives an agent's Card the coordinator operation set, and one returns it to the
 default worker set. Before it, a raise revoked the Card and consented a new
 one, which changed the access id and with it the agent's principal.
@@ -1291,7 +1291,7 @@ POST delegated_access_apply_profile
   `delegated_access_profile_resource_not_on_card` (the scope named). An
   empty list is refused with `delegated_access_profile_resource_scope_empty`.
   Without `resources`, every declaring resource takes the profile, as before.
-  Problem Board's worker and coordinator levers always send their own
+  Project Board's worker and coordinator levers always send their own
   resource. `project_agent_card_apply_profile` takes the same field.
 - **How it saves:** through `delegated_access_update`, so the precondition,
   catalog pruning and every refusal of an ordinary edit apply. The Card keeps
@@ -1778,7 +1778,7 @@ Connection Hub owns creation, immutable revisions, the current pointer,
 catalog drift, editing, update, revoke, linking, and live composition. The
 application that requested the Card supplies issuer coordinates and may store
 only its Card reference plus observed status facts. Application-specific
-policy belongs in the Card's bounded `properties`; for example, Problem Board
+policy belongs in the Card's bounded `properties`; for example, Project Board
 uses `properties.coordination.version_control.{model,reason}`.
 
 The exact Card editor uses the ordinary resource, operation, named-service,

@@ -7,7 +7,7 @@ release.
 
 ## Release the pb set
 
-The Problem Board client installs from PyPI as four packages at one version:
+The Project Board client installs from PyPI as four packages at one version:
 `app-foundation`, `service-foundation`, `connection-hub` and `project-board`.
 `scripts/release-pb` releases them together. `connection-hub-cli` carries the
 same version in the snapshot and is published on its own when it is

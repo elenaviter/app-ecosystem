@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1100 1010" font-family="Inter, ui-sans-serif, system-ui, sans-serif" role="img" aria-labelledby="pbtitle pbdesc">
-  <title id="pbtitle">How Problem Board ties together</title>
-  <desc id="pbdesc">A KDCube deployment holds the Problem Board app and Connection Hub. The board holds the plan, mail, assignments, reviews, journal views and Telegram topics, in PostgreSQL and KDCube conversation storage. On the board, a project names its repositories, each with a role (journal, work, artifact), and its places: instructions, facts and journal are kept in the journal repository; artifacts in an artifact repository or KDCube storage. Agents attend the project, and it binds them to those repositories. Connection Hub holds the Cards as a hierarchy: the project Control Card; under it each person's Control Card, set by project admins, and under that the person's My Card, their own choice within it, so a person may do what both allow; and under the project Control Card each agent's Card, combined with it by AND by default. People hold the project roles owner, admin or member; one agent is the project's coordinator, which routes, reviews and merges, and the others are workers. A person uses the board in a browser and approves Cards on their own device with a device link and code. A Telegram bot relays project messages and files both ways. On each machine, one pb relay per operating-system user keeps each agent's channel to the board under that agent's own Card. Credentials stay in the machine's native password store, never inside the agent. Each agent's workspace holds a clean clone of each repository on main, only fast-forwarded; a worktree per task; the journal worktree; and review copies at the exact commit under review. The clones reach GitHub over SSH with one deploy key per repository; today these keys are made per operating-system user, and the direction is keys minted per project through Connection Hub. Teal marks Cards, roles and authority; dark red marks credentials and keys.</desc>
+  <title id="pbtitle">How Project Board ties together</title>
+  <desc id="pbdesc">A KDCube deployment holds the Project Board app and Connection Hub. The board holds the plan, mail, assignments, reviews, journal views and Telegram topics, in PostgreSQL and KDCube conversation storage. On the board, a project names its repositories, each with a role (journal, work, artifact), and its places: instructions, facts and journal are kept in the journal repository; artifacts in an artifact repository or KDCube storage. Agents attend the project, and it binds them to those repositories. Connection Hub holds the Cards as a hierarchy: the project Control Card; under it each person's Control Card, set by project admins, and under that the person's My Card, their own choice within it, so a person may do what both allow; and under the project Control Card each agent's Card, combined with it by AND by default. People hold the project roles owner, admin or member; one agent is the project's coordinator, which routes, reviews and merges, and the others are workers. A person uses the board in a browser and approves Cards on their own device with a device link and code. A Telegram bot relays project messages and files both ways. On each machine, one pb relay per operating-system user keeps each agent's channel to the board under that agent's own Card. Credentials stay in the machine's native password store, never inside the agent. Each agent's workspace holds a clean clone of each repository on main, only fast-forwarded; a worktree per task; the journal worktree; and review copies at the exact commit under review. The clones reach GitHub over SSH with one deploy key per repository; today these keys are made per operating-system user, and the direction is keys minted per project through Connection Hub. Teal marks Cards, roles and authority; dark red marks credentials and keys.</desc>
   <defs>
     <linearGradient id="pbgraphite" x1="0" y1="0" x2="0" y2="1">
       <stop offset="0%" stop-color="#F1F3F4"/><stop offset="100%" stop-color="#E3E6E8"/>
@@ -27,7 +27,7 @@
   <ellipse cx="510" cy="246" rx="240" ry="170" fill="url(#pblamp)"/>
   <rect x="320" y="94" width="380" height="310" rx="14" fill="#FFF8E9" stroke="#D9A945" stroke-width="1.3"/>
   <rect x="326" y="100" width="368" height="298" rx="11" fill="none" stroke="#D9A945" stroke-opacity="0.3"/>
-  <text x="338" y="120" font-size="15" font-weight="700" fill="#8A6A1C" font-family="Iowan Old Style, Georgia, serif">Problem Board</text>
+  <text x="338" y="120" font-size="15" font-weight="700" fill="#8A6A1C" font-family="Iowan Old Style, Georgia, serif">Project Board</text>
   <text x="338" y="135" font-size="10" font-style="italic" fill="#A08648">the board app · one deployable unit</text>
   <text x="338" y="154" font-size="8" letter-spacing="0.12em" font-weight="700" fill="#465864" font-family="JetBrains Mono, ui-monospace, Menlo, monospace">HOLDS</text>
   <g font-size="9.5" font-weight="600" text-anchor="middle">
@@ -132,7 +132,7 @@
   <text x="164" y="631" font-size="8" font-style="italic" fill="#8794A0">routes, reviews, merges; one per project</text>
   <g font-size="9.5" font-weight="600" text-anchor="middle">
     <rect x="76" y="646" width="46" height="18" rx="4" fill="#FFFFFF" stroke="#D9A945" stroke-opacity="0.55"/><text x="99" y="658.5" fill="#8A6A1C">pb</text>
-    <rect x="128" y="646" width="132" height="18" rx="4" fill="#FFFFFF" stroke="#D9A945" stroke-opacity="0.55"/><text x="194" y="658.5" fill="#8A6A1C">Problem Board skill</text>
+    <rect x="128" y="646" width="132" height="18" rx="4" fill="#FFFFFF" stroke="#D9A945" stroke-opacity="0.55"/><text x="194" y="658.5" fill="#8A6A1C">Project Board skill</text>
   </g>
 
   <rect x="345" y="572" width="275" height="108" rx="10" fill="#FFF8E9" stroke="#D9A945" stroke-opacity="0.8"/>
@@ -144,7 +144,7 @@
   <text x="427" y="631" font-size="8" font-style="italic" fill="#8794A0">does assigned items · reports for review</text>
   <g font-size="9.5" font-weight="600" text-anchor="middle">
     <rect x="361" y="646" width="46" height="18" rx="4" fill="#FFFFFF" stroke="#D9A945" stroke-opacity="0.55"/><text x="384" y="658.5" fill="#8A6A1C">pb</text>
-    <rect x="413" y="646" width="132" height="18" rx="4" fill="#FFFFFF" stroke="#D9A945" stroke-opacity="0.55"/><text x="479" y="658.5" fill="#8A6A1C">Problem Board skill</text>
+    <rect x="413" y="646" width="132" height="18" rx="4" fill="#FFFFFF" stroke="#D9A945" stroke-opacity="0.55"/><text x="479" y="658.5" fill="#8A6A1C">Project Board skill</text>
   </g>
 
   <rect x="60" y="690" width="560" height="30" rx="8" fill="#FFFFFF" stroke="#B45438" stroke-opacity="0.6"/>
@@ -175,7 +175,7 @@
   <g font-size="9.5" font-weight="600" text-anchor="middle">
     <rect x="690" y="618" width="58" height="18" rx="9" fill="#EAF5F4" stroke="#06968C" stroke-opacity="0.5"/><text x="719" y="630.5" fill="#057069">worker</text>
     <rect x="690" y="646" width="46" height="18" rx="4" fill="#FFFFFF" stroke="#D9A945" stroke-opacity="0.55"/><text x="713" y="658.5" fill="#8A6A1C">pb</text>
-    <rect x="742" y="646" width="126" height="18" rx="4" fill="#FFFFFF" stroke="#D9A945" stroke-opacity="0.55"/><text x="805" y="658.5" fill="#8A6A1C">Problem Board skill</text>
+    <rect x="742" y="646" width="126" height="18" rx="4" fill="#FFFFFF" stroke="#D9A945" stroke-opacity="0.55"/><text x="805" y="658.5" fill="#8A6A1C">Project Board skill</text>
   </g>
   <rect x="676" y="690" width="208" height="30" rx="8" fill="#FFFFFF" stroke="#B45438" stroke-opacity="0.6"/>
   <circle cx="692" cy="705" r="3.4" fill="none" stroke="#B45438"/><circle cx="692" cy="705" r="1.2" fill="#B45438"/>

@@ -1,7 +1,7 @@
 ---
 id: project-board-projects-runtimes-and-refs
 title: Projects, Runtimes And Refs
-summary: The three kinds of Problem Board project and what each declares - its instructions, repositories and runtimes - so one worker procedure serves them all.
+summary: The three kinds of Project Board project and what each declares - its instructions, repositories and runtimes - so one worker procedure serves them all.
 tags:
   - project-board
   - projects
@@ -17,7 +17,7 @@ see_also:
 
 # Projects, Runtimes And Refs
 
-Problem Board serves three kinds of project (operator, 2026-09-22):
+Project Board serves three kinds of project (operator, 2026-09-22):
 
 1. **KDCube maintainer:** KDCube itself changes, and the team refreshes and
    reloads a KDCube deployment.

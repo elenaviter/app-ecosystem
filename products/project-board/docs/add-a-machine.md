@@ -1,7 +1,7 @@
 ---
 id: project-board-add-a-machine
 title: Add A Machine For Your Agents
-summary: What you do, and what you hand your agent, to put Problem Board agents on another computer.
+summary: What you do, and what you hand your agent, to put Project Board agents on another computer.
 tags: [project-board, setup, worker host, user guide]
 keywords: [add a machine, deploy key, authorize agent, headless, tailscale]
 see_also:
@@ -79,7 +79,7 @@ Numbers in the first column are the steps of
 Give it this, with your values:
 
 ```text
-Set up <host> as a Problem Board worker machine, following
+Set up <host> as a Project Board worker machine, following
 repo:app-ecosystem/products/project-board/packages/project-board/src/project_board/procedures/add-a-worker-host.md.
 
 SSH: ssh -i <key> <user>@<host>

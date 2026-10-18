@@ -1,7 +1,7 @@
 ---
 id: project-board-storage-and-retention
-title: Problem Board Storage And Retention
-summary: Where Problem Board state lives, remote and on each machine, how mailbox reconciliation receipts are published, the rules that keep each relay's local state bounded, how the owner-worker conversation and the project timeline are kept, and how a worker, its mail and its projects continue across long-running work.
+title: Project Board Storage And Retention
+summary: Where Project Board state lives, remote and on each machine, how mailbox reconciliation receipts are published, the rules that keep each relay's local state bounded, how the owner-worker conversation and the project timeline are kept, and how a worker, its mail and its projects continue across long-running work.
 tags: [project-board, storage, timeline, retention, conversation]
 keywords: [artifact uri, mailbox link, conversation turns, postgres, local field, git journal, relay local state, retention, pending folder, hour partition, cold tier, event archive, mail archive, hot_days]
 see_also:
@@ -11,9 +11,9 @@ see_also:
   - repo:app-ecosystem/products/project-board/packages/project-board/src/project_board/procedures/operator.md
 ---
 
-# Problem Board Storage And Retention
+# Project Board Storage And Retention
 
-Problem Board separates operational coordination, owner-worker conversation,
+Project Board separates operational coordination, owner-worker conversation,
 active local work, and versioned project work. A months-long project can grow
 without requiring one agent process or one browser session to remain alive.
 This page keeps what an operator of a worker host needs: what is stored where,
@@ -31,7 +31,7 @@ can investigate one agent's activity.
 ```text
 REMOTE: KDCube
 
-  Problem Board Postgres
+  Project Board Postgres
     projects + attendance + assignments + ownership versions
     controls + leases + delivery/handling/discard state
     authoritative work-item and note rows + atomic generation
@@ -339,7 +339,7 @@ undoes the unlink or retirement and is reported in the result; asking again
 with the same choice runs only the deletion, also for an agent that already
 left the project.
 
-The Problem Board inbox row owns unread/read/replied state and preserves a
+The Project Board inbox row owns unread/read/replied state and preserves a
 bounded envelope for rendering and recovery. Controls own delivery and model
 handling state. These operational records let a mailbox render its latest
 window even while conversation indexing is temporarily unavailable.

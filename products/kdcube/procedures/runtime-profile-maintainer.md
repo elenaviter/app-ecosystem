@@ -19,7 +19,7 @@ see_also:
 
 This is the profile for a runtime of kind `kdcube` that this team maintains:
 a KDCube deployment whose platform, SDK and apps the team changes, refreshes
-and reloads. The generic Problem Board worker procedure carries no runtime's
+and reloads. The generic Project Board worker procedure carries no runtime's
 commands; they are here. The concepts (runtime, ref, profile, repository
 alias) are in
 [projects, runtimes and refs](repo:app-ecosystem/products/project-board/docs/projects-runtimes-and-refs.md).
@@ -60,9 +60,9 @@ flags supported by that installed version.
 | Widget `src/` | the app deploy below for the widget's bundle; the pipeline builds `dist/`, and the reload returns before that build finishes | editing `src/` alone, building widgets by hand, or reading the reload receipt as the widget being live |
 | Descriptor content (`bundles.yaml`) | `bundle config apply` or `bundle reload <bundle-id>` | `refresh`, which preserves `$WORKDIR/config` |
 | An app under `apps/` | the app's **deploy worktree**, a git worktree used for nothing but deploying, is the app's only path, and the app's entry in the staged `config/bundles.yaml` carries **no `activation` block** (neither `commit` nor `require_commit`): `git -C <deploy-worktree> checkout --detach <approved-sha>`, then `kdcube bundle reload <bundle-id>`, whose receipt must read `Loaded: mounted tree at head <approved-sha>, clean`. Web requests, the Data Bus workers and a restart all load that folder, so a restart keeps the commit. The deploy worktrees and commits are on the project facts page. Setting or moving an app's folder is `kdcube bundle <bundle-id> --tenant <t> --project <p> --local-path <container-path>`, then a reload | a reload of an app whose path is a working checkout, which stages whatever that checkout holds at that instant; `activation.commit` in the descriptor, which a restart and the Data Bus workers ignore, so it is not the guarantee until W333 lands, and which a commitless reload still applies in the web proc (`Loaded: snapshot of ...`), splitting it from the Data Bus workers; `--local-path`, which keeps an existing `activation` block |
-| A change that adds, removes or renames a board operation, on either side: an operation id in `project_board/contract/worker_operation_contract.py` (App Ecosystem) or a handler in `services/operation_dispatch.py` (applications) | both halves change together, in this order: (1) check the approved board commit out in its deploy worktree **without reloading**; (2) the platform rebuild that stages the matching `project-board` package (the `app-ecosystem` row above), whose restart loads the new board against the new contract; (3) verify the board's receipt and that it answers. At import the board reconciles its handler table with the contract (`reconcile_operation_handlers` in `services/operation_dispatch.py`, W368): an operation the contract names with no handler makes the board **refuse to start**, and a handler the contract does not name is **withheld**, not served, and logged as waiting for a platform rebuild. So a contract that is newer than the board is an outage, and a board that is newer than the contract serves without its new operations until the rebuild. Find the case with the checks below before the window is planned | a platform rebuild before the board commit is checked out (its restart re-imports the old board against a contract that names operations it has no handler for, and the board refuses to start); a board reload alone treated as the whole change (it loads, but the new operations stay withheld until the platform rebuild). Before W368 a board reload alone failed to load with `Problem Board operation policy and handler table differ` (2026-09-26, W326, down 03:32–03:36Z) |
+| A change that adds, removes or renames a board operation, on either side: an operation id in `project_board/contract/worker_operation_contract.py` (App Ecosystem) or a handler in `services/operation_dispatch.py` (applications) | both halves change together, in this order: (1) check the approved board commit out in its deploy worktree **without reloading**; (2) the platform rebuild that stages the matching `project-board` package (the `app-ecosystem` row above), whose restart loads the new board against the new contract; (3) verify the board's receipt and that it answers. At import the board reconciles its handler table with the contract (`reconcile_operation_handlers` in `services/operation_dispatch.py`, W368): an operation the contract names with no handler makes the board **refuse to start**, and a handler the contract does not name is **withheld**, not served, and logged as waiting for a platform rebuild. So a contract that is newer than the board is an outage, and a board that is newer than the contract serves without its new operations until the rebuild. Find the case with the checks below before the window is planned | a platform rebuild before the board commit is checked out (its restart re-imports the old board against a contract that names operations it has no handler for, and the board refuses to start); a board reload alone treated as the whole change (it loads, but the new operations stay withheld until the platform rebuild). Before W368 a board reload alone failed to load with `Project Board operation policy and handler table differ` (2026-09-26, W326, down 03:32–03:36Z) |
 
-The Problem Board host's own actions (relay restart, client source, procedure
+The Project Board host's own actions (relay restart, client source, procedure
 install) are in the worker procedure's
 [runtime actions](repo:app-ecosystem/products/project-board/packages/project-board/src/project_board/procedures/problem-board-worker/references/runtime-actions.md);
 a bundle reload never restarts the relay, and a relay restart never moves a
@@ -207,7 +207,7 @@ Execute the action the table names for the tree, at the commit the ref names:
 - **The platform:** `kdcube refresh --path <clean git worktree of the KDCube
   commit the ref names> --build`, with the package selectors above, each
   selector's SOURCE a clean export of the App Ecosystem commit the ref names.
-- **The Problem Board client** on the same host: select only the approved
+- **The Project Board client** on the same host: select only the approved
   App Ecosystem commit, under the host agreement in the worker procedure's
   [client source selection](repo:app-ecosystem/products/project-board/packages/project-board/src/project_board/procedures/problem-board-worker/references/runtime-actions.md#client-source-selection):
 
@@ -334,7 +334,7 @@ for the tenant and project's workdir
    coordinator Card, Make coordinator or Make worker). Otherwise the operation
    is refused with `work_worker_operation_withheld_by_control_card`, which
    names that Control Card.
-3. **The Problem Board host client**, on each host whose client moved:
+3. **The Project Board host client**, on each host whose client moved:
    `pb source status`, and the relay's first stamped startup line
    (`source=snapshot`, `app_ecosystem=<sha>`): both equal the
    App Ecosystem commit the client switch released. The platform source is
