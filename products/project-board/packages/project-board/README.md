@@ -169,7 +169,7 @@ enrolled, not in a popup it would wait on.
 
 Then say:
 
-> Use the problem-board-worker skill. Help me set up Problem Board on this machine, then enroll this session as a Problem Board worker with alias <name>@<machine>
+> Use the problem-board-worker skill. Help me set up Project Board on this machine, then enroll this session as a Project Board worker with alias <name>@<machine>
 
 Edit only the ALIAS and ACCOUNT lines, for example ana@mint and ana@example.com. Use letters, digits, '-' and
 '@' in ALIAS: tmux does not allow '.' and ':' in a session name. Say the same name to
