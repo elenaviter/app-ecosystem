@@ -1,7 +1,7 @@
 ---
 id: project-board-operations-and-rules
 title: Operations And Rules
-summary: For every Problem Board operation, what decides it for a person (their Card, membership or a stated identity rule) and its business rules, generated from the board's own tables.
+summary: For every Project Board operation, what decides it for a person (their Card, membership or a stated identity rule) and its business rules, generated from the board's own tables.
 tags:
   - project-board
   - authorization
@@ -20,7 +20,7 @@ see_also:
 
 # Operations And Rules
 
-Generated from the Problem Board app: the delegated catalog, `services/operation_rules.py`
+Generated from the Project Board app: the delegated catalog, `services/operation_rules.py`
 and `services/identity_rules.py`. Do not edit this page; change those sources and run
 `scripts/generate_operation_rules_page.py`. A test fails when the two differ.
 
@@ -61,7 +61,7 @@ Which actor should hold each operation is in [Operations By Actor](operations-by
 | Operation | Group | Permission | For a person | Business rules |
 | --- | --- | --- | --- | --- |
 | `project.set_goal` | project | `work:coordinate` | Role AND current effective Card hierarchy | An owner/admin role AND current effective Card hierarchy; empty clears the goal. |
-| `project.cards.manage` | people | `work:admin` | Role AND current effective Card hierarchy | A person with the owner/admin role AND current effective Card hierarchy. No person's role preset ticks it. Checks authority for Connection Hub management, never writes a Card in Problem Board. Retired project.people.card.update remains retired. |
+| `project.cards.manage` | people | `work:admin` | Role AND current effective Card hierarchy | A person with the owner/admin role AND current effective Card hierarchy. No person's role preset ticks it. Checks authority for Connection Hub management, never writes a Card in Project Board. Retired project.people.card.update remains retired. |
 | `project.register` | project | `work:coordinate` | Identity rule `project_owner_is_a_person` | The signed-in person who registers a project is its owner and first admin. A new project is retained if Card initialization fails: work_project_cards_initialization_unavailable (503) names the incomplete step and unconfirmed cutover. This failure is not retryable by repeating registration; recovery requires explicit Card-initialization authority. No rollback, automatic reseed or legacy mutation authority is implied. Re-registering an existing project does not initialize its Cards. |
 | `project.set_journal_home` | project | `work:coordinate` | Role AND current effective Card hierarchy | Read only while the repository preset names no journal repository with a path. |
 | `project.set_repositories` | project | `work:coordinate` | Role AND current effective Card hierarchy | Written under the preset's current revision. Once the preset is the journal home, a repository keeps the journal role and a path. |
@@ -166,7 +166,7 @@ canonical Card permission rather than a second permission named after the page c
 | `telegram.bot_info` | Membership (`project_membership`) | Reads the configured bot's topic settings. |
 | `project.people.list` | Membership (`project_membership`) | Project membership and Card reconciliation retain their own authority fences. |
 | `project.people.card` | Membership (`project_membership`) | An admin reads another person's Card projection; other members read only their own. |
-| `project.people.card.reset` | Membership (`project_membership`) | A person resets only their own My Card's Problem Board service to what their Control allows: preview shows the exact result, and confirm commits only that shown result in one PB/Hub transaction (work_card_transaction_card_reset_display_changed when it moved). |
+| `project.people.card.reset` | Membership (`project_membership`) | A person resets only their own My Card's Project Board service to what their Control allows: preview shows the exact result, and confirm commits only that shown result in one PB/Hub transaction (work_card_transaction_card_reset_display_changed when it moved). |
 | `project.people.control.backfill` | Membership (`project_membership`) | Fit to role adds the missing server-defined operations and required grants of the committed role, removing nothing. Own self_preview/self_confirm is authorized by current project membership, targets only the session person, and fences role version, membership incarnation, catalog and Control revision through the existing role save; confirmation carries only the shown digest and request id. Fitting another person remains a project-admin Card-edit operation requiring cards.manage. Own My alignment is a separate exact preview and confirmation. |
 | `project.file.edit.request` | Role AND current effective Card hierarchy | A signed-in person needs project.files.edit and control.enqueue; edits only a file listed on this project. |
 | `project.file.edit.get` | Membership (`project_membership`) | The requesting person's own edit result. |

@@ -51,7 +51,7 @@ _FULL_DETAIL_LINE = "detail: compact brief view; rerun the same command with --f
 
 
 class UnreadableOutput(Exception):
-    """The text is not a Problem Board envelope. ``raw`` carries it complete."""
+    """The text is not a Project Board envelope. ``raw`` carries it complete."""
 
     def __init__(self, reason: str, raw: str) -> None:
         super().__init__(reason)
@@ -93,7 +93,7 @@ def parse_envelope(text: str) -> dict[str, Any]:
             raise UnreadableOutput(f"not JSON ({inner.msg} at line {inner.lineno + start}, column {inner.colno})", text) from inner
         skipped = lines[:start]
     if not isinstance(parsed, Mapping) or "ok" not in parsed:
-        raise UnreadableOutput("JSON without an ok field is not a Problem Board envelope", text)
+        raise UnreadableOutput("JSON without an ok field is not a Project Board envelope", text)
     envelope = dict(parsed)
     if skipped:
         envelope["_skipped_prefix"] = skipped
