@@ -242,7 +242,7 @@ def test_the_skill_names_the_always_on_rules_the_workspace_keeps() -> None:
     assert "pb copies them nowhere: no workspace file carries them." in skill
     assert "`pb procedure install --workspaces`" not in skill  # operator: "--workspaces should be itself removed"
     assert "\"CLAUDE.md / AGENTS.md made from project file (which we have multiple of them).\"" in skill
-    assert "do not save your own versions of Problem Board workflow rules" in skill
+    assert "do not save your own versions of Project Board workflow rules" in skill
     assert "goes to the coordinator as a procedure change (collaboration Rule 14), never into private memory" in skill
     section = skill[skill.index("## Always-On Rules"):skill.index("## Read pb Output")]
     for requirement in (

@@ -78,7 +78,7 @@ assignment stays authoritative; the note explains the handoff. After a long
 gap, read the item, its assignment and the latest handoff note before old
 mail, and say which earlier instructions are superseded (W449).
 
-### Route through Problem Board's worker CLI, with the complete assignment payload
+### Route through Project Board's worker CLI, with the complete assignment payload
 
 The coordinator uses the same installed worker interface as every other
 agent. `pb worker context --project-ref <project-ref>` supplies the stable

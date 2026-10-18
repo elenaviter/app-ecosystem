@@ -1,8 +1,8 @@
 ---
 id: app-ecosystem.project-board.procedure.testing
-title: Test The Problem Board Bundle
+title: Test The Project Board Bundle
 summary: >-
-  Defines the fast pre-PR and complete pre-merge gates for the Problem Board
+  Defines the fast pre-PR and complete pre-merge gates for the Project Board
   package, provider, shared field, knowledge, widgets, descriptors, and live
   verification.
 tags: [procedure, testing, bundle, problem-board]
@@ -13,7 +13,7 @@ see_also:
   - repo:app-ecosystem/products/project-board/docs/storage-and-retention.md
 ---
 
-# Test The Problem Board Bundle
+# Test The Project Board Bundle
 
 Before platform-backed tests, follow
 [the platform suite procedure](repo:app-ecosystem/products/kdcube/procedures/platform-suite.md),
@@ -40,11 +40,11 @@ are green. The complete environment-backed tier blocks merge, not opening the
 pull request. This keeps review moving while preserving the full gate:
 
 1. **Before a pull request:** run the touched test files, then the whole
-   Problem Board application suite with `-n auto -m "not slow"`. Leave
+   Project Board application suite with `-n auto -m "not slow"`. Leave
    `PB_TEST_POSTGRES_DSN` and `PROBLEM_BOARD_HOST_PYTHON` unset. Record the wall
    time, result counts, expected skips, and `--durations=20`.
 2. **Before merge:** use a disposable PostgreSQL database and an installed
-   Problem Board host interpreter, then run the whole suite with `-n 8` and no
+   Project Board host interpreter, then run the whole suite with `-n 8` and no
    marker exclusion. This run includes the environment-backed checks and every
    test marked `slow`; it runs while the reviewer reads the diff and must be
    green before merge.
@@ -74,7 +74,7 @@ any one machine's paths:
 ```bash
 KD=<kdcube-ai-app checkout>/app/ai-app/src/kdcube-ai-app
 AE=<app-ecosystem checkout>
-PB=<the Problem Board server app directory in your checkout of its repository>
+PB=<the Project Board server app directory in your checkout of its repository>
 PROJECT_BOARD=$AE/products/project-board/packages/project-board/src
 RUNNER_SCRIPT=$AE/products/project-board/packages/project-board/scripts/prepare_test_runner.py
 RUNNER_ROOT=${PB_TEST_RUNNER_ROOT:-$HOME/.kdcube/test-runners/problem-board}
@@ -146,7 +146,7 @@ PYTHONPATH="$PROJECT_PYTHONPATH" \
 
 The runner carries the platform's third-party dependencies and not necessarily
 what the overlays declare. A bare system Python will fail on those dependencies
-before it reaches any Problem Board code. The source dependency preflight over
+before it reaches any Project Board code. The source dependency preflight over
 the six overlays names the first declared distribution the runner lacks in one
 sentence, while the runner preflight also covers the Project Board test extra.
 Every line names the interpreter it asked because the answer differs per host.

@@ -1,7 +1,7 @@
 ---
 id: app-ecosystem.project-board.procedure.add-a-worker-host
 title: Add A Worker Host
-summary: Step by step, for a person or for an agent acting for them, to turn a remote Linux machine on a private network into a host that runs Problem Board agent sessions with access to exactly the repositories they work on.
+summary: Step by step, for a person or for an agent acting for them, to turn a remote Linux machine on a private network into a host that runs Project Board agent sessions with access to exactly the repositories they work on.
 tags: [procedure, problem-board, setup, relay, worker, linux, headless]
 keywords: [worker host, tailnet, headless, deploy key, pinned client, systemd relay, keyring, device login, bypass permissions, private code]
 see_also:
@@ -13,7 +13,7 @@ see_also:
 
 # Add A Worker Host
 
-This procedure adds a machine to an existing Problem Board deployment: a remote
+This procedure adds a machine to an existing Project Board deployment: a remote
 Linux machine, usually without a screen, reached over a private network such as
 Tailscale. Agent sessions (Claude Code or Codex) run there, each in its own
 workspace with its own clones of the repositories it works on, and talk to the
@@ -30,7 +30,7 @@ The short version a user follows, and what they hand their setup agent, is
 
 ## Who does what
 
-- **Operator**: the person who owns the Problem Board project.
+- **Operator**: the person who owns the Project Board project.
 - **Host agent**: an agent with an SSH session on the new host, acting for the
   operator. A person can do every host-agent step too.
 - **Either**: the host agent, or a person instead of it.
@@ -113,7 +113,7 @@ runtime import paths. The host release moves only by
 one Linux user: the inert `pb` launcher, the current client release environment
 (`project-board` with its Connection Hub client and foundation packages), the
 worker procedure package for Claude Code and Codex, and the user relay service.
-They do not install Problem Board itself, which is an app on the KDCube
+They do not install Project Board itself, which is an app on the KDCube
 deployment the relay talks to, nor any KDCube or Connection Hub server. The host
 needs neither: it reaches the deployment through its endpoint.
 
@@ -133,7 +133,7 @@ before anything changes:
 |---|---|---|
 | host id and label | `host-two`, "host-two (Linux, headless)" | the machine's name on the board. "The agents on a host agree before a relay restart" is per host id. |
 | Linux user that runs the agents | `agent-user` | owns the keys, the relay and the credential store |
-| **the project the agents join** | `Project one` | its project card lists the repositories (alias, URL, role). Step 7 gives this host a deploy key for exactly those, and step 12 clones them into each agent's workspace. The agents reach nothing else through Problem Board. Which repositories a project uses is decided on its card, not per host (W304 finding 15). |
+| **the project the agents join** | `Project one` | its project card lists the repositories (alias, URL, role). Step 7 gives this host a deploy key for exactly those, and step 12 clones them into each agent's workspace. The agents reach nothing else through Project Board. Which repositories a project uses is decided on its card, not per host (W304 finding 15). |
 | workspaces, one per agent | `~/.kdcube/pb/workspaces/agent-one`, `~/.kdcube/pb/workspaces/agent-two` | each agent edits only its own clones. The root is `~/.kdcube/pb/workspaces/<alias>` on every host (operator ruling, 2026-09-25: not in the user's home folder). An existing host keeps its old folders until a planned move. |
 | agent names | `agent-one@host-two`, `agent-two@host-two` | display names on the board. The board addresses a worker by a stable generated name. |
 | runtime of each agent | `claude-code` for both, or one of each | an agent session is described by its runtime, provider account, and session ID. Its stable worker address remains runtime plus session ID, and the board keeps its first host-login reading, as inference. One host can run Claude Code and Codex agents side by side, each in its own workspace. Needing another runtime means adding another agent. |
@@ -141,7 +141,7 @@ before anything changes:
 | who approves the agents' Cards | the project's operator | the KDCube user the agents act for. Until a project can have more than one operator (W260), it is the project's operator. |
 | `tmux` on the host | installed by whoever administers the machine | step 9 runs each agent in it. It is a system package, so a user-level install cannot provide it. |
 | **teammates who may write to these agents** | `*` (the default), any agent that shares a project with them, or named workers such as the coordinator | the host's receiver policy (`receiver_policy.allowed_peer_workers`). `pb setup` writes `*` (operator ruling, 2026-09-26); step 3 narrows it only when the operator chose named workers or none. The board lets an agent in a shared project address them, and, while one of them attends no project, anyone who knows its exact stable name (never its alias) may send it a request, reply or ping; so `*` means "my project teammates, and whoever knows a new agent's id before it joins". It grants no access to anything: it decides whose mail reaches these agents. The operator's own messages reach them either way. |
-| **how the client is installed** | a published `project-board` version (for example `2026.9.26.1900`), or an exact App Ecosystem commit | step 2. A published release is one version from the package index, the default for a machine that only runs agents; exact commits are for a machine of the team that builds Problem Board, or before a release is published (W304 U2). |
+| **how the client is installed** | a published `project-board` version (for example `2026.9.26.1900`), or an exact App Ecosystem commit | step 2. A published release is one version from the package index, the default for a machine that only runs agents; exact commits are for a machine of the team that builds Project Board, or before a release is published (W304 U2). |
 | **GitHub access** | each agent's owner links GitHub on their My Card for the project, sets their commit email there, and the deployment's GitHub App is installed on each repository owner ([GitHub access for agents](repo:app-ecosystem/products/project-board/docs/github.md)) | agents push, open pull requests and post review verdicts as their owner, over HTTPS with `pb worker git-credential` and `pb worker gh`; nothing is signed in on the machine. A machine account (for example `kdcube-agents`) signed in to `gh`, and deploy keys (step 7), are the fallback, only for an owner with no key. |
 
 **Repositories are not a host decision.** They belong to the project: the
@@ -225,7 +225,7 @@ Two routes install the same client. Step 0 decides which (W304 U2):
   [first run](problem-board-worker/references/first-run.md) reference.
   Moving the machine to another version later, or back to one it ran, is
   [install, update, roll back pb](install-update-rollback.md).
-- **Exact source commits** (a machine of the team that builds Problem Board,
+- **Exact source commits** (a machine of the team that builds Project Board,
   or before a release is published), below.
 
 **Host agent**, logged in as the user who will run the agents, first clones the
@@ -449,7 +449,7 @@ worker: Claude Code publishes it as `oauthAccount` in `~/.claude.json`; Codex
 publishes an account ID and public identity claims in `~/.codex/auth.json`.
 `pb worker authorize` reads only the account ID, email, and organization from
 that local runtime state. Credential and token values stay in their native
-files and never enter Problem Board, Connection Hub client metadata, command
+files and never enter Project Board, Connection Hub client metadata, command
 arguments, or logs. A runtime may use an API key or otherwise omit this public
 account description. In that case authorization continues without the
 identification metadata and reports `Provider account not reported`.
@@ -797,7 +797,7 @@ Runs on: the host.
 `PATH` when it runs that same `pb`, otherwise the program itself. Run the
 install through `pb`; an install that cannot name its `pb` is refused before it
 writes anything. The install keeps every other key and hook, adds only what is
-missing, and changes nothing on a second run. Older Problem Board entries are
+missing, and changes nothing on a second run. Older Project Board entries are
 brought up to date in place: a bare `pb` becomes the full path, and a
 `StopFailure` matcher that covered only `rate_limit` gains every other stopping
 error. Before it writes, it keeps a copy of the file as
@@ -889,7 +889,7 @@ tmux -u new-session -d -s <agent-name> -x 220 -y 55 "bash -lc 'start-<agent-name
 - `--ask-for-approval never` is the unattended worker policy: an approval prompt
   cannot hold the session while nobody is attached, and a failed command returns
   to the model. The agent still routes project and operator decisions through
-  Problem Board. `on-request` is the attended diagnostic mode: substitute it
+  Project Board. `on-request` is the attended diagnostic mode: substitute it
   while a person remains attached to answer Codex prompts. Sandbox access and
   approval prompts are separate, so `on-request` can prompt even with
   `danger-full-access`.
@@ -919,7 +919,7 @@ a return inside the text is read as part of it. Keep the prompt short, and read
 the answer with `capture-pane`:
 
 ```bash
-tmux send-keys -t <agent-name> -l 'Use the problem-board-worker skill. Join Problem Board as <agent-name>.'
+tmux send-keys -t <agent-name> -l 'Use the problem-board-worker skill. Join Project Board as <agent-name>.'
 tmux send-keys -t <agent-name> Enter
 tmux capture-pane -p -t <agent-name> | tail -40      # read what it shows
 ```
@@ -1144,7 +1144,7 @@ prints `Provider account not reported` and continues authorization without it.
 
 It prints the URL and the code. The **operator** opens the URL on any device,
 signs in, enters the code, and approves the presented worker authority. A first
-Card labels the client as a **Problem Board worker** and checks the
+Card labels the client as a **Project Board worker** and checks the
 descriptor's standard worker operations. To create a coordinator Card instead,
 use:
 
@@ -1152,8 +1152,8 @@ use:
 pb worker authorize <profile> --device --coordinator
 ```
 
-That consent labels the client as a **Problem Board coordinator** and checks
-the whole current Problem Board operation catalog. The worker profile is an
+That consent labels the client as a **Project Board coordinator** and checks
+the whole current Project Board operation catalog. The worker profile is an
 explicit operation list; a newly published operation does not reach workers
 until the descriptor adds it. The coordinator profile is the whole catalog;
 newly published operations appear in its next first or replacement consent.
@@ -1370,7 +1370,7 @@ Runs on: the host, and GitHub in the operator's browser (deleting deploy keys).
   in that repository and the key files on the host.
 - The whole host: detach every agent, run `pb relay-service uninstall` and
   remove the inert `pb` launcher and its release store for each
-  user, delete the deploy keys on GitHub, then remove that user's Problem Board
+  user, delete the deploy keys on GitHub, then remove that user's Project Board
   state after retaining any required audit material.
 
 ## Worked example: a machine's sheet

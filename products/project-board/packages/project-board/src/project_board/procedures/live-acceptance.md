@@ -1,6 +1,6 @@
 ---
 id: app-ecosystem.project-board.procedure.live-acceptance
-title: Run Problem Board Live Acceptance
+title: Run Project Board Live Acceptance
 summary: Verifies app-owned catalog publication, PostgreSQL plan authority and guarded local cutover, host setup, session-native enrollment and resume, direct delegated-Card admission, canonical operations over MCP and Data Bus, runtime-specific inbox checks, ownership fencing, receiver policy, and live revocation.
 tags: [procedure, live-testing, problem-board, local-worker]
 keywords: [live acceptance, guarded plan cutover, PostgreSQL plan authority, delegated catalog check, session identity, session resume command, project isolation, Connection Hub card, relay]
@@ -12,7 +12,7 @@ see_also:
   - repo:app-ecosystem/products/project-board/docs/topology-and-flows.md
 ---
 
-# Run Problem Board Live Acceptance
+# Run Project Board Live Acceptance
 
 This procedure separates setup, runtime, relay, and model-attention proofs. Run
 them in order and record each independently: a loaded bundle is not proof of
@@ -48,9 +48,9 @@ user unit before loading it.
 ## 2. Prove Runtime Readiness
 
 Stage `problem-board@1-0` and `problem-board-knowledge@1-0` from their local
-paths. Preserve the Problem Board app's `config.delegated_catalog` block.
+paths. Preserve the Project Board app's `config.delegated_catalog` block.
 
-On the first deployment after moving from a Connection Hub-owned Problem Board
+On the first deployment after moving from a Connection Hub-owned Project Board
 catalog, apply one reviewed descriptor revision before either reload:
 
 ```text
@@ -59,7 +59,7 @@ Connection Hub base removes:
   resource      */problem-board@1-0/public/mcp/problem_board*
   namespace     work from the shared */kdcube-services@1-0/.../named_services*
 
-Problem Board config.delegated_catalog retains those same identities.
+Project Board config.delegated_catalog retains those same identities.
 The shared named-services resource and every other namespace remain unchanged.
 ```
 
@@ -99,7 +99,7 @@ discovery is degraded and the test stops there.
 Before creating a worker credential, send an unauthenticated MCP initialize
 request to the `problem_board` endpoint. It must return `401` and a
 `WWW-Authenticate` header whose resource metadata resolves to the exact
-Problem Board endpoint and advertises `work:relay`. A `200` response means the
+Project Board endpoint and advertises `work:relay`. A `200` response means the
 managed route policy is not active. A transient `503` during startup is not an
 authorization verdict; wait for Connection Hub readiness and retry.
 
@@ -181,7 +181,7 @@ the relay never starts or resumes Claude Code or Codex.
 
 ## 4. Prove Local Work And Continuation
 
-Use separate machine-local Problem Board workspace roots (internally, `local
+Use separate machine-local Project Board workspace roots (internally, `local
 shared field` roots) on machines A and B. Bind project A to portable
 journal-home and project-artifact refs in Git repositories. Require
 `worker context` to resolve those refs through each machine's private mapping
@@ -353,7 +353,7 @@ Prove the boundary in this order:
 3. The board reports the worker stream online only after the socket room and
    server subscription are ready. Redis routing/session records contain the
    Card address and selected resource, never the bearer.
-4. Every operation below is a Problem Board service action. The MCP tool name
+4. Every operation below is a Project Board service action. The MCP tool name
    and a `data_bus.publish` package's `payload.operation` on subject
    `problem_board.command.v1` carry that same canonical ID:
 

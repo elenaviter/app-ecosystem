@@ -1,6 +1,6 @@
 ---
 id: project-board.skill-reference.identity-and-authorization
-title: Problem Board Worker Identity And Authorization
+title: Project Board Worker Identity And Authorization
 summary: Defines the selected-session identity, display alias, Connection Hub profile, credential boundary, attendance, assignment, revocation, and reauthorization states used by the worker skill.
 tags: [procedure, problem-board, worker, identity, authorization]
 keywords: [native session id, stable worker name, Connection Hub Card, attendance, revocation]
@@ -20,11 +20,11 @@ Keep these values separate:
 | --- | --- | --- |
 | Runtime kind + native resumable session ID | The selected coding-agent session | Stable identity input |
 | Provider account reported by the host | The vendor account running that session | Identification and change evidence |
-| Stable worker name | Problem Board address derived from that session | Mail and assignment address |
+| Stable worker name | Project Board address derived from that session | Mail and assignment address |
 | Alias | Mutable operator-readable label | Display only |
 | Logical host and relay | The configured receiving machine and transport | Delivery path, not model identity |
 | Connection Hub profile | Non-secret metadata locating one worker Card | Credential binding metadata |
-| Problem Board project attendance | The one current project, or none | Project mail and context |
+| Project Board project attendance | The one current project, or none | Project mail and context |
 | Assignment | Fenced ownership of one work item | Work mutation/report authority |
 
 The alias changes without touching anything else. `pb worker listen --alias
@@ -77,7 +77,7 @@ profile metadata and route state, not the bearer.
 Distinguish these classes when diagnosing a failure:
 
 - **Model credential:** credentials for Claude Code, Codex, or another model
-  provider. Problem Board does not receive them.
+  provider. Project Board does not receive them.
 - **Provider-account metadata:** host-reported account ID, email, and
   organization used to identify the runtime login. Card authority remains the
   operator-approved authority shown as Owner.
@@ -128,7 +128,7 @@ operations by default: `review.accept`, `review.assign`, `review.cancel`,
 `assignment.return`, `work.accept` (the compatibility name), and the two
 independent setters `work.status.set` and `work.assignee.set` (operator,
 2026-10-01). The worker profile lists each of them, and the coordinator
-profile selects every Problem Board operation. The Card's owner applies them
+profile selects every Project Board operation. The Card's owner applies them
 with **Fit to role** on the agent's row in **Team > Agents** (formerly
 Refresh worker Card and Refresh coordinator Card), which reapplies the
 role's default profile under the project's ceiling and keeps the same

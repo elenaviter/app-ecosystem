@@ -89,7 +89,7 @@ which on 2026-09-24 kept `ps` and ended an agent's own watches again.
 
 Guard prompt, with `<id>` this session's runtime session id:
 
-    Problem Board watch guard (session <id>). Do exactly this, all three
+    Project Board watch guard (session <id>). Do exactly this, all three
     steps in this one turn, in this order: 1. start a fresh watch with the
     Monitor tool (`exec pb worker watch --runtime-kind claude-code
     --runtime-session-id <id> 2>&1`, timeout 1800000 ms). 2. end every

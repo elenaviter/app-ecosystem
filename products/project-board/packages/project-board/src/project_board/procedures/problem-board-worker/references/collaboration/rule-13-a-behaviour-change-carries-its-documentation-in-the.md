@@ -2,12 +2,12 @@ Part of [collaboration](../collaboration.md).
 
 ## Rule 13. A behaviour change carries its documentation in the same change
 
-Every change to Problem Board behaviour updates the public documentation
+Every change to Project Board behaviour updates the public documentation
 (`repo:app-ecosystem/products/project-board/docs/`) in the same change; when
 the code lives in a private repository, the documentation change is a paired
 change request in app-ecosystem, named in the first one and merged with it.
 The reviewer checks it and refuses a behaviour change without it. Why: the
-concepts an agent needs to explain Problem Board had been kept only in private
+concepts an agent needs to explain Project Board had been kept only in private
 pages, so an agent with only the public client could not answer who edits
 which Card (operator, 2026-09-26).
 
