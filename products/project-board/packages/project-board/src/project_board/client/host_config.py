@@ -616,7 +616,7 @@ def profile_config_path(name: str, *, state_root: Path | None = None) -> Path:
     """The relay config of one KDCube profile, the target id ``pb setup`` named.
 
     A KDCube profile selects a deployment. It is not a Card authorization
-    profile (``pb worker authorize <profile>``). An unknown or ambiguous name
+    profile (``pb worker authorize <profile> --device``). An unknown or ambiguous name
     is refused, never answered with the machine default.
     """
 

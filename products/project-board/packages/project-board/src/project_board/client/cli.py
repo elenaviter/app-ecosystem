@@ -223,7 +223,7 @@ def _host_config(parser: argparse.ArgumentParser) -> None:
         help="Host relay config; defaults to this user's selected Problem Board target.",
     )
     # W909: the KDCube profile, the target id `pb setup --target-id` named. Not a
-    # Card authorization profile (`pb worker authorize <profile>`).
+    # Card authorization profile (`pb worker authorize <profile> --device`).
     parser.add_argument(
         "--profile",
         dest="kdcube_profile",
