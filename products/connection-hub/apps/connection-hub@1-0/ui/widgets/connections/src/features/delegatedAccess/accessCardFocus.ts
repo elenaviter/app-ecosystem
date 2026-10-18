@@ -102,7 +102,7 @@ export function isRequestLimitRefusal(reason = ''): boolean {
  *  something was restarted." Connection Hub answers project_board_restarting
  *  while the board reloads (an older package names the resolver's
  *  project_membership_provider_not_ready instead). Not a refusal, not a yes. */
-export const BOARD_RESTARTING_MESSAGE = 'Problem Board is restarting; try again in a few seconds.';
+export const BOARD_RESTARTING_MESSAGE = 'Project Board is restarting; try again in a few seconds.';
 
 export function isBoardRestarting(reason = ''): boolean {
   return /\b(project_board_restarting|project_membership_provider_not_ready)\b/.test(reason);

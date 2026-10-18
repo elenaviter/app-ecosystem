@@ -203,7 +203,7 @@ test('an unresolved exact Card deep link is visible instead of becoming an unfil
   // W260: the message carries Connection Hub's own reason.
   assert.match(panel, /unavailableAccessCardMessage\(accessCardFocus, delegatedAccessError\)/)
   // 2026-10-09: an open read that did not answer in time is named first (CONTROL_OPEN_TIMEOUT_MESSAGE).
-  assert.match(panel, /<strong>\s*\{focusTimedOut \? 'Card unavailable\.'\s*: isBoardRestarting\(delegatedAccessError\) \? 'Problem Board is restarting\.'\s*: isRequestLimitRefusal\(delegatedAccessError\) \? 'Too many requests\.' : 'Card unavailable\.'\}\s*<\/strong>/)
+  assert.match(panel, /<strong>\s*\{focusTimedOut \? 'Card unavailable\.'\s*: isBoardRestarting\(delegatedAccessError\) \? 'Project Board is restarting\.'\s*: isRequestLimitRefusal\(delegatedAccessError\) \? 'Too many requests\.' : 'Card unavailable\.'\}\s*<\/strong>/)
 })
 
 test('permission claims are operation prerequisites and tool lists retain exact bulk and individual controls', () => {

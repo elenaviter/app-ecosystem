@@ -47,7 +47,7 @@ import { BOARD_RESTARTING_EDIT_MESSAGE } from '../src/features/delegatedAccess/c
 test('a restarting board is said so: the viewer notice, still fail closed', () => {
   const restarting = { can_edit: null, reason: 'project_board_restarting', retryable: true }
   assert.equal(cardPermissionUnknown(personControl, restarting), BOARD_RESTARTING_EDIT_MESSAGE)
-  assert.match(BOARD_RESTARTING_EDIT_MESSAGE, /^Problem Board is restarting; try again in a few seconds\./)
+  assert.match(BOARD_RESTARTING_EDIT_MESSAGE, /^Project Board is restarting; try again in a few seconds\./)
   assert.equal(cardSaveBlockedReason(personControl, restarting), BOARD_RESTARTING_EDIT_MESSAGE) // Save waits
   assert.equal(cardReadOnlyReason(personControl, restarting), '') // Edit stays
 })
