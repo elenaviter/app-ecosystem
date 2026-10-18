@@ -578,6 +578,70 @@ def host_state_path(
     )
 
 
+def _write_default_pointer(pointer: Path, config_path: Path, *, make_default: bool) -> bool:
+    """Point the machine default at ``config_path`` only when that moves no one.
+
+    W909 (operator, 2026-10-18: two KDCubes on one host): setting up a second
+    KDCube profile must not move every session that runs pb without a profile
+    onto it. The default changes when there is none, when it already names
+    this config or a config that no longer exists, or on ``--make-default``.
+    """
+
+    current = str(read_json(pointer, required=False).get("config") or "").strip()
+    current_path = Path(current).expanduser().resolve() if current else None
+    if not (
+        make_default
+        or current_path is None
+        or current_path == Path(config_path).expanduser().resolve()
+        or not current_path.exists()
+    ):
+        return False
+    atomic_write_json(
+        pointer,
+        {"schema": HOST_CONFIG_POINTER_SCHEMA, "config": str(config_path), "updated_at": utc_now()},
+    )
+    return True
+
+
+def known_profiles(*, state_root: Path | None = None) -> list[str]:
+    """The KDCube profile names on this machine: every setup target with a pointer."""
+
+    base = (state_root or client_runtime_root()) / "problem-board" / "targets"
+    if not base.is_dir():
+        return []
+    return sorted({pointer.parent.parent.name for pointer in base.glob("*/*/default.json")})
+
+
+def profile_config_path(name: str, *, state_root: Path | None = None) -> Path:
+    """The relay config of one KDCube profile, the target id ``pb setup`` named.
+
+    A KDCube profile selects a deployment. It is not a Card authorization
+    profile (``pb worker authorize <profile>``). An unknown or ambiguous name
+    is refused, never answered with the machine default.
+    """
+
+    selected = component(name, field="profile")
+    base = (state_root or client_runtime_root()) / "problem-board" / "targets" / selected
+    configs: list[Path] = []
+    for pointer in sorted(base.glob("*/default.json")) if base.is_dir() else []:
+        config = str(read_json(pointer, required=False).get("config") or "").strip()
+        if config:
+            configs.append(Path(config).expanduser().resolve())
+    if len(configs) == 1:
+        return configs[0]
+    if not configs:
+        raise DomainError(
+            "work_profile_unknown",
+            f"No KDCube profile named {selected!r} is set up on this machine.",
+            details={"profile": selected, "known_profiles": known_profiles(state_root=state_root)},
+        )
+    raise DomainError(
+        "work_profile_ambiguous",
+        f"The KDCube profile {selected!r} names more than one deployment project; pass --config.",
+        details={"profile": selected, "configs": [str(config) for config in configs]},
+    )
+
+
 def _repository_url(value: Any, *, alias: str) -> str:
     url = str(value or "").strip()
     if not url.startswith(("https://", "http://", "ssh://", "git@")):
@@ -604,6 +668,7 @@ def initialize_host_config(
     state_root: str | Path | None = None,
     connection_hub_state_root: str | Path | None = None,
     idle_reconcile_ceiling_seconds: int | None = None,
+    make_default: bool = False,
 ) -> HostRelayConfig:
     selected_root = Path(state_root).expanduser().resolve() if state_root else None
     pointer = default_pointer_path(state_root=selected_root)
@@ -656,14 +721,7 @@ def initialize_host_config(
                         status=409,
                         details={"config": str(candidate_path)},
                     )
-                atomic_write_json(
-                    pointer,
-                    {
-                        "schema": HOST_CONFIG_POINTER_SCHEMA,
-                        "config": str(candidate_path),
-                        "updated_at": utc_now(),
-                    },
-                )
+                _write_default_pointer(pointer, candidate_path, make_default=make_default)
                 atomic_write_json(
                     target_pointer,
                     {
@@ -739,10 +797,7 @@ def initialize_host_config(
     }
     config = HostRelayConfig.from_mapping(value, path=path)
     atomic_write_json(path, value)
-    atomic_write_json(
-        pointer,
-        {"schema": HOST_CONFIG_POINTER_SCHEMA, "config": str(path), "updated_at": utc_now()},
-    )
+    _write_default_pointer(pointer, path, make_default=make_default)
     atomic_write_json(
         target_pointer,
         {"schema": HOST_CONFIG_POINTER_SCHEMA, "config": str(path), "updated_at": utc_now()},
@@ -921,12 +976,37 @@ def update_host_config(
         return updated
 
 
-def resolve_host_config_path(value: str | Path | None = None) -> Path:
+PROFILE_ENV = "PB_PROFILE"
+CONFIG_ENV = "PROBLEM_BOARD_CONFIG"
+
+
+def host_config_selection(
+    value: str | Path | None = None, *, profile: str | None = None
+) -> tuple[Path, str]:
+    """The host config and what chose it, highest first (W909).
+
+    ``--config`` path, ``--profile`` name, ``PROBLEM_BOARD_CONFIG`` path,
+    ``PB_PROFILE`` name, then the machine default pointer.
+    """
+
     if value:
-        return Path(value).expanduser().resolve()
-    env_path = str(os.environ.get("PROBLEM_BOARD_CONFIG") or "").strip()
+        return Path(value).expanduser().resolve(), "config_flag"
+    if str(profile or "").strip():
+        return profile_config_path(str(profile)), "profile_flag"
+    env_path = str(os.environ.get(CONFIG_ENV) or "").strip()
     if env_path:
-        return Path(env_path).expanduser().resolve()
+        return Path(env_path).expanduser().resolve(), "config_env"
+    env_profile = str(os.environ.get(PROFILE_ENV) or "").strip()
+    if env_profile:
+        return profile_config_path(env_profile), "profile_env"
+    return _default_host_config_path(), "default"
+
+
+def resolve_host_config_path(value: str | Path | None = None, *, profile: str | None = None) -> Path:
+    return host_config_selection(value, profile=profile)[0]
+
+
+def _default_host_config_path() -> Path:
     pointer = read_json(default_pointer_path(), required=False)
     path = str(pointer.get("config") or "").strip()
     if path:
@@ -1218,13 +1298,18 @@ __all__ = [
     "DEFAULT_CONTROL_KINDS",
     "HOST_CONFIG_POINTER_SCHEMA",
     "HOST_CONFIG_SCHEMA",
+    "CONFIG_ENV",
     "HostRelayConfig",
+    "PROFILE_ENV",
     "WorkerChannelConfig",
     "client_runtime_root",
     "default_pointer_path",
     "enroll_worker_channel",
+    "host_config_selection",
     "host_state_path",
     "initialize_host_config",
+    "known_profiles",
+    "profile_config_path",
     "resolve_host_config_path",
     "set_worker_channel_state",
     "set_worker_claude_profile",

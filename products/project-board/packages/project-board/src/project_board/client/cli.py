@@ -41,7 +41,11 @@ from .host_config import (
     HOST_CONFIG_SCHEMA,
     HostRelayConfig,
     enroll_worker_channel,
+    default_pointer_path,
+    host_config_selection,
     initialize_host_config,
+    known_profiles,
+    profile_config_path,
     resolve_host_config_path,
     update_host_config,
     WorkerChannelConfig,
@@ -218,6 +222,16 @@ def _host_config(parser: argparse.ArgumentParser) -> None:
         "--config",
         help="Host relay config; defaults to this user's selected Problem Board target.",
     )
+    # W909: the KDCube profile, the target id `pb setup --target-id` named. Not a
+    # Card authorization profile (`pb worker authorize <profile>`).
+    parser.add_argument(
+        "--profile",
+        dest="kdcube_profile",
+        help=(
+            "KDCube profile: the setup target id of the deployment to use (env PB_PROFILE). "
+            "Not a Card authorization profile. --config wins over it."
+        ),
+    )
 
 
 def _project_board_version() -> str:
@@ -309,6 +323,14 @@ def build_parser() -> argparse.ArgumentParser:
         help="Write the configuration without first checking that the endpoint answers as the board's MCP (offline setup).",
     )
     setup.add_argument("--config")
+    setup.add_argument(
+        "--make-default",
+        action="store_true",
+        help=(
+            "Also make this KDCube profile the machine default. Without it, an existing "
+            "default stays, so sessions that run pb without a profile do not move."
+        ),
+    )
     setup.add_argument("--state-root")
     setup.add_argument("--connection-hub-state-root")
     setup.add_argument(
@@ -2137,9 +2159,11 @@ def _status_command(args: Any) -> dict[str, Any]:
             identity = None
     from .prerequisites import check_prerequisites
 
-    return first_run_status(
+    status = first_run_status(
         config=getattr(args, "config", None), identity=identity, prerequisites=check_prerequisites()
     )
+    status["kdcube_profile"] = _kdcube_profile_view(args)
+    return status
 
 
 def _setup_endpoint_check(args: Any) -> dict[str, Any]:
@@ -2178,7 +2202,13 @@ def _setup(args: Any) -> dict[str, Any]:
         state_root=args.state_root,
         connection_hub_state_root=args.connection_hub_state_root,
         idle_reconcile_ceiling_seconds=args.idle_poll_interval,
+        make_default=bool(getattr(args, "make_default", False)),
     )
+    state_root = Path(args.state_root).expanduser().resolve() if args.state_root else None
+    default_config = str(
+        read_json(default_pointer_path(state_root=state_root), required=False).get("config") or ""
+    ).strip()
+    is_default = bool(default_config) and Path(default_config).resolve() == config.path
     field = SharedFieldStore(config.field_root)
     manifest = field.initialize(title=f"Problem Board field on {config.host_label}")
     journals = JournalWorkspace(config.journal_workspace_root, repository_map).initialize()
@@ -2188,10 +2218,15 @@ def _setup(args: Any) -> dict[str, Any]:
         "journal_workspace": str(config.journal_workspace_root),
         "field": manifest,
         "journals": journals,
+        # W909: the profile this setup wrote, and whether it is the machine default.
+        "profile": config.target_id,
+        "is_default": is_default,
+        "default_config": default_config,
         "next": {
-            "relay_debug": ["pb", "relay", "--once"],
-            "relay_install": ["pb", "relay-service", "install"],
+            "relay_debug": ["pb", "relay", "--once"] + ([] if is_default else ["--profile", config.target_id]),
+            "relay_install": ["pb", "relay-service", "install"] + ([] if is_default else ["--profile", config.target_id]),
             "selected_agent_session": ["pb", "worker", "listen"],
+            "agent_session_env": {} if is_default else {"PB_PROFILE": config.target_id},
             "session_authority": {
                 "allowed_roots": list(config.allowed_roots),
                 "rule": (
@@ -6171,6 +6206,7 @@ def _worker_command(args: Any) -> dict[str, Any]:
         # Never serve a project record as if the agent still attended it
         # (rehearsal gap 7, 2026-09-26): an unlinked agent is told plainly.
         context["attending"] = str(args.project_ref) in attended
+        context["kdcube_profile"] = _kdcube_profile_view(args)
         member = str(getattr(args, "member", "") or "").strip()
         if member:
             context = context_for_member(context, member)
@@ -7830,6 +7866,34 @@ def _channel_profile(args: argparse.Namespace) -> str:
     return str(getattr(channel, "profile", "") or "")
 
 
+def _select_kdcube_profile(args: argparse.Namespace) -> None:
+    """Turn ``--profile <name>`` into that profile's config before any command runs (W909).
+
+    Every host command reads ``args.config``; an explicit ``--config`` wins. The
+    env ``PB_PROFILE`` is read where the config is resolved, below the env path.
+    """
+
+    profile = str(getattr(args, "kdcube_profile", "") or "").strip()
+    if profile and not getattr(args, "config", None):
+        args.config = str(profile_config_path(profile))
+        args.kdcube_profile_selected_by = "profile_flag"
+
+
+def _kdcube_profile_view(args: Any) -> dict[str, Any]:
+    """Which KDCube profile this command used, and what chose it (W909)."""
+
+    try:
+        path, selected_by = host_config_selection(getattr(args, "config", None))
+    except DomainError as exc:
+        return {"state": "unresolved", "code": exc.code, "known": known_profiles()}
+    selected_by = str(getattr(args, "kdcube_profile_selected_by", "") or selected_by)
+    try:
+        name = HostRelayConfig.load(path).target_id
+    except (DomainError, OSError, ValueError):
+        name = ""
+    return {"name": name, "selected_by": selected_by, "config": str(path), "known": known_profiles()}
+
+
 def main(argv: list[str] | None = None) -> int:
     raw_argv = list(sys.argv[1:] if argv is None else argv)
     try:
@@ -7841,6 +7905,15 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 1
     args = build_parser().parse_args(cleaned_argv)
+    try:
+        _select_kdcube_profile(args)
+    except DomainError as exc:
+        envelope = {"ok": False, "error": exc.to_dict()}
+        if output_format == FORMAT_BRIEF:
+            print(render_envelope(envelope, worker_flags=worker_flags_from_argv(cleaned_argv)), end="")
+        else:
+            print(json.dumps(envelope, sort_keys=True), file=sys.stderr)
+        return 1
     if args.command == "render":
         return _render_command(args)
     if args.command == "worker" and getattr(args, "worker_command", "") == "limit-state":

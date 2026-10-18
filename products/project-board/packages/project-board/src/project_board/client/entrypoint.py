@@ -68,18 +68,28 @@ def _configure_relay_logging(config_path: Path | None) -> None:
 
 def _config_argument(argv: list[str]) -> Path | None:
     selected = ""
+    profile = ""
     index = 0
     while index < len(argv):
         token = argv[index]
-        if token == "--config" and index + 1 < len(argv):
-            selected = argv[index + 1]
-            index += 2
-            continue
-        if token.startswith("--config="):
-            selected = token.partition("=")[2]
+        # W909: a KDCube profile selects the config, and so the client source, too.
+        for name in ("--config", "--profile"):
+            if token == name and index + 1 < len(argv):
+                if name == "--config":
+                    selected = argv[index + 1]
+                else:
+                    profile = argv[index + 1]
+                index += 1
+                break
+            if token.startswith(name + "="):
+                if name == "--config":
+                    selected = token.partition("=")[2]
+                else:
+                    profile = token.partition("=")[2]
+                break
         index += 1
     try:
-        return resolve_host_config_path(selected or None)
+        return resolve_host_config_path(selected or None, profile=profile or None)
     except DomainError:
         return None
 
