@@ -46,7 +46,9 @@ from .host_config import (
     initialize_host_config,
     known_profiles,
     profile_config_path,
+    PROFILE_ENV,
     resolve_host_config_path,
+    selection_arguments,
     update_host_config,
     WorkerChannelConfig,
 )
@@ -5870,9 +5872,14 @@ def _worker_command(args: Any) -> dict[str, Any]:
         if procedure:
             result["procedure"] = procedure
         if channel.state != "active":
+            # W913: a session on a named KDCube profile (PB_PROFILE or
+            # --profile) prints --profile <name>, so the second terminal reaches
+            # the same board; an explicit --config path keeps --config.
             authorize = authorization_command(
                 channel.profile,
-                config_path=path if getattr(args, "config", None) else None,
+                selection=selection_arguments(path, target_id=config.target_id)
+                if getattr(args, "kdcube_profile_selected_by", "") or os.environ.get(PROFILE_ENV)
+                else (["--config", str(path)] if getattr(args, "config", None) else []),
             )
             result["next"] = {
                 "requires_user_action": True,

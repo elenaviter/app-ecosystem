@@ -1012,6 +1012,39 @@ def resolve_host_config_path(value: str | Path | None = None, *, profile: str | 
     return host_config_selection(value, profile=profile)[0]
 
 
+def profile_name_of(config_path: str | Path, *, target_id: str) -> str:
+    """The KDCube profile name that selects exactly this config, or empty (W913).
+
+    A printed resume or authorize line names the profile only when
+    ``--profile <name>`` (or ``PB_PROFILE``) chooses this same config on this
+    machine; an ambiguous, unknown or moved name is left out.
+    """
+
+    try:
+        selected = profile_config_path(target_id)
+    except DomainError:
+        return ""
+    return str(target_id) if selected == Path(config_path).expanduser().resolve() else ""
+
+
+def selection_arguments(config_path: str | Path, *, target_id: str) -> list[str]:
+    """What a command printed for another terminal adds to reach this config (W913).
+
+    Nothing for the machine default; ``--profile <name>`` for a named KDCube
+    profile, so a terminal without ``PB_PROFILE`` reaches the same board; else
+    ``--config <path>``.
+    """
+
+    path = Path(config_path).expanduser().resolve()
+    try:
+        if _default_host_config_path() == path:
+            return []
+    except DomainError:
+        pass
+    name = profile_name_of(path, target_id=target_id)
+    return ["--profile", name] if name else ["--config", str(path)]
+
+
 def _default_host_config_path() -> Path:
     pointer = read_json(default_pointer_path(), required=False)
     path = str(pointer.get("config") or "").strip()
@@ -1316,7 +1349,9 @@ __all__ = [
     "initialize_host_config",
     "known_profiles",
     "profile_config_path",
+    "profile_name_of",
     "resolve_host_config_path",
+    "selection_arguments",
     "set_worker_channel_state",
     "set_worker_claude_profile",
     "target_pointer_path",

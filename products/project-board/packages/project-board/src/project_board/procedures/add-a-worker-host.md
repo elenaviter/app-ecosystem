@@ -371,6 +371,16 @@ deployment projects (`work_profile_ambiguous`); neither falls back to the
 default. `pb status` and `pb worker context` show the profile in use and what
 chose it.
 
+An agent's resume line names its KDCube profile (`env PB_PROFILE=<name> ...`),
+and the board shows that word only to a platform super-admin. Everyone else
+sees the regular single-profile line (operator, 2026-10-18: "if the user is
+admin we can show him the instruction with the specification of the profile.
+otherwise regular single profle instruction"), which resumes a session of a
+non-default profile on the machine's default board. On such a machine, resume
+it with `PB_PROFILE=<name>` set. Installing a pb version (`pb source
+use-release`) restarts every relay on the machine, the default board's
+included.
+
 ## 4. Keep the user's services running
 
 Runs on: the host.

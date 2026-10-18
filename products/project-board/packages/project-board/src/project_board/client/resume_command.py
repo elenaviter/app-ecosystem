@@ -18,10 +18,18 @@ profile. The line then names the profile's configuration directory and the
 absolute Claude executable through `env CLAUDE_CONFIG_DIR=<dir> <exe>`, so a
 shell function or alias called `claude` cannot replace either, and the same
 inner line works unchanged inside tmux.
+
+W913: a session whose host config is a named KDCube profile (the `pb setup`
+target id; two boards on one machine, W909) resumes on that profile's board:
+the line starts `env PB_PROFILE=<name> ...`, for Codex too. Operator,
+2026-10-18: "if the user is admin we can show him the instruction with the
+specification of the profile. otherwise regular single profle instruction".
+The board removes the word for a viewer who is not a platform super-admin.
 """
 
 from __future__ import annotations
 
+import re
 import shlex
 from pathlib import Path
 from typing import Any, Mapping, Sequence
@@ -29,6 +37,9 @@ from typing import Any, Mapping, Sequence
 from ..contract.errors import DomainError
 
 RECONSTRUCTED = "# reconstructed: the start line of this session was not captured"
+PB_PROFILE_ENV = "PB_PROFILE="
+# The pb setup target id rule (io.component), so the word needs no quoting.
+KDCUBE_PROFILE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 DOCUMENTED_FLAGS = {
     "claude-code": ["--add-dir", "~/.kdcube", "--dangerously-skip-permissions", "--disallowedTools", "AskUserQuestion"],
     "codex": ["--sandbox", "danger-full-access", "--ask-for-approval", "never", "--search"],
@@ -65,12 +76,20 @@ def _line(argv: Sequence[str]) -> str:
 
 
 def _resume_argv(
-    runtime: str, session_id: str, flags: Sequence[str], cwd: str, profile: Mapping[str, str] | None = None
+    runtime: str,
+    session_id: str,
+    flags: Sequence[str],
+    cwd: str,
+    profile: Mapping[str, str] | None = None,
+    kdcube_profile: str = "",
 ) -> tuple[list[str], str]:
     """(argv, cwd for a leading cd) of the resume line for this runtime."""
 
+    # W913: a session of a named KDCube profile resumes on that profile's board.
+    # The board shows this word only to a platform super-admin.
+    board = [f"{PB_PROFILE_ENV}{kdcube_profile}"] if kdcube_profile else []
     if runtime == "codex":
-        argv = ["codex", "resume", session_id, *flags]
+        argv = [*(["env", *board] if board else []), "codex", "resume", session_id, *flags]
         # codex takes its folder with -C; a line without it starts from cwd.
         return argv, "" if ("-C" in flags or "--cd" in flags) else cwd
     # W763: every Claude line names its account folder through env, so neither
@@ -86,7 +105,7 @@ def _resume_argv(
             status=409,
         )
     executable = profile.get("executable") or "claude"
-    return ["env", f"CLAUDE_CONFIG_DIR={profile['config_dir']}", executable, "--resume", session_id, *flags], cwd
+    return ["env", *board, f"CLAUDE_CONFIG_DIR={profile['config_dir']}", executable, "--resume", session_id, *flags], cwd
 
 
 def _profile(value: Mapping[str, Any] | None) -> dict[str, str]:
@@ -125,11 +144,14 @@ def build_session_resume_command(
     working_directory: str = "",
     launch: Mapping[str, Any] | None = None,
     profile: Mapping[str, Any] | None = None,
+    kdcube_profile: str = "",
 ) -> dict[str, Any]:
     """Build the visible command from the captured start line, else the documented one.
 
     ``profile`` ({config_dir, executable}) is the Claude account profile the
     session is bound to (W763); without it the line is the bare `claude` one.
+    ``kdcube_profile`` is the KDCube profile of the session's host config
+    (W913); the line then starts with ``env PB_PROFILE=<name>``.
     """
 
     runtime = str(runtime_kind or "").strip().lower()
@@ -168,7 +190,13 @@ def build_session_resume_command(
         if runtime == "codex" and cwd:
             flags = ["-C", cwd, *flags]
     bound = _profile(profile) if runtime == "claude-code" else {}
-    argv, cd = _resume_argv(runtime, session_id, flags, cwd, bound)
+    board = str(kdcube_profile or "").strip()
+    if board and not KDCUBE_PROFILE_RE.fullmatch(board):
+        raise DomainError(
+            "work_session_resume_kdcube_profile_invalid",
+            "The KDCube profile name must contain only letters, digits, dot, underscore, or hyphen.",
+        )
+    argv, cd = _resume_argv(runtime, session_id, flags, cwd, bound, board)
     line = _line(argv)
     if cd:
         line = f"cd {shlex.quote(cd)} && {line}"
@@ -191,6 +219,7 @@ def build_session_resume_command(
         "argv": argv,
         "command": command,
         "profile_dir": bound.get("config_dir", ""),
+        "kdcube_profile": board,
     }
 
 
