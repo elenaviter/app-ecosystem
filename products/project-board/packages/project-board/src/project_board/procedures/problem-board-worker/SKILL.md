@@ -1,19 +1,19 @@
 ---
 name: problem-board-worker
-description: Enroll and operate the current Claude Code or Codex session as a Problem Board worker, including addressed mail, visible replies, lease settlement, reporting, and recovery routing. Host administration remains operator-owned.
+description: Enroll and operate the current Claude Code or Codex session as a Project Board worker, including addressed mail, visible replies, lease settlement, reporting, and recovery routing. Host administration remains operator-owned.
 metadata:
-  short-description: Operate one selected Problem Board worker session
+  short-description: Operate one selected Project Board worker session
 ---
 
-# Operate One Problem Board Worker Session
+# Operate One Project Board Worker Session
 
 Use this skill only in the exact Claude Code or Codex session the user selected.
-The user starts or resumes the coding-agent session. Problem Board connects that
+The user starts or resumes the coding-agent session. Project Board connects that
 session to addressed work; it does not start a model.
 
 ## Authority Boundary
 
-What Problem Board is, who edits which Card, how a person becomes a project admin, and how the coordinator hand-over and Telegram topics work: the public documentation, [Problem Board docs](repo:app-ecosystem/products/project-board/docs/README.md) (concepts, cards, coordinator, telegram).
+What Project Board is, who edits which Card, how a person becomes a project admin, and how the coordinator hand-over and Telegram topics work: the public documentation, [Project Board docs](repo:app-ecosystem/products/project-board/docs/README.md) (concepts, cards, coordinator, telegram).
 
 - Read the nearest repository instructions and current project journals before
   changing files. They decide source scope, Git actions, live-runtime actions,
@@ -23,7 +23,7 @@ What Problem Board is, who edits which Card, how a person becomes a project admi
 - Connection Hub owns worker credentials. Do not request, print, export, place in
   an environment variable, or pass a bearer on a command line.
 - A worker alias is display text. Address mail and assignments with the stable
-  worker name returned by Problem Board.
+  worker name returned by Project Board.
 - Direct conversation, project attendance, and assignment are independent
   states. Never infer one from another.
 
@@ -86,7 +86,7 @@ enrollment, a Card, a profile, project attendance, or revocation is in question.
 
 ## Always-On Rules
 
-These rules must survive a compaction or a restart, and how they do depends on the runtime. Operator, 2026-10-13 (W804): "A. although codexes have no memories. but then codexes simply in the skill". A runtime with a persistent memory facility (Claude Code's memory directory) saves each rule below as one memory entry, tagged `source: problem-board-worker <installed revision>`, when it loads a revision of this skill, and replaces the whole set when the installed revision changes. A runtime with none (Codex) keeps them through this skill itself, which it loads in full once per installed-revision change; it writes no substitute file and claims no memory entries. Adoption is `pb procedure verify` plus, by runtime, the tagged entries or the agent's confirmation that it loaded that revision. In every runtime, do not save your own versions of Problem Board workflow rules; a rule you find missing or wrong goes to the coordinator as a procedure change (collaboration Rule 14), never into private memory, because a memory you wrote yourself cannot show that you follow this procedure (operator, 2026-10-03). pb copies them nowhere: no workspace file carries them. The workspace `AGENTS.md` (and for Claude Code a `CLAUDE.md` whose managed block imports it) holds only the project's own files: `pb worker context` writes it from the project's files list, importing the instructions, facts and environment files present in your clones and listing the further files with their descriptions, and removes it when the project lists none. Operator, 2026-10-13: "CLAUDE.md / AGENTS.md made from project file (which we have multiple of them).", "and in case of new project even NONE"; nothing is written or promised at enrollment ("not sure actually why we promise the CLAUDE.md and AGENTS.md will be written. that is wrong."), and an agent's workspace folder is always its alias ("the folders must be aliases").
+These rules must survive a compaction or a restart, and how they do depends on the runtime. Operator, 2026-10-13 (W804): "A. although codexes have no memories. but then codexes simply in the skill". A runtime with a persistent memory facility (Claude Code's memory directory) saves each rule below as one memory entry, tagged `source: problem-board-worker <installed revision>`, when it loads a revision of this skill, and replaces the whole set when the installed revision changes. A runtime with none (Codex) keeps them through this skill itself, which it loads in full once per installed-revision change; it writes no substitute file and claims no memory entries. Adoption is `pb procedure verify` plus, by runtime, the tagged entries or the agent's confirmation that it loaded that revision. In every runtime, do not save your own versions of Project Board workflow rules; a rule you find missing or wrong goes to the coordinator as a procedure change (collaboration Rule 14), never into private memory, because a memory you wrote yourself cannot show that you follow this procedure (operator, 2026-10-03). pb copies them nowhere: no workspace file carries them. The workspace `AGENTS.md` (and for Claude Code a `CLAUDE.md` whose managed block imports it) holds only the project's own files: `pb worker context` writes it from the project's files list, importing the instructions, facts and environment files present in your clones and listing the further files with their descriptions, and removes it when the project lists none. Operator, 2026-10-13: "CLAUDE.md / AGENTS.md made from project file (which we have multiple of them).", "and in case of new project even NONE"; nothing is written or promised at enrollment ("not sure actually why we promise the CLAUDE.md and AGENTS.md will be written. that is wrong."), and an agent's workspace folder is always its alias ("the folders must be aliases").
 
 1. Anything that waits on the operator is a work item assigned to them (`work.assignee.set`, or `review.assign` with `operator`). Its own Result, "How to check this" and "What could not be verified" fields hold the operator's exact steps and expected result, rewritten for them when you route it. A `decision` or `question` message names it. Never leave this, or your answer to an operator's question, only in a terminal ([collaboration Rule 11](references/collaboration/rule-11-the-operator-is-asked-on-the-board-and-on-telegram-w.md)).
 2. Every task's route on its item names the next actor; hand the item on yourself, and read availability before you wait on anyone and again before you read their silence (collaboration Rule 16).
@@ -269,7 +269,7 @@ move status ([ownership](references/identity-and-authorization.md)).
 
 - `pb worker send --help` and `pb worker settle --help` are the executable
   argument contract. Do not copy legacy flat mail commands into procedure text.
-- Address a worker with the stable name returned by Problem Board. An alias is
+- Address a worker with the stable name returned by Project Board. An alias is
   refused, and the refusal names the stable choices when they are known. Without a project, only an agent that attends none can be mailed, by that name (`request`, `reply` or `ping`); the board refuses every other case alike.
 - During active work, run `pb worker receive` at actual safe work boundaries:
   after diagnosis, after a material edit, after verification, and before a

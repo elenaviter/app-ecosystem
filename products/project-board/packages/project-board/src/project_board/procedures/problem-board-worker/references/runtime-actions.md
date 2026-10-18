@@ -1,13 +1,13 @@
 ---
 id: project-board.worker-reference.runtime-actions
-title: "Runtime Actions: Project Runtimes And Problem Board Host Actions"
-summary: How a project's runtimes and their profiles carry the commands for a runtime action, which Problem Board host action makes a pb change live (client source, relay restart, procedure install), and how to verify it in the running process rather than the checkout.
+title: "Runtime Actions: Project Runtimes And Project Board Host Actions"
+summary: How a project's runtimes and their profiles carry the commands for a runtime action, which Project Board host action makes a pb change live (client source, relay restart, procedure install), and how to verify it in the running process rather than the checkout.
 tags: [procedure, problem-board, worker, runtime, deploy]
 keywords: [runtime-window backup, pb worker backup, backup manifest, keep the newest backup, project runtimes, runtime profile, local_profile, releases, pb source use-release, pb source use-code, relay restart, procedure install, what loaded, ready with a constraint, verify the artifact]
 see_also: []
 ---
 
-# Runtime Actions: Project Runtimes And Problem Board Host Actions
+# Runtime Actions: Project Runtimes And Project Board Host Actions
 
 ## Project Runtimes
 
@@ -34,7 +34,7 @@ later on the project's Control Card). The four concepts behind them are in
   them. A project that declares no runtime has no runtime actions, and a
   runtime of another kind has its own profile.
 
-The Problem Board host actions below (relay restart, client source, procedure
+The Project Board host actions below (relay restart, client source, procedure
 install) belong to every project that runs `pb`. A runtime's own actions
 (a platform refresh, an app reload, a deploy) and the order and receipts they
 need are in that runtime's profile, never on this page. A project with no
@@ -48,9 +48,9 @@ the wrong one reports a fix as live that has never executed.
 
 | You changed | It reaches the runtime when | Not enough |
 | --- | --- | --- |
-| A released Problem Board host client | `pb source use-release --expect-version <version>` builds a new release environment, resolves that version's complete dependency graph, smokes its `pb --version` and imports, atomically activates it, and verifies the restarted relay | upgrading a permanent bootstrap environment, which leaves the launcher and relay on a different dependency set |
-| A committed Problem Board client under development | `pb source use-code` with the App Ecosystem repository path, ref, and full approved commit exports all four first-party packages, resolves them together inside the release environment, smokes it, atomically activates it, and accepts only the restarted relay's matching startup record | independent installs, an editable install, a live-checkout launcher, or selecting only one repository or the relay |
-| The already selected Problem Board relay source | `pb relay-service restart`. A relay restart is host-local and reloads the recorded source without advancing it | a runtime action such as a reload; a restart cannot select a newer checkout or package version |
+| A released Project Board host client | `pb source use-release --expect-version <version>` builds a new release environment, resolves that version's complete dependency graph, smokes its `pb --version` and imports, atomically activates it, and verifies the restarted relay | upgrading a permanent bootstrap environment, which leaves the launcher and relay on a different dependency set |
+| A committed Project Board client under development | `pb source use-code` with the App Ecosystem repository path, ref, and full approved commit exports all four first-party packages, resolves them together inside the release environment, smokes it, atomically activates it, and accepts only the restarted relay's matching startup record | independent installs, an editable install, a live-checkout launcher, or selecting only one repository or the relay |
+| The already selected Project Board relay source | `pb relay-service restart`. A relay restart is host-local and reloads the recorded source without advancing it | a runtime action such as a reload; a restart cannot select a newer checkout or package version |
 | The worker procedure package inside `project-board` | `pb procedure install`, run on each host by the installer the item's route names (otherwise the coordinator on that host, or its elected integrator; [collaboration Rule 2](collaboration/rule-2-work-on-a-branch-exchange-through-a-change-request.md)) after the selected release or code commit carries the new revision | editing package source, which installed sessions never read |
 
 Copying a file into a container and restarting a container are not actions

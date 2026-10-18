@@ -1,7 +1,7 @@
 ---
 id: project-board.skill-reference.delivery-and-recovery
-title: Problem Board Worker Delivery And Recovery
-summary: Defines compact mail receipt, project revision markers, demand-driven context reads, leases, visible responses, settlement, discard, and route evidence for a Problem Board worker.
+title: Project Board Worker Delivery And Recovery
+summary: Defines compact mail receipt, project revision markers, demand-driven context reads, leases, visible responses, settlement, discard, and route evidence for a Project Board worker.
 tags: [procedure, problem-board, worker, delivery, recovery]
 keywords: [wake id, receive, lease, settlement, queued mail, delivery integrity]
 see_also: []
@@ -70,7 +70,7 @@ that reads bodies and leases messages.
 invokes `codex queue --thread <native-session-id>` for the exact resumable
 session. The resulting automatic instruction contains no task body. It names
 `pb worker receive` and an exact `--wake-id`. Preserve that ID on receive so
-Problem Board can acknowledge the queued wake. It also carries creation,
+Project Board can acknowledge the queued wake. It also carries creation,
 attempt, host, relay, and process provenance. The relay binds the wake to the
 native Codex submission ID and removes stale or duplicate PB rows through the
 native queue API. A `pb worker watch` process in a Codex background terminal is
@@ -166,7 +166,7 @@ required visible response, and final settlement result.
 - Send a required visible correlated reply before settlement.
 - Settle each lease once with its exact message ref, project ref, and lease ID.
 - If work cannot be accepted, reply with the reason and settle `refused`.
-- If the command response is uncertain, inspect supported Problem Board state
+- If the command response is uncertain, inspect supported Project Board state
   before retrying an external side effect.
 - `pb worker leases` pages every active lease held by this exact session,
   including a project lease whose attendance changed after acquisition.
@@ -229,7 +229,7 @@ never use a new key, another person's route or an ad-hoc send to force a
 possibly duplicated post. Settle the lease after the visible correlated Board
 reply is recorded, stating any channel failure or unknown outcome honestly.
 
-When sending the operator a link, address the exact Problem Board conversation
+When sending the operator a link, address the exact Project Board conversation
 and message. A deployment root URL is not a conversation link.
 
 `pb worker send --recipient <worker-or-operator> --attach <path>` snapshots an

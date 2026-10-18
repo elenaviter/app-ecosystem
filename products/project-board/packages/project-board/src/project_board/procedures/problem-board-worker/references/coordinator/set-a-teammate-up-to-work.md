@@ -27,7 +27,7 @@ workspace path directly, it cloned into it, and the flow the operator wanted
 tested was never tested (operator, 2026-09-26).
 
 **A returning worker starts from the current procedure** (operator,
-2026-09-29). A project authorized to develop Problem Board (a maintainer
+2026-09-29). A project authorized to develop Project Board (a maintainer
 project, as its facts page states) changes reviewed procedure and client
 source while a worker is idle, and an installed skill copy stays at the
 revision it was installed with. When a worker is resumed, or returns after a
@@ -44,5 +44,5 @@ long idle period, before it gets substantive work the coordinator:
 
 A worker whose info line says paused, restricted or do not use is left
 asleep until it is legitimately resumed: waking it only to update spends its
-budget for nothing. A project that consumes Problem Board follows its
+budget for nothing. A project that consumes Project Board follows its
 published-release policy for the same check.

@@ -7,7 +7,7 @@ head, a result), or an assignment or a review has no reported start, check
 the worker's state yourself. Do this after about ten
 minutes, or at once when a window or a merge waits on that one worker:
 
-1. **The wake:** the relay log's `Problem Board wake pushed` and
+1. **The wake:** the relay log's `Project Board wake pushed` and
    `wake deduplicated` lines for that worker name the wake id and since when
    it is queued.
 2. **For Codex, the native queue:** a row for the session's thread in

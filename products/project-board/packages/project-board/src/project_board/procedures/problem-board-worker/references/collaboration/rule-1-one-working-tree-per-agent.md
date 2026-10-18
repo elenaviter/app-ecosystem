@@ -65,7 +65,7 @@ Rules of the shape:
   checkout holds `main`, so a workspace tree is detached or on a work branch,
   which is what the rules want anyway.
 
-The Problem Board client and relay run from one recorded source selection, not
+The Project Board client and relay run from one recorded source selection, not
 from any working tree. `pb source use-release` selects an approved package
 version and `pb source use-code` selects an exact App Ecosystem commit as one
 release for both command and relay. A direct checkout invocation is a

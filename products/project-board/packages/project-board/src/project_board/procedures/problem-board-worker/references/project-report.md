@@ -86,7 +86,7 @@ A status is held to the same discipline, because a reader acts on it. Keep
 apart what happened, what is happening now, and what comes next. Keep a
 measured problem apart from a thought. Name each piece of work as done, in
 progress, planned, or blocked, and blocked names what on. State criticality:
-until a priority field exists, Problem Board infrastructure problems are the
+until a priority field exists, Project Board infrastructure problems are the
 most critical unless the operator has prioritised something else. Point every
 claim at the item that carries it, by key with its title, since a reader does
 not memorise numbers. Say "not yet established" in those words. What makes a

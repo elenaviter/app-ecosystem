@@ -147,7 +147,7 @@ def test_an_unrecorded_revision_skips_on_an_author_head_and_fails_for_the_merger
 def test_package_manifest_ships_every_reference_the_skill_opens() -> None:
     package = json.loads(_read("package.json"))
     skill = _read("SKILL.md")
-    assert package["revision"] == "2026.10.18.2"
+    assert package["revision"] == "2026.10.18.3"
     assert package["entrypoint"] == "SKILL.md"
     references = set(package["references"])
     # W563: coordinator.md and collaboration.md are indexes over one module
@@ -770,7 +770,7 @@ def test_operator_runtime_and_conduct_rules() -> None:
     assert "Keep apart what happened, what is happening now, and what comes next" in report
     assert "Keep a measured problem apart from a thought" in report
     assert "done, in progress, planned, or blocked, and blocked names what on" in report
-    assert "Problem Board infrastructure problems are the most critical unless the operator has prioritised something else" in report
+    assert "Project Board infrastructure problems are the most critical unless the operator has prioritised something else" in report
     assert "by key with its title" in report
     assert "every number in it came from a command run in that pass" in report
     assert "Coordination does not waive this duty" in words
@@ -923,13 +923,13 @@ def test_a_returning_worker_starts_from_the_current_procedure() -> None:
     coordinator = _words(_read("references/coordinator.md"))
 
     assert "A returning worker starts from the current procedure" in coordinator
-    assert "A project authorized to develop Problem Board (a maintainer project, as its facts page states)" in coordinator
+    assert "A project authorized to develop Project Board (a maintainer project, as its facts page states)" in coordinator
     assert "an installed skill copy stays at the revision it was installed with" in coordinator
     assert "Compares the host's selected source (`pb source status`) and installed procedure revision (`pb procedure verify`)" in coordinator
     assert "Starts the update or reinstall the host's policy allows" in coordinator
     assert "Asks the worker to load the complete current skill when its loaded revision differs from the installed one, and the worker confirms the revision before it begins" in coordinator
     assert "A worker whose info line says paused, restricted or do not use is left asleep until it is legitimately resumed" in coordinator
-    assert "A project that consumes Problem Board follows its published-release policy" in coordinator
+    assert "A project that consumes Project Board follows its published-release policy" in coordinator
 
 
 def test_delivery_reference_keeps_its_runtime_facts() -> None:
@@ -1281,7 +1281,7 @@ def test_the_worker_host_path_holds_on_a_host_that_has_none_of_it():
     assert step3.index("pb source use-code") < step3.index("pb procedure install") < step3.index("pb procedure verify")
     assert "A stale or unverifiable package is a defect in this\npath" in step3
     # What the install brings and what it does not.
-    assert "They do not install Problem Board itself" in text
+    assert "They do not install Project Board itself" in text
     # Which step creates the Card.
     assert "only the last creates\na Card" in text
     # Every numbered step names the machine it runs on.
@@ -1678,7 +1678,7 @@ def test_worker_and_coordinator_use_the_complete_pb_cli_path():
     assert "Read its notes with `plan.notes.list`" in interface
     assert "Update it with `plan.item.update`" in interface
     assert "Read the returned code, message and fields as the result" in interface
-    assert "### Route through Problem Board's worker CLI, with the complete assignment payload" in raw
+    assert "### Route through Project Board's worker CLI, with the complete assignment payload" in raw
     assert "pb worker context --project-ref <project-ref>" in coordinator
     assert "pb coordinate project.plan.item" in coordinator
     assert "pb coordinate assignment.assign" in coordinator

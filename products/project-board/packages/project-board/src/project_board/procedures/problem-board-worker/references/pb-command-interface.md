@@ -1,6 +1,6 @@
 ---
 id: project-board.skill-reference.pb-command-interface
-title: Use Problem Board Through The Worker CLI
+title: Use Project Board Through The Worker CLI
 summary: The positive worker path from a task or refusal to a canonical PB operation, payload, ref and recovery.
 tags: [procedure, problem-board, worker, cli, operations, recovery]
 keywords: [pb worker, pb coordinate, project.plan.search, project.plan.item, plan.notes.list, plan.item.update, canonical operation, refusal]
@@ -10,7 +10,7 @@ see_also:
   - ./project-workspace.md
 ---
 
-# Use Problem Board Through The Worker CLI
+# Use Project Board Through The Worker CLI
 
 Open this before the first governed project operation in a session and after
 an operation is refused. The installed `pb` command is the worker's Problem

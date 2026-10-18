@@ -1,6 +1,6 @@
 ---
 id: app-ecosystem.project-board.procedure.operator
-title: Operate Problem Board And Its Local Relay
+title: Operate Project Board And Its Local Relay
 summary: Explains host installation, the one-relay multi-worker boundary, Connection Hub authorization, receiving policy, board evidence, worker-capacity routing, and operator controls.
 tags: [procedure, operator, relay, problem-board]
 keywords: [Connection Hub profile, host relay, worker session, worker capacity, token budget, receiver policy, OAuth reconnect, replace Card]
@@ -12,7 +12,7 @@ see_also:
   - repo:app-ecosystem/products/project-board/docs/storage-and-retention.md
 ---
 
-# Operate Problem Board And Its Local Relay
+# Operate Project Board And Its Local Relay
 
 This runbook owns machine configuration, host command installation, relay
 lifecycle, receiving policy, and operator-controlled authority. The user
@@ -66,7 +66,7 @@ runtime's actions run are in
 [the KDCube maintainer runtime profile](repo:app-ecosystem/products/kdcube/procedures/runtime-profile-maintainer.md),
 which a project's runtime names. Host procedures point there instead of
 maintaining another copy; the worker procedure's `references/runtime-actions.md`
-keeps only the Problem Board host actions.
+keeps only the Project Board host actions.
 
 ## One Host, One Relay, Many Sessions
 
@@ -154,7 +154,7 @@ pb host relay-fault clear --worker <stable-worker-name>
 ```
 
 This host-local command is for coordinated acceptance testing. It is absent
-from Problem Board's MCP, Named Services, Data Bus, and browser surfaces. Run
+from Project Board's MCP, Named Services, Data Bus, and browser surfaces. Run
 the degraded and recovery checks in `live-acceptance.md` immediately after
 arming it.
 
@@ -239,7 +239,7 @@ pb worker authorize <profile> --device --replace-card
 ```
 
 Use `--coordinator` with a first or replacement authorization to propose the
-whole Problem Board operation catalog. It does not change an existing Card
+whole Project Board operation catalog. It does not change an existing Card
 during an ordinary reconnect. The descriptor-owned profile and narrowing
 rules are defined in [Delegated Access
 Cards](repo:app-ecosystem/docs/connection-hub/package/delegated-cards.md#descriptor-owned-authorization-profiles).
@@ -247,7 +247,7 @@ Cards](repo:app-ecosystem/docs/connection-hub/package/delegated-cards.md#descrip
 That destructive path reports both ids as `Replaced Card <old> with <new>`.
 An outage or transient transport failure does not select either browser path.
 
-`allowed_roots` is the user's approved Problem Board boundary and repository
+`allowed_roots` is the user's approved Project Board boundary and repository
 map. It does not modify the sandbox or filesystem authority of a Claude Code or
 Codex process. Before enrollment, the selected session verifies its actual
 access; the setup agent prepares a runtime-specific launch or resume command if
@@ -255,7 +255,7 @@ the user must restart it with additional approved directories.
 
 ## Connection Hub Entry
 
-For a deployment that already carries Problem Board rows inside
+For a deployment that already carries Project Board rows inside
 `connection-hub@1-0.config.connections`, first transfer ownership in one
 reviewed descriptor revision:
 
@@ -265,7 +265,7 @@ reviewed descriptor revision:
   `problem-board@1-0/public/mcp/problem_board` direct resource from that base;
 - retain the shared `kdcube-services@1-0/public/mcp/named_services` resource and
   every sibling namespace, removing only its `work` namespace;
-- preserve the same rows under Problem Board's `config.delegated_catalog`.
+- preserve the same rows under Project Board's `config.delegated_catalog`.
 
 Apply that complete descriptor revision before reloading the app. The resource,
 operation, and grant IDs stay the same, so this moves catalog ownership without
@@ -285,7 +285,7 @@ older duplicate resource and namespace owners in place.
 4. A selected agent runs `pb worker listen`. The command returns its unique
    profile name and, when needed, `pb worker authorize <profile> --device`.
 5. The user opens the normal Connection Hub card editor from the authorization
-   flow. The requested Problem Board operations and `work:relay` are proposed
+   flow. The requested Project Board operations and `work:relay` are proposed
    for that session; the
    user may add any other resources, operations, and connected accounts that
    this connected client should use. Saving the card completes consent.
@@ -325,7 +325,7 @@ linking it to another project.
 
 ## Changing What A Worker Card May Do
 
-The Card selects the Problem Board service resource, canonical operations
+The Card selects the Project Board service resource, canonical operations
 under that resource, and their required grants. The relay presents that same
 Card directly to Data Bus. Opening the socket proves the Card and resource;
 every operation is then checked separately against current Card and catalog
@@ -430,7 +430,7 @@ online while being unable to do anything at all.
 
 ## Migrating A Pre-Contract Worker Card
 
-A Problem Board worker holds an application-neutral, multi-resource credential
+A Project Board worker holds an application-neutral, multi-resource credential
 so its card can gain resources later. Cards created before that contract open
 as entry-bound: they behave like a card for a single-service MCP client and can
 only vary tools within the one service they were made for. Such a card cannot
@@ -526,13 +526,13 @@ before running `worker detach`; Codex has no session-owned watch to terminate.
 Detach marks the agent session as
 detached while retaining its relay channel and inbox for resume. Stopping the
 relay removes its live stream presence. Moving a worker to limbo suspends
-effective Problem Board operations. Revoking its Connection Hub Card rejects
+effective Project Board operations. Revoking its Connection Hub Card rejects
 the next incoming operation and removes its route from outbound live delivery.
 A cooperative
 stop message, detach, project removal, pool suspension, worker retirement, and
 credential revocation are distinct operations.
 
-Retirement is the permanent Problem Board action for one exact runtime and
+Retirement is the permanent Project Board action for one exact runtime and
 native session identity. The owner opens it from the worker card and confirms
 the stable worker shown with its machine and session. The control plane removes
 that worker's attendance, withdraws controls that have not completed relay
@@ -542,7 +542,7 @@ same session cannot enroll again. Retirement does not revoke the separate
 Connection Hub Card; inspect or revoke that credential in Connection Hub when
 transport authority should also end.
 
-The Problem Board main scene includes a Connection Hub pane. Use the shield
+The Project Board main scene includes a Connection Hub pane. Use the shield
 action on any worker card to open that worker's exact delegated-access card in
 that pane. The card address is non-secret; the bearer remains in native
 credential custody. Resource, operation, connected-account, expiry, and
@@ -590,7 +590,7 @@ post. There you can answer:
 
 Two conditions: you linked your Telegram account to your KDCube account once
 through the deployment bot's Mini App (the Connection Hub stores that link),
-and the Problem Board app declares its `telegram` integration row with the
+and the Project Board app declares its `telegram` integration row with the
 bot's `bot_token` and `webhook_secret` refs and names it in
 `telegram.integration_id`. The board owns the bot's webhook; the app's
 `docs/telegram.md` has the deployment steps. Only private chats are
@@ -598,7 +598,7 @@ accepted, and only from a linked person with a role on the project; anything
 else is refused and logged. Without the row the inbox message shows
 `channel: not_configured`; the detail names every owner or admin who has not
 linked Telegram. Set the optional `board_url` bundle property to the
-deployment's public origin. Each post then links to the public Problem Board
+deployment's public origin. Each post then links to the public Project Board
 site with the stable worker address and exact inbox message ref; opening it
 selects that worker's conversation and focuses the message.
 

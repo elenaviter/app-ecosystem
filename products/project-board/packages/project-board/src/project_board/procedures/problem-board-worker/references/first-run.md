@@ -11,7 +11,7 @@ see_also: []
 
 Read this when the user asks you to use this skill and `pb status` does not
 report `session_attending`, or when `pb` is not installed yet. The user may be
-new to Problem Board. Your job is to make each step obvious: say what it is,
+new to Project Board. Your job is to make each step obvious: say what it is,
 ask for what only the user knows, propose one command, run it after they
 approve, and read the state again.
 
@@ -49,8 +49,8 @@ tmux new-session -d -s "$ALIAS" "mkdir -p ~/.kdcube/pb/workspaces/$ALIAS '$HOME/
 tmux attach -t "$ALIAS"
 ```
 
-and says "Use the problem-board-worker skill. Help me set up Problem Board on
-this machine, then enroll this session as a Problem Board worker with alias
+and says "Use the problem-board-worker skill. Help me set up Project Board on
+this machine, then enroll this session as a Project Board worker with alias
 <name>@<machine>", with the same name as in ALIAS. Edit only the ALIAS and
 ACCOUNT lines, for example ana@mint and ana@example.com. Use letters, digits,
 '-' and '@' in ALIAS: tmux does not allow '.' and ':' in a session name. ACCOUNT is the Claude
@@ -130,8 +130,8 @@ step buried among tool results is a step the person does not see.
 | value | what it names |
 | --- | --- |
 | target name (`--target-id`) | this machine's short, stable label for one KDCube deployment; the deployment never receives it |
-| endpoint (`--endpoint`) | the real governed Problem Board MCP address on that deployment |
-| tenant and platform project | the KDCube deployment coordinates that host the Problem Board app; `pb setup` reads both from the endpoint's path, so `--tenant` and `--platform-project` are only for a check (a value that differs is refused as `work_setup_scope_mismatch`) |
+| endpoint (`--endpoint`) | the real governed Project Board MCP address on that deployment |
+| tenant and platform project | the KDCube deployment coordinates that host the Project Board app; `pb setup` reads both from the endpoint's path, so `--tenant` and `--platform-project` are only for a check (a value that differs is refused as `work_setup_scope_mismatch`) |
 | host ID (`--host-id`) | the stable logical identity of this machine, published with its workers |
 | host label (`--host-label`) | the machine's readable display name |
 | allowed root (`--allow-root`) | a local directory workers on this machine may address |
@@ -240,7 +240,7 @@ this one meet at `pb setup`, which the `machine_not_configured` section covers.
 
 ## `machine_not_configured`
 
-Explain in a few sentences: a Problem Board server is one KDCube deployment,
+Explain in a few sentences: a Project Board server is one KDCube deployment,
 reached at an endpoint URL, holding its boards under a tenant and a project.
 This machine needs to know which one, and it runs one small background relay
 that carries messages between the agents here and that server.
@@ -248,7 +248,7 @@ that carries messages between the agents here and that server.
 When `next.step` is `configure_target`:
 
 1. Ask for the endpoint only. It comes from **Connect a machine** in the
-   board's top bar in the Problem Board web app (it needs no project), filled
+   board's top bar in the Project Board web app (it needs no project), filled
    in and copyable: ask them to copy it. Without the panel, ask for the
    endpoint URL, the address ending in `/public/mcp/problem_board`, as this
    machine reaches it. The endpoint names the tenant and the platform project,

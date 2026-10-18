@@ -1,6 +1,6 @@
 ---
 id: app-ecosystem.project-board.procedure.local-worker-session
-title: Run A Problem Board Local Worker Session
+title: Run A Project Board Local Worker Session
 summary: Routes a selected Claude Code or Codex session to the versioned worker skill package that owns enrollment, addressed mail, settlement, reporting, journaling, recovery, and detach.
 tags: [procedure, local-worker, codex, claude-code]
 keywords: [worker skill, worker listen, worker receive, lease settlement, native session identity]
@@ -9,7 +9,7 @@ see_also:
   - repo:app-ecosystem/products/project-board/docs/topology-and-flows.md
 ---
 
-# Run A Problem Board Local Worker Session
+# Run A Project Board Local Worker Session
 
 Use the installed `problem-board-worker` skill inside the exact user-selected
 Claude Code or Codex session. It owns the executable selected-session flow and

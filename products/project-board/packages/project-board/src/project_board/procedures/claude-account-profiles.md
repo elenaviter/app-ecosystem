@@ -19,7 +19,7 @@ it every session on a machine shares `~/.claude` and the one login in
 `~/.claude.json`, so a machine cannot run agents of two Claude accounts, and
 the board cannot tell which account an agent's usage belongs to.
 
-Problem Board gives each account its own folder, named after the account
+Project Board gives each account its own folder, named after the account
 email: `~/.claude-accounts/<email>`. Every Claude agent runs in the folder of
 its account (operator, 2026-10-12: "we re not going to work wit unscoped
 claude agents"). Its card reads that folder's login and usage, never the

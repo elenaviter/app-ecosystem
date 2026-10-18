@@ -1,7 +1,7 @@
 ---
 id: app-ecosystem.project-board.procedure.first-time-setup
-title: First-Time Problem Board Setup
-summary: Walks a first-time operator from a running remote Problem Board through local host configuration, relay supervision, per-session consent, worker listening, and the first project.
+title: First-Time Project Board Setup
+summary: Walks a first-time operator from a running remote Project Board through local host configuration, relay supervision, per-session consent, worker listening, and the first project.
 tags: [procedure, problem-board, setup, relay, worker]
 keywords: [first-time setup, host relay, Connection Hub, worker enrollment, inbox heartbeat]
 see_also:
@@ -13,10 +13,10 @@ see_also:
   - repo:app-ecosystem/products/project-board/docs/topology-and-flows.md
 ---
 
-# First-Time Problem Board Setup
+# First-Time Project Board Setup
 
 Use this guide for the first machine that will contribute Claude Code or Codex
-workers to a Problem Board deployment. This guide and the
+workers to a Project Board deployment. This guide and the
 [operator procedure](operator.md) own host setup and relay administration. The
 `problem-board-worker` skill installed by the released `project-board` package
 owns one selected session after the machine is ready.
@@ -25,7 +25,7 @@ owns one selected session after the machine is ready.
 
 ```text
 REMOTE: KDCube deployment
-  Problem Board + governed work service + broker
+  Project Board + governed work service + broker
                          ^
                          | live partitioned Data Bus
                          v
@@ -65,19 +65,19 @@ The deployment operator confirms once that:
 - `problem-board@1-0` is loaded and ready;
 - its managed `problem_board` service resource is in the Connection Hub catalog;
 - the model-facing Named Services resource exposes `work` to supervisor agents;
-- the signed-in Problem Board UI opens.
+- the signed-in Project Board UI opens.
 
 Record these coordinates:
 
 ```text
 target name              local readable name for this deployment
-service endpoint         governed Problem Board `problem_board` endpoint
+service endpoint         governed Project Board `problem_board` endpoint
 tenant                   KDCube tenant
 platform project         KDCube project that hosts the app
 ```
 
 The target name is local configuration metadata. Worker identity, logical host
-identity, and Problem Board project identity are separate values.
+identity, and Project Board project identity are separate values.
 
 The owning definitions of target, endpoint, tenant, platform project, host ID,
 host label, and allowed root ship in the worker procedure's **What The Setup
@@ -265,7 +265,7 @@ Start or select a Claude Code or Codex terminal with access to the intended
 checkout roots. Send it this instruction:
 
 ```text
-Use the problem-board-worker skill. Join Problem Board as <alias>.
+Use the problem-board-worker skill. Join Project Board as <alias>.
 ```
 
 That single instruction owns the complete join flow. The selected agent runs
@@ -454,7 +454,7 @@ Before closing a worker terminal, ask it to settle or refuse leased mail,
 record its work boundary, and detach:
 
 ```text
-Settle current mail, record the work boundary, and detach from Problem Board.
+Settle current mail, record the work boundary, and detach from Project Board.
 ```
 
 Detaching stops that model session's heartbeat. The machine relay stays online
@@ -473,7 +473,7 @@ session enrolls as a new worker and receives project attendance or reassigned
 work explicitly.
 
 Use **suspend** on the board when this worker may return. Use **retire** when
-this exact coding-agent session must leave Problem Board permanently. The
+this exact coding-agent session must leave Project Board permanently. The
 retirement dialog identifies the stable worker, native session, and machine and
 requires confirmation. It preserves history, removes project attendance,
 fences unfinished ownership, and disables the matching relay channel. Start a
@@ -490,7 +490,7 @@ Repeat Steps 2 through 7 on that machine with:
 - one profile for every selected local agent session.
 
 Both machines use the same remote target. Git carries source and journal
-history; addressed Problem Board mail carries questions, controls, receipts,
+history; addressed Project Board mail carries questions, controls, receipts,
 and handoff references. Absolute local paths never cross the network.
 
 A remote or headless machine (no browser, reached over a private network such

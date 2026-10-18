@@ -1,7 +1,7 @@
 ---
 id: app-ecosystem.project-board.procedure.agent-worker
-title: Choose The Problem Board Worker Or Operator Procedure
-summary: Routes machine setup and relay administration to operator runbooks and routes one selected Claude Code or Codex session to the versioned Problem Board worker skill package.
+title: Choose The Project Board Worker Or Operator Procedure
+summary: Routes machine setup and relay administration to operator runbooks and routes one selected Claude Code or Codex session to the versioned Project Board worker skill package.
 tags: [procedure, problem-board, setup, worker, coding-agent]
 keywords: [worker skill, session identity, worker enrollment, relay operator, procedure package]
 see_also:
@@ -11,9 +11,9 @@ see_also:
   - repo:app-ecosystem/products/project-board/docs/topology-and-flows.md
 ---
 
-# Choose The Problem Board Worker Or Operator Procedure
+# Choose The Project Board Worker Or Operator Procedure
 
-Problem Board has two operational roles with separate authority and context.
+Project Board has two operational roles with separate authority and context.
 Choose the role before loading detailed instructions.
 
 | Role | Owned procedure |

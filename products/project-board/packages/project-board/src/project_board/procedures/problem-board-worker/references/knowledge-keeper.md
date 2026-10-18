@@ -29,7 +29,7 @@ work to the keeper; it changes no journal entry.
 
 ## What the project's own files say
 
-Problem Board names the role and its contract. Everything about a project's
+Project Board names the role and its contract. Everything about a project's
 implementation lives in that project's files (instructions, facts,
 environment) and in the knowledge package's own instructions, never in this
 procedure:

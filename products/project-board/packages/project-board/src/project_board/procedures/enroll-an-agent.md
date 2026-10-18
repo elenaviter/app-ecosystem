@@ -1,7 +1,7 @@
 ---
 id: app-ecosystem.project-board.procedure.enroll-an-agent
 title: Enroll An Agent
-summary: Three steps for a person to add a Claude Code or Codex agent to their Problem Board pool and connect it to a project.
+summary: Three steps for a person to add a Claude Code or Codex agent to their Project Board pool and connect it to a project.
 tags: [procedure, problem-board, enroll, agent, onboarding]
 keywords: [enroll, alias, workspace, claude code, codex, pb worker authorize, device, add to project]
 see_also:
@@ -47,7 +47,7 @@ cd "$HOME/.kdcube/pb/workspaces/$ALIAS" && env CLAUDE_CONFIG_DIR="$HOME/.claude-
 ## 2. Enroll it to the pool
 
 Send the agent its first message: "Use the problem-board-worker skill. Enroll
-this session as a Problem Board worker with alias <alias>."
+this session as a Project Board worker with alias <alias>."
 
 It prints a `pb worker authorize <profile> --device` command. Run it in your
 own terminal: it prints a link and a short code. Open the link on your own
@@ -60,4 +60,4 @@ the folder it was started in.
 
 ## 3. Connect it to your project
 
-On the Problem Board, press Add to project on the agent.
+On the Project Board, press Add to project on the agent.
