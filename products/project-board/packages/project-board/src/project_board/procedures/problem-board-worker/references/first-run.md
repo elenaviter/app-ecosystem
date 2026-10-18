@@ -143,14 +143,14 @@ therefore separate relay configuration, profiles, mail field, logs, and client
 source selector. It is not a remote identity and does not replace the host ID.
 
 The target name is also the machine's name for that deployment's **KDCube
-profile** (W909). Every host command takes `--profile <name>`, and a session
+profile**. Every host command takes `--profile <name>`, and a session
 takes `PB_PROFILE=<name>` from its environment. A command picks its deployment
 in this order: `--config <path>`, `--profile <name>`, `PROBLEM_BOARD_CONFIG=<path>`,
 `PB_PROFILE=<name>`, then the machine default pointer. An unknown or ambiguous
 name is refused, never answered with the default. Setting up another target
 keeps the existing default unless `pb setup --make-default` is given. A KDCube
-profile is not the Card authorization profile `pb worker authorize <profile>`
-takes. The add-a-worker-host procedure has the second-KDCube steps.
+profile is not the Card authorization profile that
+`pb worker authorize <profile> --device` takes. The add-a-worker-host procedure has the second-KDCube steps.
 This section is the owning definition; setup guides point here rather than
 restating the meanings.
 

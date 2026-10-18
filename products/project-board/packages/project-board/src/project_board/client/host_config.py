@@ -628,6 +628,12 @@ def profile_config_path(name: str, *, state_root: Path | None = None) -> Path:
         if config:
             configs.append(Path(config).expanduser().resolve())
     if len(configs) == 1:
+        if not configs[0].exists():
+            raise DomainError(
+                "work_profile_config_missing",
+                f"The KDCube profile {selected!r} points at a configuration that no longer exists; run pb setup for it again.",
+                details={"profile": selected, "config": str(configs[0])},
+            )
         return configs[0]
     if not configs:
         raise DomainError(

@@ -347,8 +347,8 @@ One host can serve two KDCube deployments at once, for example a local KDCube
 and a cloud one, each with its own relay (operator, 2026-10-18: "Two relays at
 once: << but this we nee3d"). Each deployment is a **KDCube profile**: the name
 `pb setup --target-id` gives it. A KDCube profile is not the Card authorization
-profile of step 11 (`pb worker authorize <profile>`), which names one agent's
-credential. One agent session works for one KDCube profile.
+profile of step 11 (`pb worker authorize <profile> --device`), which names one
+agent's credential. One agent session works for one KDCube profile.
 
 1. Set up the second profile with its own `--target-id` and endpoint, as
    above. Setup keeps the existing machine default, so agents that run `pb`

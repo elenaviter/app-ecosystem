@@ -148,3 +148,12 @@ def test_two_profiles_get_two_relay_services(tmp_path):
     assert local.service_id != cloud.service_id
     assert local.definition_path != cloud.definition_path
     assert "--config" in cloud.program_arguments and str(cloud.config_path) in cloud.program_arguments
+
+
+def test_a_profile_whose_config_is_gone_is_refused(tmp_path):
+    _setup(tmp_path, "local")
+    cloud = _setup(tmp_path, "cloud")
+    cloud.unlink()
+    with pytest.raises(DomainError) as refused:
+        host_config.profile_config_path("cloud")
+    assert refused.value.code == "work_profile_config_missing"
