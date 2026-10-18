@@ -77,6 +77,7 @@ from .host_config import (
     HostRelayConfig,
     WorkerChannelConfig,
     agent_workspace,
+    profile_name_of,
     set_worker_channel_state,
 )
 from .authorization import PROFILE_METADATA_ABSENT, authorization_observation
@@ -780,6 +781,12 @@ def _declared_idle_ceiling(value: Mapping[str, Any]) -> int:
     return max(active, 120)
 
 
+def _host_profile_name(host: HostRelayConfig) -> str:
+    path = getattr(host, "path", None)
+    target_id = str(getattr(host, "target_id", "") or "")
+    return profile_name_of(path, target_id=target_id) if path and target_id else ""
+
+
 @dataclass(frozen=True)
 class RelayConfig:
     field_root: Path
@@ -832,6 +839,9 @@ class RelayConfig:
     runtime_launch: Mapping[str, Any] = field(default_factory=dict)
     # W763: the Claude account profile this session is bound to.
     claude_profile: Mapping[str, Any] = field(default_factory=dict)
+    # W913: the KDCube profile (pb setup target id) that selects this relay's
+    # host config, empty when no name selects it; the resume line carries it.
+    kdcube_profile: str = ""
 
     def repository_mapping(self) -> dict[str, Any]:
         return repository_entries(self.source_repositories, self.source_read_roots)
@@ -1039,6 +1049,7 @@ class RelayConfig:
             )[0],
             runtime_launch=dict(getattr(channel, "runtime_launch", {}) or {}),
             claude_profile=dict(getattr(channel, "claude_profile", {}) or {}),
+            kdcube_profile=_host_profile_name(host),
         )
 
     @classmethod
@@ -3604,6 +3615,7 @@ class ProblemBoardHostRelayAdapter:
             working_directory=self.config.workspace or self.config.working_directory,
             launch=self.config.runtime_launch,
             profile=resume_profile(self.config.claude_profile),
+            kdcube_profile=self.config.kdcube_profile,
         )
         command = str(generated["command"])
         await self.client.action(

@@ -3,7 +3,7 @@ from __future__ import annotations
 import sys
 from collections.abc import Mapping
 from pathlib import Path
-from typing import Any
+from typing import Any, Sequence
 
 from ..contract.errors import PERMANENT_CREDENTIAL_CODES, DomainError
 from ..contract.runtime_account import normalize_runtime_account
@@ -180,10 +180,22 @@ DEVICE_FLAG = "--device"
 
 
 def authorization_command(
-    profile_name: str, *, config_path: str | Path | None = None
+    profile_name: str,
+    *,
+    config_path: str | Path | None = None,
+    selection: Sequence[str] | None = None,
 ) -> list[str]:
+    """The authorize line to run in a second terminal.
+
+    ``selection`` is what reaches this session's KDCube profile from a terminal
+    without ``PB_PROFILE`` (W913: ``--profile <name>``, host_config
+    ``selection_arguments``); it replaces ``config_path``.
+    """
+
     command = ["pb", "worker", "authorize", profile_name, DEVICE_FLAG]
-    if config_path is not None:
+    if selection is not None:
+        command.extend(str(item) for item in selection)
+    elif config_path is not None:
         command.extend(["--config", str(Path(config_path).expanduser().resolve())])
     return command
 
