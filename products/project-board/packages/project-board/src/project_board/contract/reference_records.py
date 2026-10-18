@@ -221,7 +221,7 @@ def reference_for_record(
     if policy is None:
         raise DomainError(
             "work_reference_policy_missing",
-            "This Problem Board object kind has no reference policy.",
+            "This Project Board object kind has no reference policy.",
             details={"kind": normalized_kind},
         )
     timestamp = _first_text(record, policy.timestamp_fields)

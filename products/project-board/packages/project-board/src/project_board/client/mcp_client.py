@@ -106,7 +106,7 @@ def _tool_payload(result: Any) -> dict[str, Any]:
         code, message = _refusal(
             payload,
             "work_mcp_tool_failed",
-            " ".join(texts) or "The Problem Board MCP call failed.",
+            " ".join(texts) or "The Project Board MCP call failed.",
         )
         raise DomainError(
             code,
@@ -118,7 +118,7 @@ def _tool_payload(result: Any) -> dict[str, Any]:
         code, message = _refusal(
             payload,
             "work_remote_denied",
-            "The Problem Board control plane denied the call.",
+            "The Project Board control plane denied the call.",
         )
         raise DomainError(code, message, status=int(payload.get("status") or 403), details=payload)
     require_successful_operation_envelope(
@@ -181,7 +181,7 @@ def governed_endpoint_identity(endpoint: str) -> tuple[str, str]:
     if tail != ["public", "mcp", "problem_board"]:
         raise DomainError(
             "work_relay_endpoint_not_governed",
-            "The configured endpoint is not the governed Problem Board MCP address.",
+            "The configured endpoint is not the governed Project Board MCP address.",
             status=409,
             details={"endpoint": str(endpoint or "")},
         )
@@ -460,14 +460,14 @@ class ProblemBoardDataBusClient:
                 status = 500
             raise DomainError(
                 str(error.get("code") or "work_remote_denied"),
-                str(error.get("message") or "Problem Board rejected the operation."),
+                str(error.get("message") or "Project Board rejected the operation."),
                 status=status,
                 details=details,
             )
         if outcome.status == "conflict":
             raise DomainError(
                 "work_remote_conflict",
-                "Problem Board could not apply the operation to its current state.",
+                "Project Board could not apply the operation to its current state.",
                 status=409,
                 details=dict(outcome.data),
             )

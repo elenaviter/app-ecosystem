@@ -27,7 +27,7 @@ def _unknown_operation(operation: str) -> DomainError:
     return DomainError(
         "work_coordinate_operation_unknown",
         (
-            f"{operation or '(none)'} is not a canonical Problem Board operation."
+            f"{operation or '(none)'} is not a canonical Project Board operation."
             + (" Did you mean " + " or ".join(close) + "?" if close else "")
         ),
         status=400,

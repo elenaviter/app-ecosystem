@@ -36,7 +36,7 @@ PROFILE_PLACEHOLDER = "<profile>"
 # the Card is a separate, deliberate act, not the answer to a missing operation.
 CARD_REFRESH_FIX = (
     "A project admin presses Fit to role on this agent's row in Team > Agents "
-    "(for a worker it sets the Card's Problem Board permissions to the worker defaults; "
+    "(for a worker it sets the Card's Project Board permissions to the worker defaults; "
     "for the coordinator it applies the coordinator profile again); the Card, its client "
     "and this session stay the same."
 )

@@ -109,7 +109,7 @@ def _invalid(value: Any) -> DomainError:
     return DomainError(
         "work_ref_invalid",
         (
-            "Expected a canonical Problem Board reference: a natural project "
+            "Expected a canonical Project Board reference: a natural project "
             "identity, a worker runtime plus native session identity, or "
             "work:<kind>[:<subkind>]:<created-at>:<key>:<semantic-name>."
         ),
@@ -126,7 +126,7 @@ def normalize_reference_timestamp(value: Any) -> str:
     except ValueError as exc:
         raise DomainError(
             "field_timestamp_invalid",
-            "A Problem Board reference needs a valid creation timestamp.",
+            "A Project Board reference needs a valid creation timestamp.",
             details={"created_at": text},
         ) from exc
     if moment.tzinfo is None:
@@ -142,7 +142,7 @@ def normalize_reference_key(value: Any) -> str:
     if REFERENCE_KEY_SEGMENT_RE.fullmatch(text) is None:
         raise DomainError(
             "work_ref_key_invalid",
-            "A Problem Board reference key must be one segment of at most 128 characters.",
+            "A Project Board reference key must be one segment of at most 128 characters.",
             details={"value": text[:256], "maximum_characters": 128},
         )
     return text
@@ -164,7 +164,7 @@ def normalize_semantic_name(value: Any, *, fallback: str) -> str:
     if REFERENCE_SEMANTIC_SEGMENT_RE.fullmatch(segment) is None:
         raise DomainError(
             "work_ref_semantic_name_invalid",
-            "A Problem Board reference semantic name could not be derived.",
+            "A Project Board reference semantic name could not be derived.",
             details={"value": str(value or "")[:128]},
         )
     return segment
@@ -384,7 +384,7 @@ def normalize_reference_mapping(
         if not target_address.is_canonical:
             raise DomainError(
                 "work_reference_mapping_target_legacy",
-                "Every reference mapping target must use a canonical Problem Board URI.",
+                "Every reference mapping target must use a canonical Project Board URI.",
                 status=409,
                 details={"source_ref": source, "target_ref": target},
             )

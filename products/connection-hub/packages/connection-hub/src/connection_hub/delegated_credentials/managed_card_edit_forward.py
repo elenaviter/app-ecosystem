@@ -341,20 +341,20 @@ __all__ = ["OPERATION", "OUTCOME_SCHEMA", "PROTOCOL", "SCHEMA", "ManagedCardEdit
 MANAGED_REVOKE_REASONS = {
     "person_my": ("managed_card_revoke_requires_project_removal",
                   "A person's My Card ends only when the person is removed from the project, which ends their "
-                  "project Control Card and My Card together. Use People > Remove in Problem Board. "
+                  "project Control Card and My Card together. Use People > Remove in Project Board. "
                   "Nothing was changed."),
     "agent": ("managed_card_revoke_requires_unlink",
-              "This agent's Card is linked to a project. Unlink the agent from the project in Problem Board "
+              "This agent's Card is linked to a project. Unlink the agent from the project in Project Board "
               "first; its own Card can then be revoked here. Nothing was changed."),
     "invitation_control": ("managed_card_revoke_requires_invitation_withdraw",
-                           "This is a pending invitation's Control Card. Withdraw the invitation in Problem Board "
+                           "This is a pending invitation's Control Card. Withdraw the invitation in Project Board "
                            "(People > Invitations). Nothing was changed."),
     "project_control": ("managed_card_revoke_project_control_unsupported",
                         "A project's Control Card exists as long as the project and ends only when the project "
                         "is deleted. Nothing was changed."),
     "managed": ("managed_card_revoke_requires_project",
                 "This Card is managed by its project. It ends only through the project's own action in "
-                "Problem Board. Nothing was changed."),
+                "Project Board. Nothing was changed."),
 }
 
 

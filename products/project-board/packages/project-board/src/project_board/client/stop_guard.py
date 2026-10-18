@@ -50,7 +50,7 @@ def rearm_reason(runtime_session_id: str) -> str:
 
     session = runtime_session_id
     return (
-        "The Problem Board watch for this session is not running, so board mail cannot wake it. "
+        "The Project Board watch for this session is not running, so board mail cannot wake it. "
         "Before ending this turn, re-arm it: start the Monitor tool with the command "
         f"`exec pb worker watch --runtime-kind claude-code --runtime-session-id {session} 2>&1` "
         "and timeout_ms 1800000, then run "

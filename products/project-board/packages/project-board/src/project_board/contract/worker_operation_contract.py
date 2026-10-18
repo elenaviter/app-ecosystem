@@ -24,7 +24,7 @@ PROBLEM_BOARD_OPERATION_POLICIES: dict[str, dict[str, Any]] = {
             "Check that the person may manage the project's Cards in Connection "
             "Hub: the owner or admin role, the required administrative Control "
             "minimum, AND this operation through the current effective Cards. "
-            "It writes no Card in Problem Board."
+            "It writes no Card in Project Board."
         ),
         "grants": ("work:admin",),
     },
@@ -734,7 +734,7 @@ if operation_inventory_by_kind() != PROBLEM_BOARD_OPERATIONS:
     missing = sorted(PROBLEM_BOARD_OPERATIONS - operation_inventory_by_kind())
     extra = sorted(operation_inventory_by_kind() - PROBLEM_BOARD_OPERATIONS)
     raise RuntimeError(
-        "Problem Board operation placement must cover the canonical inventory "
+        "Project Board operation placement must cover the canonical inventory "
         f"exactly (missing={missing}, extra={extra})."
     )
 

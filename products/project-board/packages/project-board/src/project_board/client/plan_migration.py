@@ -512,7 +512,7 @@ def _prepare_reference_migration(
     if unresolved:
         raise DomainError(
             "field_reference_migration_unresolved",
-            "Stored Problem Board references remain unresolved; repair or retire them before retrying the migration.",
+            "Stored Project Board references remain unresolved; repair or retire them before retrying the migration.",
             status=409,
             details={
                 "unresolved_reference_count": len(unresolved),

@@ -134,7 +134,7 @@ def _service_command_error(
 ) -> DomainError:
     is_launchd = bool(command and Path(command[0]).name == "launchctl")
     message = (
-        "launchd could not change the login-scoped Problem Board relay. "
+        "launchd could not change the login-scoped Project Board relay. "
         "Run the same pb relay-service command from the logged-in user's "
         "normal Terminal; do not run it as root."
         if is_launchd
@@ -326,7 +326,7 @@ class RelayService:
             if time.monotonic() >= deadline:
                 raise DomainError(
                     "work_relay_service_stop_timeout",
-                    "launchd did not unload the Problem Board relay in time.",
+                    "launchd did not unload the Project Board relay in time.",
                     details={
                         "command": command,
                         "target": self._launchd_target(),

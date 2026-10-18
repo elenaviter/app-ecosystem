@@ -1019,7 +1019,7 @@ def _default_host_config_path() -> Path:
         return Path(path).expanduser().resolve()
     raise DomainError(
         "work_relay_config_required",
-        "Problem Board has no default machine configuration. Run the setup procedure first.",
+        "Project Board has no default machine configuration. Run the setup procedure first.",
     )
 
 

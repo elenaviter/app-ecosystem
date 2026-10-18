@@ -220,7 +220,7 @@ def _agent_identity(parser: argparse.ArgumentParser) -> None:
 def _host_config(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--config",
-        help="Host relay config; defaults to this user's selected Problem Board target.",
+        help="Host relay config; defaults to this user's selected Project Board target.",
     )
     # W909: the KDCube profile, the target id `pb setup --target-id` named. Not a
     # Card authorization profile (`pb worker authorize <profile> --device`).
@@ -242,7 +242,7 @@ def _project_board_version() -> str:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="problem-board", description="Operate a Problem Board shared field.")
+    parser = argparse.ArgumentParser(prog="problem-board", description="Operate a Project Board shared field.")
     parser.add_argument(
         "--version",
         action="version",
@@ -285,7 +285,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
 
     setup = sub.add_parser(
-        "setup", help="Create one machine-scoped Problem Board relay and local field."
+        "setup", help="Create one machine-scoped Project Board relay and local field."
     )
     setup.add_argument("--target-id", required=True)
     setup.add_argument("--endpoint", required=True)
@@ -367,7 +367,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--endpoint",
         default="",
         help=(
-            "Replace the governed Problem Board service endpoint; rotates every "
+            "Replace the governed Project Board service endpoint; rotates every "
             "resource-scoped worker profile and requires authorization again."
         ),
     )
@@ -533,9 +533,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     coordinate = sub.add_parser(
         "coordinate",
-        help="Call one Problem Board operation with this session's own card.",
+        help="Call one Project Board operation with this session's own card.",
         description=(
-            "Invoke a canonical Problem Board operation against the governed "
+            "Invoke a canonical Project Board operation against the governed "
             "endpoint using the card this session already holds. The operation "
             "ids are the ones the catalog publishes, so there is no second "
             "namespace to learn: worker.retire is worker.retire on every surface. "
@@ -741,7 +741,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     procedure = sub.add_parser(
         "procedure",
-        help="Inspect, install, or verify the Problem Board worker skill package.",
+        help="Inspect, install, or verify the Project Board worker skill package.",
     )
     procedure_commands = procedure.add_subparsers(
         dest="procedure_command", required=True
@@ -800,7 +800,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
 
     command = worker_commands.add_parser(
-        "whoami", help="Show this runtime's stable Problem Board identity."
+        "whoami", help="Show this runtime's stable Project Board identity."
     )
     _agent_identity(command)
 
@@ -2210,7 +2210,7 @@ def _setup(args: Any) -> dict[str, Any]:
     ).strip()
     is_default = bool(default_config) and Path(default_config).resolve() == config.path
     field = SharedFieldStore(config.field_root)
-    manifest = field.initialize(title=f"Problem Board field on {config.host_label}")
+    manifest = field.initialize(title=f"Project Board field on {config.host_label}")
     journals = JournalWorkspace(config.journal_workspace_root, repository_map).initialize()
     return {
         "config": str(config.path),
@@ -2232,7 +2232,7 @@ def _setup(args: Any) -> dict[str, Any]:
                 "rule": (
                     "Before enrollment, the selected coding-agent session verifies that "
                     "its own harness can read and write every required approved root. "
-                    "Problem Board receiver policy does not grant filesystem access."
+                    "Project Board receiver policy does not grant filesystem access."
                 ),
             },
             "authorization": (
@@ -2320,7 +2320,7 @@ def _host_command(args: Any) -> dict[str, Any]:
             sender="control-plane",
             recipient=worker_name,
             kind="ping",
-            subject="Problem Board end-to-end delivery probe",
+            subject="Project Board end-to-end delivery probe",
             body=(
                 f"Delivery probe {probe_id}. Acknowledge and settle this message; "
                 "no other action is required."
@@ -2330,7 +2330,7 @@ def _host_command(args: Any) -> dict[str, Any]:
             idempotency_key=f"delivery-probe:{probe_id}",
             sender_identity={
                 "kind": "system",
-                "label": "Problem Board delivery probe",
+                "label": "Project Board delivery probe",
             },
         )
         message_ref = str(sent.get("message_ref") or "")
@@ -7012,7 +7012,7 @@ def _runtime_procedure_state(runtime_kind: str) -> dict[str, Any]:
         "the next step: the copy this session loaded is not the one this host's "
         "client carries."
         + (
-            " The destination holds a copy Problem Board does not own or cannot "
+            " The destination holds a copy Project Board does not own or cannot "
             "read; look at it before adding --force."
             if state in {"conflict", "corrupt", "unreadable"}
             else ""

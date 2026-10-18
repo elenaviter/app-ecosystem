@@ -78,7 +78,7 @@ def _origin(url: str) -> str:
 def _not_board(endpoint: str, found: str, **details: Any) -> DomainError:
     return DomainError(
         "work_setup_endpoint_not_board",
-        f"{endpoint} does not answer as the Problem Board MCP endpoint ({found}). "
+        f"{endpoint} does not answer as the Project Board MCP endpoint ({found}). "
         f"The endpoint has the shape {EXPECTED_SHAPE}. {WHERE_TO_COPY}",
         status=400,
         details={"endpoint": endpoint, "expected_shape": EXPECTED_SHAPE, "found": found, **details},

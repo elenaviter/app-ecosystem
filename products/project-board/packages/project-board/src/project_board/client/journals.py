@@ -757,7 +757,7 @@ class JournalWorkspace:
                 "retrieval_frontmatter": list(JOURNAL_RETRIEVAL_FRONTMATTER),
                 "rule": (
                     "The agent writes the complete file, including front matter. "
-                    "Problem Board does not generate its filename, tags, sections, or body."
+                    "Project Board does not generate its filename, tags, sections, or body."
                 ),
             },
             "journal_index": self.index_status(),
