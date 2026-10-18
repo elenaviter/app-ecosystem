@@ -6064,7 +6064,7 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
         <div className="error" role="alert">
           <strong>
             {focusTimedOut ? 'Card unavailable.'
-              : isBoardRestarting(delegatedAccessError) ? 'Problem Board is restarting.'
+              : isBoardRestarting(delegatedAccessError) ? 'Project Board is restarting.'
               : isRequestLimitRefusal(delegatedAccessError) ? 'Too many requests.' : 'Card unavailable.'}
           </strong>{' '}
           {focusTimedOut ? CONTROL_OPEN_TIMEOUT_MESSAGE : unavailableAccessCardMessage(accessCardFocus, delegatedAccessError)}

@@ -196,7 +196,7 @@ test('a refused person removal says where to remove the person and keeps the Car
   const result = await h.store.dispatch(h.revokeDelegatedAccess({ ...revokeArgs, projectPersonControl: person }))
   assert.equal(result.meta.requestStatus, 'rejected')
   assert.equal(result.payload, h.PERSON_REMOVAL_GUIDANCE)
-  assert.match(result.payload, /Remove this person in Problem Board/)
+  assert.match(result.payload, /Remove this person in Project Board/)
   assert.equal(h.store.getState().error, h.PERSON_REMOVAL_GUIDANCE)
   assertPreserved(h.store.getState(), h.before)
   assert.equal(h.requests.length, 1, 'the write is never retried')

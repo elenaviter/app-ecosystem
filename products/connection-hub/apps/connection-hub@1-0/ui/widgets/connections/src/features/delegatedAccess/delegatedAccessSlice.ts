@@ -402,7 +402,7 @@ export const updateAgentCapabilitySelection = createAsyncThunk<
 );
 
 export const PERSON_REMOVAL_GUIDANCE =
-  'Remove this person in Problem Board (Team). Their Control Card and access stay as they are until then.';
+  'Remove this person in Project Board (Team). Their Control Card and access stay as they are until then.';
 
 export const revokeDelegatedAccess = createAsyncThunk<
   DelegatedAccessRevokeResult,
