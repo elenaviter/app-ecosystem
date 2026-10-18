@@ -497,8 +497,9 @@ projects that continue for months. The storage and retention contract is in
 ## Operator Scene And Worker Card Authority
 
 ```text
-Project Board main scene (/sites/problem-board/, a project at
-                          /sites/problem-board/<project name>)
+Project Board main scene (/sites/<alias>/, the descriptor's site
+                          alias, project-board by default; a project at
+                          /sites/<alias>/<project name>)
   |
   +-- Board pane (fills the site at first, on the addressed project)
   |     worker card -> shield action
