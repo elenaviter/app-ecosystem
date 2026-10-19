@@ -1,13 +1,14 @@
 package:
   id: service-foundation
-  ref: "2026.10.18.1804"
+  ref: "2026.10.19.1800"
   description: |
-    - KDCube profiles: one host can serve more than one KDCube. Every host command takes `--profile <name>`, and a session takes `PB_PROFILE` from its environment. A command picks its deployment by `--config`, `--profile`, `PROBLEM_BOARD_CONFIG`, `PB_PROFILE`, then the machine default. An unknown or ambiguous profile is refused, never answered with the default. A profile whose configuration no longer exists is also refused (`work_profile_config_missing`). `pb status` and `pb worker context` show the profile in use and what chose it.
-    - Setup keeps the machine default: setting up another profile no longer moves the machine default. `pb setup --make-default` moves it explicitly.
-    - Worker procedure: the managed procedure is at revision 2026.10.18.2. The pages that name a Card authorization profile show `pb worker authorize <profile> --device`.
+    - Project import: the worker contract carries the five project-import operations (`project.import`, `project.import.upload.begin`, `project.import.upload.seal`, `project.import.cancel`, `project.import.get`) with their request and response shapes, and `pb worker project-import` uploads a project export in parts, seals it and starts the import into an empty project, retrying while the board reports it busy (#857). The docs describe the import window and say that an importing agent's own Card history is the only history an empty target may hold; the person flow is unchanged (#858).
+    - Connection Hub diagnostics: when an authenticated Card participant call answers unavailable, the Hub logs the stage, exception class and code location, without exception messages or request values (#859).
+    - Resume and authorize lines: they name the session's KDCube profile, so each viewer sees the line that resumes that session on their own profile (#856).
+    - Display name: worker procedures, docs, client and Connection Hub messages, the Hub UI and the operations page say Project Board; technical identifiers and runtime state are unchanged (#849-#853). The worker procedure revision recorded with it is 2026.10.18.3 (#849).
 
 components:
   python_package:
     id: service-foundation
     path: packages/service-foundation
-    version: "2026.10.18.1804"
+    version: "2026.10.19.1800"
