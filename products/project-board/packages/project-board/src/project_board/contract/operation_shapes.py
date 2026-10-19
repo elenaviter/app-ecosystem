@@ -85,6 +85,32 @@ PROBLEM_BOARD_OPERATION_SHAPES: dict[str, dict[str, Any]] = {   'project.registe
         'object_ref': 'work:project:<project_id>',
         'payload': {'goal': 'string; empty clears the goal'},
     },
+    'project.import': {
+        'description': 'Start importing a sealed upload into an empty project; a background job runs it once.',
+        'object_ref': 'work:project:<project_id>',
+        'payload': {'upload_id': 'string; a sealed upload of this project', 'client_key': 'string; the retry key'},
+    },
+    'project.import.upload.begin': {
+        'description': 'Begin a chunked upload of an export archive (8 MiB parts).',
+        'object_ref': 'work:project:<project_id>',
+        'payload': {'total_bytes': 'integer; the archive size', 'archive_sha256': 'string; lowercase hex',
+                    'client_key': 'string; the retry key'},
+    },
+    'project.import.upload.seal': {
+        'description': 'Seal the upload once every part is stored; then it cannot change.',
+        'object_ref': 'work:project:<project_id>',
+        'payload': {'upload_id': 'string'},
+    },
+    'project.import.cancel': {
+        'description': "Cancel the project's running import; manual work is unlocked at once.",
+        'object_ref': 'work:project:<project_id>',
+        'payload': {'import_id': 'string'},
+    },
+    'project.import.get': {
+        'description': "Whether the project can be imported into, and the current import's state.",
+        'object_ref': 'work:project:<project_id>',
+        'payload': {},
+    },
     'project.cards.manage': {
         'description': 'Check the signed-in person may manage project Cards in Connection Hub. No Project Board Card write.',
         'object_ref': 'work:project:<project_id>',

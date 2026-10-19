@@ -61,6 +61,11 @@ Which actor should hold each operation is in [Operations By Actor](operations-by
 | Operation | Group | Permission | For a person | Business rules |
 | --- | --- | --- | --- | --- |
 | `project.set_goal` | project | `work:coordinate` | Role AND current effective Card hierarchy | An owner/admin role AND current effective Card hierarchy; empty clears the goal. |
+| `project.import` | project | `work:admin` | Role AND current effective Card hierarchy | The project's owner (a person) or an agent whose grantor is the owner, AND project.import on the current Card hierarchy (W908 D3). Only into a ready, empty project, once; refused while another import runs. |
+| `project.import.upload.begin` | project | `work:admin` | Role AND current effective Card hierarchy | As project.import: the owner, or an agent whose grantor is the owner, AND project.import on the current Card hierarchy (W908 D3). The server mints the upload; the cap is the board's archive limit. |
+| `project.import.upload.seal` | project | `work:admin` | Role AND current effective Card hierarchy | As project.import (W908 D3). Every part read back and the whole archive hash checked; then the upload cannot change. |
+| `project.import.cancel` | project | `work:admin` | Role AND current effective Card hierarchy | The project's owner or the import's own actor, AND project.import.cancel on the current Card hierarchy (W908 D3). Unlocks manual work at once. |
+| `project.import.get` | project | `work:observe` | Membership (`project_membership`) | Whether the project can be imported into and the current import's public state (W908 D3). |
 | `project.cards.manage` | people | `work:admin` | Role AND current effective Card hierarchy | A person with the owner/admin role AND current effective Card hierarchy. No person's role preset ticks it. Checks authority for Connection Hub management, never writes a Card in Project Board. Retired project.people.card.update remains retired. |
 | `project.register` | project | `work:coordinate` | Identity rule `project_owner_is_a_person` | The signed-in person who registers a project is its owner and first admin. A new project is retained if Card initialization fails: work_project_cards_initialization_unavailable (503) names the incomplete step and unconfirmed cutover. This failure is not retryable by repeating registration; recovery requires explicit Card-initialization authority. No rollback, automatic reseed or legacy mutation authority is implied. Re-registering an existing project does not initialize its Cards. |
 | `project.set_journal_home` | project | `work:coordinate` | Role AND current effective Card hierarchy | Read only while the repository preset names no journal repository with a path. |
@@ -206,6 +211,7 @@ canonical Card permission rather than a second permission named after the page c
 | `project.report.archive` | Identity rule `person_views_people_only` |  |
 | `project.report.restore` | Identity rule `person_views_people_only` |  |
 | `project.report.delete` | Identity rule `person_views_people_only` |  |
+| `project.import.result` | Identity rule `person_views_people_only` | The import's outcome, for its own actor or the project owner (W908 D3). |
 | `project.export` | Identity rule `project_admin_by_role` | A person (never an agent) with the admin role AND project.control.update on their current Card hierarchy (W805). |
 | `project.delete` | Identity rule `project_admin_by_role` | A person (never an agent) with the admin role AND project.control.update on their current Card hierarchy, after typing the title (W805). |
 | `session.resume.request` | Identity rule `worker_pool_is_its_grantors` | Only an agent the caller owns. |
