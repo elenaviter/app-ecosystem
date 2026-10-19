@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "connection-hub"
-version = "2026.10.19.1800"
+version = "2026.10.19.2200"
 description = "Connection Hub delegated-access authority and client SDK."
 readme = "README.md"
 license = { text = "MIT" }
@@ -22,7 +22,7 @@ dependencies = [
     "httpx>=0.27,<1",
     "jwcrypto>=1.5.6,<2",
     # The Hub's Card decisions use service_foundation.coordination (durable wire, decision kernel).
-    "service-foundation>=2026.10.19.1800,<2027",
+    "service-foundation>=2026.10.19.2200,<2027",
 ]
 
 [project.optional-dependencies]
@@ -35,7 +35,7 @@ oidc = [
 # the native store, and an authenticated MCP connection. Problem Board's pb
 # depends on this extra and needs no KDCube package (W322).
 client = [
-    "app-foundation[mcp,native-secrets]>=2026.10.19.1800,<2027",
+    "app-foundation[mcp,native-secrets]>=2026.10.19.2200,<2027",
     "filelock>=3.16,<4",
     "httpx2>=2.5,<3",
     "keyring>=25,<26",
@@ -48,7 +48,7 @@ client = [
 test = [
     "pytest>=8,<10",
     "pytest-asyncio>=0.23,<2",
-    "app-foundation[mcp,native-secrets]>=2026.10.19.1800,<2027",
+    "app-foundation[mcp,native-secrets]>=2026.10.19.2200,<2027",
     "filelock>=3.16,<4",
     "httpx2>=2.5,<3",
     "keyring>=25,<26",
