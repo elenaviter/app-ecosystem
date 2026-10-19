@@ -124,6 +124,13 @@ the `project.import` operation on their current Card hierarchy (and
 The decision is asked again at every step, including in the background run, so
 a Card revoked after the start stops the import.
 
+An agent imports only while it attends the project as a worker, so it is
+linked first, and linking it records the change of its Card in the project's
+people history. That record of the importing agent's own Card does not count
+against "empty"; any other person or agent event, an invitation, an item, a
+note or an approved plan still does, and a person's import offer is unchanged.
+Nothing is removed from the history.
+
 - **Upload.** The archive is sent in parts of 8 MiB. The board hashes every
   part itself, then seals the upload: the parts are read back and their list
   frozen, so the archive the run reads is exactly the one that was sealed. The
