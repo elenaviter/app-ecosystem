@@ -112,17 +112,26 @@ set nobody can join.
 
 ### Importing a project
 
-A project's export can be imported into a new, empty project. The order is:
-create the project, import, then invite people and agents. The import is
-offered only while the project is still empty: no work items, no other
+A project's export can be imported into a new, empty project. For a person the
+order is: create the project, import, then invite people and agents. The import
+is offered only while the project is still empty: no work items, no other
 members or attending agents, no approved plan. An invitation or a plan
-approval ends that window.
+approval ends that window. An agent that imports is the one exception, below.
 
 Who: the project's owner, or an agent whose Card grantor is the owner, with
 the `project.import` operation on their current Card hierarchy (and
 `project.import.upload.begin` / `project.import.upload.seal` for the upload).
 The decision is asked again at every step, including in the background run, so
 a Card revoked after the start stops the import.
+
+An agent imports only while it attends the project as a worker, so it is
+linked first, and linking it (and any later change of its own Card, such as
+its role) is recorded in the project's people history. For that importing
+agent, the history of its own Card does not count against "empty". Every
+other people event (an invitation, a member, another agent's Card, or any
+event that is not a Card change), and any item, note or approved plan, still
+does. A person's import offer is unchanged, and nothing is removed from the
+history.
 
 - **Upload.** The archive is sent in parts of 8 MiB. The board hashes every
   part itself, then seals the upload: the parts are read back and their list
