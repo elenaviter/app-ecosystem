@@ -150,17 +150,22 @@ a Card revoked after the start stops the import.
   a board runs one import's start or run at a time. A start that finds
   another import running waits up to 20 seconds, then answers
   `work_import_busy` with a suggested retry interval; `pb worker
-  project-import` and the dialog retry it with the same key, so the person
-  sees a waiting state. A run waits for its turn until its deadline. There is
-  no promise of first-come order.
+  project-import` retries it with the same key for up to ten minutes. A run
+  waits for its turn until its deadline. There is no promise of first-come
+  order.
 - **Limits.** The reader refuses an archive that expands past twice the size
   limit, a single file over it, links or unsafe names, and too many files or
   rows; nothing is written before the archive passes.
 
-`project.import.get` reports whether the project can be imported now, whether
-an import is running, and the last import's state; the result of a finished
-import (what was inserted, what was skipped and why) is shown on the project
-card.
+`project.import.get` reports whether the project can be imported now and the
+running import's id and state; given an `import_id`, it also reports that
+import's own state and error code (a different project's import is refused),
+which is how `pb worker project-import --wait` follows its import to committed
+or failed. `project.import.result` gives a person the result of a finished
+import: what was inserted and what was left out and why.
+
+How a person starts an import in the browser (the Create project choice and the
+project card's Import section) is described when that part ships.
 
 ## People: members and project admins
 
