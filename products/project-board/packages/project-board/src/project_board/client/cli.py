@@ -3890,10 +3890,7 @@ def _worker_project_import(args: Any) -> dict[str, Any]:
         ).get("object")
         if not isinstance(sealed, Mapping) or not sealed.get("sealed"):
             raise DomainError("work_import_upload_response_invalid", "The upload was not sealed.", status=502)
-    started = _reference_mapping_request(
-        args, action="project.import", object_ref=args.project_ref,
-        payload={"upload_id": upload_id, "client_key": client_key},
-    ).get("object")
+    started = _start_import(args, upload_id, client_key)
     if not isinstance(started, Mapping) or not started.get("import_id"):
         raise DomainError("work_import_response_invalid", "The import did not start.", status=502)
     result = {"project_ref": args.project_ref, "upload_id": upload_id, "import_id": started["import_id"],
@@ -3901,6 +3898,27 @@ def _worker_project_import(args: Any) -> dict[str, Any]:
     if args.wait:
         result["state"] = _wait_for_import(args)
     return result
+
+
+def _start_import(args: Any, upload_id: str, client_key: str) -> Any:
+    """Start the import; while another import holds the board's import turn the board answers work_import_busy,
+    and the start is retried with the same client key (the same start) until it gets its turn (10 minutes)."""
+
+    deadline = time.monotonic() + IMPORT_BUSY_WAIT_SECONDS
+    while True:
+        try:
+            return _reference_mapping_request(
+                args, action="project.import", object_ref=args.project_ref,
+                payload={"upload_id": upload_id, "client_key": client_key},
+            ).get("object")
+        except DomainError as exc:
+            if exc.code != "work_import_busy" or time.monotonic() > deadline:
+                raise
+            wait = (exc.details or {}).get("retry_after_seconds") if isinstance(exc.details, Mapping) else None
+            time.sleep(max(1.0, min(60.0, float(wait or 10))))
+
+
+IMPORT_BUSY_WAIT_SECONDS = 600
 
 
 async def _upload_import_parts(part_url: str, data: bytes, size: int, count: int) -> None:

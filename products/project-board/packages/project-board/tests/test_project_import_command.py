@@ -65,3 +65,21 @@ def test_a_sealed_upload_is_not_sent_again_and_a_misfit_upload_is_refused(tmp_pa
     with pytest.raises(cli.DomainError) as refused:
         cli._worker_project_import(_args(tmp_path, b"abc"))
     assert refused.value.code == "work_import_upload_response_invalid"
+
+
+def test_a_busy_start_is_retried_with_the_same_key(tmp_path, monkeypatch):
+    starts = []
+
+    def request(args, *, action, object_ref, payload):
+        if action == "project.import.upload.begin":
+            return {"object": {"upload_id": "u1", "sealed": True}}
+        starts.append(payload["client_key"])
+        if len(starts) < 3:
+            raise cli.DomainError("work_import_busy", "Another import is running.", status=503,
+                                  details={"retry_after_seconds": 0})
+        return {"object": {"import_id": "i1", "state": "admitted"}}
+
+    monkeypatch.setattr(cli, "_reference_mapping_request", request)
+    monkeypatch.setattr(cli.time, "sleep", lambda seconds: None)
+    assert cli._worker_project_import(_args(tmp_path, b"abc"))["import_id"] == "i1"
+    assert len(starts) == 3 and len(set(starts)) == 1
