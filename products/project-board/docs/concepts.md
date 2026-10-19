@@ -110,6 +110,51 @@ like the others, and the flag is tried again. Someone who keeps joining stops th
 (`work_project_delete_members_joined`); nothing is deleted. Once the flag is
 set nobody can join.
 
+### Importing a project
+
+A project's export can be imported into a new, empty project. The order is:
+create the project, import, then invite people and agents. The import is
+offered only while the project is still empty: no work items, no other
+members or attending agents, no approved plan. An invitation or a plan
+approval ends that window.
+
+Who: the project's owner, or an agent whose Card grantor is the owner, with
+the `project.import` operation on their current Card hierarchy (and
+`project.import.upload.begin` / `project.import.upload.seal` for the upload).
+The decision is asked again at every step, including in the background run, so
+a Card revoked after the start stops the import.
+
+- **Upload.** The archive is sent in parts of 8 MiB. The board hashes every
+  part itself, then seals the upload: the parts are read back and their list
+  frozen, so the archive the run reads is exactly the one that was sealed. The
+  board accepts archives up to a configured size (a bundle property, 256 MiB
+  by default). An agent's `pb worker project-import --file <archive>` does all
+  of this; its parts go to a short-lived link bound to that upload and agent.
+- **Start.** Starting checks the archive (format, size limits, the project's
+  emptiness) and admits it: from then on the project shows as under import and
+  manual creation is locked, and the import commits only if the project is
+  still empty then. The same retry key returns the same import, so a lost
+  reply is safe to retry.
+- **Run.** A background job imports the archive within 30 minutes, as the
+  person or Card binding that started it, never as a service identity. Rows
+  get the new project's references and fresh identifiers; carried bodies,
+  attachments and report documents are written byte for byte. An imported work
+  item is a new row: its revision starts at 1 and its last-update time is the
+  import's time. The job runs once; a duplicate delivery does nothing.
+- **Cancel, fail, recover.** The owner or the person who started it can cancel
+  before the run commits. A failure, a cancel or an expired deadline unlocks
+  the project at once and removes what the import wrote. A job that was never
+  delivered is enqueued again, as the stored caller, by the board's recovery
+  job; an upload no running import reads is removed after a day.
+- **Limits.** The reader refuses an archive that expands past twice the size
+  limit, a single file over it, links or unsafe names, and too many files or
+  rows; nothing is written before the archive passes.
+
+`project.import.get` reports whether the project can be imported now, whether
+an import is running, and the last import's state; the result of a finished
+import (what was inserted, what was skipped and why) is shown on the project
+card.
+
 ## People: members and project admins
 
 Every person on a project has a role, `admin` or `member`, and the person who
