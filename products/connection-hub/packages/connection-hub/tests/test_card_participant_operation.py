@@ -11,6 +11,7 @@ from __future__ import annotations
 import copy
 import json
 import os
+import re
 from dataclasses import replace
 from pathlib import Path
 
@@ -456,3 +457,30 @@ async def test_composition_runs_only_after_a_request_authenticates(tmp_path):
                                                   after_authentication=broken)
     assert await failing.answer(_request("read_pending")) == {
         "ok": False, "status": 503, "error": {"code": "card_participant_unavailable"}}
+
+
+@pytest.mark.asyncio
+async def test_an_unexpected_prepare_failure_is_signed_unavailable_and_logged_without_values(tmp_path, caplog):
+    # The signed answer may only say "unavailable"; the log line is the one place that names the stage.
+    world, before, after = await _world(tmp_path)
+
+    class _BrokenParticipant:
+        async def prepare(self, transaction_id):
+            raise RuntimeError("store said: " + REQUEST_SECRET)
+
+    def bind(scope):
+        return ScopeBinding(participant=_BrokenParticipant(), decisions=world.bind(scope).decisions)
+
+    operation = CardTransactionParticipantOperation(callers={PEER: replace(world.caller, bind=bind)},
+                                                    card_store=world.store, nonces=world.nonces, enabled=True,
+                                                    clock=lambda: NOW)
+    request = _request("prepare")
+    with caplog.at_level("WARNING", logger="connection_hub.delegated_credentials.cards.participant_operation"):
+        answer = await operation.answer(request)
+    assert _verified(answer, request) == {"kind": "refused", "code": "card_participant_unavailable", "status": 503}
+    lines = [record.getMessage() for record in caplog.records]
+    assert len(lines) == 1, lines
+    assert re.fullmatch(r"card participant prepare unavailable: RuntimeError at "
+                        r"test_card_participant_operation\.prepare:\d+ via participant_operation\._dispatch:\d+",
+                        lines[0]), lines[0]
+    assert REQUEST_SECRET not in lines[0] and "store said" not in lines[0] and TX not in lines[0]

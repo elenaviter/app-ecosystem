@@ -30,8 +30,11 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import re
+import traceback
 from dataclasses import asdict, dataclass, field
+from pathlib import PurePath
 from typing import Any, Awaitable, Callable, Mapping
 
 from service_foundation.coordination.durable_decision_log import DecisionRefused
@@ -54,6 +57,22 @@ MIN_SECRET_BYTES = 32
 MAX_SKEW_SECONDS = 300
 _ECHO = re.compile(r"[0-9a-f]{32,128}\Z")
 _BOUNDED = 256
+_LOG = logging.getLogger(__name__)
+
+
+def _raised_at(exc: BaseException) -> str:
+    """Where ``exc`` was raised: the innermost frame, and the innermost Connection Hub frame
+    when that differs, each as ``module.function:line``. Code locations only, no values."""
+    frames = traceback.extract_tb(exc.__traceback__)
+    if not frames:
+        return "-"
+
+    def where(frame: traceback.FrameSummary) -> str:
+        return f"{PurePath(frame.filename).stem}.{frame.name}:{frame.lineno}"
+
+    own = next((frame for frame in reversed(frames) if "connection_hub" in PurePath(frame.filename).parts), None)
+    innermost = where(frames[-1])
+    return innermost if own is None or own is frames[-1] else f"{innermost} via {where(own)}"
 # The Hub reasons an answer may carry; anything else is card_participant_refused.
 HUB_REFUSALS = frozenset({
     # W661 S5: card_version's fixed refusal for a manual edit that would change a protected grant.
@@ -231,7 +250,12 @@ class CardTransactionParticipantOperation:
             result = self._refusal(exc.reason)
         except DecisionRefused as exc:
             result = self._refusal(str(exc))
-        except Exception:  # noqa: BLE001 - authenticated, so signed; never internal text
+        except Exception as exc:  # noqa: BLE001 - authenticated, so signed; never internal text
+            # The signed code says only "unavailable", so the log names the stage:
+            # the action, the exception class and where it was raised. Never the
+            # exception's message or any request value.
+            _LOG.warning("card participant %s unavailable: %s at %s", data["action"], type(exc).__name__,
+                         _raised_at(exc))
             result = self._refusal("card_participant_unavailable")
         return self._signed(caller, data, digest, result)
 
