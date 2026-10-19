@@ -287,8 +287,11 @@ Materialization"): the per-key Redis lock first, THEN the observed file lock. Th
   `card_lock_lost`. A write outside any R operation carries no Card-lock claim (the proc-only guard applies). A
   task that outlived its operation is refused `card_lock_session_closed`.
 - **Fail closed:** an unreachable Redis refuses `card_lock_unavailable` at once. A Redis whose
-  `maxmemory-policy` is not `noeviction` refuses before any lock. A key held past the 30 s wait refuses
-  `card_mutation_lock_timeout`.
+  `maxmemory-policy` is not `noeviction` refuses `card_lock_redis_policy_not_noeviction` before any lock. The
+  policy is read with `CONFIG GET`; a managed Redis that refuses `CONFIG` (AWS ElastiCache restricts it) is read
+  from `INFO memory` instead, and when neither reports a policy the lock refuses
+  `card_lock_redis_policy_unverified`. On ElastiCache, set `maxmemory-policy` to `noeviction` in the cluster's
+  parameter group. A key held past the 30 s wait refuses `card_mutation_lock_timeout`.
 - **The bounds stay ordered:** wait 30 s < PB lock_timeout 40 s < statement 45 s < idle-in-transaction 60 s <
   TTL 120 s.
 - **One Redis node per deployment is assumed:** a replica promotion could grant a key twice.

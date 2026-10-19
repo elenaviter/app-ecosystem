@@ -19,6 +19,7 @@ require[s] storage-level idempotency and optimistic concurrency checks" (P, the 
 - R-2: keys carry a kind: ``kdcube:cards:lock:<tenant>:<project>:card:<subject_hash>:<access_id>`` for a Card, and
   ``...:<kind>:<id>`` for the service's other sections. The service takes them in its existing order.
 - R-3: ``assert_redis_noeviction`` at startup; anything but ``noeviction`` refuses the Card lock (fail closed).
+  The policy comes from CONFIG GET, or from INFO memory where a managed Redis refuses CONFIG.
   One Redis node per deployment is assumed: a replica promotion could grant a key twice.
 - R-4: renewal is an owner-checked Lua PEXPIRE in a task bound to the operation; a failure marks the operation lost.
   The write guard (``assert_card_lock_owned``) checks "not lost" and GET == owner value for every key it holds before
@@ -33,6 +34,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import pathlib
 import secrets
 from contextlib import asynccontextmanager
@@ -40,6 +42,11 @@ from contextvars import ContextVar
 from typing import Any, AsyncIterator, Callable
 
 from .store import CardStorageError
+
+_LOG = logging.getLogger(__name__)
+# Redis's own eviction policy names: the only policy values ever logged (anything else logs as "other").
+_REDIS_POLICIES = frozenset({"noeviction", "allkeys-lru", "allkeys-lfu", "allkeys-random", "volatile-lru",
+                             "volatile-lfu", "volatile-random", "volatile-ttl"})
 
 REDIS_LOCK_TTL_SECONDS = 120
 REDIS_LOCK_RENEW_SECONDS = 20
@@ -281,17 +288,39 @@ async def assert_card_lock_owned() -> None:
             raise CardStorageError("card_lock_lost")
 
 
+def _policy_text(value: Any) -> str | None:
+    if isinstance(value, bytes):
+        value = value.decode("utf-8", errors="replace")
+    return value if isinstance(value, str) and value else None
+
+
 async def assert_redis_noeviction(redis: Any) -> None:
-    """R-3: a lock key with a TTL is evictable under allkeys-* and volatile-*; only noeviction keeps it."""
+    """R-3: a lock key with a TTL is evictable under allkeys-* and volatile-*; only noeviction keeps it.
+
+    ``CONFIG GET maxmemory-policy`` answers first. A managed Redis that refuses CONFIG (AWS ElastiCache lists it
+    as a restricted command) or answers without the field is read from ``INFO memory`` (``maxmemory_policy``)
+    instead. Only a policy one of them reports is used: when neither reports one, the lock is refused unverified."""
+    source, policy, failure = "config", None, None
     try:
         found = await redis.config_get("maxmemory-policy")
-    except Exception as exc:  # noqa: BLE001 - unverifiable is refused, never assumed
-        raise CardStorageError("card_lock_redis_policy_unverified") from exc
-    policy = found.get("maxmemory-policy") if isinstance(found, dict) else None
-    if isinstance(policy, bytes):
-        policy = policy.decode("utf-8", errors="replace")
+        policy = _policy_text(found.get("maxmemory-policy")) if isinstance(found, dict) else None
+    except Exception as exc:  # noqa: BLE001 - try INFO before refusing
+        failure = exc
+    if policy is None:
+        source = "info"
+        try:
+            memory = await redis.info("memory")
+            policy = _policy_text(memory.get("maxmemory_policy")) if isinstance(memory, dict) else None
+        except Exception as exc:  # noqa: BLE001 - unverifiable is refused, never assumed
+            failure = exc
+    if policy is None:
+        _LOG.warning("card lock redis policy unverified: CONFIG GET and INFO memory report none")
+        raise CardStorageError("card_lock_redis_policy_unverified") from failure
     if policy != "noeviction":
+        _LOG.warning("card lock redis policy refused via %s: %s", source,
+                     policy if policy in _REDIS_POLICIES else "other")
         raise CardStorageError("card_lock_redis_policy_not_noeviction")
+    _LOG.info("card lock redis policy noeviction verified via %s", source)
 
 
 # Synchronous callers (two cleanup deletions: an effects-only in-doubt entry and an account-fence pending mark) get
