@@ -146,6 +146,13 @@ a Card revoked after the start stops the import.
   the project at once and removes what the import wrote. A job that was never
   delivered is enqueued again, as the stored caller, by the board's recovery
   job; an upload no running import reads is removed after a day.
+- **One at a time.** Reading and importing an archive holds it in memory, so
+  a board runs one import's start or run at a time. A start that finds
+  another import running waits up to 20 seconds, then answers
+  `work_import_busy` with a suggested retry interval; `pb worker
+  project-import` and the dialog retry it with the same key, so the person
+  sees a waiting state. A run waits for its turn until its deadline. There is
+  no promise of first-come order.
 - **Limits.** The reader refuses an archive that expands past twice the size
   limit, a single file over it, links or unsafe names, and too many files or
   rows; nothing is written before the archive passes.
