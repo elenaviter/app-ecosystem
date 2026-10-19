@@ -107,9 +107,10 @@ PROBLEM_BOARD_OPERATION_SHAPES: dict[str, dict[str, Any]] = {   'project.registe
         'payload': {'import_id': 'string'},
     },
     'project.import.get': {
-        'description': "Whether the project can be imported into, and the current import's state.",
+        'description': "Whether the project can be imported into, the current import's state, and with import_id "
+                       "that import's own state and error code.",
         'object_ref': 'work:project:<project_id>',
-        'payload': {},
+        'payload': {'import_id': 'string: one import to report on (optional)'},
     },
     'project.cards.manage': {
         'description': 'Check the signed-in person may manage project Cards in Connection Hub. No Project Board Card write.',

@@ -3896,7 +3896,7 @@ def _worker_project_import(args: Any) -> dict[str, Any]:
     result = {"project_ref": args.project_ref, "upload_id": upload_id, "import_id": started["import_id"],
               "state": started.get("state"), "archive_sha256": digest, "archive_bytes": len(data)}
     if args.wait:
-        result["state"] = _wait_for_import(args)
+        result.update(_wait_for_import(args, str(started["import_id"])))
     return result
 
 
@@ -3946,18 +3946,24 @@ async def _upload_import_parts(part_url: str, data: bytes, size: int, count: int
                 await asyncio.sleep(2 ** attempt)
 
 
-def _wait_for_import(args: Any) -> str:
-    """Follow project.import.get every five seconds until the import is no longer running (30 minutes at most)."""
+_IMPORT_RUNNING_STATES = ("admitted", "files_written", "failing")
+
+
+def _wait_for_import(args: Any, import_id: str) -> dict[str, str]:
+    """Follow this import (project.import.get with its id) every five seconds until its own state is final:
+    committed or failed, with the error code (30 minutes at most, then its current state)."""
 
     deadline = time.monotonic() + 1800
     while True:
         status = _reference_mapping_request(
-            args, action="project.import.get", object_ref=args.project_ref, payload={},
+            args, action="project.import.get", object_ref=args.project_ref, payload={"import_id": import_id},
         ).get("object") or {}
-        if not status.get("under_import") and not status.get("cleanup_pending"):
-            return "finished" if not status.get("can_import") else "failed"
+        own = status.get("import") if isinstance(status.get("import"), Mapping) else {}
+        state = str(own.get("state") or "")
+        if state and state not in _IMPORT_RUNNING_STATES:
+            return {"state": state, "error": str(own.get("error") or "")}
         if time.monotonic() > deadline:
-            return str(status.get("state") or "running")
+            return {"state": state or "running", "error": ""}
         time.sleep(5)
 
 

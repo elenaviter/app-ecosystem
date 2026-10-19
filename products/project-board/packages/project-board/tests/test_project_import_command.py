@@ -83,3 +83,26 @@ def test_a_busy_start_is_retried_with_the_same_key(tmp_path, monkeypatch):
     monkeypatch.setattr(cli.time, "sleep", lambda seconds: None)
     assert cli._worker_project_import(_args(tmp_path, b"abc"))["import_id"] == "i1"
     assert len(starts) == 3 and len(set(starts)) == 1
+
+
+def test_wait_follows_this_import_not_the_project(tmp_path, monkeypatch):
+    seen = []
+    states = iter(["admitted", "files_written", "failed"])
+
+    def request(args, *, action, object_ref, payload):
+        if action == "project.import.upload.begin":
+            return {"object": {"upload_id": "u1", "sealed": True}}
+        if action == "project.import":
+            return {"object": {"import_id": "i1", "state": "admitted"}}
+        seen.append(payload)
+        # The project is no longer importable (filled by hand) while this import failed: it is not "finished".
+        return {"object": {"can_import": False, "under_import": False, "import": {"import_id": "i1",
+                "state": next(states), "error": "work_import_plan_changed"}}}
+
+    monkeypatch.setattr(cli, "_reference_mapping_request", request)
+    monkeypatch.setattr(cli.time, "sleep", lambda seconds: None)
+    args = _args(tmp_path, b"abc")
+    args.wait = True
+    result = cli._worker_project_import(args)
+    assert (result["state"], result["error"]) == ("failed", "work_import_plan_changed")
+    assert seen and all(p == {"import_id": "i1"} for p in seen)
