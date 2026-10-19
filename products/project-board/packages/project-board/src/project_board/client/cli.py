@@ -1000,6 +1000,17 @@ def build_parser() -> argparse.ArgumentParser:
     command.add_argument("--file", required=True)
 
     command = worker_commands.add_parser(
+        "project-import",
+        help="Import a project export archive into an empty project you or your grantor own.",
+    )
+    _host_config(command)
+    _agent_identity(command)
+    command.add_argument("--project-ref", required=True)
+    command.add_argument("--file", required=True, help="The .tar.gz export archive.")
+    command.add_argument("--client-key", default="", help="Retry key; the same key resumes the same upload and import.")
+    command.add_argument("--wait", action="store_true", help="Wait until the import has finished.")
+
+    command = worker_commands.add_parser(
         "item-read",
         help="Read one work item's text fields whole: no notes, history or download links.",
     )
@@ -3843,6 +3854,119 @@ def _worker_item_attach(args: Any) -> dict[str, Any]:
     }
 
 
+def _worker_project_import(args: Any) -> dict[str, Any]:
+    """Import an export archive into an empty project (W908 D3).
+
+    Begin a chunked upload, post each part to the signed part link the board returns, seal the upload, start
+    the import, and with --wait follow its state. The same --client-key resumes the same upload and import, so a
+    lost reply or an interrupted upload is retried safely; without one, a key is derived from the file's hash.
+    """
+
+    source = Path(args.file).expanduser().resolve(strict=True)
+    if not source.is_file():
+        raise DomainError("work_import_file_invalid", "The archive path is not a file.")
+    data = source.read_bytes()
+    digest = hashlib.sha256(data).hexdigest()
+    client_key = str(args.client_key or f"pb-import-{digest[:24]}")
+    begun = _reference_mapping_request(
+        args, action="project.import.upload.begin", object_ref=args.project_ref,
+        payload={"total_bytes": len(data), "archive_sha256": digest, "client_key": client_key},
+    ).get("object")
+    if not isinstance(begun, Mapping) or not begun.get("upload_id"):
+        raise DomainError("work_import_upload_response_invalid", "No upload was returned.", status=502)
+    upload_id = str(begun["upload_id"])
+    if not begun.get("sealed"):
+        part_url = str(begun.get("part_url") or "")
+        if not part_url:
+            raise DomainError("work_import_upload_response_invalid", "No part link was returned.", status=502)
+        size = int(begun.get("part_bytes") or 0)
+        count = int(begun.get("part_count") or 0)
+        if size <= 0 or count != -(-len(data) // size):
+            raise DomainError("work_import_upload_response_invalid", "The upload's parts do not fit the file.",
+                              status=502)
+        asyncio.run(_upload_import_parts(part_url, data, size, count))
+        sealed = _reference_mapping_request(
+            args, action="project.import.upload.seal", object_ref=args.project_ref, payload={"upload_id": upload_id},
+        ).get("object")
+        if not isinstance(sealed, Mapping) or not sealed.get("sealed"):
+            raise DomainError("work_import_upload_response_invalid", "The upload was not sealed.", status=502)
+    started = _start_import(args, upload_id, client_key)
+    if not isinstance(started, Mapping) or not started.get("import_id"):
+        raise DomainError("work_import_response_invalid", "The import did not start.", status=502)
+    result = {"project_ref": args.project_ref, "upload_id": upload_id, "import_id": started["import_id"],
+              "state": started.get("state"), "archive_sha256": digest, "archive_bytes": len(data)}
+    if args.wait:
+        result.update(_wait_for_import(args, str(started["import_id"])))
+    return result
+
+
+def _start_import(args: Any, upload_id: str, client_key: str) -> Any:
+    """Start the import; while another import holds the board's import turn the board answers work_import_busy,
+    and the start is retried with the same client key (the same start) until it gets its turn (10 minutes)."""
+
+    deadline = time.monotonic() + IMPORT_BUSY_WAIT_SECONDS
+    while True:
+        try:
+            return _reference_mapping_request(
+                args, action="project.import", object_ref=args.project_ref,
+                payload={"upload_id": upload_id, "client_key": client_key},
+            ).get("object")
+        except DomainError as exc:
+            if exc.code != "work_import_busy" or time.monotonic() > deadline:
+                raise
+            wait = (exc.details or {}).get("retry_after_seconds") if isinstance(exc.details, Mapping) else None
+            time.sleep(max(1.0, min(60.0, float(wait or 10))))
+
+
+IMPORT_BUSY_WAIT_SECONDS = 600
+
+
+async def _upload_import_parts(part_url: str, data: bytes, size: int, count: int) -> None:
+    """Every part over one connection, each retried a few times on a transient failure."""
+
+    import aiohttp
+
+    separator = "&" if "?" in part_url else "?"
+    async with aiohttp.ClientSession() as session:
+        for index in range(count):
+            chunk = data[index * size:(index + 1) * size]
+            url = f"{part_url}{separator}index={index}&sha256={hashlib.sha256(chunk).hexdigest()}"
+            for attempt in range(4):
+                async with session.post(url, data=chunk,
+                                        headers={"Content-Type": "application/octet-stream"}) as response:
+                    if response.status < 300:
+                        break
+                    body = (await response.content.read(4096)).decode("utf-8", "replace")
+                    if response.status < 500 and response.status != 429:
+                        raise DomainError("work_import_part_refused", "The board refused an archive part.",
+                                          status=response.status, details={"index": index, "answer": body[:500]})
+                if attempt == 3:
+                    raise DomainError("work_import_part_failed", "An archive part could not be uploaded.",
+                                      status=503, details={"index": index})
+                await asyncio.sleep(2 ** attempt)
+
+
+_IMPORT_RUNNING_STATES = ("admitted", "files_written", "failing")
+
+
+def _wait_for_import(args: Any, import_id: str) -> dict[str, str]:
+    """Follow this import (project.import.get with its id) every five seconds until its own state is final:
+    committed or failed, with the error code (30 minutes at most, then its current state)."""
+
+    deadline = time.monotonic() + 1800
+    while True:
+        status = _reference_mapping_request(
+            args, action="project.import.get", object_ref=args.project_ref, payload={"import_id": import_id},
+        ).get("object") or {}
+        own = status.get("import") if isinstance(status.get("import"), Mapping) else {}
+        state = str(own.get("state") or "")
+        if state and state not in _IMPORT_RUNNING_STATES:
+            return {"state": state, "error": str(own.get("error") or "")}
+        if time.monotonic() > deadline:
+            return {"state": state or "running", "error": ""}
+        time.sleep(5)
+
+
 # The text an item carries for whoever works on or reviews it.
 _ITEM_READ_FIELDS = ("title", "summary", "description", "acceptance", "result", "blocked_reason",
                      "cancel_reason", "review")
@@ -6293,6 +6417,8 @@ def _worker_command(args: Any) -> dict[str, Any]:
         )
     if args.worker_command == "item-attach":
         return _worker_item_attach(args)
+    if args.worker_command == "project-import":
+        return _worker_project_import(args)
     if args.worker_command == "item-read":
         return _worker_item_read(args)
     if args.worker_command == "note-read":

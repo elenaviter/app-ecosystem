@@ -19,6 +19,36 @@ PROBLEM_BOARD_OPERATION_POLICIES: dict[str, dict[str, Any]] = {
         ),
         "grants": ("work:coordinate",),
     },
+    # W908 D3: importing an export archive into a freshly created, empty project.
+    "project.import": {
+        "description": (
+            "Start importing a sealed export archive into an empty project the "
+            "owner created: the owner (a person) or an agent whose grantor is "
+            "the owner, AND this operation through the current effective Cards. "
+            "Once per project; a background job runs it."
+        ),
+        "grants": ("work:admin",),
+    },
+    "project.import.upload.begin": {
+        "description": "Begin a chunked upload of an export archive for project.import (same rule).",
+        "grants": ("work:admin",),
+    },
+    "project.import.upload.seal": {
+        "description": "Seal a chunked archive upload after every part is stored and checked (same rule).",
+        "grants": ("work:admin",),
+    },
+    "project.import.cancel": {
+        "description": (
+            "Cancel a running import: the owner or the import's own actor, AND "
+            "this operation through the current effective Cards. Manual work is "
+            "unlocked at once."
+        ),
+        "grants": ("work:admin",),
+    },
+    "project.import.get": {
+        "description": "Read whether the project can be imported into and the current import's state.",
+        "grants": ("work:observe",),
+    },
     "project.cards.manage": {
         "description": (
             "Check that the person may manage the project's Cards in Connection "
@@ -573,6 +603,7 @@ PROBLEM_BOARD_OPERATIONS = frozenset(PROBLEM_BOARD_OPERATION_POLICIES)
 # mutation table and is therefore not here).
 READ_OPERATIONS = frozenset(
     {
+        "project.import.get",
         "assignment.list",
         "mail.reconciliation.list",
         "mail.reconciliation.read",
@@ -604,6 +635,11 @@ PROBLEM_BOARD_OPERATIONS_BY_KIND: dict[str, tuple[str, ...]] = {
     "work.project": (
         "project.register",
         "project.set_goal",
+        "project.import",
+        "project.import.upload.begin",
+        "project.import.upload.seal",
+        "project.import.cancel",
+        "project.import.get",
         "project.cards.manage",
         "project.set_journal_home",
         "project.set_repositories",
