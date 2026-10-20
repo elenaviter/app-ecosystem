@@ -20,7 +20,7 @@ def _entrypoint_module():
 
 
 @pytest.mark.asyncio
-async def test_card_transactions_bind_the_issuance_authority_and_no_handle_store(monkeypatch):
+async def test_card_transactions_bind_the_issuance_authority_and_an_issue_only_handle_store(monkeypatch):
     module = _entrypoint_module()
     handles, issuance, decisions = object(), object(), object()
     captured = {}
@@ -51,6 +51,7 @@ async def test_card_transactions_bind_the_issuance_authority_and_no_handle_store
     persistence = SimpleNamespace(credential_handles=handles)
     await module._bind_card_transactions(SimpleNamespace(pg_pool=object()), service,
                                          persistence=persistence, grant_store=None)
-    assert captured.get("credential_handles") is None
+    assert captured.get("credential_handles") is None  # never bound to the Card writer
+    assert captured["issue_credential_handles"] is handles  # only the issuance effect writes a new Card's row
     assert captured["issuance_store"] is issuance
     assert captured["decisions"] is decisions
