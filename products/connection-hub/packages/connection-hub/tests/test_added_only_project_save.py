@@ -10,6 +10,7 @@ what the Card already carries and refuse, by name, only what it adds.
 
 from __future__ import annotations
 
+from dataclasses import replace
 from types import SimpleNamespace
 
 import pytest
@@ -133,10 +134,62 @@ async def test_a_new_operation_under_a_carried_grant_beyond_the_bound_is_refused
 
 
 @pytest.mark.asyncio
-async def test_widening_to_every_tool_counts_every_grant_as_added() -> None:
+async def test_narrowing_to_an_explicit_empty_selection_adds_nothing() -> None:
+    # An explicit [] means no operations (the resolver stores it so and the
+    # runtime enforces it), never every tool: removing the last operation of a
+    # carried service is a narrowing, allowed under any bound.
     stored = _stored(["review.approve"], ["work:review"])
     resolved = await _save(stored, [], ["work:review"], bound=[])
+    assert resolved.error is None
+    assert resolved.resource_operations == {RESOURCE: []}
+
+
+@pytest.mark.asyncio
+async def test_selecting_from_a_stored_explicit_empty_selection_is_an_addition() -> None:
+    # The Card held the grant but no operation: each operation selected now is new.
+    stored = _stored([], ["work:review"])
+    resolved = await _save(stored, ["review.approve"], ["work:review"], bound=["work:observe"])
     assert resolved.error["grants"] == ["work:review"]
+    assert (await _save(stored, ["review.approve"], ["work:review"], bound=["work:review"])).error is None
+
+
+@pytest.mark.asyncio
+async def test_a_legacy_record_that_named_no_operations_keeps_an_exact_subset() -> None:
+    stored = _stored([], ["work:review"])
+    legacy = replace(stored, resource_operations={})
+    resolved = await _save(legacy, ["review.approve"], ["work:review"], bound=[])
+    assert resolved.error is None
+
+
+@pytest.mark.asyncio
+async def test_a_new_service_with_an_explicit_empty_selection_still_adds_its_grants() -> None:
+    stored = _stored(["work.report"], ["work:observe"])
+    service = _service()
+    active = await service._catalog_resolver.resolve_active()
+    resolved = await service._resolve_card_authority(
+        user=USER, existing=replace(stored, resource_grants={}, resource_operations={}),
+        active=active, resource_grants={RESOURCE: ["work:review"]}, resource_operations={RESOURCE: []},
+        operations=(), named_service_operations=None, account_scope=None, properties=None,
+        _delegable_grants=[],
+    )
+    assert resolved.error["grants"] == ["work:review"]
+
+
+def test_the_classifier_tells_explicit_empty_from_a_missing_selection() -> None:
+    from connection_hub.delegated_credentials.automation_access import _newly_selected_operation_grants
+
+    config = oauth_delegated_config_from_connections(CONNECTIONS)
+    pairs = [(RESOURCE, config.resource_config(RESOURCE))]
+    stored = _stored(["review.approve"], ["work:review"])
+    none = NamedServiceSelection.none()
+
+    def added(selection):
+        return _newly_selected_operation_grants(stored, resource_operations=selection,
+                                                named_service_operations=none, resource_pairs=pairs)
+    assert added({RESOURCE: []}) == set()
+    assert added({}) is None  # nothing stated for operations the Card holds: not told apart
+    assert added({RESOURCE: ["review.approve", "work.report"]}) == {"work:observe"}
+    assert added({RESOURCE: ["*"]}) is None  # unknown growth stays unknown
 
 
 def test_a_person_card_refusal_names_the_grants_and_the_project_host_s_reason() -> None:
