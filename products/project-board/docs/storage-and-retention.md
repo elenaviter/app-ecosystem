@@ -322,9 +322,12 @@ date-filtered read reaches them by time (KDCube conversation retention). The
 window is the assembly property `routines.conversation_store.hot_days`
 (default 90 days), and the platform's `conversation-archive` job moves rows
 once a day at 02:20 UTC; `routines.conversation_store.archive_enabled: false`
-turns it off. Archived rows are written per UTC day under
-`conversation-cold/<yyyy>/<mm>/<dd>/` with a manifest holding each part's
-SHA-256, and are deleted from Postgres only after the part is read back and
+turns it off. Archived rows are written like the conversation store itself,
+one folder per user and conversation, then per UTC day:
+`conversation-cold/<user>/<conversation>/<yyyy>/<mm>/<dd>/`, next to the
+bodies at `conversation/<user>/<conversation>/`. Users, projects and agents
+have no bound, so a part never mixes users or conversations. Each part has a
+manifest holding its SHA-256, and archived rows are deleted from Postgres only after the part is read back and
 checked. KDCube's conversation list and an opened conversation still include
 archived messages within their own rolling window.
 
@@ -434,8 +437,8 @@ board's `event-archive` job runs once a day at 02:40 UTC, one instance per
 tenant and project, and logs the window and where it came from:
 
 ```text
-<board bundle storage>/events/<project-id>/<yyyy>/<mm>/<dd>/
-  <batch-id>.jsonl.gz        the day's events, one JSON record per line
+<board bundle storage>/events/<project-id>/<agent>/<yyyy>/<mm>/<dd>/
+  <batch-id>.jsonl.gz        one agent's events of that day, one JSON record per line
   <batch-id>.manifest.json   row count, event ids, time range, SHA-256
 ```
 
