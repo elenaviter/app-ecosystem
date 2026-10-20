@@ -164,6 +164,7 @@ number of operations in flight.
 | journal-index operations | `-`, operation id; step pointers use step, field and value hash | `-/pending/` until complete | 30 days, 50 MiB, 25,000 operations | operation and status-by-outbox are exact lookups |
 | assignments | project, worker, assignment id | worker `pending/` | active projection only | observers and sync read pending assignments only |
 | agent sessions | project, worker, session id | mutable current-state rows | detached rows: 90 days; 1,000 rows per worker | bounded current-state listing |
+| relay channel diagnostics | the worker row's `relay_diagnostic` | the open interval and its attempts | each list: its newest 20 entries, none older than 7 days; removed for a channel the host no longer serves (W553) | one exact read; `pb host inspect` and `pb relay-service status` print one summary per served channel, `pb host inspect --diagnostics` the stored lists |
 | worker, project and reconciliation markers | stable identity | one mutable row per identity | overwritten in place | one exact read |
 
 Every partition walk goes through the shared read recorder. It logs one line
