@@ -3129,6 +3129,25 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
     const held = ((item.resource_grants || {})[resource] || []).filter((grant: string) => managed.has(grant));
     return Array.from(new Set([...claims.filter((claim) => !managed.has(claim)), ...held]));
   };
+  // W918: the Card may hold a connector this viewer's catalog cannot place (another owner's personal MCP server,
+  // absent from the viewer's own catalog). The viewer cannot tell which route serves it, so every route the Card
+  // holds stays exactly as held; dropping it would cut the owner's connector off its transport on an unrelated Save.
+  const holdsUnplacedConnector = (item: DelegatedAccessRecord): boolean => editResourceKeys(item).some((resource) => (
+    isConnectorResource(resource)
+    && editDirectResourceHasAuthority(item, resource)
+    && !editSelectionIndex.parentsByChild[(item.catalog_row_by_resource || {})[resource] || editRowFor(resource)]?.length
+  ));
+  const withHeldRoutes = (
+    item: DelegatedAccessRecord, routed: Record<string, string[]>, kept: Record<string, string[]>,
+  ): Record<string, string[]> => {
+    if (!holdsUnplacedConnector(item)) return routed;
+    const out = { ...routed };
+    Object.entries(kept).forEach(([resource, claims]) => {
+      const row = (item.catalog_row_by_resource || {})[resource] || editRowFor(resource);
+      if (editSelectionIndex.childrenByParent[row]?.length && claims.length && !out[resource]) out[resource] = claims;
+    });
+    return out;
+  };
   const editKeptClaimsSelected = (item: DelegatedAccessRecord, resource: string): string[] => {
     if (resource === APPLICATION_API_RESOURCE) {
       return editApplicationRolePolicy.defaultRole
@@ -3142,7 +3161,9 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
       const candidateRow = (item.catalog_row_by_resource || {})[candidate] || editRowFor(candidate);
       return childRows.has(candidateRow) && editDirectResourceHasAuthority(item, candidate);
     });
-    if (!hasSelectedChild) return [];
+    if (!hasSelectedChild) {
+      return holdsUnplacedConnector(item) ? [...((item.resource_grants || {})[resource] || [])] : [];
+    }
     const option = resources.find((candidate) => candidate.resource === row);
     return option ? grantsForResource(option) : [];
   };
@@ -3155,13 +3176,13 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
         .filter((resource) => editResourceHasAuthority(item, resource))
         .map((resource) => [resource, editKeptClaims(item, resource)]),
     );
-    const routed = materializeSelectionRouteGrants(
+    const routed = withHeldRoutes(item, materializeSelectionRouteGrants(
       resources,
       editSelectionIndex,
       kept,
       editRowFor,
       Object.keys(kept),
-    );
+    ), kept);
     const named = Object.fromEntries(
       Object.entries(editNamedServiceOperations)
         .filter(([resource]) => resource in routed)
@@ -3304,13 +3325,13 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
     // and the edit replaces the authority the operator reviewed. The credential
     // is untouched — a copied manual token, an agent's reusable bearer and an
     // OAuth client's handles all keep working, on their very next call.
-    const routedKept = materializeSelectionRouteGrants(
+    const routedKept = withHeldRoutes(item, materializeSelectionRouteGrants(
       resources,
       editSelectionIndex,
       kept,
       editRowFor,
       Object.keys(kept),
-    );
+    ), kept);
     // The edited selection, minus resources fully unchecked above.
     const keptNamedServiceOperations = Object.fromEntries(
       Object.entries(editNamedServiceOperations)
