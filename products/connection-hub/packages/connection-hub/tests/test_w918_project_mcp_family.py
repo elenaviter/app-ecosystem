@@ -344,3 +344,14 @@ async def test_the_effective_project_control_never_shows_a_connector():
     hierarchy = await compose_control_hierarchy(my, load_control=load_control)
     assert CONNECTOR_B not in hierarchy.effective_control_card.resource_grants
     assert CONNECTOR_B not in hierarchy.effective_card.resource_grants
+
+
+async def test_an_admitted_connector_keeps_the_callers_own_acceptance_evidence():
+    from connection_hub.delegated_credentials.catalog.descriptors import ResourceAcceptance
+
+    p = project_control("on")
+    accepted = ResourceAcceptance(kind="remote_mcp", revision="r1", digest="ab" * 32,
+                                  grants=("external_mcp:use",), operations={"search": "cd" * 32})
+    caller = dataclasses.replace(agent(p, tools=("search",)), resource_acceptance={CONNECTOR_A: accepted})
+    effective = await resolve(caller, [p])
+    assert effective.resource_acceptance[CONNECTOR_A] == accepted

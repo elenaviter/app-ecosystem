@@ -2845,7 +2845,11 @@ class AutomationAccessService:
                     invocation_modes=changes.get("invocation_modes"))
             except ManagedCardEditError as exc:
                 return exc.to_dict()
-            if unchanged:
+            # W918: a switch-only P Save changes no selection field; it is still a real edit.
+            switch_changes = (kind == "project_control" and changes.get("external_mcp_family") is not None
+                              and changes.get("external_mcp_family")
+                              != dict(record.properties or {}).get("external_mcp_family"))
+            if unchanged and not switch_changes:
                 return {"ok": True, "unchanged": True}
         composition_mode = label = external_mcp_family = None
         stored_mode = record.composition_mode

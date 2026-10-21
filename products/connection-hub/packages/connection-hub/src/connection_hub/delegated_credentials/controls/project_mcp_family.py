@@ -126,8 +126,15 @@ def validate_family_property(properties: Mapping[str, Any]) -> None:
         raise ValueError("control_card_external_mcp_family_invalid")
 
 
+# A project's own Control is an application Control issued for a Problem Board project ref; any
+# other application Control (another app's ref) keeps the ordinary fold.
+_PROJECT_REF_PREFIX = "work:project:"
+
+
 def _is_project_control(control: CardAuthority, project_ref: str) -> bool:
     if control.issuer_kind != _PROJECT_CONTROL_ISSUER_KIND or str(control.issuer_ref or "") != project_ref:
+        return False
+    if not project_ref.startswith(_PROJECT_REF_PREFIX) or len(project_ref) <= len(_PROJECT_REF_PREFIX):
         return False
     if not authority_is_credentialless(control) or not control_snapshot_is_exact(control):
         return False

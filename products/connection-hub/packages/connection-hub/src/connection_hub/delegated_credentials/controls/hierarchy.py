@@ -80,10 +80,14 @@ def compose_resolved_control_hierarchy(
         if gate and family is not None and connector_grants:
             admitted_grants, admitted_operations = admitted_family_resources(
                 family, connector_grants, connector_operations)
+            # The caller's own acceptance evidence for an admitted connector stays the caller's.
+            acceptance = {resource: card.resource_acceptance[resource] for resource in admitted_grants
+                          if resource in (card.resource_acceptance or {})}
             effective = replace(
                 effective,
                 resource_grants={**effective.resource_grants, **admitted_grants},
                 resource_operations={**effective.resource_operations, **admitted_operations},
+                resource_acceptance={**dict(effective.resource_acceptance or {}), **acceptance},
             )
     folded = dependencies if gate is None else tuple(strip_connectors(control) for control in dependencies)
     effective_control = compose_subtree(folded[0], folded[1:]) if folded else None
