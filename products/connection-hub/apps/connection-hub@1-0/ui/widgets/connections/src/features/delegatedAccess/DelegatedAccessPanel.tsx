@@ -76,6 +76,7 @@ import {
   resourceSelectionIndex,
   saveProblemText,
   saveProblems,
+  seedEditResourceOperations,
   toggleAccepted,
 } from './resourceEditing';
 import {
@@ -2308,14 +2309,7 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
       [item.access_id]: 'caller',
     }));
     setEditPicks(picks);
-    setEditResourceOperations(
-      Object.fromEntries(
-        Object.keys(item.resource_grants || {}).map((resource) => [
-          resource,
-          item.resource_operations?.[resource] || item.operations || [],
-        ]),
-      ),
-    );
+    setEditResourceOperations(seedEditResourceOperations(item));
     setEditApplicationRolePolicy(seedApplicationOperationRolePolicy(
       item.properties,
       item.resource_grants,
