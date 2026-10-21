@@ -1391,8 +1391,10 @@ def test_the_nested_update_is_sent_unchanged_under_its_own_request_identity(subm
         {
             "result": "Merged and active.",
             "review": {"look_at": "Run the suite.", "could_not_verify": "None"},
-            # A field this client does not list is the service's to judge.
-            "a_field_a_newer_service_accepts": "kept",
+            # W919: a key the catalog does not list is refused before sending
+            # (the board refuses an unknown change field too), so the payload
+            # sent unchanged carries only catalog fields.
+            "tags": ["kept"],
         }
     )
 
@@ -1514,8 +1516,11 @@ def test_the_correction_keeps_unknown_fields_and_leaves_the_call_unchanged():
     }
     payload = _update(changes)
     before = copy.deepcopy(payload)
-    [problem] = operation_call_problems("plan.item.update", PROJECT, payload)
+    problems = operation_call_problems("plan.item.update", PROJECT, payload)
     assert payload == before, "building the correction changes nothing the caller passed"
+    [problem] = [p for p in problems if "corrected" in p]
+    # W919: the invented field is also named as unknown; the correction still keeps it.
+    assert [p["field"] for p in problems if p["problem"] == "unknown"] == ["changes.a_new_service_field.value"]
     assert json.loads(problem["corrected"]) == {
         "review": {"could_not_verify": "None", "look_at": "Run the suite."},
         "a_new_service_field.value": "untouched",
@@ -1531,7 +1536,10 @@ def test_the_correction_keeps_nested_siblings_in_either_key_order(dotted_first):
     dotted = ("review.future_service_field.add", "new")
     nested = ("review", {"future_service_field": {"keep": "original"}})
     changes = dict([dotted, nested] if dotted_first else [nested, dotted])
-    [problem] = operation_call_problems("plan.item.update", PROJECT, _update(changes))
+    problems = operation_call_problems("plan.item.update", PROJECT, _update(changes))
+    [problem] = [p for p in problems if "corrected" in p]
+    # W919: the invented nested field is also named as unknown.
+    assert [p["field"] for p in problems if p["problem"] == "unknown"] == ["changes.review.future_service_field"]
     assert json.loads(problem["corrected"]) == {
         "review": {"future_service_field": {"keep": "original", "add": "new"}}
     }
