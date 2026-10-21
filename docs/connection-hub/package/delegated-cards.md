@@ -1405,6 +1405,11 @@ No link means the caller Card is used unchanged. A present link is an explicit
 authorization dependency: a missing, unreadable, updating, revoked, or
 mismatched linked Card fails closed and is never treated as no link.
 
+On a project chain, a caller's own custom MCP connectors are not folded by AND
+or OR: the project Control's External MCP switch decides them, and no Control
+contributes one. See
+[the External MCP switch](../custom-mcp-connector.md#36-in-a-project-the-external-mcp-switch).
+
 ### Current parent hierarchy and service modes
 
 The host-neutral `controls.hierarchy.compose_control_hierarchy` resolves the

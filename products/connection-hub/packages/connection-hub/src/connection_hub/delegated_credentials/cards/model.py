@@ -637,6 +637,12 @@ class CardAuthority:
             for service, selected_mode in service_modes.items()
         ):
             raise CardRecordError("control_card_service_composition_modes_invalid")
+        if "external_mcp_family" in self.properties:
+            # W918: a project Control's External MCP switch; only a credentialless Control carries it.
+            if self.properties["external_mcp_family"] not in {"on", "off"}:
+                raise CardRecordError("control_card_external_mcp_family_invalid")
+            if self.source != CREDENTIALLESS_CARD_SOURCE:
+                raise CardRecordError("external_mcp_family_requires_control_card")
         if self.source == CREDENTIALLESS_CARD_SOURCE:
             if not self.issuer_ref:
                 raise CardRecordError("credentialless_card_issuer_ref_missing")

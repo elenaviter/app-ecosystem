@@ -149,26 +149,49 @@ def _family_resource_authority(
                 assignment[resource] = (family_id, family)
                 break
 
+    return bounded_family_authority(
+        card.resource_grants, card.resource_operations, assignment, families,
+        resource_limit_reason="agent_resource_family_resource_limit",
+        tool_limit_reason="agent_resource_family_tool_limit",
+    )
+
+
+def bounded_family_authority(
+    resource_grants: Mapping[str, tuple[str, ...]],
+    resource_operations: Mapping[str, tuple[str, ...]],
+    assignment: Mapping[str, tuple[str, Mapping[str, Any]]],
+    families: Mapping[str, Mapping[str, Any]],
+    *,
+    resource_limit_reason: str,
+    tool_limit_reason: str,
+) -> tuple[dict[str, tuple[str, ...]], dict[str, tuple[str, ...]]]:
+    """The caller's own grants for each assigned resource, tools bounded by its family.
+
+    Shared by descriptor families and the project External MCP family (W918):
+    per-family ``max_resources``, ``allowed_tools`` (``*`` keeps the caller's
+    selection) and ``max_tools_per_resource``; a limit refuses with the
+    caller's reason, never truncates.
+    """
     counts: dict[str, int] = {}
     for family_id, _family in assignment.values():
         counts[family_id] = counts.get(family_id, 0) + 1
     for family_id, family in families.items():
         limit = _positive_limit(family.get("max_resources"))
         if limit is not None and counts.get(family_id, 0) > limit:
-            raise ControlCardMismatch("agent_resource_family_resource_limit")
+            raise ControlCardMismatch(resource_limit_reason)
 
     grants: dict[str, tuple[str, ...]] = {}
     operations: dict[str, tuple[str, ...]] = {}
     for resource, (_family_id, family) in assignment.items():
         allowed = set(_string_values(family.get("allowed_tools")))
-        selected = tuple(card.resource_operations.get(resource, ()))
+        selected = tuple(resource_operations.get(resource, ()))
         bounded = selected if "*" in allowed else tuple(
             operation for operation in selected if operation in allowed
         )
         limit = _positive_limit(family.get("max_tools_per_resource"))
         if limit is not None and len(set(bounded)) > limit:
-            raise ControlCardMismatch("agent_resource_family_tool_limit")
-        grants[resource] = tuple(card.resource_grants.get(resource, ()))
+            raise ControlCardMismatch(tool_limit_reason)
+        grants[resource] = tuple(resource_grants.get(resource, ()))
         operations[resource] = tuple(sorted(set(bounded)))
     return grants, operations
 
@@ -550,6 +573,12 @@ def compose_card_authority_selection(
         if SERVICE_COMPOSITION_MODES_PROPERTY in card.properties:
             properties[SERVICE_COMPOSITION_MODES_PROPERTY] = copy.deepcopy(
                 card.properties[SERVICE_COMPOSITION_MODES_PROPERTY])
+    # W918: a Control's External MCP switch is that Control's own policy. It is
+    # never inherited by composition (a C keeps only its own value; a caller
+    # never carries one); the hierarchy reads it from the raw validated chain.
+    properties.pop("external_mcp_family", None)
+    if authority_is_credentialless(card) and "external_mcp_family" in card.properties:
+        properties["external_mcp_family"] = card.properties["external_mcp_family"]
     # Target authority is a finite set, not an ordinary last-writer-wins Card
     # property. An absent side contributes no cross-application reads.
     properties[CONVERSATION_TARGETS_PROPERTY] = list(

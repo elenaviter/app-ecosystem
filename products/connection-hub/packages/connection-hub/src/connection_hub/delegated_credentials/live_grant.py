@@ -63,6 +63,7 @@ async def resolve_live_grant_composition(
     expected_grantor_subject: str = "",
     expected_delegate_subject: str = "",
     card_store: Any = None,
+    project_families: Any = None,
 ) -> ResolvedCardComposition | None:
     """Return current Caller, Control, and Effective authority, or raise.
 
@@ -156,7 +157,9 @@ async def resolve_live_grant_composition(
             return entry.authority if entry is not None and not entry.is_revoked else None
 
         try:
-            result = await compose_control_hierarchy(caller, load_control=load_control)
+            # W918: the caller's own External MCP family policy; None closes the gate.
+            result = await compose_control_hierarchy(caller, load_control=load_control,
+                                                     project_families=project_families)
             effective = result.effective_card
             control = result.control_card
         except ControlCardMismatch as exc:
@@ -178,6 +181,7 @@ async def resolve_live_grant_card(
     expected_grantor_subject: str = "",
     expected_delegate_subject: str = "",
     card_store: Any = None,
+    project_families: Any = None,
 ) -> CardAuthority | None:
     """Compatibility view returning only the current Effective Card."""
 
@@ -190,6 +194,7 @@ async def resolve_live_grant_card(
         expected_grantor_subject=expected_grantor_subject,
         expected_delegate_subject=expected_delegate_subject,
         card_store=card_store,
+        project_families=project_families,
     )
     return composition.effective_card if composition is not None else None
 

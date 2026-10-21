@@ -95,7 +95,8 @@ async def build_managed_card_selection_update(
     host: Any, *, original: CardAuthority, kind: str, selection: Mapping[str, Any], active: Any,
     decision: ProjectAuthorizationDecision, project_ref: str, actor_subject: str, request_id: str, now: int,
     accepted_operations: Mapping[str, Any] | None = None, composition_mode: str | None = None,
-    label: str | None = None, allow_unchanged: bool = False,
+    label: str | None = None, allow_unchanged: bool = False, external_mcp_family: str | None = None,
+    invocation_modes: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """One exact P or agent-Card update from a host-authorized selection, without a write (W723: and its acceptance).
 
@@ -106,6 +107,9 @@ async def build_managed_card_selection_update(
     if kind not in OPERATIONS or not isinstance(selection, Mapping) or set(selection) - _SELECTION_FIELDS:
         raise _refuse("card_plan_selection_invalid")
     if composition_mode is not None and (kind != "project_control" or composition_mode not in {"and", "or"}):
+        raise _refuse("card_plan_selection_invalid")
+    # W918: the project's External MCP switch, one field of P, like the access rule.
+    if external_mcp_family is not None and (kind != "project_control" or external_mcp_family not in {"on", "off"}):
         raise _refuse("card_plan_selection_invalid")
     if type(now) is not int or now < 1:
         raise _refuse("card_plan_audit_time_invalid")
@@ -153,9 +157,19 @@ async def build_managed_card_selection_update(
         catalog_version=catalog_version,
         resource_acceptance=preserve_descriptor_acceptance(original.resource_acceptance, computed),
         **({"composition_mode": composition_mode} if composition_mode is not None else {}),
-        **({"label": label} if label is not None else {}))
+        **({"label": label} if label is not None else {}),
+        **({"properties": {**dict(selected.properties or {}), "external_mcp_family": external_mcp_family}}
+           if external_mcp_family is not None else {}))
     if candidate.control_card != original.control_card:
         raise _refuse("card_plan_update_scope_invalid")  # an edit never moves a Card in the hierarchy
+    if kind == "agent_card":
+        # W918: only the Card's owner adds or changes their custom MCP connectors; anyone may remove one.
+        from .owner_only_connectors import custom_mcp_owner_only_refusal
+        refusal = custom_mcp_owner_only_refusal(original=original, candidate=candidate, actor_subject=actor_subject,
+                                                invocation_modes=invocation_modes,
+                                                accepted_operations=accepted_operations)
+        if refusal is not None:
+            raise _refuse(refusal)
     before, after = original.to_dict(), candidate.to_dict()
     after["card_revision"] = before["card_revision"]
     if after == before and not allow_unchanged:
@@ -169,6 +183,8 @@ async def build_managed_card_selection_update(
         shown["composition_mode"] = candidate.to_dict().get("composition_mode")  # the one rule the person set
     if label is not None:
         shown["label"] = label  # the one display field the person renamed
+    if external_mcp_family is not None:
+        shown["properties"] = {**dict(shown.get("properties") or {}), "external_mcp_family": external_mcp_family}
     if undisplayed_change(shown, candidate.to_dict()) is not None:
         raise _refuse("card_plan_undisplayed_change")
     return {"member": group_member(original=original, candidate=candidate, action="update")}

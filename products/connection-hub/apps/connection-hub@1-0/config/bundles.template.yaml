@@ -170,6 +170,19 @@ bundles:
             # Empty -> derived from the request host at runtime.
           public_base_url: "https://<PUBLIC_HOST>"
         delegated_credentials:
+          # W918: what a project's External MCP switch may admit of its
+          # members' own connectors (urn:connection-hub:remote-mcp:<id>).
+          # The project Control holds only the on/off switch; this is the
+          # deployment's ceiling. Remove it, or leave it invalid, and every
+          # project's switch stays closed.
+          project_resource_families:
+          - id: user_external_mcp
+            resource_kinds: [remote_mcp]
+            authority_sources: [delegated_card]
+            resource_patterns: ["urn:connection-hub:remote-mcp:*"]
+            allowed_tools: ["*"]
+            max_resources: 8
+            max_tools_per_resource: 64
           # Opaque external issuer ports; no policy or secret values here.
           # Missing required issuer providers fail closed. Enable only after
           # both peers, nonce/reservation stores and existing secret refs qualify.
