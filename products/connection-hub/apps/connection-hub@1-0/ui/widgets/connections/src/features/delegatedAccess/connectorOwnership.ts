@@ -12,14 +12,6 @@ export const CONNECTOR_RESOURCE_PREFIX = 'urn:connection-hub:remote-mcp:';
 
 export const CONNECTORS_OWNER_ONLY_NOTE = 'Only the Card\'s owner changes these.';
 
-const PERSON_SUBJECT_PREFIXES = ['cognito:', 'user:'];
-
-function bareSubject(value: string | undefined): string {
-  const text = String(value || '').trim();
-  const prefix = PERSON_SUBJECT_PREFIXES.find((candidate) => text.startsWith(candidate));
-  return prefix ? text.slice(prefix.length) : text;
-}
-
 export function isConnectorResource(resource: string | undefined): boolean {
   const text = String(resource || '');
   return text.startsWith(CONNECTOR_RESOURCE_PREFIX) && text.length > CONNECTOR_RESOURCE_PREFIX.length;
@@ -27,10 +19,11 @@ export function isConnectorResource(resource: string | undefined): boolean {
 
 /** Whether this viewer may only keep or remove the Card's connectors (not its grantor).
  *
- *  An unknown viewer or grantor counts as not the owner: the editor never offers more
- *  than the Hub will accept. */
+ *  The exact comparison the Hub makes (actor subject against the stored grantor), with no
+ *  alias folding; an unknown viewer or grantor counts as not the owner, so the editor never
+ *  offers more than the Hub will accept. */
 export function connectorsOwnerOnly(grantorSubject: string | undefined, viewerSubject: string | undefined): boolean {
-  const grantor = bareSubject(grantorSubject);
-  const viewer = bareSubject(viewerSubject);
+  const grantor = String(grantorSubject || '');
+  const viewer = String(viewerSubject || '');
   return !grantor || !viewer || grantor !== viewer;
 }

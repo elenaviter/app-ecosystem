@@ -105,6 +105,16 @@ read every card.
   owns its exact tools and permissions. The hierarchy explains reachability;
   the saved card keeps the route and every selected server as separate
   authority rows.
+- **A Card's personal MCP servers change only by its owner.** The Hub refuses
+  a non-owner's addition or change of a connector on any Save and allows
+  removing one whole (`owner_only_connectors.py`). So for a viewer whose
+  platform user id is not exactly the Card's `grantor_subject` (no alias is
+  folded; an unknown viewer counts as not the owner), each connector row's
+  grants, tools, "Accept update" and invocation choices are disabled. The
+  row's **Remove** stays, neither offer picker offers a connector, and one
+  line under the servers reads "Only the Card's owner changes these." The
+  owner's own editor is unchanged. A connector is recognised by the Hub's own
+  id namespace, `urn:connection-hub:remote-mcp:`.
 - **A permission appears only where it decides something.** The service
   permissions required by an operation live in the row's tooltip. The row
   names them only when the card does not carry one ("needs canvas:read"),

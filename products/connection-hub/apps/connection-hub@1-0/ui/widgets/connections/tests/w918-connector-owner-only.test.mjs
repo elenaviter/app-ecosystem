@@ -19,9 +19,12 @@ test('a connector is the Hub resource kind, by its stable id', () => {
 })
 
 test('only a viewer who is not the grantor is limited to keeping or removing', () => {
-  assert.equal(connectorsOwnerOnly('user:owner', 'owner'), false, 'the owner, with or without the subject prefix')
+  assert.equal(connectorsOwnerOnly('user:owner', 'user:owner'), false, 'the owner, exactly')
   assert.equal(connectorsOwnerOnly('owner', 'owner'), false)
   assert.equal(connectorsOwnerOnly('user:owner', 'admin'), true)
+  // The Hub compares exact subjects (owner_only_connectors.py): no alias is folded.
+  assert.equal(connectorsOwnerOnly('user:owner', 'owner'), true)
+  assert.equal(connectorsOwnerOnly('cognito:owner', 'user:owner'), true)
   // Unknown on either side never offers more than the Hub accepts.
   assert.equal(connectorsOwnerOnly('', 'owner'), true)
   assert.equal(connectorsOwnerOnly('user:owner', undefined), true)
