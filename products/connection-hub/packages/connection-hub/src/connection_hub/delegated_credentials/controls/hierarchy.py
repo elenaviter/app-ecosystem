@@ -18,7 +18,7 @@ from connection_hub.delegated_credentials.controls.project_person_composition im
     project_held_control,
 )
 from connection_hub.delegated_credentials.controls.project_mcp_family import (
-    admitted_family_resources, configured_family, project_family_gate, split_family_resources, strip_connectors,
+    ProjectFamilyPolicy, admitted_family_resources, project_family_gate, split_family_resources, strip_connectors,
 )
 
 
@@ -31,9 +31,15 @@ class ControlHierarchy:
 
 
 def compose_resolved_control_hierarchy(
-    card: CardAuthority, dependencies: tuple[CardAuthority, ...],
+    card: CardAuthority, dependencies: tuple[CardAuthority, ...], *,
+    project_families: ProjectFamilyPolicy | None = None,
 ) -> ControlHierarchy:
-    """Validate and compose an already current, ordered dependency vector."""
+    """Validate and compose an already current, ordered dependency vector.
+
+    ``project_families`` (W918) is the owning service's own deployment policy
+    for the External MCP switch. None closes that gate: on a project chain the
+    caller's connectors are then dropped, never folded.
+    """
 
     chain = [card, *dependencies]
     if len(dependencies) > 32:
@@ -73,7 +79,7 @@ def compose_resolved_control_hierarchy(
     if gate is None:
         effective = compose_subtree(card, dependencies)
     else:
-        family = configured_family()
+        family = project_families.family() if project_families is not None else None
         rest, connector_grants, connector_operations = split_family_resources(card, family)
         # No Control on a project chain contributes or folds a connector, whatever its mode (AND or OR).
         effective = compose_subtree(rest, tuple(strip_connectors(control) for control in dependencies))
@@ -100,6 +106,7 @@ async def compose_control_hierarchy(
     load_control: Callable[..., Awaitable[CardAuthority | None]],
     max_depth: int = 32,
     preloaded: Mapping[tuple[str, str], CardAuthority] | None = None,
+    project_families: ProjectFamilyPolicy | None = None,
 ) -> ControlHierarchy:
     """Resolve exact current coordinates and compose the downstream subtree.
 
@@ -149,7 +156,7 @@ async def compose_control_hierarchy(
         coordinates.append(coordinate)
         seen.add(coordinate)
 
-    result = compose_resolved_control_hierarchy(card, tuple(chain[1:]))
+    result = compose_resolved_control_hierarchy(card, tuple(chain[1:]), project_families=project_families)
     # W389: the dependency re-reads are independent, so they run together; the first
     # failure in chain order decides the refusal, as it did when they ran one by one.
     currents = await asyncio.gather(

@@ -124,7 +124,7 @@ from connection_hub.delegated_credentials.oauth.store import GrantStore
 from kdcube_ai_app.apps.chat.sdk.integrations.connection_hub.delegated_credentials.automation_access import (
     AutomationAccessService,
 )
-from connection_hub.delegated_credentials.controls.project_mcp_family import configure_project_resource_families
+from connection_hub.delegated_credentials.controls.project_mcp_family import ProjectFamilyPolicy
 from connection_hub.delegated_credentials.cache_settings import (
     DelegatedCacheSettings,
 )
@@ -1184,14 +1184,17 @@ def _connections_config(entrypoint: Any) -> Dict[str, Any]:
         connections = dict(raw) if isinstance(raw, Mapping) else {}
     else:
         connections = {}
-    # W918: every read of this descriptor also refreshes the deployment's
-    # project resource families (the External MCP switch's ceiling), so a
-    # descriptor change takes effect with the next request. Absent or
-    # invalid configures none, which keeps every project's switch closed.
-    delegated = connections.get("delegated_credentials")
-    families = delegated.get("project_resource_families") if isinstance(delegated, Mapping) else None
-    configure_project_resource_families(families if isinstance(families, list) else None)
     return connections
+
+
+def _project_resource_families(connections: Mapping[str, Any]) -> ProjectFamilyPolicy:
+    """W918: this request's own External MCP family policy, an immutable value read from its descriptor.
+
+    Each service that composes Card chains receives it at construction; nothing is process-wide, so one
+    tenant's or request's declaration never reaches another's. Absent or invalid is the empty policy, which
+    keeps every project's switch closed.
+    """
+    return ProjectFamilyPolicy.from_connections(connections)
 
 
 def _delegated_gateway_auth_config(entrypoint: Any) -> Dict[str, Any]:
@@ -1298,6 +1301,10 @@ async def _bind_delegated_client_request_config(
         request.state.oauth_delegated_config = cfg
         request.state.oauth_delegated_issuer = str(cfg.get("issuer") or "").rstrip("/")
         request.state.oauth_grant_store_required = True
+        # W918: this request's own External MCP family policy, for the platform's
+        # OAuth surfaces that compose Card chains (MCP surface guard, token refresh).
+        request.state.connection_hub_project_resource_families = _project_resource_families(
+            _connections_config(entrypoint))
         if original_exchange_enabled and _bool(cfg.get("enabled"), default=False):
             from .surfaces.oauth_original_exchange_host import (
                 OriginalExchangeHostingUnavailable, configured_issuer,
@@ -1887,6 +1894,7 @@ async def _automation_access_service_for(
             entrypoint, owner_subject
         ),
         invocation_policy_service=_invocation_policy_service(entrypoint),
+        project_resource_families=_project_resource_families(connections),
     )
     service.bind_issuer_registry(issuers, actor_subject=_platform_user_id(entrypoint))
     actor, classification, read_tenant, read_project = _protected_lifecycle_read_context(entrypoint)
@@ -2020,6 +2028,7 @@ async def _project_authorization_service(entrypoint: Any) -> AutomationAccessSer
         config=await _delegated_oauth_config_from_entrypoint(entrypoint, None),
         catalog_resolver=_delegated_catalog_resolver(entrypoint, redis),
         card_persistence=await _delegated_card_persistence(entrypoint, redis),
+        project_resource_families=_project_resource_families(_connections_config(entrypoint)),
     )
 
 
@@ -4721,7 +4730,8 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
         tenant, project = _runtime_tenant_project(self)
         operation = CardCensusReadOperation(
             callers=built.callers, card_store=persistence.card_store, catalog_store=_delegated_catalog_store(self),
-            nonces=redis, clock=time.time, nonce_prefix=f"connection-hub:{tenant}:{project}:card-census:nonce:")
+            nonces=redis, clock=time.time, nonce_prefix=f"connection-hub:{tenant}:{project}:card-census:nonce:",
+            project_families=_project_resource_families(_connections_config(self)))
         return await operation.answer(payload)
 
     @api(method="POST", alias="card_read_collection_register", route="public")

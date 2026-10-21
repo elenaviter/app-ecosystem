@@ -5,20 +5,17 @@ import dataclasses
 import pytest
 
 from connection_hub.delegated_credentials.controls.project_mcp_family import (
-    configure_project_resource_families,
     project_family_gate,
 )
 from test_w918_project_mcp_family import (
-    CONNECTOR_A, CONNECTOR_B, CREATOR, FAMILY, agent, person_chain,
+    CONNECTOR_A, CONNECTOR_B, CREATOR, FAMILY, agent, person_chain, policy,
     project_control, resolve, resolve_person,
 )
 
 
-@pytest.fixture(autouse=True)
-def family_configuration():
-    configure_project_resource_families([FAMILY])
-    yield
-    configure_project_resource_families(None)
+# W918 (claude-main): the family policy is now an explicit, immutable composition
+# input (see test_w918_project_mcp_family.POLICY); the module-global
+# configuration these cases first used no longer exists.
 
 
 async def test_same_holder_implicit_binding_still_gets_the_project_gate():
@@ -46,13 +43,11 @@ async def test_root_or_cannot_contribute_a_connector_when_gate_is_off():
 
 
 async def test_pattern_miss_cannot_escape_gate_off_through_or_folding():
-    configure_project_resource_families([
-        {**FAMILY, "resource_patterns": [CONNECTOR_B]},
-    ])
+    families = policy(resource_patterns=[CONNECTOR_B])
     my, c, p, _ = person_chain("off", connectors=(CONNECTOR_A,))
     c = dataclasses.replace(c, composition_mode="or")
     p = dataclasses.replace(p, composition_mode="or")
-    effective = await resolve_person(my, c, p)
+    effective = await resolve_person(my, c, p, families=families)
     assert CONNECTOR_A not in effective.resource_grants
 
 
@@ -137,3 +132,39 @@ async def test_or_control_cannot_replace_the_callers_connector_acceptance():
                                  resource_acceptance={CONNECTOR_A: old})
     effective = await resolve(caller, [p])
     assert effective.resource_acceptance[CONNECTOR_A] == old
+
+
+async def test_family_ceiling_is_request_scoped_across_dependency_awaits():
+    # Review case 8, ported to the explicit policy: request A (max_resources=1)
+    # pauses in its dependency read while request B composes under its own wider
+    # policy; A must still refuse under A's policy.
+    import asyncio
+
+    from connection_hub.delegated_credentials.controls.effective import ControlCardMismatch
+    from connection_hub.delegated_credentials.controls.hierarchy import compose_control_hierarchy
+
+    p = project_control("on")
+    caller = agent(p, connectors=(CONNECTOR_A, CONNECTOR_B))
+    reading = asyncio.Event()
+    changed = asyncio.Event()
+
+    async def strict_request():
+        async def load_control(control_id, *, grantor_subject):
+            reading.set()
+            await changed.wait()
+            return p
+
+        with pytest.raises(ControlCardMismatch, match="project_resource_family_resource_limit"):
+            await compose_control_hierarchy(caller, load_control=load_control,
+                                            project_families=policy(max_resources=1))
+
+    async def other_request():
+        await reading.wait()
+
+        async def load_control(control_id, *, grantor_subject):
+            return p
+
+        await compose_control_hierarchy(caller, load_control=load_control, project_families=policy(max_resources=8))
+        changed.set()
+
+    await asyncio.gather(strict_request(), other_request())

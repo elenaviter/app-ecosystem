@@ -437,6 +437,11 @@ class ProjectIdentityLifecycle:
     def _authority(self, record: Any, state: str) -> CardAuthority:
         return dataclasses.replace(self._authority_from_record(record), state=state)
 
+    @property
+    def project_families(self) -> Any:
+        """W918: the host service's own External MCP family policy; None closes the gate."""
+        return getattr(self._host, "_project_resource_families", None)
+
     async def _repair_my_card_binding(
         self,
         record: Any,
@@ -602,7 +607,8 @@ class ProjectIdentityLifecycle:
                 # W389: the walk's first Card is the Control Card just read; the re-read still checks it.
                 hierarchy = await compose_control_hierarchy(
                     my_authority, load_control=load_control,
-                    preloaded={(control_authority.grantor_subject, control_authority.access_id): control_authority})
+                    preloaded={(control_authority.grantor_subject, control_authority.access_id): control_authority},
+                    project_families=self.project_families)
                 control_resolution = ProjectCardResolution.current(
                     hierarchy.control_card, control_dependencies=hierarchy.dependencies[1:])
             except ControlCardMismatch as exc:
@@ -736,6 +742,7 @@ class ProjectIdentityLifecycle:
             control_card=resolution.control_card,
             my_card=resolution.my_card,
             catalog=catalog,
+            project_families=self.project_families,
         )
 
     async def authorize_many(self, requests: list) -> list:
@@ -783,7 +790,8 @@ async def _authorize_many(lifecycle: "ProjectIdentityLifecycle",
         else:
             decisions.append(authorize_project_operation(request=request, edge=resolution.edge,
                                                          control_card=resolution.control_card,
-                                                         my_card=resolution.my_card, catalog=catalog))
+                                                         my_card=resolution.my_card, catalog=catalog,
+                                                         project_families=lifecycle.project_families))
     return decisions
 
 

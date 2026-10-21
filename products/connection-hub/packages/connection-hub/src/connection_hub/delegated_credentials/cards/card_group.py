@@ -323,7 +323,10 @@ async def compose_group_chains(members: Sequence[Mapping[str, Any]], load_live: 
         if not chain:
             continue
         try:
-            compose_resolved_control_hierarchy(card, tuple(chain))
+            # Structure only: every edge and guard is checked here. No External
+            # MCP policy is applied (connectors are dropped on a project chain),
+            # so its limits refuse where authority is served, never here.
+            compose_resolved_control_hierarchy(card, tuple(chain), project_families=None)
         except ControlCardMismatch as exc:
             raise _refuse("card_group_chain_invalid") from exc
 

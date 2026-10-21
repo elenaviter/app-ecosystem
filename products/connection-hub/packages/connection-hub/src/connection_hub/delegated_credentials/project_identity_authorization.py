@@ -524,8 +524,12 @@ def authorize_project_operation(
     my_card: ProjectCardResolution | None,
     catalog: ActiveCatalogCapabilities | None,
     now: int | None = None,
+    project_families: Any = None,
 ) -> ProjectOperationAuthorizationDecision:
-    """Evaluate one operation against current authoritative inputs."""
+    """Evaluate one operation against current authoritative inputs.
+
+    ``project_families`` is the caller's own External MCP family policy (W918).
+    """
 
     issue: _Issue | None = None
     if reason := request.validation_reason():
@@ -593,6 +597,7 @@ def authorize_project_operation(
         hierarchy = compose_resolved_control_hierarchy(
             my_card.authority,
             (control_card.authority, *control_card.control_dependencies),
+            project_families=project_families,
         )
         effective = hierarchy.effective_card
     except ControlCardMismatch as exc:

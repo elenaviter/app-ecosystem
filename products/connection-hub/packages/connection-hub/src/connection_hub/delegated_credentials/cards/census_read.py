@@ -154,8 +154,11 @@ class CardCensusReadOperation:
 
     def __init__(self, *, callers: Mapping[str, ParticipantCaller], card_store: Any, catalog_store: Any,
                  nonces: Any, clock: Callable[[], float],
-                 nonce_prefix: str = "connection-hub:card-census:nonce:") -> None:
+                 nonce_prefix: str = "connection-hub:card-census:nonce:",
+                 project_families: Any = None) -> None:
         self._callers = dict(callers)
+        # W918: this deployment's own External MCP family policy (None closes the gate).
+        self._project_families = project_families
         self._cards = card_store
         self._catalog = catalog_store
         self._nonces = nonces
@@ -288,7 +291,8 @@ class CardCensusReadOperation:
             return authority
 
         try:
-            hierarchy = await compose_control_hierarchy(my, load_control=load_control)
+            hierarchy = await compose_control_hierarchy(my, load_control=load_control,
+                                                        project_families=self._project_families)
         except ControlCardMismatch as exc:
             if staged:
                 return {"state": "in_transaction", "cards": []}  # an ancestor is staged: reread after its decision

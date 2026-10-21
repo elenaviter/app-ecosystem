@@ -12,11 +12,10 @@ import pytest
 from connection_hub.delegated_credentials.cards.model import (
     CardAuthority, CardRecordError, ControlCardBinding, NamedServiceSelection,
 )
-from connection_hub.delegated_credentials.controls import project_mcp_family as family_module
 from connection_hub.delegated_credentials.controls.effective import ControlCardMismatch
 from connection_hub.delegated_credentials.controls.model import control_card_id_for_issuer, new_credentialless_card
 from connection_hub.delegated_credentials.controls.project_mcp_family import (
-    EXTERNAL_MCP_FAMILY_PROPERTY, configure_project_resource_families, project_family_gate,
+    EXTERNAL_MCP_FAMILY_PROPERTY, ProjectFamilyPolicy, project_family_gate,
 )
 
 PROJECT = "work:project:w918-test"
@@ -32,11 +31,12 @@ FAMILY = {
 }
 
 
-@pytest.fixture(autouse=True)
-def project_family():
-    configure_project_resource_families([FAMILY])
-    yield
-    configure_project_resource_families(None)
+# The deployment's policy, an immutable value each composition receives explicitly.
+POLICY = ProjectFamilyPolicy.from_declaration([FAMILY])
+
+
+def policy(**over):
+    return ProjectFamilyPolicy.from_declaration([{**FAMILY, **over}])
 
 
 def project_control(switch=None, *, selection=(PB,), mode="and"):
@@ -71,7 +71,7 @@ def agent(parent, *, connectors=(CONNECTOR_A,), tools=("search", "fetch")):
     )
 
 
-async def resolve(card, controls):
+async def resolve(card, controls, *, families=POLICY):
     from connection_hub.delegated_credentials.controls.hierarchy import compose_control_hierarchy
 
     by_coordinate = {(c.grantor_subject, c.access_id): c for c in controls}
@@ -79,7 +79,8 @@ async def resolve(card, controls):
     async def load_control(control_id, *, grantor_subject):
         return by_coordinate.get((grantor_subject, control_id))
 
-    return (await compose_control_hierarchy(card, load_control=load_control)).effective_card
+    return (await compose_control_hierarchy(card, load_control=load_control,
+                                            project_families=families)).effective_card
 
 
 async def test_switch_on_admits_the_owners_own_connectors_unchanged():
@@ -112,31 +113,74 @@ async def test_project_or_mode_never_contributes_or_reopens_connectors():
         await resolve(agent(p), [p])
 
 
-async def test_unconfigured_family_closes_the_gate():
-    configure_project_resource_families(None)
+@pytest.mark.parametrize("families", [None, ProjectFamilyPolicy(), ProjectFamilyPolicy.from_declaration(None)])
+async def test_no_policy_closes_the_gate(families):
     p = project_control("on")
-    effective = await resolve(agent(p), [p])
+    effective = await resolve(agent(p), [p], families=families)
     assert CONNECTOR_A not in effective.resource_grants
 
 
-async def test_invalid_family_declaration_configures_nothing():
-    configure_project_resource_families([{**FAMILY, "max_resources": 0}])
-    assert family_module.configured_family() is None
+@pytest.mark.parametrize("declaration", [
+    [{**FAMILY, "max_resources": 0}], [FAMILY, FAMILY], [{**FAMILY, "resource_kinds": ["docs"]}],
+    [{**FAMILY, "resource_patterns": ["https://*"]}], "not-a-list", [None],
+])
+async def test_an_invalid_declaration_is_the_closed_policy(declaration):
+    families = ProjectFamilyPolicy.from_declaration(declaration)
+    assert families.family() is None
     p = project_control("on")
-    effective = await resolve(agent(p), [p])
+    effective = await resolve(agent(p), [p], families=families)
     assert CONNECTOR_A not in effective.resource_grants
+
+
+def test_the_policy_is_read_from_the_descriptor_and_is_immutable():
+    import dataclasses as dc
+
+    families = ProjectFamilyPolicy.from_connections(
+        {"delegated_credentials": {"project_resource_families": [FAMILY]}})
+    assert families == POLICY and families.family().max_resources == 8
+    assert ProjectFamilyPolicy.from_connections({}).family() is None
+    with pytest.raises(dc.FrozenInstanceError):
+        families.families = ()
+
+
+async def test_concurrent_compositions_each_use_their_own_policy():
+    import asyncio
+
+    p = project_control("on")
+    caller = agent(p, connectors=(CONNECTOR_A, CONNECTOR_B))
+    reading, changed = asyncio.Event(), asyncio.Event()
+
+    async def load_slow(control_id, *, grantor_subject):
+        reading.set()
+        await changed.wait()
+        return p
+
+    async def load_now(control_id, *, grantor_subject):
+        return p
+
+    from connection_hub.delegated_credentials.controls.hierarchy import compose_control_hierarchy
+
+    async def strict():
+        with pytest.raises(ControlCardMismatch, match="project_resource_family_resource_limit"):
+            await compose_control_hierarchy(caller, load_control=load_slow, project_families=policy(max_resources=1))
+
+    async def wide():
+        await reading.wait()
+        result = await compose_control_hierarchy(caller, load_control=load_now, project_families=POLICY)
+        changed.set()
+        return result
+
+    _, result = await asyncio.gather(strict(), wide())
+    assert CONNECTOR_B in result.effective_card.resource_grants
 
 
 async def test_family_limits_are_enforced():
-    configure_project_resource_families([{**FAMILY, "max_resources": 1}])
     p = project_control("on")
     with pytest.raises(ControlCardMismatch, match="project_resource_family_resource_limit"):
-        await resolve(agent(p, connectors=(CONNECTOR_A, CONNECTOR_B)), [p])
-    configure_project_resource_families([{**FAMILY, "max_tools_per_resource": 1}])
+        await resolve(agent(p, connectors=(CONNECTOR_A, CONNECTOR_B)), [p], families=policy(max_resources=1))
     with pytest.raises(ControlCardMismatch, match="project_resource_family_tool_limit"):
-        await resolve(agent(p, tools=("a", "b")), [p])
-    configure_project_resource_families([{**FAMILY, "allowed_tools": ["search"]}])
-    effective = await resolve(agent(p, tools=("search", "delete")), [p])
+        await resolve(agent(p, tools=("a", "b")), [p], families=policy(max_tools_per_resource=1))
+    effective = await resolve(agent(p, tools=("search", "delete")), [p], families=policy(allowed_tools=["search"]))
     assert effective.resource_operations[CONNECTOR_A] == ("search",)
 
 
@@ -232,8 +276,8 @@ def person_chain(p_switch="on", c_switch=None, *, connectors=(CONNECTOR_A,)):
     return my, c, p, RESOURCE
 
 
-async def resolve_person(my, c, p):
-    return await resolve(my, [c, p])
+async def resolve_person(my, c, p, *, families=POLICY):
+    return await resolve(my, [c, p], families=families)
 
 
 async def test_person_chain_switch_on_admits_connectors_and_keeps_the_board_fold():
@@ -355,3 +399,36 @@ async def test_an_admitted_connector_keeps_the_callers_own_acceptance_evidence()
     caller = dataclasses.replace(agent(p, tools=("search",)), resource_acceptance={CONNECTOR_A: accepted})
     effective = await resolve(caller, [p])
     assert effective.resource_acceptance[CONNECTOR_A] == accepted
+
+
+def test_every_composition_call_names_its_project_family_policy():
+    """No composition can silently fall back: each call passes the owning service's policy (or None, said)."""
+    import ast
+    from pathlib import Path
+
+    import connection_hub
+
+    root = Path(connection_hub.__file__).parent
+    calls = []
+    for path in root.rglob("*.py"):
+        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+            if isinstance(node, ast.Call):
+                name = getattr(node.func, "id", None) or getattr(node.func, "attr", None)
+                if name in ("compose_control_hierarchy", "compose_resolved_control_hierarchy"):
+                    calls.append((path.relative_to(root).as_posix(), node.lineno,
+                                  any(k.arg == "project_families" for k in node.keywords)))
+    assert len(calls) >= 7
+    assert [c for c in calls if not c[2]] == []
+
+
+def test_the_identity_lifecycle_uses_its_host_services_policy():
+    from types import SimpleNamespace
+
+    from connection_hub.delegated_credentials.project_identity_lifecycle import ProjectIdentityLifecycle
+
+    lifecycle = ProjectIdentityLifecycle(host=SimpleNamespace(_project_resource_families=POLICY),
+                                         authority_from_record=lambda r: r, record_from_authority=lambda a: a)
+    assert lifecycle.project_families is POLICY
+    bare = ProjectIdentityLifecycle(host=SimpleNamespace(), authority_from_record=lambda r: r,
+                                    record_from_authority=lambda a: a)
+    assert bare.project_families is None

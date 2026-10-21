@@ -19,7 +19,7 @@ from .application_operation_policy import APPLICATION_OPERATIONS_PROPERTY
 from .controls.effective import SERVICE_COMPOSITION_MODES_PROPERTY
 from .controls.project_invitation import PROJECT_INVITATION_CONTROL_PROPERTY
 from .controls.project_person import PROJECT_PERSON_CONTROL_PROPERTY
-from .controls.project_mcp_family import EXTERNAL_MCP_FAMILY_PROPERTY
+from .controls.external_mcp_switch import EXTERNAL_MCP_FAMILY_PROPERTY
 from .controls.snapshot import CONTROL_SNAPSHOT_PROPERTY
 from .conversation_target_policy import CONVERSATION_TARGETS_PROPERTY
 from .project_identity_lifecycle import MY_CARD_COMMIT_EMAIL_PROPERTY, MY_CARD_GITHUB_PROPERTY

@@ -300,6 +300,75 @@ granted per agent per user with per-tool policy that the user can withdraw
 at any time. The ceiling is the application's only say in that arrangement:
 which kinds, which servers, which tools, how many.
 
+### 3.6 In a project: the External MCP switch
+
+A project cannot list its members' connectors in advance: each person
+connects their own. So a project's Control Card carries no connector grants.
+It carries one switch, `external_mcp_family`, `on` or `off`.
+
+**Where it applies.** Only on a chain Connection Hub positively recognises as
+a project chain: an agent Card bound directly to its project's Control Card
+P (a Problem Board project, `work:project:<id>`), or a person's My Card under
+their project Control C under that P. On every other chain nothing below
+applies and connectors fold like any other resource.
+
+**What it decides.**
+
+- On P, `on` or `off`. Absent counts as off.
+- A C may say `off` and so narrow its person. It never turns on what P has
+  off. Absent on C means "as P".
+- Switch on: the caller's own connectors pass with the caller's own grants,
+  tools and accepted descriptors, bounded by the deployment's project family
+  below. Switch off: they are dropped.
+- No Control ever contributes a connector, or its own acceptance evidence for
+  one, in AND or OR mode. A connector outside the family's patterns is
+  dropped, never folded.
+- Switching changes only P. Connectors already stored on Cards take effect on
+  the next decision, with no rewrite of any agent's Card. Readiness, accepted
+  descriptors and per-tool policies are still required as for any connector.
+
+**Who changes it.** The switch is written only through the owning project's
+Control transaction, covered by its digest, revision and fence like any other
+Control edit. A direct write is refused
+`external_mcp_family_requires_project_transaction`; an invalid value is
+refused `control_card_external_mcp_family_invalid`. A new Problem Board
+project starts with the switch on.
+
+**Who changes the connectors.** Only the Card's owner adds a connector or
+changes one (its grants, tools, accepted descriptor or invocation policy).
+Anyone else who may edit the Card, such as a project admin editing an agent
+Card, may leave each connector exactly as it is or remove it entirely; any
+other change is refused `card_custom_mcp_owner_only`.
+
+**The project family.** The deployment's ceiling for the switch lives in the
+Connection Hub descriptor, in the same field shape as
+`delegated_resource_families`:
+
+```yaml
+connections:
+  delegated_credentials:
+    project_resource_families:
+    - id: user_external_mcp
+      resource_kinds: [remote_mcp]
+      resource_patterns:
+      - "urn:connection-hub:remote-mcp:*"
+      allowed_tools: ["*"]
+      max_resources: 8
+      max_tools_per_resource: 64
+```
+
+The switch reads the family with `id` `user_external_mcp`. `resource_kinds` is only `remote_mcp`, every
+pattern a `urn:connection-hub:remote-mcp:` glob, `allowed_tools` a non-empty
+list (`*` keeps the caller's own selection), and both limits positive
+integers. A missing or invalid declaration (any invalid or duplicate entry
+invalidates the whole list), or no `user_external_mcp` entry, keeps every
+project's switch closed. The declaration is read with the rest
+of the descriptor for each request and handed to each composition as an
+immutable value, so one deployment's declaration never applies to another's
+request. Over a limit, the decision refuses
+`project_resource_family_resource_limit` or
+`project_resource_family_tool_limit`; it never truncates.
+
 ## 4. Layers, from descriptor to server
 
 ```text

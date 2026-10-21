@@ -152,6 +152,7 @@ from connection_hub.delegated_credentials.controls.effective import (
     ControlCardMismatch,
     effective_card_authority,
 )
+from connection_hub.delegated_credentials.controls.external_mcp_switch import direct_switch_write_refusal
 from connection_hub.delegated_credentials.controls.hierarchy import compose_control_hierarchy
 from connection_hub.delegated_credentials.conversation_target_policy import (
     conversation_targets,
@@ -1843,11 +1844,14 @@ class AutomationAccessService:
         ) = None,
         issuer_registry: IssuerRegistry | None = None,
         issuer_actor_subject: str = "",
+        project_resource_families: Any | None = None,
     ) -> None:
         self._redis = redis
         self._tenant = _clean(tenant)
         self._project = _clean(project)
         self._config = config
+        # W918: this deployment's immutable External MCP family policy (None closes the gate).
+        self._project_resource_families = project_resource_families
         selected_backend = _clean(authority_backend).lower()
         if grant_store is None and selected_backend == AUTHORITY_BACKEND_POSTGRESQL:
             raise GrantStoreUnavailable(
@@ -2134,7 +2138,8 @@ class AutomationAccessService:
             return card_authority_from_record(current) if current is not None else None
 
         try:
-            result = await compose_control_hierarchy(caller, load_control=load_control)
+            result = await compose_control_hierarchy(caller, load_control=load_control,
+                                                     project_families=self._project_resource_families)
         except ControlCardMismatch as exc:
             if exc.reason == "control_card_unresolvable":
                 return None, None
@@ -8058,10 +8063,9 @@ class AutomationAccessService:
                          "expected_catalog_version": expected_catalog_version, "_screen_save": _screen_save,
                          "external_mcp_family": external_mcp_family})
             return forwarded if forwarded is not None else refused
-        if external_mcp_family is not None:
-            # W918: the switch is written only by the project's own transaction, never by a direct write.
-            return {"ok": False, "error": "external_mcp_family_requires_project_transaction", "status": 409,
-                    "message": "Only the project's own Control edit sets External MCP. Nothing was saved."}
+        # W918: the switch is written only by its Control's own transaction; the switch owns that refusal.
+        if (refused := direct_switch_write_refusal(external_mcp_family)) is not None:
+            return refused
         updated = await self.update_access(
             user,
             access_id=existing.access_id,

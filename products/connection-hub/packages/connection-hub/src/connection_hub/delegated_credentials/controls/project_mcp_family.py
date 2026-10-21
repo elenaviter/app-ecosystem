@@ -24,26 +24,28 @@ connectors fold like any other resource.
 - Off: the caller's connectors are dropped. No Control ever contributes one.
 
 The family limits are deployment-owned
-(``connections.delegated_credentials.project_resource_families``) and
-configured once at startup; an unconfigured, invalid or unknown family closes
-the gate.
+(``connections.delegated_credentials.project_resource_families``). They are an
+immutable ``ProjectFamilyPolicy`` value that each owning service receives from
+its own descriptor read and passes to every composition explicitly; there is
+no module state, so one tenant's or request's declaration can never reach
+another's composition. No policy, an invalid declaration or an unknown family
+closes the gate.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
 from fnmatch import fnmatchcase
-from typing import Any, Iterable, Mapping
+from typing import Any, Mapping
 
 from connection_hub.delegated_credentials.cards.model import CardAuthority, authority_is_credentialless
 from connection_hub.delegated_credentials.controls.model import ControlCardError, control_card_id_for_issuer
 from connection_hub.delegated_credentials.controls.snapshot import control_snapshot_is_exact
+from connection_hub.delegated_credentials.controls.external_mcp_switch import (
+    EXTERNAL_MCP_FAMILY_PROPERTY, FAMILY_OFF, FAMILY_ON, FAMILY_VALUES, validate_family_property,
+)
 from connection_hub.remote_mcp.models import connector_id_from_resource
 
-EXTERNAL_MCP_FAMILY_PROPERTY = "external_mcp_family"
-FAMILY_ON = "on"
-FAMILY_OFF = "off"
-FAMILY_VALUES = frozenset({FAMILY_ON, FAMILY_OFF})
 EXTERNAL_MCP_FAMILY_ID = "user_external_mcp"
 # The project Control's issuer kind (as controls.project_person_composition).
 _PROJECT_CONTROL_ISSUER_KIND = "application"
@@ -95,35 +97,46 @@ class ProjectResourceFamily:
         return bool(connector_id_from_resource(resource)) and any(
             fnmatchcase(resource, pattern) for pattern in self.resource_patterns)
 
-
-_FAMILIES: dict[str, ProjectResourceFamily] = {}
-
-
-def configure_project_resource_families(entries: Iterable[Mapping[str, Any]] | None) -> None:
-    """Load the deployment's declaration. Any invalid entry leaves no family configured."""
-    _FAMILIES.clear()
-    if entries is None:
-        return
-    parsed: dict[str, ProjectResourceFamily] = {}
-    try:
-        for raw in entries:
-            family = ProjectResourceFamily.from_mapping(raw)
-            if family.family_id in parsed:
-                raise ProjectFamilyConfigError("project_resource_family_duplicate")
-            parsed[family.family_id] = family
-    except (ProjectFamilyConfigError, TypeError):
-        return
-    _FAMILIES.update(parsed)
+    def limits(self) -> dict[str, Any]:
+        """The family's ceiling in the shape the shared family algebra reads."""
+        return {"allowed_tools": list(self.allowed_tools), "max_resources": self.max_resources,
+                "max_tools_per_resource": self.max_tools_per_resource}
 
 
-def configured_family(family_id: str = EXTERNAL_MCP_FAMILY_ID) -> ProjectResourceFamily | None:
-    return _FAMILIES.get(family_id)
+@dataclass(frozen=True)
+class ProjectFamilyPolicy:
+    """One deployment's validated declaration, as an immutable value."""
+
+    families: tuple[ProjectResourceFamily, ...] = ()
+
+    @classmethod
+    def from_declaration(cls, entries: Any) -> "ProjectFamilyPolicy":
+        """The declaration's families; anything invalid gives the empty (closed) policy."""
+        if not isinstance(entries, (list, tuple)):
+            return cls()
+        parsed: dict[str, ProjectResourceFamily] = {}
+        try:
+            for raw in entries:
+                family = ProjectResourceFamily.from_mapping(raw)
+                if family.family_id in parsed:
+                    raise ProjectFamilyConfigError("project_resource_family_duplicate")
+                parsed[family.family_id] = family
+        except (ProjectFamilyConfigError, TypeError):
+            return cls()
+        return cls(tuple(parsed[key] for key in sorted(parsed)))
+
+    @classmethod
+    def from_connections(cls, connections: Any) -> "ProjectFamilyPolicy":
+        """Read ``delegated_credentials.project_resource_families`` from a ``connections`` mapping."""
+        delegated = connections.get("delegated_credentials") if isinstance(connections, Mapping) else None
+        return cls.from_declaration(
+            delegated.get("project_resource_families") if isinstance(delegated, Mapping) else None)
+
+    def family(self, family_id: str = EXTERNAL_MCP_FAMILY_ID) -> ProjectResourceFamily | None:
+        return next((family for family in self.families if family.family_id == family_id), None)
 
 
-def validate_family_property(properties: Mapping[str, Any]) -> None:
-    """Card codec check: the switch is ``on`` or ``off`` when present."""
-    if EXTERNAL_MCP_FAMILY_PROPERTY in properties and properties[EXTERNAL_MCP_FAMILY_PROPERTY] not in FAMILY_VALUES:
-        raise ValueError("control_card_external_mcp_family_invalid")
+NO_PROJECT_FAMILIES = ProjectFamilyPolicy()
 
 
 # A project's own Control is an application Control issued for a Problem Board project ref; any
@@ -232,22 +245,20 @@ def split_family_resources(card: CardAuthority, family: ProjectResourceFamily | 
 def admitted_family_resources(family: ProjectResourceFamily, grants: Mapping[str, tuple[str, ...]],
                               operations: Mapping[str, tuple[str, ...]]
                               ) -> tuple[dict[str, tuple[str, ...]], dict[str, tuple[str, ...]]]:
-    """The caller's own connectors under the family ceiling; over a limit refuses."""
-    from connection_hub.delegated_credentials.controls.effective import ControlCardMismatch
+    """The caller's own connectors under the family ceiling; over a limit refuses.
 
-    if len(grants) > family.max_resources:
-        raise ControlCardMismatch("project_resource_family_resource_limit")
-    allowed = set(family.allowed_tools)
-    admitted_grants: dict[str, tuple[str, ...]] = {}
-    admitted_operations: dict[str, tuple[str, ...]] = {}
-    for resource, resource_grants in grants.items():
-        selected = tuple(operations.get(resource, ()))
-        bounded = selected if "*" in allowed else tuple(op for op in selected if op in allowed)
-        if len(set(bounded)) > family.max_tools_per_resource:
-            raise ControlCardMismatch("project_resource_family_tool_limit")
-        admitted_grants[resource] = tuple(resource_grants)
-        admitted_operations[resource] = tuple(sorted(set(bounded)))
-    return admitted_grants, admitted_operations
+    The same bounded-tools and limit algebra as descriptor families
+    (``effective.bounded_family_authority``), with this family's own codes.
+    """
+    from connection_hub.delegated_credentials.controls.effective import bounded_family_authority
+
+    limits = family.limits()
+    return bounded_family_authority(
+        grants, operations, {resource: (family.family_id, limits) for resource in grants},
+        {family.family_id: limits},
+        resource_limit_reason="project_resource_family_resource_limit",
+        tool_limit_reason="project_resource_family_tool_limit",
+    )
 
 
 __all__ = [
@@ -255,11 +266,11 @@ __all__ = [
     "EXTERNAL_MCP_FAMILY_PROPERTY",
     "FAMILY_OFF",
     "FAMILY_ON",
+    "NO_PROJECT_FAMILIES",
     "ProjectFamilyConfigError",
+    "ProjectFamilyPolicy",
     "ProjectResourceFamily",
     "admitted_family_resources",
-    "configure_project_resource_families",
-    "configured_family",
     "project_family_gate",
     "split_family_resources",
     "strip_connectors",
