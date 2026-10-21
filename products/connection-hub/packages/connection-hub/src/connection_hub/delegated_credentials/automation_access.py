@@ -2847,9 +2847,10 @@ class AutomationAccessService:
                 return exc.to_dict()
             if unchanged:
                 return {"ok": True, "unchanged": True}
-        composition_mode = label = None
+        composition_mode = label = external_mcp_family = None
         stored_mode = record.composition_mode
-        if kind == "project_control" and changes.get("composition_mode") is not None:
+        if kind == "project_control" and (changes.get("composition_mode") is not None
+                                          or changes.get("external_mcp_family") is not None):
             # W742: the rule is compared with P's durable current revision, never the serving projection (live
             # 10 Oct 22:49Z: a projection behind the committed revision), so a repeated rule is a no-op.
             current = await self._load_record_any_state(record.access_id, grantor_subject=record.grantor_subject)
@@ -2883,8 +2884,16 @@ class AutomationAccessService:
                      if changes.get(field) is not None}
         if whole_selection is not None:
             selection = whole_selection
+        # W918: the project's External MCP switch, compared with P's durable revision like the access rule.
+        requested_family = changes.get("external_mcp_family")
+        if requested_family is not None:
+            if kind != "project_control" or requested_family not in {"on", "off"}:
+                return {"ok": False, "error": "managed_card_edit_fields_unsupported", "status": 409,
+                        "message": "Only a project's Control carries its External MCP switch. Nothing was saved."}
+            if requested_family != dict(record.properties or {}).get("external_mcp_family"):
+                external_mcp_family = requested_family
         if (kind == "project_control" and not selection and not changes.get("accepted_operations")
-                and composition_mode is None and label is None):
+                and composition_mode is None and label is None and external_mcp_family is None):
             if revision != record.card_revision:
                 return {"ok": False, "error": "managed_card_edit_revision_changed", "status": 409,
                         "message": "Reload the Card and save again. Nothing was saved."}
@@ -2896,7 +2905,8 @@ class AutomationAccessService:
                 access_id=record.access_id, subject_hash=subject_hash_for(record.grantor_subject),
                 accepted_operations=changes.get("accepted_operations"),
                 expected_catalog_version=changes.get("expected_catalog_version"),
-                composition_mode=composition_mode, label=label, invocation_modes=whole_modes)
+                composition_mode=composition_mode, label=label, invocation_modes=whole_modes,
+                external_mcp_family=external_mcp_family)
             outcome = await forwarder.forward(body)
         except ManagedCardEditError as exc:
             return exc.to_dict()
@@ -2923,9 +2933,12 @@ class AutomationAccessService:
             selection = {field: changes[field] for field in
                          ("resource_grants", "resource_operations", "named_service_operations", "account_scope")
                          if changes.get(field) is not None}
+            identity = [_subject_from_user(user), record.access_id, changes.get("expected_card_revision"), selection]
+            if changes.get("external_mcp_family") is not None:
+                # W918: two different switch values are two Saves; every other Save keeps its old id.
+                identity.append({"external_mcp_family": changes["external_mcp_family"]})
             digest = hashlib.sha256(json.dumps(
-                [_subject_from_user(user), record.access_id, changes.get("expected_card_revision"), selection],
-                sort_keys=True, separators=(",", ":"), default=str).encode("utf-8")).hexdigest()
+                identity, sort_keys=True, separators=(",", ":"), default=str).encode("utf-8")).hexdigest()
             request_id = "project-control-save:" + digest[:48]
         return await self._forward_agent_card_edit(user, record=record, project_ref=_clean(record.issuer_ref),
                                                    request_id=request_id, changes=changes, kind="project_control")
@@ -7992,6 +8005,7 @@ class AutomationAccessService:
         _screen_save: bool = False,
         accepted_operations: Mapping[str, Iterable[str]] | None = None,
         request_id: str | None = None,
+        external_mcp_family: str | None = None,
         _delegable_grants: Iterable[str] | None = None,
         _record_transform: Callable[
             [AutomationAccessRecord, AutomationAccessRecord],
@@ -8037,7 +8051,8 @@ class AutomationAccessService:
                          "properties": properties, "composition_mode": composition_mode, "label": label,
                          "expected_card_revision": expected_card_revision,
                          "accepted_operations": accepted_operations,
-                         "expected_catalog_version": expected_catalog_version, "_screen_save": _screen_save})
+                         "expected_catalog_version": expected_catalog_version, "_screen_save": _screen_save,
+                         "external_mcp_family": external_mcp_family})
             return forwarded if forwarded is not None else refused
         updated = await self.update_access(
             user,

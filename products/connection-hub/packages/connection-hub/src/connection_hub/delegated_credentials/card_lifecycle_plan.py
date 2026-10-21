@@ -642,7 +642,8 @@ async def plan_card_lifecycle(
             if "properties" in raw["selection"] and not isinstance(raw["selection"]["properties"], Mapping):
                 raise CardLifecyclePlanRefused("card_plan_selection_invalid", 400)
             identity_fields = {
-                "application_control": {"holder_subject", "issuer_ref", "issuer_label", "manage_url", "composition_mode"},
+                "application_control": {"holder_subject", "issuer_ref", "issuer_label", "manage_url", "composition_mode",
+                                        "external_mcp_family"},
                 "project_person_control": {"target_subject", "label", "manage_url", "composition_mode", "seed_origin",
                                            "invitation"},
                 "project_person_my_card": {"person_subject", "label", "manage_url"},
@@ -677,13 +678,21 @@ async def plan_card_lifecycle(
                         raise CardLifecyclePlanRefused("card_plan_application_identity_invalid", 400)
                     if identity.get("composition_mode", "and") not in ("and", "or"):
                         raise CardLifecyclePlanRefused("control_card_composition_mode_invalid", 400)
+                    # W918: the project's External MCP switch, set by the project at creation ("should be on
+                    # bu default", operator 2026-10-21); only "on" or "off", never inferred.
+                    if "external_mcp_family" in identity and identity["external_mcp_family"] not in ("on", "off"):
+                        raise CardLifecyclePlanRefused("control_card_external_mcp_family_invalid", 400)
                     issuer_label = str(identity.get("issuer_label") or "")
                     manage_url = str(identity.get("manage_url") or "")
                     mode = str(identity.get("composition_mode") or "and")
+                    genesis_properties = selection.get("properties")
+                    if "external_mcp_family" in identity:
+                        genesis_properties = {**dict(genesis_properties or {}),
+                                              "external_mcp_family": identity["external_mcp_family"]}
                     base = build_application_control(
                         project_ref=scope, holder_subject=holder, catalog_version=catalog_version,
                         issuer_label=issuer_label, manage_url=manage_url,
-                        composition_mode=mode, properties=selection.get("properties"), now=now,
+                        composition_mode=mode, properties=genesis_properties, now=now,
                     )
                     if selected:
                         from connection_hub.delegated_credentials.automation_access import record_from_card
@@ -942,7 +951,7 @@ async def plan_card_lifecycle(
                                    "selection", "profile", "resource", "display_digest", "control",
                                    "add_grants", "add_operations", "remove_operations", "operation_grants",
                                    "protected_grants", "accepted_operations", "expected_catalog_version",
-                                   "composition_mode", "label", "invocation_modes"}
+                                   "composition_mode", "label", "invocation_modes", "external_mcp_family"}
                     or ("selection" in raw) != (raw.get("kind") in {"reselect", "reselect_project_control",
                                                                     "reselect_agent_card",
                                                                     "reselect_invitation_control", "set_person_properties"})
@@ -954,6 +963,9 @@ async def plan_card_lifecycle(
                     # W742: the project access rule travels only on the project Control's own edit.
                     or ("composition_mode" in raw and (raw.get("kind") != "reselect_project_control"
                                                        or raw["composition_mode"] not in {"and", "or"}))
+                    # W918: the project's External MCP switch travels only on the project Control's own edit.
+                    or ("external_mcp_family" in raw and (raw.get("kind") != "reselect_project_control"
+                                                          or raw["external_mcp_family"] not in {"on", "off"}))
                     # W735: a Card's display name travels only on a selection edit of that Card.
                     or ("label" in raw and (raw.get("kind") not in {"reselect", "reselect_project_control",
                                                                     "reselect_agent_card",
@@ -1064,6 +1076,8 @@ async def plan_card_lifecycle(
                     project_ref=scope, actor_subject=actor, request_id=request_id, now=now,
                     accepted_operations=raw.get("accepted_operations"),
                     composition_mode=raw.get("composition_mode"), label=raw.get("label"),
+                    external_mcp_family=raw.get("external_mcp_family"),
+                    invocation_modes=raw.get("invocation_modes"),
                     allow_unchanged=_carries_held_mode(original, raw))
                 members.append(built["member"])
                 originals[(subject_hash, access_id)] = original.to_dict()

@@ -113,7 +113,8 @@ def managed_card_edit_body(*, actor_subject: str, project_ref: str, request_id: 
                            accepted_operations: Mapping[str, Any] | None = None,
                            expected_catalog_version: str | None = None,
                            composition_mode: str | None = None, label: str | None = None,
-                           invocation_modes: Mapping[str, Any] | None = None) -> dict:
+                           invocation_modes: Mapping[str, Any] | None = None,
+                           external_mcp_family: str | None = None) -> dict:
     """The exact unsigned request; nothing in it comes from the browser except the edit itself.
 
     W723: ``accepted_operations`` travels only when the person ticked "Accept update", so every body
@@ -123,6 +124,8 @@ def managed_card_edit_body(*, actor_subject: str, project_ref: str, request_id: 
     (P) edit that changes it, as an exact, signed field; a rule change alone is a real edit.
     W735: ``label`` (the Card's display name, not authority) travels only when it changes, as an exact,
     signed field; a rename alone is a real edit.
+    W918: ``external_mcp_family`` (the project's External MCP switch, ``on``/``off``) travels only on a
+    project Control (P) edit that changes it, exactly like the access rule.
     """
     for value in (actor_subject, project_ref, request_id, principal_key):
         if type(value) is not str or not 0 < len(value) <= 256 or value != value.strip() or not value.isprintable():
@@ -132,6 +135,8 @@ def managed_card_edit_body(*, actor_subject: str, project_ref: str, request_id: 
     if modes and kind not in {"person_my", "agent_card"}:
         raise ManagedCardEditError("managed_card_edit_fields_unsupported", 400)
     if composition_mode is not None and (kind != "project_control" or composition_mode not in COMPOSITION_MODES):
+        raise ManagedCardEditError("managed_card_edit_request_invalid", 400)
+    if external_mcp_family is not None and (kind != "project_control" or external_mcp_family not in {"on", "off"}):
         raise ManagedCardEditError("managed_card_edit_request_invalid", 400)
     if label is not None and (not valid_label(label) or kind not in TARGET_KINDS):
         raise ManagedCardEditError("managed_card_edit_request_invalid", 400)
@@ -147,7 +152,7 @@ def managed_card_edit_body(*, actor_subject: str, project_ref: str, request_id: 
                 "target": {"kind": kind, "principal_key": principal_key, "original_revision": original_revision},
                 "selection": {}}
     if not isinstance(selection, Mapping) or (not selection and not accepted and composition_mode is None
-                                              and label is None):
+                                              and label is None and external_mcp_family is None):
         raise ManagedCardEditError("managed_card_edit_request_invalid", 400)
     if set(selection) == {"properties"}:
         # The pre-existing settings-only API is still closed. Whole-Card Save
@@ -161,7 +166,8 @@ def managed_card_edit_body(*, actor_subject: str, project_ref: str, request_id: 
         if (kind != "person_my" or principal_key != "user:" + actor_subject
                 or type(original_revision) is not int or original_revision < 1
                 or accepted_operations is not None or expected_catalog_version is not None
-                or composition_mode is not None or label is not None or invocation_modes is not None):
+                or composition_mode is not None or label is not None or invocation_modes is not None
+                or external_mcp_family is not None):
             raise ManagedCardEditError("managed_card_edit_fields_unsupported", 400)
         return {"schema": SCHEMA, "actor_subject": actor_subject, "project_ref": project_ref,
                 "request_id": request_id,
@@ -174,6 +180,8 @@ def managed_card_edit_body(*, actor_subject: str, project_ref: str, request_id: 
         extra["invocation_modes"] = modes
     if composition_mode is not None:
         extra["composition_mode"] = composition_mode
+    if external_mcp_family is not None:
+        extra["external_mcp_family"] = external_mcp_family
     if label is not None:
         extra["label"] = label
     if expected_catalog_version is not None:

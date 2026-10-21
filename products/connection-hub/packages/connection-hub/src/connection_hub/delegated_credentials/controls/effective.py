@@ -550,6 +550,12 @@ def compose_card_authority_selection(
         if SERVICE_COMPOSITION_MODES_PROPERTY in card.properties:
             properties[SERVICE_COMPOSITION_MODES_PROPERTY] = copy.deepcopy(
                 card.properties[SERVICE_COMPOSITION_MODES_PROPERTY])
+    # W918: a Control's External MCP switch is that Control's own policy. It is
+    # never inherited by composition (a C keeps only its own value; a caller
+    # never carries one); the hierarchy reads it from the raw validated chain.
+    properties.pop("external_mcp_family", None)
+    if authority_is_credentialless(card) and "external_mcp_family" in card.properties:
+        properties["external_mcp_family"] = card.properties["external_mcp_family"]
     # Target authority is a finite set, not an ordinary last-writer-wins Card
     # property. An absent side contributes no cross-application reads.
     properties[CONVERSATION_TARGETS_PROPERTY] = list(

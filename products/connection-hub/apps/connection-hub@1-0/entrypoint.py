@@ -124,6 +124,7 @@ from connection_hub.delegated_credentials.oauth.store import GrantStore
 from kdcube_ai_app.apps.chat.sdk.integrations.connection_hub.delegated_credentials.automation_access import (
     AutomationAccessService,
 )
+from connection_hub.delegated_credentials.controls.project_mcp_family import configure_project_resource_families
 from connection_hub.delegated_credentials.cache_settings import (
     DelegatedCacheSettings,
 )
@@ -1174,8 +1175,17 @@ def _connections_config(entrypoint: Any) -> Dict[str, Any]:
     props = getattr(entrypoint, "bundle_props", None)
     if isinstance(props, Mapping):
         raw = props.get("connections")
-        return dict(raw) if isinstance(raw, Mapping) else {}
-    return {}
+        connections = dict(raw) if isinstance(raw, Mapping) else {}
+    else:
+        connections = {}
+    # W918: every read of this descriptor also refreshes the deployment's
+    # project resource families (the External MCP switch's ceiling), so a
+    # descriptor change takes effect with the next request. Absent or
+    # invalid configures none, which keeps every project's switch closed.
+    delegated = connections.get("delegated_credentials")
+    families = delegated.get("project_resource_families") if isinstance(delegated, Mapping) else None
+    configure_project_resource_families(families if isinstance(families, list) else None)
+    return connections
 
 
 def _delegated_gateway_auth_config(entrypoint: Any) -> Dict[str, Any]:

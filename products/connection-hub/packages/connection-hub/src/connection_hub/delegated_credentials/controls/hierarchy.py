@@ -17,6 +17,9 @@ from connection_hub.delegated_credentials.controls.project_person_composition im
     compose_with_project_control, compose_with_project_held_control, project_control_parent,
     project_held_control,
 )
+from connection_hub.delegated_credentials.controls.project_mcp_family import (
+    admitted_family_resources, configured_family, project_family_gate, split_family_resources,
+)
 
 
 @dataclass(frozen=True)
@@ -63,7 +66,24 @@ def compose_resolved_control_hierarchy(
 
     # Each upstream operation applies to EVERYTHING below it. Folding from
     # the leaf gives P op_P (C op_C My), not (P op_P C) op_C My.
-    effective = compose_subtree(card, dependencies)
+    # W918: on a validated project chain the caller's own MCP connectors are
+    # decided by the project's External MCP switch, not folded: no Control can
+    # list them, and none may contribute one. Every other chain is unchanged.
+    gate = project_family_gate(card, dependencies)
+    if gate is None:
+        effective = compose_subtree(card, dependencies)
+    else:
+        family = configured_family()
+        rest, connector_grants, connector_operations = split_family_resources(card, family)
+        effective = compose_subtree(rest, dependencies)
+        if gate and family is not None and connector_grants:
+            admitted_grants, admitted_operations = admitted_family_resources(
+                family, connector_grants, connector_operations)
+            effective = replace(
+                effective,
+                resource_grants={**effective.resource_grants, **admitted_grants},
+                resource_operations={**effective.resource_operations, **admitted_operations},
+            )
     effective_control = compose_subtree(dependencies[0], dependencies[1:]) if dependencies else None
     return ControlHierarchy(effective, dependencies[0] if dependencies else None,
                             effective_control, dependencies)
