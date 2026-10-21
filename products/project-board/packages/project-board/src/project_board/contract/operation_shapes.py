@@ -19,7 +19,7 @@ from typing import Any, Mapping
 from .errors import DomainError
 from .plan_nodes import parse_plan_node_ref
 from .work_lifecycle import CANONICAL_WORK_STATUSES, canonical_work_status
-from .worker_operation_contract import PROBLEM_BOARD_OPERATIONS
+from .worker_operation_contract import PROBLEM_BOARD_OPERATIONS, operation_is_read
 
 # The item fields plan.item.update changes, each with its type, as the
 # service's item patch accepts them. The service reads this same table.
@@ -1132,6 +1132,91 @@ _STRICT_OBJECTS: dict[str, frozenset[str]] = {
     "plan.item.update": frozenset({"changes", "changes.review"}),
 }
 
+# W919: a mutation refuses a payload key it does not take. On 2026-10-21 a
+# plan.item.update carried "dry_run": true, which no operation of that name
+# accepts; the board ignored it and applied the change. A caller who believes
+# it is previewing must not write. Reads keep accepting extra keys.
+#
+# Fields the board reads that the catalog does not describe yet. A caller may
+# send them, so they are not refused. Found by reading what each mutation's
+# handler and its same-module helpers take from the payload in the board's
+# services/operation_dispatch.py (Applications main 539b7dca, 2026-10-21).
+# Describing them in the catalog would remove them from here.
+_ACCEPTED_UNDESCRIBED_FIELDS: dict[str, frozenset[str]] = {
+    "assignment.report": frozenset({"scope"}),
+    "control.enqueue": frozenset({"attachments"}),
+    "control.refuse": frozenset({"result", "result_ref"}),
+    "mail.route": frozenset({"attachments"}),
+    "project.references.migrate": frozenset({"reference_mapping_artifact"}),
+    "project.references.preview": frozenset({"reference_mapping_upload"}),
+    "project.report.publish": frozenset({"dry_run"}),
+    "worker.estimate": frozenset({"worker_name"}),
+    "worker.heartbeat": frozenset({
+        "agent_session_times", "assignment_files", "disk_usage", "known_reply",
+        "known_reply_digest", "known_team_revision", "project_record", "reply_protocol",
+        "store_reads", "store_reads_changed", "team_protocol", "worker_alias_request",
+        "workspace_report",
+    }),
+    "worker.publish": frozenset({"repository_urls", "worker_name"}),
+    "worker.rename": frozenset({"worker_name"}),
+    "worker.restore": frozenset({"reason"}),
+}
+
+# The transport's own field: the client reads it for every mutation's outcome
+# recovery (relay.py, coordinate_recovery.mutation_idempotency_key) and the
+# board's ledger records it (W574), whether or not the operation's catalog
+# entry lists it. Agents retry under the same key, so it is never refused.
+_TRANSPORT_FIELDS: frozenset[str] = frozenset({"idempotency_key"})
+
+# Nested objects whose keys are closed too, with what the board accepts beyond
+# the catalog at that level: the service takes PLAN_ITEM_CHANGE_FIELDS and
+# "status" in changes (it then refuses a status change there itself).
+_CLOSED_OBJECTS: dict[str, dict[str, frozenset[str]]] = {
+    "plan.item.update": {
+        "changes": frozenset({"status"}),
+        "changes.review": frozenset(),
+        "changes.review.hold": frozenset(),
+    },
+}
+
+
+def _unknown_key_problems(
+    operation: str, payload: Mapping[str, Any], described: Mapping[str, Any]
+) -> list[dict[str, str]]:
+    """Keys a mutation does not take, at the top level and in its closed objects (W919)."""
+
+    def unknown(value: Mapping[str, Any], shape: Mapping[str, Any], extra: frozenset[str], path: str) -> list[dict[str, str]]:
+        allowed = set(shape) | set(extra)
+        found = []
+        for key in value:
+            name = str(key)
+            # A dotted name under a nested field is reported by _nested_problems.
+            if name in allowed or ("." in name and isinstance(shape.get(name.split(".", 1)[0]), Mapping)):
+                continue
+            where = f"{path}{name}"
+            found.append({
+                "field": where,
+                "problem": "unknown",
+                "message": (
+                    f"{where} is not a field of {operation}; the call is refused so nothing is "
+                    f"changed by mistake. Remove it. The fields here are: {', '.join(sorted(allowed))}."
+                ),
+            })
+        return found
+
+    problems = unknown(
+        payload, described, _ACCEPTED_UNDESCRIBED_FIELDS.get(operation, frozenset()) | _TRANSPORT_FIELDS, ""
+    )
+    for where, extra in _CLOSED_OBJECTS.get(operation, {}).items():
+        value: Any = payload
+        shape: Any = described
+        for part in where.split("."):
+            value = value.get(part) if isinstance(value, Mapping) else None
+            shape = shape.get(part) if isinstance(shape, Mapping) else None
+        if isinstance(value, Mapping) and isinstance(shape, Mapping):
+            problems.extend(unknown(value, shape, extra, f"{where}."))
+    return problems
+
 
 # Payloads whose example needs real types: an integer revision and a nested
 # object, not a string placeholder for every field. Each is a valid call once
@@ -1309,6 +1394,8 @@ def operation_call_problems(
                 payload, described, path="", strict=_STRICT_OBJECTS.get(operation, frozenset())
             )
         )
+        if not operation_is_read(operation):
+            problems.extend(_unknown_key_problems(operation, payload, described))
     if operation == "plan.item.create":
         item = payload.get("item")
         if isinstance(item, Mapping):
