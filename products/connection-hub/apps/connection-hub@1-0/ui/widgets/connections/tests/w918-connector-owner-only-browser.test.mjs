@@ -19,6 +19,8 @@ const saves = (page) => page.evaluate(() => window.__calls
 async function saveWithBoardChange(page) {
   await page.evaluate(() => document.querySelectorAll('details').forEach((element) => { element.open = true }))
   await page.locator('.tool-choice label.grant-chip[title="plan.item.list"]').click()
+  // An added operation needs its invocation choice before Save (editMissingChoices), as in W755.
+  await page.getByRole('button', { name: 'plan.item.list: once' }).click()
   await page.getByRole('button', { name: 'Save', exact: true }).click()
   await page.waitForFunction(() => window.__calls.some((call) => call.operation === 'delegated_access_update'),
     null, { timeout: 10000 })
@@ -51,6 +53,12 @@ async function withEditor(t, viewer, run, { link = false, catalog = '' } = {}) {
       const edit = page.getByRole('button', { name: 'Edit', exact: true })
       await edit.first().waitFor({ state: 'visible', timeout: 15000 })
       await edit.first().click()
+    }
+    if (catalog) {
+      // Under the MCP route the connectors render only while the route section is open.
+      const route = page.locator(`details.resource-edit-section[data-resource="${ROUTE}"]`)
+      await route.waitFor({ state: 'attached', timeout: 15000 })
+      if (!(await route.evaluate((element) => element.open))) await route.locator('summary').first().click()
     }
     const row = page.locator(`details.resource-edit-section[data-resource="${CONNECTOR}"]`)
     await row.waitFor({ state: 'attached', timeout: 15000 })
