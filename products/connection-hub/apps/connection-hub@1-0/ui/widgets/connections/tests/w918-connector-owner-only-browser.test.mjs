@@ -11,7 +11,23 @@ import { launchBrowser, startFixtureServer } from './browser-fixture.mjs'
 const CONNECTOR = 'urn:connection-hub:remote-mcp:mcp_aaaaaaaaaaaaaaaaaaaaaaaa'
 const NOTE = "Only the Card's owner changes these."
 
-async function withEditor(t, viewer, run) {
+const BOARD = 'https://board.example.test/mcp/problem_board'
+const saves = (page) => page.evaluate(() => window.__calls
+  .filter((call) => call.operation === 'delegated_access_update').map((call) => call.data))
+
+/** Ticks one more board tool (a change this viewer may make), Saves, and returns the one Save request. */
+async function saveWithBoardChange(page) {
+  await page.evaluate(() => document.querySelectorAll('details').forEach((element) => { element.open = true }))
+  await page.locator('.tool-choice label.grant-chip[title="plan.item.list"]').click()
+  await page.getByRole('button', { name: 'Save', exact: true }).click()
+  await page.waitForFunction(() => window.__calls.some((call) => call.operation === 'delegated_access_update'),
+    null, { timeout: 10000 })
+  const sent = await saves(page)
+  assert.equal(sent.length, 1, 'exactly one Save request')
+  return sent[0]
+}
+
+async function withEditor(t, viewer, run, { link = false } = {}) {
   const browser = await launchBrowser()
   if (!browser) {
     t.skip('no Chromium available; set PLAYWRIGHT_CHROMIUM_EXECUTABLE to run the mounted W918 check')
@@ -26,10 +42,14 @@ async function withEditor(t, viewer, run) {
     ? route.fulfill({ status: 200, contentType: 'application/json', body: '{"csrf_required":false}' })
     : route.request().url().startsWith(origin) ? route.continue() : route.abort())
   try {
-    await page.goto(`${origin}tests/fixtures/w918-connector-owner-only.html?viewer=${viewer}`, { waitUntil: 'domcontentloaded' })
-    const edit = page.getByRole('button', { name: 'Edit', exact: true })
-    await edit.first().waitFor({ state: 'visible', timeout: 15000 })
-    await edit.first().click()
+    await page.goto(`${origin}tests/fixtures/w918-connector-owner-only.html?viewer=${viewer}${link ? '&link=1' : ''}`,
+      { waitUntil: 'domcontentloaded' })
+    if (!link) {
+      // A guided edit link opens the editor itself; otherwise open it.
+      const edit = page.getByRole('button', { name: 'Edit', exact: true })
+      await edit.first().waitFor({ state: 'visible', timeout: 15000 })
+      await edit.first().click()
+    }
     const row = page.locator(`details.resource-edit-section[data-resource="${CONNECTOR}"]`)
     await row.waitFor({ state: 'attached', timeout: 15000 })
     // Open the row (an existing resource starts collapsed).
@@ -66,4 +86,21 @@ test("the owner's own editor is unchanged", async (t) => {
     assert.equal(await row.locator('fieldset.resource-edit-section__body').evaluate((element) => element.disabled), false)
     assert.equal(await row.locator('.resource-edit-section__owner-only').count(), 0)
   })
+})
+
+test("a non-owner's Save of another change keeps the owner's connector exactly as held", async (t) => {
+  await withEditor(t, 'other', async ({ page }) => {
+    const body = await saveWithBoardChange(page)
+    assert.deepEqual(body.resource_grants[CONNECTOR], ['external_mcp:use'], 'the connector grant is kept')
+    assert.deepEqual(body.resource_operations[CONNECTOR], ['search'], 'the connector tools are kept')
+    assert.deepEqual([...body.resource_operations[BOARD]].sort(), ['plan.item.get', 'plan.item.list'])
+  })
+})
+
+test("a guided link naming the owner's connector seeds nothing for a non-owner", async (t) => {
+  await withEditor(t, 'other', async ({ page, row }) => {
+    assert.equal(await row.locator('.resource-edit-section__owner-only').count(), 1)
+    const body = await saveWithBoardChange(page)
+    assert.deepEqual(body.resource_operations[CONNECTOR], ['search'], 'the linked fetch was not added')
+  }, { link: true })
 })
