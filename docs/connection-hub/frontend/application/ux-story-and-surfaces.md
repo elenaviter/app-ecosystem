@@ -111,10 +111,13 @@ read every card.
   platform user id is not exactly the Card's `grantor_subject` (no alias is
   folded; an unknown viewer counts as not the owner), each connector row's
   grants, tools, "Accept update" and invocation choices are disabled. The
-  row's **Remove** stays, neither offer picker offers a connector, and one
-  line under the servers reads "Only the Card's owner changes these." The
-  owner's own editor is unchanged. A connector is recognised by the Hub's own
-  id namespace, `urn:connection-hub:remote-mcp:`.
+  row's **Remove** stays, neither offer picker offers a connector, and the
+  connector row itself reads "Only the Card's owner changes these." (on the
+  row, because another person's server is usually not in the viewer's own
+  catalog and then shows as a top-level row). The owner's own editor is
+  unchanged. A connector is recognised by the Hub's own id namespace,
+  `urn:connection-hub:remote-mcp:`. The editor only shows this rule; the Hub
+  enforces it on every Save whatever the editor sends.
 - **A permission appears only where it decides something.** The service
   permissions required by an operation live in the row's tooltip. The row
   names them only when the card does not carry one ("needs canvas:read"),

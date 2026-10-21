@@ -41,4 +41,8 @@ test('the editor disables a connector body for a non-owner, keeps Remove, and of
   const body = source.indexOf('className="resource-edit-section__body"')
   assert.ok(head > 0 && head < body)
   assert.equal(CONNECTORS_OWNER_ONLY_NOTE, "Only the Card's owner changes these.")
+  // The line is drawn on the connector row itself, not only under a recognised parent route.
+  const note = source.indexOf('className="resource-edit-section__owner-only"')
+  assert.ok(note > body, 'the note is inside the connector row body')
+  assert.doesNotMatch(source, /resource-selection-children__owner-only/)
 })

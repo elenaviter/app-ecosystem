@@ -4334,11 +4334,16 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
             }
           }}
         />
-        {/* W918: a viewer who is not the Card's owner keeps or removes a personal MCP server, never changes it. */}
+        {/* W918: a viewer who is not the Card's owner keeps or removes a personal MCP server, never changes it.
+            The line is on the connector row itself: another person's server is often not in this viewer's
+            catalog, so it may render as a top-level row rather than under "Your configured MCP servers". */}
         <fieldset
           className="resource-edit-section__body"
           disabled={isConnectorResource(resource) && connectorsOwnerOnly(item.grantor_subject, platformUserId)}
         >
+          {isConnectorResource(resource) && connectorsOwnerOnly(item.grantor_subject, platformUserId) ? (
+            <p className="resource-edit-section__owner-only" role="note">{CONNECTORS_OWNER_ONLY_NOTE}</p>
+          ) : null}
           {resource !== '*' && !isSelectionRoute ? (
             <div className="edit-section__head resource-address-head">
               <span className="edit-section__name">
@@ -4802,9 +4807,6 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
                     <strong>Your configured MCP servers</strong>
                     <InfoMark text={`${editResourceTitle(item, resource)} is the route to these servers. Each chosen server keeps its own exact permissions and tools on this card.`} />
                   </div>
-                  {ownerOnlyConnectors && children.some(isConnectorResource) ? (
-                    <p className="resource-selection-children__owner-only" role="note">{CONNECTORS_OWNER_ONLY_NOTE}</p>
-                  ) : null}
                   {children.map((child) => renderResourceState(child, resource))}
                   <ResourceOfferPicker
                     offers={ownerOnlyConnectors
