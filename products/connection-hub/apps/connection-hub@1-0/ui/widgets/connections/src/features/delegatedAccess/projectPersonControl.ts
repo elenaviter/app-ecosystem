@@ -107,6 +107,11 @@ export function projectPersonControlCoordinates(
     : null;
 }
 
+// The issuer kinds of a Control Card a project holds: "application" for the
+// project's own Control Card (as the board creates it), "project" for a
+// person's Control Card. The issuer_kind "operator" is not one of them.
+const PROJECT_CONTROL_ISSUER_KINDS = new Set(['application', 'project']);
+
 export interface LinkedControlOpenTarget {
   controlId: string;
   projectRef?: string;
@@ -123,8 +128,9 @@ export interface LinkedControlOpenTarget {
  *    as the signed-in person's own Card (`control_card_get` answers
  *    control_card_not_found for it). Without the person it fails closed.
  *  - Any other Card whose binding the project holds (an agent's Card under
- *    the project Control Card) is read through the project
- *    (`project_control_card_get`), so an admin who did not create that
+ *    the project Control Card: `issuer_ref` a work:project ref, `issuer_kind`
+ *    "application" as the board creates it, or "project") is read through the
+ *    project (`project_control_card_get`), so an admin who did not create that
  *    Control Card can open it too (W920).
  *  - Any other binding keeps `control_card_get`.
  *
@@ -136,15 +142,18 @@ export function linkedControlOpenTarget(
   const controlId = clean(binding.control_id);
   if (!controlId) return null;
   const projectRef = clean(binding.issuer_ref);
-  const projectHeld = clean(binding.issuer_kind) === 'project' && projectRef.startsWith('work:project:');
-  if (isMyCard(item) && clean(binding.issuer_kind) === 'project') {
+  const issuerKind = clean(binding.issuer_kind);
+  const projectScoped = projectRef.startsWith('work:project:');
+  if (isMyCard(item) && issuerKind === 'project') {
     const targetSubject = clean(item.grantor_subject);
-    return projectHeld && targetSubject ? { controlId, projectRef, targetSubject } : null;
+    return projectScoped && targetSubject ? { controlId, projectRef, targetSubject } : null;
   }
   // W920: any other Card bound under a project's Control Card (an agent's
   // Card) reads it through that project (`project_control_card_get`); only its
-  // creator would find it through `control_card_get`.
-  if (projectHeld) return { controlId, projectRef };
+  // creator would find it through `control_card_get`. The board creates a
+  // project's Control Card with issuer_kind "application" (person Controls are
+  // "project"), so the project ref, not the kind, says the project holds it.
+  if (projectScoped && PROJECT_CONTROL_ISSUER_KINDS.has(issuerKind)) return { controlId, projectRef };
   return { controlId };
 }
 

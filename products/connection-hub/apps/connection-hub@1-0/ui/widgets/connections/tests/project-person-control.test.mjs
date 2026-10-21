@@ -142,7 +142,9 @@ test('an agent Card under a project Control Card opens it through the project, n
   // Live 2026-10-21: an admin who did not create KDCube Maintenance's Control Card pressed
   // "Open KDCube Maintenance" on an agent Card and control_card_get answered control_card_not_found.
   const agentCard = { source: 'grant', issuer_kind: 'kdcube_agent_descriptor', issuer_ref: 'agent:x', grantor_subject: 'person-2' }
-  const binding = { control_id: 'control-project', issuer_ref: 'work:project:q', issuer_kind: 'project' }
+  // The real shape (live 2026-10-21): project_controls.py creates a project's Control Card without
+  // issuer_kind, so it is the gateway default "application"; #864 checked "project" and never fired.
+  const binding = { control_id: 'control-project', issuer_ref: 'work:project:q', issuer_kind: 'application' }
   const target = linkedControlOpenTarget(agentCard, binding)
   assert.deepEqual(target, { controlId: 'control-project', projectRef: 'work:project:q' })
   assert.deepEqual(controlCardGetRequest(target), {
@@ -169,4 +171,24 @@ test('a My Card names its project Control Card "Control Card", never an account 
   assert.match(panel, /const label = linkedControlOpenTarget\(item, binding\)\?\.targetSubject\s*\? 'Control Card'\s*: controlIssuerLabel\(binding, issuerViewer\);/)
   // The head then reads "Card composed with Control Card (AND)".
   assert.match(panel, /`Card composed with \$\{label\} \(\$\{mode\}\)`/)
+})
+
+test('only a project-held binding routes an agent Card through the project; operator and foreign refs keep control_card_get (W920)', () => {
+  const agentCard = { source: 'grant', issuer_kind: 'kdcube_agent_descriptor', issuer_ref: 'agent:x', grantor_subject: 'person-2' }
+  const cases = [
+    [{ issuer_kind: 'application', issuer_ref: 'work:project:q' }, 'project_control_card_get'],
+    [{ issuer_kind: 'project', issuer_ref: 'work:project:q' }, 'project_control_card_get'],
+    // An operator Card: issuer_kind "operator", issuer_ref "<operator ref>:<project ref>" (operator_cards.py).
+    [{ issuer_kind: 'operator', issuer_ref: 'problem-board-operator:work:project:q' }, 'control_card_get'],
+    [{ issuer_kind: 'operator', issuer_ref: 'work:project:q' }, 'control_card_get'],
+    [{ issuer_kind: 'application', issuer_ref: 'problem-board@1-0' }, 'control_card_get'],
+    [{ issuer_kind: '', issuer_ref: 'work:project:q' }, 'control_card_get'],
+  ]
+  for (const [fields, operation] of cases) {
+    const request = controlCardGetRequest(linkedControlOpenTarget(agentCard, { control_id: 'c', ...fields }))
+    assert.equal(request.operation, operation, JSON.stringify(fields))
+  }
+  // A person's My Card under an "application" binding is not a person Control: it is not routed as one.
+  const myCard = { source: 'project-person', issuer_kind: 'project-person', issuer_ref: 'work:project:q', grantor_subject: 'person-2' }
+  assert.equal(linkedControlOpenTarget(myCard, { control_id: 'c', issuer_ref: 'work:project:q', issuer_kind: 'application' }).targetSubject, undefined)
 })
