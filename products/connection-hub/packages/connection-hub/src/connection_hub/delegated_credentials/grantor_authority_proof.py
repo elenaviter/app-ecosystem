@@ -53,9 +53,18 @@ def _unb64(text: str) -> bytes:
     return base64.urlsafe_b64decode(text + "=" * (-len(text) % 4))
 
 
-def edit_digest(selection: Mapping[str, Any]) -> str:
-    """The exact edit a proof is bound to: the canonical selection the owner sent."""
-    return hashlib.sha256(_canonical(dict(selection or {}))).hexdigest()
+# The fields of an agent-Card edit a proof covers: the whole edit as forwarded, the catalog pin included.
+EDIT_FIELDS = ("selection", "accepted_operations", "expected_catalog_version", "invocation_modes", "label")
+
+
+def edit_of(carrier: Mapping[str, Any]) -> dict[str, Any]:
+    """The edit a forwarded body or a planned update carries, in one canonical shape."""
+    return {field: carrier[field] for field in EDIT_FIELDS if field in carrier}
+
+
+def edit_digest(edit: Mapping[str, Any]) -> str:
+    """The exact edit a proof is bound to."""
+    return hashlib.sha256(_canonical(dict(edit or {}))).hexdigest()
 
 
 def _key(secret: str) -> bytes:
@@ -92,7 +101,7 @@ class GrantorAuthority:
 
 
 def issue_grantor_proof(*, secret: str, user: Mapping[str, Any], grantor_subject: str, access_id: str,
-                        original_revision: int, request_id: str, selection: Mapping[str, Any],
+                        original_revision: int, request_id: str, edit: Mapping[str, Any],
                         now: int, ttl_seconds: int) -> str:
     """A proof for the owner's own Save. ``user`` is the Hub's authenticated session identity."""
     from connection_hub.authority_inventory import platform_identity_from_user
@@ -108,7 +117,7 @@ def issue_grantor_proof(*, secret: str, user: Mapping[str, Any], grantor_subject
     claims = {
         "schema": SCHEMA, "grantor_subject": grantor_subject, "access_id": access_id,
         "original_revision": original_revision, "request_id": request_id,
-        "edit_digest": edit_digest(selection),
+        "edit_digest": edit_digest(edit),
         "roles": sorted(set(identity.roles)),
         "permissions": sorted(set(identity.permissions)),
         "issued_at": now, "expires_at": now + ttl_seconds,
@@ -119,7 +128,7 @@ def issue_grantor_proof(*, secret: str, user: Mapping[str, Any], grantor_subject
 
 
 def verify_grantor_proof(token: Any, *, secret: str, now: int, grantor_subject: str, access_id: str,
-                         original_revision: int, request_id: str, selection: Mapping[str, Any]
+                         original_revision: int, request_id: str, edit: Mapping[str, Any]
                          ) -> GrantorAuthority:
     """The proof's claims, or ``card_grantor_proof_invalid``. Checked the same way at every phase."""
     key = _key(secret)
@@ -152,12 +161,12 @@ def verify_grantor_proof(token: Any, *, secret: str, now: int, grantor_subject: 
         raise GrantorProofError()
     if (authority.grantor_subject != grantor_subject or authority.access_id != access_id
             or authority.original_revision != original_revision or authority.request_id != request_id
-            or authority.edit_digest != edit_digest(selection)):
+            or authority.edit_digest != edit_digest(edit)):
         raise GrantorProofError()
     return authority
 
 
 __all__ = [
-    "GrantorAuthority", "GrantorProofError", "INVENTORY_UNAVAILABLE", "PROOF_INVALID",
-    "edit_digest", "issue_grantor_proof", "verify_grantor_proof",
+    "EDIT_FIELDS", "GrantorAuthority", "GrantorProofError", "INVENTORY_UNAVAILABLE", "PROOF_INVALID",
+    "edit_digest", "edit_of", "issue_grantor_proof", "verify_grantor_proof",
 ]

@@ -504,6 +504,13 @@ def retired_project_control(
     return dataclasses.replace(candidate, provenance=provenance)
 
 
+def _grantor_edit(raw: Mapping[str, Any]) -> dict[str, Any]:
+    """W918 H1: the edit an owner's authority proof must cover, read from the planned update itself."""
+    from .grantor_authority_proof import edit_of
+
+    return edit_of(raw)
+
+
 async def plan_card_lifecycle(
     host: Any,
     *,
@@ -1081,7 +1088,7 @@ async def plan_card_lifecycle(
                     composition_mode=raw.get("composition_mode"), label=raw.get("label"),
                     external_mcp_family=raw.get("external_mcp_family"),
                     invocation_modes=raw.get("invocation_modes"), grantor_proof=raw.get("grantor_proof"),
-                    load_live=load_live,
+                    grantor_edit=_grantor_edit(raw), load_live=load_live,
                     allow_unchanged=_carries_held_mode(original, raw))
                 members.append(built["member"])
                 originals[(subject_hash, access_id)] = original.to_dict()

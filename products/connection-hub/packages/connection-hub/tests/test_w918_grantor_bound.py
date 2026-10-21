@@ -116,7 +116,7 @@ async def test_without_a_grantor_bound_the_save_is_bounded_as_before():
 
 
 SECRET = "k" * 40
-SELECTION = {"resource_grants": {DOCS: ["docs:read"]}}
+SELECTION = {"selection": {"resource_grants": {DOCS: ["docs:read"]}}, "expected_catalog_version": "catalog-1"}
 
 
 def _card():
@@ -129,35 +129,36 @@ def _card():
 
 def _token(**over):
     args = dict(secret=SECRET, user=OWNER, grantor_subject="user:owner", access_id="agent-card",
-                original_revision=4, request_id="save-1", selection=SELECTION, now=1000, ttl_seconds=300)
+                original_revision=4, request_id="save-1", edit=SELECTION, now=1000, ttl_seconds=300)
     args.update(over)
     return issue_grantor_proof(**args)
 
 
-def _verify(proof, *, actor="user:owner", selection=SELECTION, now=1010, secret=SECRET):
+def _verify(proof, *, actor="user:owner", edit=SELECTION, now=1010, secret=SECRET, request_id="save-1"):
     return _verified_owner_authority(SimpleNamespace(_grantor_authority_secret=secret), _card(), proof,
-                                     selection=selection, actor_subject=actor, now=now)
+                                     edit=edit, actor_subject=actor, request_id=request_id, now=now)
 
 
 def test_the_planner_reads_the_owners_identity_from_a_valid_proof():
-    identity = _verify({"token": _token(), "business_request_id": "save-1"})
+    identity = _verify(_token())
     assert identity["user_id"] == "user:owner" and EDITOR in identity["roles"]
     assert _verify(None) is None
 
 
 @pytest.mark.parametrize("change", [
-    dict(actor="user:admin"), dict(selection={"resource_grants": {}}), dict(now=1300), dict(secret="z" * 40),
+    dict(actor="user:admin"), dict(edit={"selection": {}}), dict(now=1300), dict(secret="z" * 40),
+    # A proof made for another Save never verifies for this plan's own request (review, 18:08Z).
+    dict(request_id="another-save"),
+    dict(edit={**SELECTION, "expected_catalog_version": "catalog-2"}),
+    dict(edit={**SELECTION, "label": "renamed"}),
 ])
-def test_the_planner_refuses_a_proof_for_another_actor_edit_time_or_key(change):
+def test_the_planner_refuses_a_proof_for_another_actor_save_edit_catalog_time_or_key(change):
     with pytest.raises(DecisionRefused, match="card_grantor_proof_invalid"):
-        _verify({"token": _token(), "business_request_id": "save-1"}, **change)
+        _verify(_token(), **change)
 
 
 @pytest.mark.parametrize("proof", [
-    {"token": "x.y", "business_request_id": "save-1"},
-    {"token": None, "business_request_id": "save-1"},
-    {"token": "x"},
-    "not-a-mapping",
+    "x.y", "x", "", 7, {"token": "anything", "business_request_id": "save-1"},
 ])
 def test_the_planner_refuses_a_malformed_or_tampered_proof(proof):
     with pytest.raises(DecisionRefused):
@@ -166,7 +167,7 @@ def test_the_planner_refuses_a_malformed_or_tampered_proof(proof):
 
 def test_no_secret_means_no_proof_verifies():
     with pytest.raises(DecisionRefused, match="card_grantor_inventory_unavailable"):
-        _verify({"token": _token(), "business_request_id": "save-1"}, secret="")
+        _verify(_token(), secret="")
 
 
 @pytest.mark.asyncio
@@ -202,7 +203,7 @@ def test_the_hub_issues_a_proof_only_for_the_owners_own_agent_card_save():
 
     service = _service()
     record = _agent()
-    args = dict(record=record, kind="agent_card", revision=4, request_id="save-1", selection=SELECTION)
+    args = dict(record=record, kind="agent_card", revision=4, request_id="save-1", edit=SELECTION)
     assert service._owner_authority_proof(OWNER, **args) is None  # no secret configured: dormant
     service._grantor_authority_secret = SECRET
     assert service._owner_authority_proof({**OWNER, "user_id": "user:admin"}, **args) is None
@@ -212,7 +213,7 @@ def test_the_hub_issues_a_proof_only_for_the_owners_own_agent_card_save():
 
     authority = verify_grantor_proof(token, secret=SECRET, now=int(time.time()), grantor_subject="user:owner",
                                      access_id="agent-card", original_revision=4, request_id="save-1",
-                                     selection=SELECTION)
+                                     edit=SELECTION)
     assert EDITOR in authority.roles
 
 
@@ -234,6 +235,12 @@ def test_stage_fences_the_project_control_an_agent_cards_bound_used():
     with pytest.raises(CardVersionRefused):
         _agent_parent_reads(updates, cards, reads[1:])
     assert _agent_parent_reads([{**updates[0], "kind": "reselect"}], cards, reads) == []
+    # The W850 role follow of the agent Card itself is fenced too; a person's role change is not.
+    follow = {"kind": "role_selection", "subject_hash": "a" * 64, "access_id": "agent-card",
+              "target_subject": "agent-card"}
+    assert _agent_parent_reads([follow], cards, reads) == [
+        {"card": {"subject_hash": p_key[0], "access_id": "p-control"}, "version": 7}]
+    assert _agent_parent_reads([{**follow, "target_subject": "user:person"}], cards, reads) == []
 
 
 def test_stage_names_the_w918_planner_refusals():
@@ -241,3 +248,33 @@ def test_stage_names_the_w918_planner_refusals():
 
     for code in ("card_custom_mcp_owner_only", "card_grantor_inventory_unavailable", "card_grantor_proof_invalid"):
         assert code in version.REFUSALS and code in version._NAMED_PLANNER_REFUSALS
+
+
+def test_a_retried_save_with_a_fresh_proof_stages_the_same_edit():
+    from connection_hub.delegated_credentials.cards.participant_card_version import REQUEST_FIELDS, stage_digest
+
+    base = {name: None for name in REQUEST_FIELDS}
+    update = {"kind": "reselect_agent_card", "access_id": "agent-card", "selection": {"resource_grants": {}}}
+    first = {**base, "updates": [{**update, "grantor_proof": "first.proof"}], "request_echo": "a"}
+    retry = {**base, "updates": [{**update, "grantor_proof": "fresh.proof"}], "request_echo": "b"}
+    other = {**base, "updates": [{**update, "selection": {"resource_grants": {"x": ["y"]}},
+                                  "grantor_proof": "first.proof"}]}
+    assert stage_digest(first) == stage_digest(retry)
+    assert stage_digest(first) != stage_digest(other)
+
+
+def test_the_proof_covers_the_same_edit_on_both_sides():
+    from connection_hub.delegated_credentials.grantor_authority_proof import edit_of
+    from connection_hub.delegated_credentials.managed_card_edit_forward import managed_card_edit_body
+
+    body = managed_card_edit_body(
+        actor_subject="user:owner", project_ref="work:project:x", request_id="save-1", kind="agent_card",
+        principal_key="card:agent-card", original_revision=4, selection={"resource_grants": {DOCS: ["docs:read"]}},
+        access_id="agent-card", subject_hash="h" * 64, accepted_operations={DOCS: ["docs.search"]},
+        expected_catalog_version="catalog-1")
+    # What the board's link-only save puts on its reselect_agent_card update for the same edit.
+    planned = {"kind": "reselect_agent_card", "access_id": "agent-card", "subject_hash": "h" * 64,
+               "original_revision": 4, "selection": {"resource_grants": {DOCS: ["docs:read"]}},
+               "accepted_operations": {DOCS: ["docs.search"]}, "expected_catalog_version": "catalog-1",
+               "grantor_proof": "token"}
+    assert edit_of(body) == edit_of(planned)

@@ -13,20 +13,21 @@ from connection_hub.delegated_credentials.grantor_authority_proof import (
 
 SECRET = "s" * 40
 OWNER = {"user_id": "user:owner", "roles": ["kdcube:role:user", "docs:editor"], "permissions": ["docs.write"]}
-SELECTION = {"resource_grants": {"https://docs.example.test/mcp": ["docs:read"]}}
+SELECTION = {"selection": {"resource_grants": {"https://docs.example.test/mcp": ["docs:read"]}},
+             "expected_catalog_version": "catalog-7"}
 NOW = 1_800_000_000
 
 
 def issue(**over):
     args = dict(secret=SECRET, user=OWNER, grantor_subject="user:owner", access_id="agent-1", original_revision=4,
-                request_id="agent-card-save:abc", selection=SELECTION, now=NOW, ttl_seconds=300)
+                request_id="agent-card-save:abc", edit=SELECTION, now=NOW, ttl_seconds=300)
     args.update(over)
     return issue_grantor_proof(**args)
 
 
 def verify(token, **over):
     args = dict(secret=SECRET, now=NOW + 10, grantor_subject="user:owner", access_id="agent-1",
-                original_revision=4, request_id="agent-card-save:abc", selection=SELECTION)
+                original_revision=4, request_id="agent-card-save:abc", edit=SELECTION)
     args.update(over)
     return verify_grantor_proof(token, **args)
 
@@ -53,7 +54,8 @@ def test_no_secret_means_no_proof():
 
 @pytest.mark.parametrize("change", [
     dict(grantor_subject="user:other"), dict(access_id="agent-2"), dict(original_revision=5),
-    dict(request_id="agent-card-save:other"), dict(selection={"resource_grants": {}}),
+    dict(request_id="agent-card-save:other"), dict(edit={"selection": {}}),
+    dict(edit={**SELECTION, "expected_catalog_version": "catalog-8"}),
     dict(now=NOW + 300), dict(now=NOW - 1), dict(secret="t" * 40),
 ])
 def test_another_scope_an_expired_proof_or_another_key_is_refused(change):

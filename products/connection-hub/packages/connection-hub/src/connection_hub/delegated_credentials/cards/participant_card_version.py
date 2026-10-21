@@ -194,10 +194,17 @@ def stage_digest(data: Mapping[str, Any]) -> str:
     A retry of the same save (a fresh echo and nonce) has the same stage digest, so the store finds its own
     marker; a different edit under the same txn does not (stage_txn_conflict). The signed answer still
     binds the exact call through ``request_digest``.
+
+    W918 H1: an agent Card owner's ``grantor_proof`` is an attestation of the edit, not part of it: a retry
+    of the same Save carries the Hub's fresh proof, so the digest leaves it out. Every STAGE still verifies
+    the proof it receives against this edit.
     """
-    return sha256_hex(canonical_json_bytes({name: data[name] for name in REQUEST_FIELDS
-                                            if name not in ("schema", "op", "request_echo", "links",
-                                                            "compensation_at")}))
+    content = {name: data[name] for name in REQUEST_FIELDS
+               if name not in ("schema", "op", "request_echo", "links", "compensation_at")}
+    if isinstance(content.get("updates"), list):
+        content["updates"] = [{key: value for key, value in update.items() if key != "grantor_proof"}
+                              if isinstance(update, Mapping) else update for update in content["updates"]]
+    return sha256_hex(canonical_json_bytes(content))
 
 
 def _valid_stage(data: Mapping[str, Any]) -> bool:
@@ -326,8 +333,11 @@ def _agent_parent_reads(updates: Sequence[Mapping[str, Any]], cards: Sequence[Ma
     """
     from .store import subject_hash_for
 
+    # Every entrance that bounds an agent Card by P: its own edit, and its W850 role follow (a role_selection
+    # whose target is the agent Card itself; a person's role change targets the person and is not this).
     targets = {(update["subject_hash"], update["access_id"]) for update in updates
-               if update.get("kind") == "reselect_agent_card"}
+               if update.get("kind") == "reselect_agent_card"
+               or update.get("kind") == "role_selection" and update.get("target_subject") == update.get("access_id")}
     wanted = set()
     for card in cards:
         if (card["subject_hash"], card["access_id"]) not in targets:

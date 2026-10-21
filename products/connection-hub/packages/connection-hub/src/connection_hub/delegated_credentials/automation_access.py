@@ -2921,9 +2921,10 @@ class AutomationAccessService:
                 expected_catalog_version=changes.get("expected_catalog_version"),
                 composition_mode=composition_mode, label=label, invocation_modes=whole_modes,
                 external_mcp_family=external_mcp_family)
-            # W918 H1: the proof covers exactly the selection this body carries.
+            # W918 H1: the proof covers exactly the edit this body carries, its catalog pin included.
+            from .grantor_authority_proof import edit_of
             proof = self._owner_authority_proof(user, record=record, kind=kind, revision=revision,
-                                                request_id=request_id, selection=body["selection"])
+                                                request_id=request_id, edit=edit_of(body))
             if proof is not None:
                 body = {**body, "grantor_proof": proof}
             outcome = await forwarder.forward(body)
@@ -2935,7 +2936,7 @@ class AutomationAccessService:
                     "message": "The project did not save this change. Your draft is kept."})}
 
     def _owner_authority_proof(self, user: Mapping[str, Any], *, record: AutomationAccessRecord, kind: str,
-                               revision: int, request_id: str, selection: Mapping[str, Any]) -> str | None:
+                               revision: int, request_id: str, edit: Mapping[str, Any]) -> str | None:
         """W918 H1: a proof of the owner's own authority for their own agent-Card edit, else None.
 
         Issued only from the owner's authenticated session (its subject is the Card's grantor) and only
@@ -2950,7 +2951,7 @@ class AutomationAccessService:
             return issue_grantor_proof(
                 secret=secret, user=user, grantor_subject=record.grantor_subject,
                 access_id=record.access_id, original_revision=revision, request_id=request_id,
-                selection=selection, now=int(time.time()), ttl_seconds=GRANTOR_PROOF_TTL_SECONDS)
+                edit=edit, now=int(time.time()), ttl_seconds=GRANTOR_PROOF_TTL_SECONDS)
         except GrantorProofError:
             return None
 
