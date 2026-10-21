@@ -120,3 +120,20 @@ async def test_switch_only_screen_save_is_a_real_signed_forward():
     assert result["ok"] is True
     assert len(peer.calls) == 1
     assert peer.calls[0][2]["external_mcp_family"] == "on"
+
+
+async def test_or_control_cannot_replace_the_callers_connector_acceptance():
+    from connection_hub.delegated_credentials.catalog.descriptors import ResourceAcceptance
+
+    old = ResourceAcceptance(kind="remote_mcp", revision="1", digest="owner-old",
+                             grants=("external_mcp:use",), operations={"search": "old-tool"})
+    newer = ResourceAcceptance(kind="remote_mcp", revision="2", digest="control-new",
+                               grants=("external_mcp:use",), operations={"search": "new-tool"})
+    p = project_control("on", mode="or", selection=(CONNECTOR_A,))
+    p = dataclasses.replace(p, resource_grants={CONNECTOR_A: ("external_mcp:use",)},
+                            resource_acceptance={CONNECTOR_A: newer})
+    caller = dataclasses.replace(agent(p), grantor_subject=CREATOR, source="agent",
+                                 delegate_subject="integration:review",
+                                 resource_acceptance={CONNECTOR_A: old})
+    effective = await resolve(caller, [p])
+    assert effective.resource_acceptance[CONNECTOR_A] == old

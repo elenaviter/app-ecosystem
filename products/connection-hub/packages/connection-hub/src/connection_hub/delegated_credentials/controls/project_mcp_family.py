@@ -199,13 +199,19 @@ def _is_connector(resource: str) -> bool:
 
 
 def strip_connectors(card: CardAuthority) -> CardAuthority:
-    """The Card without any connector resource. On a project chain no Control's connector ever folds."""
-    if not any(_is_connector(r) for r in (*card.resource_grants, *card.resource_operations)):
+    """The Card without any connector authority or evidence (grants, tools, acceptance).
+
+    On a project chain no Control's connector ever folds, and no Control's
+    acceptance evidence can stand in for the caller's own.
+    """
+    acceptance = dict(card.resource_acceptance or {})
+    if not any(_is_connector(r) for r in (*card.resource_grants, *card.resource_operations, *acceptance)):
         return card
     return replace(
         card,
         resource_grants={r: g for r, g in card.resource_grants.items() if not _is_connector(r)},
         resource_operations={r: o for r, o in card.resource_operations.items() if not _is_connector(r)},
+        resource_acceptance={r: a for r, a in acceptance.items() if not _is_connector(r)},
     )
 
 
