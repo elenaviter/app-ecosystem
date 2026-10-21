@@ -122,6 +122,10 @@ export interface LinkedControlOpenTarget {
  *    through the project and the person (`project_person_control_get`), never
  *    as the signed-in person's own Card (`control_card_get` answers
  *    control_card_not_found for it). Without the person it fails closed.
+ *  - Any other Card whose binding the project holds (an agent's Card under
+ *    the project Control Card) is read through the project
+ *    (`project_control_card_get`), so an admin who did not create that
+ *    Control Card can open it too (W920).
  *  - Any other binding keeps `control_card_get`.
  *
  *  The displayed label or UUID never selects the Card. */
@@ -137,6 +141,10 @@ export function linkedControlOpenTarget(
     const targetSubject = clean(item.grantor_subject);
     return projectHeld && targetSubject ? { controlId, projectRef, targetSubject } : null;
   }
+  // W920: any other Card bound under a project's Control Card (an agent's
+  // Card) reads it through that project (`project_control_card_get`); only its
+  // creator would find it through `control_card_get`.
+  if (projectHeld) return { controlId, projectRef };
   return { controlId };
 }
 
