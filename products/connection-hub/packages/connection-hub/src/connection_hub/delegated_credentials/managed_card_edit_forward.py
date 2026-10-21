@@ -125,7 +125,9 @@ def managed_card_edit_body(*, actor_subject: str, project_ref: str, request_id: 
     W735: ``label`` (the Card's display name, not authority) travels only when it changes, as an exact,
     signed field; a rename alone is a real edit.
     W918: ``external_mcp_family`` (the project's External MCP switch, ``on``/``off``) travels only on a
-    project Control (P) edit that changes it, exactly like the access rule.
+    project Control (P) edit that changes it, exactly like the access rule. The forward adds
+    ``grantor_proof`` (W918 H1, the Hub-signed proof of the owner's own authority) to the owner's own
+    agent-Card body over exactly this ``selection``; the host relays it unchanged and cannot make one.
     """
     for value in (actor_subject, project_ref, request_id, principal_key):
         if type(value) is not str or not 0 < len(value) <= 256 or value != value.strip() or not value.isprintable():

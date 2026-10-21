@@ -1895,6 +1895,11 @@ async def _automation_access_service_for(
         ),
         invocation_policy_service=_invocation_policy_service(entrypoint),
         project_resource_families=_project_resource_families(connections),
+        # W918 H1: dormant until the deployment sets it (no proof is issued, and an
+        # addition only the owner can prove is refused card_grantor_inventory_unavailable).
+        grantor_authority_secret=await _bundle_secret_value(
+            entrypoint, secret_path="connections.delegated_credentials.grantor_authority_secret",
+            trace_scope="delegated_credentials.grantor_authority", warn_missing=False),
     )
     service.bind_issuer_registry(issuers, actor_subject=_platform_user_id(entrypoint))
     actor, classification, read_tenant, read_project = _protected_lifecycle_read_context(entrypoint)

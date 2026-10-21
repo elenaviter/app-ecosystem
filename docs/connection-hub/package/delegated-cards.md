@@ -1229,6 +1229,37 @@ last. If the final commit is interrupted, calls remain denied until the same
 change id is retried. This avoids a visible card grant with an absent or older
 usage policy.
 
+#### An agent Card under a project
+
+An agent attending a project has its Card bound under the project's Control
+P, and a Save is made by the project's own Card transaction. Its bound is
+split by resource:
+
+- **What the project governs** (the resources P lists) is bounded by the
+  project's own authorization, as for any project Card edit.
+- **Every other resource** is bounded by the Card owner's own authority.
+  The project host cannot know it, so Connection Hub proves it: when the
+  owner saves their own agent Card from their own authenticated session, the
+  Hub signs a short-lived *grantor proof* holding the owner's platform roles
+  and permissions, bound to that Card, its revision, the exact edit and the
+  Save's request, and adds it to the edit it forwards. The host relays it
+  unchanged and cannot make one. The planner verifies it against the stored
+  Card and the exact submitted edit before anything is staged, and checks
+  the other resources' grants against it. It states admission-time
+  authority: what the owner held when they saved.
+- **Without a proof** (an admin's Save, or a deployment that has not set the
+  signing secret), adding a grant outside what the project governs is refused
+  `card_grantor_inventory_unavailable`. Keeping or removing what the Card
+  already carries is not refused. A proof that does not verify, for another
+  actor or edit, expired or signed with another key, is refused
+  `card_grantor_proof_invalid`.
+
+The signing secret is Connection Hub's own,
+`connections.delegated_credentials.grantor_authority_secret` in the Hub's
+`bundles.secrets.yaml` (32 bytes or longer); it is never shared with a project
+host. Personal MCP connectors are further reserved to their owner: see
+[the External MCP switch](../custom-mcp-connector.md#36-in-a-project-the-external-mcp-switch).
+
 ### OAuth card
 
 `extend_client_access` merges a one-click extension or replaces one resource's

@@ -21,6 +21,8 @@ CARD_SAVE_CODES = frozenset({
     "agent_plan_target_invalid",
     "agent_plan_update_invalid",
     "card_custom_mcp_owner_only",  # W918: only the Card's owner adds or changes their MCP connectors
+    "card_grantor_inventory_unavailable",  # W918 H2: an addition only the Card's owner can prove
+    "card_grantor_proof_invalid",  # W918 H1: the owner's authority proof does not verify for this edit
     "card_group_control_read_missing",
     "card_group_member_duplicate",
     "card_group_too_large",
@@ -70,6 +72,7 @@ CARD_SAVE_CODES = frozenset({
     "card_plan_reset_display_moved",
     "card_plan_reset_not_held",
     "card_plan_reset_unchanged",
+    "card_plan_project_control_read_missing",  # W918 H2: the agent's project Control could not be read
     "card_plan_role_operation_unknown",
     "card_plan_role_unchanged",
     "card_plan_agent_follow_add_only",  # W850: an agent Card's role follow never removes
