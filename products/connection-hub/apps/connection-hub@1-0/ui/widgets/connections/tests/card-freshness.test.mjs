@@ -118,7 +118,8 @@ test('an edit link keeps its requested operation: it is added after the read see
   assert.equal(withLinkedOperation(seeded, undefined, 'op'), seeded)
   // In the panel the addition runs in beginEdit's continuation, never before it (EMain and Ops B1, 13:49).
   const link = panel.slice(panel.indexOf('if (accessCardFocusRequestsEdit(accessCardFocus)) {'), panel.indexOf('if (accessCardFocus.accountId) {'))
-  assert.match(link, /void beginEdit\(item\)\.then\(\(opened\) => \{\s+if \(opened\) setEditResourceOperations\(\(current\) => withLinkedOperation\(current, resource, outerOperation\)\);/)
+  // W918: the continuation also skips a change to another owner's personal MCP server (seedsForbiddenConnector).
+  assert.match(link, /void beginEdit\(item\)\.then\(\(opened\) => \{\s+if \(opened && !seedsForbiddenConnector\) \{\s+setEditResourceOperations\(\(current\) => withLinkedOperation\(current, resource, outerOperation\)\);/)
   assert.equal((link.match(/setEditResourceOperations/g) || []).length, 1)
 })
 
