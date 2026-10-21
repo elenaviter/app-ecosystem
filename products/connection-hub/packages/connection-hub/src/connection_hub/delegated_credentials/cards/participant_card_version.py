@@ -86,7 +86,15 @@ REFUSALS = {"txn_closed": 409, "txn_unknown": 404, "card_changed": 409, "stage_c
             "invocation_modes_invalid": 400, "invocation_policy_unavailable": 503,
             # W872 live (20:06Z): a policy whose earlier Card change is not settled yet is named as that, not as
             # card_changed, so the editor can say what blocked the Save.
-            "invocation_policy_earlier_change_undecided": 409}
+            "invocation_policy_earlier_change_undecided": 409,
+            # W918: an agent Card's save names why it was refused (operator: each refusal shows its named
+            # reason): a personal MCP server only its owner changes, an addition only its owner can prove,
+            # and an owner's authority proof that does not verify for this edit.
+            "card_custom_mcp_owner_only": 403, "card_grantor_inventory_unavailable": 409,
+            "card_grantor_proof_invalid": 409}
+# Planner refusals STAGE names as they are (fixed codes, no request content), instead of edit_invalid.
+_NAMED_PLANNER_REFUSALS = frozenset({"card_edit_admin_grant_role_only", "card_custom_mcp_owner_only",
+                                     "card_grantor_inventory_unavailable", "card_grantor_proof_invalid"})
 # Store codes PB sees under the contract's name: a txn staged under another scope or caller is out of scope.
 _ALIASES = {"txn_scope_mismatch": "request_scope_invalid"}
 _CARD_CHANGED = frozenset({"card_plan_original_revision_changed", "card_plan_update_target_absent",
@@ -186,10 +194,17 @@ def stage_digest(data: Mapping[str, Any]) -> str:
     A retry of the same save (a fresh echo and nonce) has the same stage digest, so the store finds its own
     marker; a different edit under the same txn does not (stage_txn_conflict). The signed answer still
     binds the exact call through ``request_digest``.
+
+    W918 H1: an agent Card owner's ``grantor_proof`` is an attestation of the edit, not part of it: a retry
+    of the same Save carries the Hub's fresh proof, so the digest leaves it out. Every STAGE still verifies
+    the proof it receives against this edit.
     """
-    return sha256_hex(canonical_json_bytes({name: data[name] for name in REQUEST_FIELDS
-                                            if name not in ("schema", "op", "request_echo", "links",
-                                                            "compensation_at")}))
+    content = {name: data[name] for name in REQUEST_FIELDS
+               if name not in ("schema", "op", "request_echo", "links", "compensation_at")}
+    if isinstance(content.get("updates"), list):
+        content["updates"] = [{key: value for key, value in update.items() if key != "grantor_proof"}
+                              if isinstance(update, Mapping) else update for update in content["updates"]]
+    return sha256_hex(canonical_json_bytes(content))
 
 
 def _valid_stage(data: Mapping[str, Any]) -> bool:
@@ -306,6 +321,37 @@ def _reset_reads(updates: Sequence[Mapping[str, Any]], plan_reads: Sequence[Mapp
              for read in plan_reads if (read.get("subject_hash"), read.get("access_id")) in wanted]
     if len(reads) != len(wanted):
         raise CardVersionRefused("edit_invalid")  # a reset whose Control the planner did not read: never unfenced
+    return reads
+
+
+def _agent_parent_reads(updates: Sequence[Mapping[str, Any]], cards: Sequence[Mapping[str, Any]],
+                        plan_reads: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    """W918 H2: the project Control an agent Card's bound was computed from, fenced like a reset's Control.
+
+    The planner bounds an agent Card's save by the resources its project Control P lists; P must not move
+    between PLAN and COMMIT unseen, so its exact read is a locked, fenced, never-written read member.
+    """
+    from .store import subject_hash_for
+
+    # Every entrance that bounds an agent Card by P: its own edit, and its W850 role follow (a role_selection
+    # whose target is the agent Card itself; a person's role change targets the person and is not this).
+    targets = {(update["subject_hash"], update["access_id"]) for update in updates
+               if update.get("kind") == "reselect_agent_card"
+               or update.get("kind") == "role_selection" and update.get("target_subject") == update.get("access_id")}
+    wanted = set()
+    for card in cards:
+        if (card["subject_hash"], card["access_id"]) not in targets:
+            continue
+        binding = (card.get("candidate") or {}).get("control_card")
+        if not isinstance(binding, Mapping):
+            raise CardVersionRefused("edit_invalid")
+        holder = str(binding.get("holder_subject") or "") or str(card["candidate"].get("grantor_subject") or "")
+        wanted.add((subject_hash_for(holder), str(binding.get("control_id") or "")))
+    reads = [{"card": {"subject_hash": read["subject_hash"], "access_id": read["access_id"]},
+              "version": read["revision"]}
+             for read in plan_reads if (read.get("subject_hash"), read.get("access_id")) in wanted]
+    if len(reads) != len(wanted):
+        raise CardVersionRefused("edit_invalid")  # an agent save whose P the planner did not read: never unfenced
     return reads
 
 
@@ -486,7 +532,7 @@ class CardVersionOperation:
             code = planned.get("error") if isinstance(planned, Mapping) else None
             if code in _CARD_CHANGED:
                 raise CardVersionRefused("card_changed")
-            if code == "card_edit_admin_grant_role_only":
+            if code in _NAMED_PLANNER_REFUSALS:
                 raise CardVersionRefused(code)
             if code == "card_plan_already_applied":
                 raise _AlreadyApplied
@@ -512,6 +558,9 @@ class CardVersionOperation:
         effects = await self._effects(cards, at=_at(data["at"]))
         effects.extend(await self._policy_effects(cards, data["updates"]))
         reads = _reset_reads(data["updates"], plan.get("reads") or ())
+        fenced = {(read["card"]["subject_hash"], read["card"]["access_id"]) for read in reads}
+        reads += [read for read in _agent_parent_reads(data["updates"], cards, plan.get("reads") or ())
+                  if (read["card"]["subject_hash"], read["card"]["access_id"]) not in fenced]
 
         async def prepare() -> None:
             for effect in effects:

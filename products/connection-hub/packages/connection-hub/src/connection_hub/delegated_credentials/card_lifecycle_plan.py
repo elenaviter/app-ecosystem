@@ -504,6 +504,13 @@ def retired_project_control(
     return dataclasses.replace(candidate, provenance=provenance)
 
 
+def _grantor_edit(raw: Mapping[str, Any]) -> dict[str, Any]:
+    """W918 H1: the edit an owner's authority proof must cover, read from the planned update itself."""
+    from .grantor_authority_proof import edit_of
+
+    return edit_of(raw)
+
+
 async def plan_card_lifecycle(
     host: Any,
     *,
@@ -951,7 +958,8 @@ async def plan_card_lifecycle(
                                    "selection", "profile", "resource", "display_digest", "control",
                                    "add_grants", "add_operations", "remove_operations", "operation_grants",
                                    "protected_grants", "accepted_operations", "expected_catalog_version",
-                                   "composition_mode", "label", "invocation_modes", "external_mcp_family"}
+                                   "composition_mode", "label", "invocation_modes", "external_mcp_family",
+                                   "grantor_proof"}
                     or ("selection" in raw) != (raw.get("kind") in {"reselect", "reselect_project_control",
                                                                     "reselect_agent_card",
                                                                     "reselect_invitation_control", "set_person_properties"})
@@ -960,6 +968,8 @@ async def plan_card_lifecycle(
                     or ("accepted_operations" in raw and "selection" not in raw)
                     or ("expected_catalog_version" in raw and "selection" not in raw)
                     or ("invocation_modes" in raw and raw.get("kind") not in {"reselect", "reselect_agent_card"})
+                    # W918 H1: the owner's own authority proof travels only with an agent Card's edit.
+                    or ("grantor_proof" in raw and raw.get("kind") != "reselect_agent_card")
                     # W742: the project access rule travels only on the project Control's own edit.
                     or ("composition_mode" in raw and (raw.get("kind") != "reselect_project_control"
                                                        or raw["composition_mode"] not in {"and", "or"}))
@@ -1077,7 +1087,8 @@ async def plan_card_lifecycle(
                     accepted_operations=raw.get("accepted_operations"),
                     composition_mode=raw.get("composition_mode"), label=raw.get("label"),
                     external_mcp_family=raw.get("external_mcp_family"),
-                    invocation_modes=raw.get("invocation_modes"),
+                    invocation_modes=raw.get("invocation_modes"), grantor_proof=raw.get("grantor_proof"),
+                    grantor_edit=_grantor_edit(raw), load_live=load_live,
                     allow_unchanged=_carries_held_mode(original, raw))
                 members.append(built["member"])
                 originals[(subject_hash, access_id)] = original.to_dict()
@@ -1117,7 +1128,7 @@ async def plan_card_lifecycle(
                         built = await build_managed_card_selection_update(
                             host, original=original, kind="agent_card", selection=selection, active=active,
                             decision=decision, project_ref=scope, actor_subject=actor, request_id=request_id,
-                            now=now)
+                            now=now, load_live=load_live)
                     except DecisionRefused as exc:
                         # An added operation the active catalog does not declare resolves away (W810).
                         if getattr(exc, "reason", str(exc)) != "card_plan_selection_unchanged":

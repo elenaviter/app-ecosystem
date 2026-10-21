@@ -91,12 +91,55 @@ def managed_target_kind(original: CardAuthority, *, project_ref: str, kind: str)
     raise _refuse("card_plan_update_scope_invalid")
 
 
+async def _governed_resources(load_live: Any, original: CardAuthority) -> tuple[str, ...]:
+    """The resources the agent's project governs: those its project Control P lists.
+
+    Read through the plan's own live read (once per plan). STAGE fences that exact read
+    (``participant_card_version._agent_parent_reads``), so a P edited before COMMIT refuses the save.
+    """
+    from .cards.store import subject_hash_for
+
+    binding = original.control_card
+    holder = str(binding.holder_subject or "") or original.grantor_subject
+    project = await load_live(subject_hash_for(holder), binding.control_id) if load_live is not None else None
+    if project is None:
+        raise _refuse("card_plan_project_control_read_missing")
+    return tuple(sorted(dict(project.resource_grants or {})))
+
+
+def _verified_owner_authority(host: Any, original: CardAuthority, grantor_proof: str | None, *,
+                              edit: Mapping[str, Any], actor_subject: str, request_id: str,
+                              now: int) -> dict[str, Any] | None:
+    """The owner's admission-time identity from a verified proof, or None when no proof was sent.
+
+    A proof is only ever the owner's own: it is refused for any other actor, and checked against the
+    stored Card (grantor, id, revision), this plan's own authorized request (the Save's request id, which
+    the decision also names), the exact planned edit with its catalog pin, its expiry (the planner's own
+    clock, at PLAN and again at STAGE) and the Hub's own key. Nothing beside the token is trusted.
+    """
+    from .grantor_authority_proof import GrantorProofError, verify_grantor_proof
+
+    if grantor_proof is None:
+        return None
+    if type(grantor_proof) is not str or actor_subject != original.grantor_subject:
+        raise _refuse("card_grantor_proof_invalid")
+    try:
+        authority = verify_grantor_proof(
+            grantor_proof, secret=getattr(host, "_grantor_authority_secret", "") or "", now=now,
+            grantor_subject=original.grantor_subject, access_id=original.access_id,
+            original_revision=original.card_revision, request_id=request_id, edit=edit)
+    except GrantorProofError as exc:
+        raise _refuse(exc.reason) from exc
+    return authority.identity()
+
+
 async def build_managed_card_selection_update(
     host: Any, *, original: CardAuthority, kind: str, selection: Mapping[str, Any], active: Any,
     decision: ProjectAuthorizationDecision, project_ref: str, actor_subject: str, request_id: str, now: int,
     accepted_operations: Mapping[str, Any] | None = None, composition_mode: str | None = None,
     label: str | None = None, allow_unchanged: bool = False, external_mcp_family: str | None = None,
-    invocation_modes: Mapping[str, Any] | None = None,
+    invocation_modes: Mapping[str, Any] | None = None, grantor_proof: str | None = None,
+    grantor_edit: Mapping[str, Any] | None = None, load_live: Any = None,
 ) -> dict[str, Any]:
     """One exact P or agent-Card update from a host-authorized selection, without a write (W723: and its acceptance).
 
@@ -124,6 +167,16 @@ async def build_managed_card_selection_update(
     for field in ("resource_grants", "resource_operations", "account_scope"):
         if field in selection and not isinstance(selection[field], Mapping):
             raise _refuse("card_plan_selection_invalid")
+    grantor_bound = None
+    if kind == "agent_card":
+        # W918 H2: the project bounds only what it governs (its own P's resources); every other
+        # resource is bounded by the owner's own proven authority, and is refused without it.
+        grantor_bound = {"governed": await _governed_resources(load_live, original),
+                         "authority": _verified_owner_authority(
+                             host, original, grantor_proof, edit=grantor_edit or {}, actor_subject=actor_subject,
+                             request_id=request_id, now=now)}
+    elif grantor_proof is not None:
+        raise _refuse("card_plan_selection_invalid")
     catalog_config = await host._catalog_config(active, owner_subject=original.grantor_subject)
     from .whole_card_save import normalize_selection
     selection = normalize_selection(original, selection, config=catalog_config)
@@ -137,6 +190,7 @@ async def build_managed_card_selection_update(
         account_scope=selection.get("account_scope", original.account_scope),
         properties=dict(original.properties or {}),
         _delegable_grants=decision.delegable_grants, _platform_admin=decision.platform_admin,
+        _grantor_bound=grantor_bound,
     )
     if resolved.error is not None:
         raise _refuse(str(resolved.error.get("error") or "card_plan_selection_invalid"))

@@ -272,6 +272,8 @@ AUTOMATION_CLIENT_PREFIX = "automation"
 AUTOMATION_ACCESS_DEFAULT_TTL_SECONDS = ACCESS_TOKEN_TTL_SECONDS
 ALL_RESOURCES_RESOURCE = "*"
 DELEGATED_SESSION_MAX_TTL_SECONDS = 7 * 24 * 3600
+# W918 H1: an owner's authority proof covers one Save's transaction window, never longer.
+GRANTOR_PROOF_TTL_SECONDS = 300
 
 AuthorityFactory = Callable[..., Any]
 NamedServiceDiscoveryFactory = Callable[..., Any]
@@ -1845,6 +1847,7 @@ class AutomationAccessService:
         issuer_registry: IssuerRegistry | None = None,
         issuer_actor_subject: str = "",
         project_resource_families: Any | None = None,
+        grantor_authority_secret: str = "",
     ) -> None:
         self._redis = redis
         self._tenant = _clean(tenant)
@@ -1852,6 +1855,8 @@ class AutomationAccessService:
         self._config = config
         # W918: this deployment's immutable External MCP family policy (None closes the gate).
         self._project_resource_families = project_resource_families
+        # W918 H1: signs the owner's own authority proof; empty leaves the proof dormant (none issued).
+        self._grantor_authority_secret = str(grantor_authority_secret or "")
         selected_backend = _clean(authority_backend).lower()
         if grant_store is None and selected_backend == AUTHORITY_BACKEND_POSTGRESQL:
             raise GrantStoreUnavailable(
@@ -2916,6 +2921,12 @@ class AutomationAccessService:
                 expected_catalog_version=changes.get("expected_catalog_version"),
                 composition_mode=composition_mode, label=label, invocation_modes=whole_modes,
                 external_mcp_family=external_mcp_family)
+            # W918 H1: the proof covers exactly the edit this body carries, its catalog pin included.
+            from .grantor_authority_proof import edit_of
+            proof = self._owner_authority_proof(user, record=record, kind=kind, revision=revision,
+                                                request_id=request_id, edit=edit_of(body))
+            if proof is not None:
+                body = {**body, "grantor_proof": proof}
             outcome = await forwarder.forward(body)
         except ManagedCardEditError as exc:
             return exc.to_dict()
@@ -2923,6 +2934,26 @@ class AutomationAccessService:
                 **({} if outcome["state"] == "committed" else {
                     "error": "managed_card_edit_" + outcome["state"], "status": 409,
                     "message": "The project did not save this change. Your draft is kept."})}
+
+    def _owner_authority_proof(self, user: Mapping[str, Any], *, record: AutomationAccessRecord, kind: str,
+                               revision: int, request_id: str, edit: Mapping[str, Any]) -> str | None:
+        """W918 H1: a proof of the owner's own authority for their own agent-Card edit, else None.
+
+        Issued only from the owner's authenticated session (its subject is the Card's grantor) and only
+        when the deployment configured the signing secret; it lives for one bounded transaction window.
+        """
+        from .grantor_authority_proof import GrantorProofError, issue_grantor_proof
+
+        secret = getattr(self, "_grantor_authority_secret", "")
+        if kind != "agent_card" or not secret or _subject_from_user(user) != record.grantor_subject:
+            return None
+        try:
+            return issue_grantor_proof(
+                secret=secret, user=user, grantor_subject=record.grantor_subject,
+                access_id=record.access_id, original_revision=revision, request_id=request_id,
+                edit=edit, now=int(time.time()), ttl_seconds=GRANTOR_PROOF_TTL_SECONDS)
+        except GrantorProofError:
+            return None
 
     async def _forward_managed_project_control(
         self, user: Mapping[str, Any], *, record: AutomationAccessRecord, request_id: str | None,
@@ -5374,8 +5405,17 @@ class AutomationAccessService:
         properties: Mapping[str, Any] | None,
         _delegable_grants: Iterable[str] | None = None,
         _platform_admin: bool | None = None,
+        _grantor_bound: Mapping[str, Any] | None = None,
     ) -> "ResolvedCardAuthority":
         """The authority a save writes, resolved once for every entrance.
+
+        ``_grantor_bound`` (W918 H2, with ``_delegable_grants``) splits the bound
+        by resource: ``governed`` resources are bounded by ``_delegable_grants``
+        (the project's own), every other resource by ``authority``, the Card
+        owner's admission-time platform identity from a verified grantor proof.
+        Without an ``authority`` a non-governed addition is refused
+        ``card_grantor_inventory_unavailable``; removals and carried grants follow
+        the carried rule below as before.
 
         Owns the decisions, not the record: selection resolution, catalog
         reconciliation, the delegability checks, the materialized boundary, and
@@ -5612,7 +5652,28 @@ class AutomationAccessService:
             if _delegable_grants is None
             else set(_as_list(_delegable_grants))
         )
-        denied = [grant for grant in selected_grants if grant not in delegable_grants]
+        # Grants refused only because no owner authority was proven (W918 H2).
+        unproven: set[str] = set()
+        if _delegable_grants is not None and _grantor_bound is not None:
+            governed = set(_as_list(_grantor_bound.get("governed") or ()))
+            owner = _grantor_bound.get("authority")
+            owner_grants = (
+                set((await self._available_inventory(
+                    owner, requested_grants=authority_grants, config=catalog_config,
+                )).grant_names())
+                if isinstance(owner, Mapping) else None
+            )
+            denied = []
+            for resource, grants in selected_resource_grants.items():
+                bound = delegable_grants if resource in governed else (owner_grants or set())
+                outside = [grant for grant in grants if grant not in bound]
+                if resource not in governed and owner_grants is None:
+                    unproven.update(outside)
+                denied.extend(outside)
+            denied = _as_list(denied)
+            delegable_grants = delegable_grants | (owner_grants or set())
+        else:
+            denied = [grant for grant in selected_grants if grant not in delegable_grants]
         if denied and _delegable_grants is not None:
             # A save bounded by its project host refuses only what it ADDS
             # beyond that bound (W296, 2026-09-26): a grant the stored Card
@@ -5635,6 +5696,13 @@ class AutomationAccessService:
                 for grant in denied
                 if grant not in carried or added is None or grant in added
             ]
+        if denied and unproven & set(denied):
+            return ResolvedCardAuthority(error={
+                "ok": False,
+                "error": "card_grantor_inventory_unavailable",
+                "grants": denied,
+                "message": "Only the Card's owner can add these, from their own session. Nothing was saved.",
+            })
         if denied:
             return ResolvedCardAuthority(error={
                 "ok": False,
