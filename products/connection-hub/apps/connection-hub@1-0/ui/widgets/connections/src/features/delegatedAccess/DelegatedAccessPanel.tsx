@@ -2541,8 +2541,14 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
         // W587: the requested operation is added only after beginEdit's read
         // seeded the draft; added before, the seed would drop it.
         const { resource, outerOperation } = accessCardFocus;
+        // W918: a link never seeds a change to another person's personal MCP server; it opens the Card to edit
+        // what this viewer may, with that connector read-only.
+        const seedsForbiddenConnector = isConnectorResource(resource)
+          && connectorsOwnerOnly(item.grantor_subject, platformUserId);
         void beginEdit(item).then((opened) => {
-          if (opened) setEditResourceOperations((current) => withLinkedOperation(current, resource, outerOperation));
+          if (opened && !seedsForbiddenConnector) {
+            setEditResourceOperations((current) => withLinkedOperation(current, resource, outerOperation));
+          }
         });
       }
     }
@@ -2565,6 +2571,7 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
     accounts,
     delegatedAccessLoading,
     beginEdit,
+    platformUserId,
   ]);
   useEffect(() => {
     // The Card is not in this person's own list: ask for it through the

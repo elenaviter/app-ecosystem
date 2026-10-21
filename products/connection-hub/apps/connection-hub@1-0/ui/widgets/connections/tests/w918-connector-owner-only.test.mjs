@@ -13,7 +13,12 @@ const CONNECTOR = 'urn:connection-hub:remote-mcp:mcp_aaaaaaaaaaaaaaaaaaaaaaaa'
 
 test('a connector is the Hub resource kind, by its stable id', () => {
   assert.equal(isConnectorResource(CONNECTOR), true)
-  for (const other of ['urn:connection-hub:remote-mcp:', 'https://board.example.test/mcp', '*', '', undefined]) {
+  // The same parse as the Hub's connector_id_from_resource: trimmed, id lower-cased, exact id shape.
+  assert.equal(isConnectorResource(`  ${CONNECTOR}  `), true)
+  assert.equal(isConnectorResource('urn:connection-hub:remote-mcp:MCP_AAAAAAAAAAAAAAAAAAAAAAAA'), true)
+  for (const other of ['urn:connection-hub:remote-mcp:', 'https://board.example.test/mcp', '*', '', undefined,
+    'urn:connection-hub:remote-mcp:mcp_short', 'urn:connection-hub:remote-mcp:mcp_aaaaaaaaaaaaaaaaaaaaaaaa/x',
+    'URN:connection-hub:remote-mcp:mcp_aaaaaaaaaaaaaaaaaaaaaaaa', 'urn:connection-hub:remote-mcp:other_aaaaaaaaaaaaaaaaaaaaaaaa']) {
     assert.equal(isConnectorResource(other), false, String(other))
   }
 })
@@ -45,4 +50,7 @@ test('the editor disables a connector body for a non-owner, keeps Remove, and of
   const note = source.indexOf('className="resource-edit-section__owner-only"')
   assert.ok(note > body, 'the note is inside the connector row body')
   assert.doesNotMatch(source, /resource-selection-children__owner-only/)
+  // A guided edit link never seeds a change to another person's connector.
+  assert.match(source, /const seedsForbiddenConnector = isConnectorResource\(resource\)\s*&& connectorsOwnerOnly\(item\.grantor_subject, platformUserId\)/)
+  assert.match(source, /if \(opened && !seedsForbiddenConnector\)/)
 })

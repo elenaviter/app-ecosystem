@@ -12,9 +12,15 @@ export const CONNECTOR_RESOURCE_PREFIX = 'urn:connection-hub:remote-mcp:';
 
 export const CONNECTORS_OWNER_ONLY_NOTE = 'Only the Card\'s owner changes these.';
 
+// The Hub's own connector id (remote_mcp.models: `mcp_` and 24 lower-case letters or digits).
+const CONNECTOR_ID = /^mcp_[a-z0-9]{24}$/;
+
+/** Whether a resource is a Hub connector, parsed exactly as the Hub does (connector_id_from_resource):
+ *  the trimmed value starts with the prefix and the rest, lower-cased, is a valid connector id. */
 export function isConnectorResource(resource: string | undefined): boolean {
-  const text = String(resource || '');
-  return text.startsWith(CONNECTOR_RESOURCE_PREFIX) && text.length > CONNECTOR_RESOURCE_PREFIX.length;
+  const text = String(resource || '').trim();
+  if (!text.startsWith(CONNECTOR_RESOURCE_PREFIX)) return false;
+  return CONNECTOR_ID.test(text.slice(CONNECTOR_RESOURCE_PREFIX.length).trim().toLowerCase());
 }
 
 /** Whether this viewer may only keep or remove the Card's connectors (not its grantor).
