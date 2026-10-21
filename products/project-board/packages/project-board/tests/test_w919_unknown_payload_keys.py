@@ -115,3 +115,25 @@ def test_every_mutation_example_in_the_catalog_passes_the_rule():
         payload = json.loads(match.group(1))
         unknown = [p for p in operation_call_problems(operation, "", payload) if p["problem"] == "unknown"]
         assert unknown == [], (operation, unknown)
+
+
+def test_every_mutation_accepts_the_idempotency_key():
+    # Review of e2439847 (claude-ops@spark1): the key is the transport's, read
+    # for outcome recovery and recorded by the board's ledger, on every
+    # mutation; 61 of 81 catalog entries do not list it.
+    for operation in sorted(PROBLEM_BOARD_OPERATION_SHAPES):
+        if operation_is_read(operation):
+            continue
+        unknown = [p for p in operation_call_problems(operation, "", {"idempotency_key": "k"}) if p["problem"] == "unknown"]
+        assert unknown == [], (operation, unknown)
+
+
+def test_review_assign_with_a_reason_names_what_the_board_would_drop():
+    # The reviewer's 2026-10-20 call: the board's review.assign reads work_ref,
+    # reviewer and integration, so reason and expected_revision were dropped silently.
+    payload = {"work_ref": WORK_REF, "reviewer": "w", "expected_revision": 3, "reason": "r", "idempotency_key": "k"}
+    fields = sorted(p["field"] for p in operation_call_problems("review.assign", PROJECT, payload) if p["problem"] == "unknown")
+    from project_board.contract.operation_shapes import operation_shape
+    described = set(operation_shape("review.assign")["payload"])
+    assert "idempotency_key" not in fields
+    assert set(fields) == {"expected_revision", "reason"} - described

@@ -1162,6 +1162,12 @@ _ACCEPTED_UNDESCRIBED_FIELDS: dict[str, frozenset[str]] = {
     "worker.restore": frozenset({"reason"}),
 }
 
+# The transport's own field: the client reads it for every mutation's outcome
+# recovery (relay.py, coordinate_recovery.mutation_idempotency_key) and the
+# board's ledger records it (W574), whether or not the operation's catalog
+# entry lists it. Agents retry under the same key, so it is never refused.
+_TRANSPORT_FIELDS: frozenset[str] = frozenset({"idempotency_key"})
+
 # Nested objects whose keys are closed too, with what the board accepts beyond
 # the catalog at that level: the service takes PLAN_ITEM_CHANGE_FIELDS and
 # "status" in changes (it then refuses a status change there itself).
@@ -1198,7 +1204,9 @@ def _unknown_key_problems(
             })
         return found
 
-    problems = unknown(payload, described, _ACCEPTED_UNDESCRIBED_FIELDS.get(operation, frozenset()), "")
+    problems = unknown(
+        payload, described, _ACCEPTED_UNDESCRIBED_FIELDS.get(operation, frozenset()) | _TRANSPORT_FIELDS, ""
+    )
     for where, extra in _CLOSED_OBJECTS.get(operation, {}).items():
         value: Any = payload
         shape: Any = described
