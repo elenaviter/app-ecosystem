@@ -327,3 +327,20 @@ def test_the_planner_sets_the_switch_only_on_the_project_control():
             asyncio.run(build_managed_card_selection_update(Host(), original=stored_p(), kind=kind, selection={},
                 active=None, decision=None, project_ref=PLAN_PROJECT, actor_subject="alice", request_id="plan-1",
                 now=1_800_000_000, external_mcp_family=value))
+
+
+async def test_the_effective_project_control_never_shows_a_connector():
+    from connection_hub.delegated_credentials.controls.hierarchy import compose_control_hierarchy
+
+    my, c, p, _ = person_chain("on", connectors=())
+    p = dataclasses.replace(p, composition_mode="or",
+                            resource_grants={**p.resource_grants, CONNECTOR_B: ("external_mcp:use",)},
+                            resource_operations={**p.resource_operations, CONNECTOR_B: ("search",)})
+    by = {(x.grantor_subject, x.access_id): x for x in (c, p)}
+
+    async def load_control(control_id, *, grantor_subject):
+        return by.get((grantor_subject, control_id))
+
+    hierarchy = await compose_control_hierarchy(my, load_control=load_control)
+    assert CONNECTOR_B not in hierarchy.effective_control_card.resource_grants
+    assert CONNECTOR_B not in hierarchy.effective_card.resource_grants

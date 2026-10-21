@@ -147,8 +147,9 @@ def _binds_project_control(child: CardAuthority, control: CardAuthority) -> str:
     if binding is None or binding.issuer_kind != _PROJECT_CONTROL_ISSUER_KIND:
         return ""
     project_ref = str(binding.issuer_ref or "").strip()
-    if (not project_ref or binding.control_id != control.access_id
-            or str(binding.holder_subject or "") != control.grantor_subject):
+    # An empty holder means P's own holder owns this Card (as attach writes it and the resolver reads it).
+    holder = str(binding.holder_subject or "").strip() or str(child.grantor_subject or "").strip()
+    if not project_ref or binding.control_id != control.access_id or holder != control.grantor_subject:
         return ""
     return project_ref if _is_project_control(control, project_ref) else ""
 
@@ -186,26 +187,33 @@ def project_family_gate(card: CardAuthority, dependencies: tuple[CardAuthority, 
     return True
 
 
+def _is_connector(resource: str) -> bool:
+    return bool(connector_id_from_resource(resource))
+
+
+def strip_connectors(card: CardAuthority) -> CardAuthority:
+    """The Card without any connector resource. On a project chain no Control's connector ever folds."""
+    if not any(_is_connector(r) for r in (*card.resource_grants, *card.resource_operations)):
+        return card
+    return replace(
+        card,
+        resource_grants={r: g for r, g in card.resource_grants.items() if not _is_connector(r)},
+        resource_operations={r: o for r, o in card.resource_operations.items() if not _is_connector(r)},
+    )
+
+
 def split_family_resources(card: CardAuthority, family: ProjectResourceFamily | None
                            ) -> tuple[CardAuthority, dict[str, tuple[str, ...]], dict[str, tuple[str, ...]]]:
-    """The card without its connector resources, and those resources' grants and operations."""
-    if family is None:
-        # No configured family: connectors are still separated so a Control
-        # never decides them by intersection; the gate then drops them.
-        matches = lambda resource: bool(connector_id_from_resource(resource))  # noqa: E731
-    else:
-        matches = family.matches
-    connectors = sorted(resource for resource in card.resource_grants if matches(resource))
-    if not connectors:
-        return card, {}, {}
-    grants = {r: tuple(card.resource_grants.get(r, ())) for r in connectors}
-    operations = {r: tuple(card.resource_operations.get(r, ())) for r in connectors}
-    rest = replace(
-        card,
-        resource_grants={r: g for r, g in card.resource_grants.items() if r not in grants},
-        resource_operations={r: o for r, o in card.resource_operations.items() if r not in grants},
-    )
-    return rest, grants, operations
+    """The card without ANY connector resource, and the caller's connectors the family can admit.
+
+    Every connector leaves the fold, whether or not the family matches it: a
+    connector outside the family is dropped, never folded by AND or OR.
+    """
+    connectors = sorted(r for r in card.resource_grants if _is_connector(r))
+    admissible = [r for r in connectors if family is not None and family.matches(r)]
+    grants = {r: tuple(card.resource_grants.get(r, ())) for r in admissible}
+    operations = {r: tuple(card.resource_operations.get(r, ())) for r in admissible}
+    return strip_connectors(card), grants, operations
 
 
 def admitted_family_resources(family: ProjectResourceFamily, grants: Mapping[str, tuple[str, ...]],
@@ -241,5 +249,6 @@ __all__ = [
     "configured_family",
     "project_family_gate",
     "split_family_resources",
+    "strip_connectors",
     "validate_family_property",
 ]

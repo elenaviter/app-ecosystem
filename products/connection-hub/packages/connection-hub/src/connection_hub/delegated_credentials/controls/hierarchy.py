@@ -18,7 +18,7 @@ from connection_hub.delegated_credentials.controls.project_person_composition im
     project_held_control,
 )
 from connection_hub.delegated_credentials.controls.project_mcp_family import (
-    admitted_family_resources, configured_family, project_family_gate, split_family_resources,
+    admitted_family_resources, configured_family, project_family_gate, split_family_resources, strip_connectors,
 )
 
 
@@ -75,7 +75,8 @@ def compose_resolved_control_hierarchy(
     else:
         family = configured_family()
         rest, connector_grants, connector_operations = split_family_resources(card, family)
-        effective = compose_subtree(rest, dependencies)
+        # No Control on a project chain contributes or folds a connector, whatever its mode (AND or OR).
+        effective = compose_subtree(rest, tuple(strip_connectors(control) for control in dependencies))
         if gate and family is not None and connector_grants:
             admitted_grants, admitted_operations = admitted_family_resources(
                 family, connector_grants, connector_operations)
@@ -84,7 +85,8 @@ def compose_resolved_control_hierarchy(
                 resource_grants={**effective.resource_grants, **admitted_grants},
                 resource_operations={**effective.resource_operations, **admitted_operations},
             )
-    effective_control = compose_subtree(dependencies[0], dependencies[1:]) if dependencies else None
+    folded = dependencies if gate is None else tuple(strip_connectors(control) for control in dependencies)
+    effective_control = compose_subtree(folded[0], folded[1:]) if folded else None
     return ControlHierarchy(effective, dependencies[0] if dependencies else None,
                             effective_control, dependencies)
 
