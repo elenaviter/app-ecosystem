@@ -385,3 +385,31 @@ def test_a_control_card_not_held_by_a_project_stays_editable_by_its_creator():
     opened = asyncio.run(service.control_card_get(creator, control_id=control_id))
     assert opened["access"]["resource_grants"][NAMED_RESOURCE] == ["named_services:use", "slack:read"]
     assert "viewer" not in opened, "no project read-only view on a Card no project holds"
+
+
+@pytest.mark.parametrize("via, can_edit", [("project_admin", True), ("project_member", False)])
+def test_a_non_creator_without_platform_roles_reads_the_project_control_card_only_through_the_project(via, can_edit):
+    # W920 (live 2026-10-21): "Open <project>" on an agent Card asked the creator-only path and an ordinary
+    # project admin got control_card_not_found. Reading must not depend on who created the Card, nor on a
+    # platform role: the project's answer alone lets this person in.
+    service, creator, control_id, resource = _real_card()
+    person = {"user_id": "plain-admin", "roles": ["kdcube:role:registered"], "permissions": []}
+    assert asyncio.run(service.control_card_get(person, control_id=control_id))["error"] == "control_card_not_found"
+
+    port = Port({"read": _allow(via, "read", {"control_id": control_id})})
+    opened = asyncio.run(ProjectControlCardAccess(service, port).get(person, control_id=control_id, project_ref=PROJECT))
+    assert opened["ok"] is True, opened
+    assert opened["access"]["access_id"] == control_id
+    assert opened["access"]["grantor_subject"] == CREATOR, "read under the creator's key, not the reader's"
+    assert opened["access"]["via"] == via and opened["access"]["can_edit"] is can_edit
+    # An editor is answered by the read alone; for a member the project is also asked about writing, and refuses.
+    assert [call["action"] for call in port.calls] == (["read"] if can_edit else ["read", "write"])
+
+
+def test_a_project_that_refuses_the_reader_opens_nothing_even_for_an_existing_card():
+    # The project path is the only door for a non-creator: a refusal is a refusal, never a creator-path fallback.
+    service, creator, control_id, resource = _real_card()
+    person = {"user_id": "outsider", "roles": ["kdcube:role:registered"], "permissions": []}
+    refused = asyncio.run(ProjectControlCardAccess(service, Port()).get(person, control_id=control_id, project_ref=PROJECT))
+    assert refused["ok"] is False and refused["error"] == "work_project_control_card_read_denied"
+    assert "access" not in refused and "control_card" not in refused
