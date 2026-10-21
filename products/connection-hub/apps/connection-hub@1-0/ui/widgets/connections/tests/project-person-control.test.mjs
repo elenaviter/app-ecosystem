@@ -124,18 +124,36 @@ test('a My Card link opens the person project Control Card through the project a
   assert.equal(isLinkedControlCard(null, target), false)
 })
 
-test('a My Card fails closed without a project ref or person; any other binding keeps control_card_get', () => {
+test('a My Card fails closed without a project ref or person; a non-project binding keeps control_card_get', () => {
   const myCard = { source: 'project-person', issuer_kind: 'project-person', issuer_ref: 'work:project:q', grantor_subject: 'person-2' }
   assert.equal(linkedControlOpenTarget({ ...myCard, grantor_subject: '' }, { control_id: 'c', issuer_ref: 'work:project:q', issuer_kind: 'project' }), null)
   assert.equal(linkedControlOpenTarget(myCard, { control_id: 'c', issuer_ref: '', issuer_kind: 'project' }), null)
   assert.equal(linkedControlOpenTarget(myCard, { control_id: 'c', issuer_ref: 'problem-board@1-0:project:q', issuer_kind: 'project' }), null)
-  // issuer_kind "project" on a Card that is not a My Card: unchanged, control_card_get.
+  // A "project" binding whose ref is not a work:project: ref is not project-held: control_card_get.
   const agentCard = { source: 'grant', issuer_kind: 'kdcube_agent_descriptor', issuer_ref: 'agent:x', grantor_subject: 'person-2' }
-  assert.deepEqual(controlCardGetRequest(linkedControlOpenTarget(agentCard, { control_id: 'control-project', issuer_ref: 'work:project:q', issuer_kind: 'project' })),
+  assert.deepEqual(controlCardGetRequest(linkedControlOpenTarget(agentCard, { control_id: 'control-project', issuer_ref: 'problem-board@1-0:project:q', issuer_kind: 'project' })),
     { operation: 'control_card_get', data: { control_id: 'control-project' } })
   const plain = { source: 'grant', issuer_kind: 'application', issuer_ref: 'app', grantor_subject: 'person-3' }
   assert.deepEqual(linkedControlOpenTarget(plain, { control_id: 'control-own', issuer_ref: 'app', issuer_kind: 'application' }), { controlId: 'control-own' })
   assert.equal(linkedControlOpenTarget(plain, { control_id: '  ', issuer_ref: 'x' }), null)
+})
+
+test('an agent Card under a project Control Card opens it through the project, not as its creator (W920)', () => {
+  // Live 2026-10-21: an admin who did not create KDCube Maintenance's Control Card pressed
+  // "Open KDCube Maintenance" on an agent Card and control_card_get answered control_card_not_found.
+  const agentCard = { source: 'grant', issuer_kind: 'kdcube_agent_descriptor', issuer_ref: 'agent:x', grantor_subject: 'person-2' }
+  const binding = { control_id: 'control-project', issuer_ref: 'work:project:q', issuer_kind: 'project' }
+  const target = linkedControlOpenTarget(agentCard, binding)
+  assert.deepEqual(target, { controlId: 'control-project', projectRef: 'work:project:q' })
+  assert.deepEqual(controlCardGetRequest(target), {
+    operation: 'project_control_card_get',
+    data: { control_id: 'control-project', project_ref: 'work:project:q' },
+  })
+  // No person is named, so the My Card label rule ("Control Card") does not apply to it.
+  assert.equal(target.targetSubject, undefined)
+  // The opened Card must still be exactly the one the binding names.
+  assert.equal(isLinkedControlCard({ access_id: 'control-project' }, target), true)
+  assert.equal(isLinkedControlCard({ access_id: 'another-control' }, target), false)
 })
 
 test('the panel opens the linked Card through the helper and refuses a mismatch', () => {
