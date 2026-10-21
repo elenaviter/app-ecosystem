@@ -363,6 +363,26 @@ export interface SaveProblem {
 }
 
 /** Everything that blocks Save, so the button can say why. */
+/** The operations an edit starts with on each resource the Card grants: that
+ *  resource's own `resource_operations` entry, or none. `resource_operations`
+ *  is the Card's operation authority; `operations` is only the union derived
+ *  from it (Connection Hub delegated-cards.md), so a resource without its own
+ *  entry selects nothing. W920/W921: Quickstart's project Control Card grants
+ *  `*` with no `*` entry, and seeding it from the union put the 94 board MCP
+ *  operations on `*`, where Save then listed them as missing application
+ *  operations. */
+export function seedEditResourceOperations(item: {
+  resource_grants?: Record<string, readonly string[]>;
+  resource_operations?: Record<string, readonly string[]>;
+}): Record<string, string[]> {
+  return Object.fromEntries(
+    Object.keys(item.resource_grants || {}).map((resource) => [
+      resource,
+      [...(item.resource_operations?.[resource] || [])],
+    ]),
+  );
+}
+
 export function saveProblems(input: {
   resourceKeys: string[];
   addedResources: string[];

@@ -410,3 +410,46 @@ test('a catalog template row is not drawn beside the concrete resource it govern
   assert.deepEqual([...catalogTemplateRows({ [concrete]: '' })], [])
   assert.deepEqual([...catalogTemplateRows({})], [])
 })
+
+// W921 (live 2026-10-21): Quickstart works' project Control Card grants `*` (the
+// application APIs) with no `*` entry in resource_operations; its operations union
+// is the board's MCP operations only. The editor seeded `*` from that union, and
+// Save listed every board operation as "no longer in the current catalog".
+test('a granted resource without its own operations starts with none, never the union (W921)', async () => {
+  const { seedEditResourceOperations } = await import('../src/features/delegatedAccess/resourceEditing.ts')
+  const { withManagedGrantsAsHeld } = await import('../src/features/delegatedAccess/managedGrants.ts')
+  const MCP = '*/api/integrations/bundles/*/*/problem-board@1-0/public/mcp/problem_board*'
+  const BOARD = ['assignment.assign', 'plan.item.update', 'workspace.shared_write.publish']
+  const APP = 'urn:kdcube:application-operation:kdcube-services%401-0:api.operations.post.telegram_send'
+  const quickstart = {
+    resource_grants: { '*': ['kdcube:role:super-admin'], [MCP]: ['work:coordinate'] },
+    resource_operations: { [MCP]: BOARD },
+    operations: BOARD,
+  }
+  const seeded = seedEditResourceOperations(quickstart)
+  assert.deepEqual(seeded, { '*': [], [MCP]: BOARD })
+
+  // Nothing on `*`, so the application catalog check has nothing to refuse.
+  const problems = saveProblems({
+    resourceKeys: ['*', MCP],
+    addedResources: [],
+    claimsFor: (resource) => quickstart.resource_grants[resource],
+    operationsFor: (resource) => seeded[resource] || [],
+    missingChoices: [],
+    applicationOperationCatalog: { resource: '*', status: 'ready', knownOperations: [APP] },
+  })
+  assert.deepEqual(problems.filter((problem) => problem.code === 'application_operation_unavailable'), [])
+
+  // What Save sends: the empty `*` list is dropped, so the stored map comes back unchanged.
+  assert.deepEqual(withManagedGrantsAsHeld(seeded, quickstart.resource_operations, () => new Set()), { [MCP]: BOARD })
+
+  // A Card with its own `*` list (KDCube Maintenance's shape) keeps exactly that list.
+  const maintenance = {
+    resource_grants: quickstart.resource_grants,
+    resource_operations: { '*': [APP], [MCP]: BOARD },
+    operations: [...BOARD, APP],
+  }
+  assert.deepEqual(seedEditResourceOperations(maintenance), { '*': [APP], [MCP]: BOARD })
+  // An operation the Card holds on a resource it no longer grants is not seeded.
+  assert.deepEqual(seedEditResourceOperations({ resource_grants: {}, resource_operations: { [MCP]: BOARD } }), {})
+})
