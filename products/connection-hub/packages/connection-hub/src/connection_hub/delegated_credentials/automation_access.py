@@ -8054,6 +8054,10 @@ class AutomationAccessService:
                          "expected_catalog_version": expected_catalog_version, "_screen_save": _screen_save,
                          "external_mcp_family": external_mcp_family})
             return forwarded if forwarded is not None else refused
+        if external_mcp_family is not None:
+            # W918: the switch is written only by the project's own transaction, never by a direct write.
+            return {"ok": False, "error": "external_mcp_family_requires_project_transaction", "status": 409,
+                    "message": "Only the project's own Control edit sets External MCP. Nothing was saved."}
         updated = await self.update_access(
             user,
             access_id=existing.access_id,

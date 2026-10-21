@@ -464,6 +464,12 @@ def _control_card_changes(payload: Mapping[str, Any]) -> Dict[str, Any]:
             if "accepted_operations" in payload
             else None
         ),
+        # W918: the project's External MCP switch; the Control-Card writer refuses it on any other Card.
+        "external_mcp_family": (
+            str(payload.get("external_mcp_family") or "").strip()
+            if "external_mcp_family" in payload
+            else None
+        ),
     }
 
 
