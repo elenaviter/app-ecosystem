@@ -90,6 +90,24 @@ export function findAccessCardFocus<T extends { access_id: string; source?: stri
   return candidates.find((candidate) => matchesAccessCardFocus(candidate, focus));
 }
 
+/** What a link's focus shows when its Card is no longer among the loaded
+ *  Cards. A Card opened through a project (W319) lives only in the one
+ *  focused slot, so opening its linked Control Card replaces it there. That
+ *  is the person moving on from the Card the link opened, not the Card
+ *  becoming invisible: the focus stays resolved (operator, 2026-10-21: "i
+ *  should be able to see. i also perfectly should be able to click on the
+ *  project card linked"). */
+export function unmatchedAccessCardFocusState({
+  loading,
+  movedToLinkedControl,
+}: {
+  loading: boolean;
+  movedToLinkedControl: boolean;
+}): 'loading' | 'resolved' | 'unavailable' {
+  if (loading) return 'loading';
+  return movedToLinkedControl ? 'resolved' : 'unavailable';
+}
+
 const MY_CARD_PREFIX = 'person-my-card-';
 
 /** The platform's request limit, in the words its gateway refuses with:

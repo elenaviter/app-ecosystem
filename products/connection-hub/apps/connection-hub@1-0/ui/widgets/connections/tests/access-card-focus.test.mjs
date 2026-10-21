@@ -148,3 +148,37 @@ test('W435: a refusal by the request limit says so, and claims nothing about the
   assert.equal(isRequestLimitRefusal('control_card_not_found'), false)
   assert.match(unavailableAccessCardMessage(request, 'control_card_not_found'), /does not exist or is not visible/)
 })
+
+// Live 2026-10-21 (operator, local Hub at 2a9815e5): a board link opened Yaroslav's agent Card through
+// KDCube Maintenance; "Open KDCube Maintenance" opened the project Control Card under a red "Card
+// unavailable. Card aut_55d0077e95c18b1e does not exist or is not visible to this account." The Control
+// Card replaced the agent Card in the one focused slot, and the link's focus then reported it missing.
+// Operator: "i should be able to see. i also perfectly should be able to click on the project card linked".
+test('opening the linked Control Card from a link-opened Card leaves no unavailable banner', async () => {
+  const { readFileSync } = await import('node:fs')
+  const { unmatchedAccessCardFocusState } = await import('../src/features/delegatedAccess/accessCardFocus.ts')
+  const link = focus({ access_id: 'aut_55d0077e95c18b1e', project_ref: 'work:project:kdcube-maintenance' })
+  const agentCard = { access_id: 'aut_55d0077e95c18b1e', source: 'grant' }
+  const controlCard = { access_id: 'control-d0cc151b', source: 'control' }
+
+  // The panel's own lookup: before the open the link finds its Card, after it only the Control Card is held.
+  assert.equal(findAccessCardFocus([agentCard], link), agentCard)
+  assert.equal(findAccessCardFocus([controlCard], link), undefined)
+
+  // After moving on to the linked Control Card, the link is done, not unavailable.
+  assert.equal(unmatchedAccessCardFocusState({ loading: false, movedToLinkedControl: true }), 'resolved')
+  // A Card the link never found is still reported, and a read in flight is still loading.
+  assert.equal(unmatchedAccessCardFocusState({ loading: false, movedToLinkedControl: false }), 'unavailable')
+  assert.equal(unmatchedAccessCardFocusState({ loading: true, movedToLinkedControl: true }), 'loading')
+
+  // The panel wires it: the open marks the Card before its read, and the focus effect asks the rule.
+  const panel = readFileSync(new URL('../src/features/delegatedAccess/DelegatedAccessPanel.tsx', import.meta.url), 'utf8')
+  const open = panel.slice(panel.indexOf('const openLinkedControlCard = async'))
+  assert.ok(open.indexOf('movedToLinkedControlFrom.current = item.access_id') > -1)
+  assert.ok(
+    open.indexOf('movedToLinkedControlFrom.current = item.access_id') < open.indexOf('dispatch(loadControlCard(target))'),
+    'the mark is set before the read whose answer replaces the Card',
+  )
+  assert.match(panel, /movedToLinkedControl: movedToLinkedControlFrom\.current === accessCardFocus\.accessId/)
+  assert.doesNotMatch(panel, /projectAgentCardPending\.current \? 'loading' : 'unavailable'/)
+})

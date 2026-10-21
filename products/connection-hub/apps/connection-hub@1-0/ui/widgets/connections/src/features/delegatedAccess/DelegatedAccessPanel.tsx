@@ -169,6 +169,7 @@ import {
   isBoardRestarting,
   isRequestLimitRefusal,
   unavailableAccessCardMessage,
+  unmatchedAccessCardFocusState,
 } from './accessCardFocus';
 import {
   CONTROL_OPEN_READ_SECONDS,
@@ -2437,6 +2438,9 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
   // W319: a project link to another person's agent Card, opened through the project.
   const projectAgentCardAttempt = useRef<string | null>(null);
   const projectAgentCardPending = useRef(false);
+  // The Card whose linked Control Card the person opened from it: that Control Card now holds the
+  // focused slot, so this Card's link is done, not unavailable.
+  const movedToLinkedControlFrom = useRef<string | null>(null);
   // W587: the focus a fresh server read has answered. A Control link always
   // reads the server, even when a copy is cached: another admin may have
   // saved since this tab loaded it, and only the read shows that revision.
@@ -2519,9 +2523,10 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
     const item = match && freshestCard(items, focusedCard, match.access_id);
     if (!item) {
       if (!accessCardFocus.controlOnly) {
-        setAccessCardFocusState(
-          delegatedAccessLoading || projectAgentCardPending.current ? 'loading' : 'unavailable',
-        );
+        setAccessCardFocusState(unmatchedAccessCardFocusState({
+          loading: delegatedAccessLoading || projectAgentCardPending.current,
+          movedToLinkedControl: movedToLinkedControlFrom.current === accessCardFocus.accessId,
+        }));
       }
       return;
     }
@@ -4973,6 +4978,8 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
     const target = linkedControlOpenTarget(item, binding);
     if (!target) return;
     setEditActionError('');
+    // Before the read: its answer replaces this Card in the focused slot as soon as it lands.
+    movedToLinkedControlFrom.current = item.access_id;
     try {
       const result = await dispatch(loadControlCard(target)).unwrap();
       if (!result.access || !isLinkedControlCard(result.access, target)) {
