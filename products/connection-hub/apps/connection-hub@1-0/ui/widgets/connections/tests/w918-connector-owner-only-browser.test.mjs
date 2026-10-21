@@ -27,7 +27,9 @@ async function saveWithBoardChange(page) {
   return sent[0]
 }
 
-async function withEditor(t, viewer, run, { link = false } = {}) {
+const ROUTE = 'https://host.test/api/integrations/bundles/t/p/connection-hub@1-0/public/mcp/remote_mcp_proxy'
+
+async function withEditor(t, viewer, run, { link = false, catalog = '' } = {}) {
   const browser = await launchBrowser()
   if (!browser) {
     t.skip('no Chromium available; set PLAYWRIGHT_CHROMIUM_EXECUTABLE to run the mounted W918 check')
@@ -42,7 +44,7 @@ async function withEditor(t, viewer, run, { link = false } = {}) {
     ? route.fulfill({ status: 200, contentType: 'application/json', body: '{"csrf_required":false}' })
     : route.request().url().startsWith(origin) ? route.continue() : route.abort())
   try {
-    await page.goto(`${origin}tests/fixtures/w918-connector-owner-only.html?viewer=${viewer}${link ? '&link=1' : ''}`,
+    await page.goto(`${origin}tests/fixtures/w918-connector-owner-only.html?viewer=${viewer}${link ? '&link=1' : ''}${catalog ? `&catalog=${catalog}` : ''}`,
       { waitUntil: 'domcontentloaded' })
     if (!link) {
       // A guided edit link opens the editor itself; otherwise open it.
@@ -118,4 +120,32 @@ test("a non-owner's unchanged Save goes through and keeps the owner's connector 
     assert.deepEqual(sent[0].resource_operations[CONNECTOR], ['search'], 'the connector tools are kept')
     assert.deepEqual(sent[0].resource_operations[BOARD], ['plan.item.get'], 'nothing else changed')
   })
+})
+
+test("under the MCP route, a non-owner's Save keeps the foreign connector A and the route, beside their own B", async (t) => {
+  // The viewer's catalog has the route with only the viewer's own connector B; the Card holds the route and the
+  // owner's connector A. Review (19:44Z): selection-route materialization must not drop A or the route.
+  await withEditor(t, 'other', async ({ page }) => {
+    await page.getByRole('button', { name: 'Save', exact: true }).click()
+    await page.waitForFunction(() => window.__calls.some((call) => call.operation === 'delegated_access_update'),
+      null, { timeout: 10000 })
+    const [body, ...more] = await saves(page)
+    assert.deepEqual(more, [], 'exactly one Save request')
+    assert.deepEqual(body.resource_grants[CONNECTOR], ['external_mcp:use'], 'A is kept')
+    assert.deepEqual(body.resource_operations[CONNECTOR], ['search'], "A's tools are kept")
+    assert.deepEqual(body.resource_grants[ROUTE], ['external_mcp:use'], 'the transport route is kept')
+    assert.equal('urn:connection-hub:remote-mcp:mcp_bbbbbbbbbbbbbbbbbbbbbbbb' in (body.resource_grants || {}), false,
+      'the viewer\'s own B is not added by a Save that did not choose it')
+  }, { catalog: 'route' })
+})
+
+test("with A in the viewer's catalog, A's real tool controls render and are all disabled for a non-owner", async (t) => {
+  await withEditor(t, 'other', async ({ row }) => {
+    const controls = row.locator('fieldset.resource-edit-section__body').locator('input, button, select, textarea')
+    assert.ok(await controls.count() > 0, "A's tool controls render")
+    for (let index = 0; index < await controls.count(); index += 1) {
+      assert.equal(await controls.nth(index).isDisabled(), true, `control ${index} is disabled`)
+    }
+    assert.equal((await row.locator('.resource-edit-section__owner-only').innerText()).trim(), NOTE)
+  }, { catalog: 'full' })
 })
