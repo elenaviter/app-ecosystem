@@ -104,3 +104,18 @@ test("a guided link naming the owner's connector seeds nothing for a non-owner",
     assert.deepEqual(body.resource_operations[CONNECTOR], ['search'], 'the linked fetch was not added')
   }, { link: true })
 })
+
+test("a non-owner's unchanged Save goes through and keeps the owner's connector as held", async (t) => {
+  await withEditor(t, 'other', async ({ page }) => {
+    const save = page.getByRole('button', { name: 'Save', exact: true })
+    assert.equal(await save.isEnabled(), true, 'a Save with no change is still offered (the whole Card travels)')
+    await save.click()
+    await page.waitForFunction(() => window.__calls.some((call) => call.operation === 'delegated_access_update'),
+      null, { timeout: 10000 })
+    const sent = await saves(page)
+    assert.equal(sent.length, 1, 'exactly one Save request')
+    assert.deepEqual(sent[0].resource_grants[CONNECTOR], ['external_mcp:use'], 'the connector grant is kept')
+    assert.deepEqual(sent[0].resource_operations[CONNECTOR], ['search'], 'the connector tools are kept')
+    assert.deepEqual(sent[0].resource_operations[BOARD], ['plan.item.get'], 'nothing else changed')
+  })
+})
