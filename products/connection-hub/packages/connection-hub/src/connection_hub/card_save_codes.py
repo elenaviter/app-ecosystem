@@ -20,6 +20,7 @@ CARD_SAVE_CODES = frozenset({
     "agent_plan_project_control_invalid",
     "agent_plan_target_invalid",
     "agent_plan_update_invalid",
+    "card_custom_mcp_owner_only",  # W918: only the Card's owner adds or changes their MCP connectors
     "card_group_control_read_missing",
     "card_group_member_duplicate",
     "card_group_too_large",
@@ -96,6 +97,7 @@ CARD_SAVE_CODES = frozenset({
     "catalog_digest",
     "catalog_version",
     "control_card_composition_mode_invalid",
+    "control_card_external_mcp_family_invalid",  # W918: the project's External MCP switch is on or off
     "control_card_initial_selection",
     "control_card_initial_selection_empty",
     "control_id",
