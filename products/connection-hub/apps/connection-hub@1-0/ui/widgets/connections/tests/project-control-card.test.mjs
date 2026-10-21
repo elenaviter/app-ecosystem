@@ -97,7 +97,8 @@ test("an agent Card's Open <project> reads and saves the project Control Card wh
   // control_card_not_found. The whole path must never depend on who created the Card.
   const { linkedControlOpenTarget } = await import('../src/features/delegatedAccess/projectPersonControl.ts')
   const agentCard = { source: 'grant', issuer_kind: 'kdcube_agent_descriptor', issuer_ref: 'agent:x', grantor_subject: 'agent-owner' }
-  const binding = { control_id: 'control-project', issuer_ref: PROJECT, issuer_kind: 'project' }
+  // The real shape: the board creates a project's Control Card with issuer_kind "application".
+  const binding = { control_id: 'control-project', issuer_ref: PROJECT, issuer_kind: 'application' }
 
   // 1. Open: the read goes through the project, never the creator-only path.
   const request = controlCardGetRequest(linkedControlOpenTarget(agentCard, binding))
