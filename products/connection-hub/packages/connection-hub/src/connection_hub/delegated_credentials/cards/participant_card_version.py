@@ -86,7 +86,15 @@ REFUSALS = {"txn_closed": 409, "txn_unknown": 404, "card_changed": 409, "stage_c
             "invocation_modes_invalid": 400, "invocation_policy_unavailable": 503,
             # W872 live (20:06Z): a policy whose earlier Card change is not settled yet is named as that, not as
             # card_changed, so the editor can say what blocked the Save.
-            "invocation_policy_earlier_change_undecided": 409}
+            "invocation_policy_earlier_change_undecided": 409,
+            # W918: an agent Card's save names why it was refused (operator: each refusal shows its named
+            # reason): a personal MCP server only its owner changes, an addition only its owner can prove,
+            # and an owner's authority proof that does not verify for this edit.
+            "card_custom_mcp_owner_only": 403, "card_grantor_inventory_unavailable": 409,
+            "card_grantor_proof_invalid": 409}
+# Planner refusals STAGE names as they are (fixed codes, no request content), instead of edit_invalid.
+_NAMED_PLANNER_REFUSALS = frozenset({"card_edit_admin_grant_role_only", "card_custom_mcp_owner_only",
+                                     "card_grantor_inventory_unavailable", "card_grantor_proof_invalid"})
 # Store codes PB sees under the contract's name: a txn staged under another scope or caller is out of scope.
 _ALIASES = {"txn_scope_mismatch": "request_scope_invalid"}
 _CARD_CHANGED = frozenset({"card_plan_original_revision_changed", "card_plan_update_target_absent",
@@ -514,7 +522,7 @@ class CardVersionOperation:
             code = planned.get("error") if isinstance(planned, Mapping) else None
             if code in _CARD_CHANGED:
                 raise CardVersionRefused("card_changed")
-            if code == "card_edit_admin_grant_role_only":
+            if code in _NAMED_PLANNER_REFUSALS:
                 raise CardVersionRefused(code)
             if code == "card_plan_already_applied":
                 raise _AlreadyApplied

@@ -234,3 +234,10 @@ def test_stage_fences_the_project_control_an_agent_cards_bound_used():
     with pytest.raises(CardVersionRefused):
         _agent_parent_reads(updates, cards, reads[1:])
     assert _agent_parent_reads([{**updates[0], "kind": "reselect"}], cards, reads) == []
+
+
+def test_stage_names_the_w918_planner_refusals():
+    from connection_hub.delegated_credentials.cards import participant_card_version as version
+
+    for code in ("card_custom_mcp_owner_only", "card_grantor_inventory_unavailable", "card_grantor_proof_invalid"):
+        assert code in version.REFUSALS and code in version._NAMED_PLANNER_REFUSALS
