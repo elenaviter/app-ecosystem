@@ -214,3 +214,23 @@ def test_the_hub_issues_a_proof_only_for_the_owners_own_agent_card_save():
                                      access_id="agent-card", original_revision=4, request_id="save-1",
                                      selection=SELECTION)
     assert EDITOR in authority.roles
+
+
+def test_stage_fences_the_project_control_an_agent_cards_bound_used():
+    from connection_hub.delegated_credentials.cards.participant_card_version import (
+        CardVersionRefused, _agent_parent_reads,
+    )
+    from connection_hub.delegated_credentials.cards.store import subject_hash_for
+
+    p_key = (subject_hash_for("user:owner"), "p-control")
+    updates = [{"kind": "reselect_agent_card", "subject_hash": "a" * 64, "access_id": "agent-card"}]
+    cards = [{"subject_hash": "a" * 64, "access_id": "agent-card", "candidate": {
+        "grantor_subject": "user:owner", "control_card": {"control_id": "p-control", "holder_subject": ""}}}]
+    reads = [{"subject_hash": p_key[0], "access_id": "p-control", "revision": 7},
+             {"subject_hash": "x" * 64, "access_id": "other", "revision": 1}]
+    assert _agent_parent_reads(updates, cards, reads) == [
+        {"card": {"subject_hash": p_key[0], "access_id": "p-control"}, "version": 7}]
+    # A plan that never read P cannot stage unfenced; other kinds add nothing.
+    with pytest.raises(CardVersionRefused):
+        _agent_parent_reads(updates, cards, reads[1:])
+    assert _agent_parent_reads([{**updates[0], "kind": "reselect"}], cards, reads) == []

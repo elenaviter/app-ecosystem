@@ -94,8 +94,8 @@ def managed_target_kind(original: CardAuthority, *, project_ref: str, kind: str)
 async def _governed_resources(load_live: Any, original: CardAuthority) -> tuple[str, ...]:
     """The resources the agent's project governs: those its project Control P lists.
 
-    Read through the plan's own live read, so P is read once per plan and its revision is held
-    by the decision like every other read: a P edited before COMMIT refuses this plan.
+    Read through the plan's own live read (once per plan). STAGE fences that exact read
+    (``participant_card_version._agent_parent_reads``), so a P edited before COMMIT refuses the save.
     """
     from .cards.store import subject_hash_for
 

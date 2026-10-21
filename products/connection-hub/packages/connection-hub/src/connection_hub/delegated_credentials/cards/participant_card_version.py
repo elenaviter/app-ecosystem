@@ -309,6 +309,34 @@ def _reset_reads(updates: Sequence[Mapping[str, Any]], plan_reads: Sequence[Mapp
     return reads
 
 
+def _agent_parent_reads(updates: Sequence[Mapping[str, Any]], cards: Sequence[Mapping[str, Any]],
+                        plan_reads: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    """W918 H2: the project Control an agent Card's bound was computed from, fenced like a reset's Control.
+
+    The planner bounds an agent Card's save by the resources its project Control P lists; P must not move
+    between PLAN and COMMIT unseen, so its exact read is a locked, fenced, never-written read member.
+    """
+    from .store import subject_hash_for
+
+    targets = {(update["subject_hash"], update["access_id"]) for update in updates
+               if update.get("kind") == "reselect_agent_card"}
+    wanted = set()
+    for card in cards:
+        if (card["subject_hash"], card["access_id"]) not in targets:
+            continue
+        binding = (card.get("candidate") or {}).get("control_card")
+        if not isinstance(binding, Mapping):
+            raise CardVersionRefused("edit_invalid")
+        holder = str(binding.get("holder_subject") or "") or str(card["candidate"].get("grantor_subject") or "")
+        wanted.add((subject_hash_for(holder), str(binding.get("control_id") or "")))
+    reads = [{"card": {"subject_hash": read["subject_hash"], "access_id": read["access_id"]},
+              "version": read["revision"]}
+             for read in plan_reads if (read.get("subject_hash"), read.get("access_id")) in wanted]
+    if len(reads) != len(wanted):
+        raise CardVersionRefused("edit_invalid")  # an agent save whose P the planner did not read: never unfenced
+    return reads
+
+
 def invitation_seed_evidence(creations: list[Mapping[str, Any]]) -> tuple[list[Mapping[str, Any]], dict[str, dict]]:
     """W746: a join's person Control seeded from an invitation names the redeemer's verified email digest.
 
@@ -512,6 +540,9 @@ class CardVersionOperation:
         effects = await self._effects(cards, at=_at(data["at"]))
         effects.extend(await self._policy_effects(cards, data["updates"]))
         reads = _reset_reads(data["updates"], plan.get("reads") or ())
+        fenced = {(read["card"]["subject_hash"], read["card"]["access_id"]) for read in reads}
+        reads += [read for read in _agent_parent_reads(data["updates"], cards, plan.get("reads") or ())
+                  if (read["card"]["subject_hash"], read["card"]["access_id"]) not in fenced]
 
         async def prepare() -> None:
             for effect in effects:

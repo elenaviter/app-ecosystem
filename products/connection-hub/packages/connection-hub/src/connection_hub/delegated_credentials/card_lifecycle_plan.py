@@ -1121,7 +1121,7 @@ async def plan_card_lifecycle(
                         built = await build_managed_card_selection_update(
                             host, original=original, kind="agent_card", selection=selection, active=active,
                             decision=decision, project_ref=scope, actor_subject=actor, request_id=request_id,
-                            now=now)
+                            now=now, load_live=load_live)
                     except DecisionRefused as exc:
                         # An added operation the active catalog does not declare resolves away (W810).
                         if getattr(exc, "reason", str(exc)) != "card_plan_selection_unchanged":
