@@ -4799,7 +4799,7 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
                 && (children.length || childOffers.length) ? (
                 <div className="resource-selection-children">
                   <div className="resource-selection-children__head">
-                    <strong>{ownerOnlyConnectors ? 'Configured MCP servers' : 'Your configured MCP servers'}</strong>
+                    <strong>Your configured MCP servers</strong>
                     <InfoMark text={`${editResourceTitle(item, resource)} is the route to these servers. Each chosen server keeps its own exact permissions and tools on this card.`} />
                   </div>
                   {ownerOnlyConnectors && children.some(isConnectorResource) ? (

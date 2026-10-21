@@ -87,8 +87,7 @@ test('viewport-bound widget and access-map panel own their sizing', () => {
 test('access-card tools are visible and selection doors group their services', () => {
   const panel = source('src/features/delegatedAccess/DelegatedAccessPanel.tsx')
   assert.match(panel, /resourceSelectionIndex\(createResources\)/)
-  // W918: the owner reads "Your configured MCP servers"; anyone else reads "Configured MCP servers".
-  assert.match(panel, /ownerOnlyConnectors \? 'Configured MCP servers' : 'Your configured MCP servers'/)
+  assert.match(panel, />Your configured MCP servers</)
   assert.match(panel, /title="Add an MCP server"/)
   assert.match(panel, /className=\{isSelectionFamily \? 'resource-selection-family' : 'resource-family'\}/)
   assert.match(panel, /resourceLabelFor\(resource\)[\s\S]{0,120}doorAlias\(resource\)/)
