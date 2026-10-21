@@ -1,4 +1,5 @@
 import { FormEvent, Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { CONNECTORS_OWNER_ONLY_NOTE, connectorsOwnerOnly, isConnectorResource } from './connectorOwnership';
 import { useAppDispatch, useAppSelector } from '../../app/hooks';
 import { PaneGroup } from '../../components/Pane';
 import { CopyButton, DoorRef } from '../../components/CopyControls';
@@ -4333,7 +4334,11 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
             }
           }}
         />
-        <div className="resource-edit-section__body">
+        {/* W918: a viewer who is not the Card's owner keeps or removes a personal MCP server, never changes it. */}
+        <fieldset
+          className="resource-edit-section__body"
+          disabled={isConnectorResource(resource) && connectorsOwnerOnly(item.grantor_subject, platformUserId)}
+        >
           {resource !== '*' && !isSelectionRoute ? (
             <div className="edit-section__head resource-address-head">
               <span className="edit-section__name">
@@ -4699,7 +4704,7 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
             }))}
           />
           ) : null}
-        </div>
+        </fieldset>
       </details>
     );
   };
@@ -4751,6 +4756,8 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
       (offer) => !childOfferResources.has(catalogRow(offer.resource))
         && !resourceFamilyRoots.has(offer.resource),
     );
+    // W918: only the Card's owner adds a personal MCP server; others may keep or remove one.
+    const ownerOnlyConnectors = connectorsOwnerOnly(item.grantor_subject, platformUserId);
     const renderResourceState = (resource: string, parent = '') => (
       editRemovedResources.includes(resource) ? (
         <RemovedResourceStub
@@ -4792,12 +4799,16 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
                 && (children.length || childOffers.length) ? (
                 <div className="resource-selection-children">
                   <div className="resource-selection-children__head">
-                    <strong>Your configured MCP servers</strong>
+                    <strong>{ownerOnlyConnectors ? 'Configured MCP servers' : 'Your configured MCP servers'}</strong>
                     <InfoMark text={`${editResourceTitle(item, resource)} is the route to these servers. Each chosen server keeps its own exact permissions and tools on this card.`} />
                   </div>
+                  {ownerOnlyConnectors && children.some(isConnectorResource) ? (
+                    <p className="resource-selection-children__owner-only" role="note">{CONNECTORS_OWNER_ONLY_NOTE}</p>
+                  ) : null}
                   {children.map((child) => renderResourceState(child, resource))}
                   <ResourceOfferPicker
-                    offers={childOffers}
+                    offers={ownerOnlyConnectors
+                      ? childOffers.filter((offer) => !isConnectorResource(offer.resource)) : childOffers}
                     added={Array.from(new Set([
                       ...editAddedResources,
                       ...(composition?.mode === 'or' ? authorityResourceKeys(composition.control) : []),
@@ -4814,7 +4825,8 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
           );
         })}
         <ResourceOfferPicker
-          offers={topLevelOffers}
+          offers={ownerOnlyConnectors
+            ? topLevelOffers.filter((offer) => !isConnectorResource(offer.resource)) : topLevelOffers}
           added={Array.from(new Set([
             ...editAddedResources,
             ...(composition?.mode === 'or' ? authorityResourceKeys(composition.control) : []),
