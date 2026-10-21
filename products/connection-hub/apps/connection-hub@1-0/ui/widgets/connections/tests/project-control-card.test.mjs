@@ -90,3 +90,27 @@ test('a Card from the creator path carries no project route', () => {
   assert.equal(projectControlCardUpdateTarget({ access_id: 'control-own', source: 'control' }), null)
   assert.equal(projectControlCardReadOnly({ access_id: 'control-own', source: 'control' }), false)
 })
+
+test("an agent Card's Open <project> reads and saves the project Control Card whoever created it (W920)", async () => {
+  // Live 2026-10-21: an admin who did not create KDCube Maintenance's Control Card pressed
+  // "Open KDCube Maintenance" on an agent Card; the creator-only control_card_get answered
+  // control_card_not_found. The whole path must never depend on who created the Card.
+  const { linkedControlOpenTarget } = await import('../src/features/delegatedAccess/projectPersonControl.ts')
+  const agentCard = { source: 'grant', issuer_kind: 'kdcube_agent_descriptor', issuer_ref: 'agent:x', grantor_subject: 'agent-owner' }
+  const binding = { control_id: 'control-project', issuer_ref: PROJECT, issuer_kind: 'project' }
+
+  // 1. Open: the read goes through the project, never the creator-only path.
+  const request = controlCardGetRequest(linkedControlOpenTarget(agentCard, binding))
+  assert.equal(request.operation, 'project_control_card_get')
+  assert.deepEqual(request.data, { control_id: 'control-project', project_ref: PROJECT })
+
+  // 2. Each non-creator role the project answers keeps the project route; only an editor may save.
+  for (const [via, canEdit] of [['project_admin', true], ['project_member', false]]) {
+    const record = projectControlCardRecord({
+      access_id: 'control-project', source: 'control', via, can_edit: canEdit, project_ref: PROJECT,
+    })
+    assert.equal(projectControlCardReadOnly(record), !canEdit, via)
+    // 3. Save: back through the project with the same Card, never as the creator's own Card.
+    assert.deepEqual(projectControlCardUpdateTarget(record), { controlId: 'control-project', projectRef: PROJECT }, via)
+  }
+})
