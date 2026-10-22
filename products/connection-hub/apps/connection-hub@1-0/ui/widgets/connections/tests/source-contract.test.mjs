@@ -170,8 +170,9 @@ test('an exact Control Card reuses the Card editor without joining the agent-car
   assert.match(panel, /<CopyButton value=\{record\.issuer_ref\} label="Copy issuer reference" \/>/)
   // W424: the linked Card is read through whoever holds it and opened only when it is the bound one.
   assert.match(panel, /dispatch\(loadControlCard\(target\)\)\.unwrap\(\)/)
-  assert.match(panel, /if \(!result\.access \|\| !isLinkedControlCard\(result\.access, target\)\) \{/)
-  assert.match(panel, /switchEdit\(result\.access\)/)
+  // #871: the outcome helper checks the bound Card; the panel switches only to what it verified.
+  assert.match(source('src/features/delegatedAccess/accessCardFocus.ts'), /if \(!answer\.access \|\| !isLinkedControlCard\(answer\.access, target\)\) \{/)
+  assert.match(panel, /if \(outcome\.open\) switchEdit\(outcome\.open\)/)
   assert.doesNotMatch(panel, /<a href=\{binding\.manage_url\}/)
   assert.match(panel, /Revoke/)
   assert.match(panel, /compositionMode: item\.source === 'control'/)

@@ -142,6 +142,7 @@ import {
   createDelegatedAccess,
   grantAgentAccess,
   loadControlCard,
+  restoreFocusedCard,
   retireControlReads,
   loadDelegatedAccess,
   renewDelegatedAccess,
@@ -169,6 +170,9 @@ import {
   isBoardRestarting,
   isRequestLimitRefusal,
   unavailableAccessCardMessage,
+  linkedControlOpenOutcome,
+  type LinkedControlSwitch,
+  unmatchedAccessCardFocusState,
 } from './accessCardFocus';
 import {
   CONTROL_OPEN_READ_SECONDS,
@@ -184,7 +188,6 @@ import {
   withLinkedOperation,
 } from './cardFreshness';
 import {
-  isLinkedControlCard,
   linkedControlOpenTarget,
   projectPersonControlCoordinates,
 } from './projectPersonControl';
@@ -2437,6 +2440,9 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
   // W319: a project link to another person's agent Card, opened through the project.
   const projectAgentCardAttempt = useRef<string | null>(null);
   const projectAgentCardPending = useRef(false);
+  // The Card whose linked Control Card the person is opening from it. Verified, that Control Card holds
+  // the focused slot and this Card's link is done; until then the link is still loading.
+  const [linkedSwitch, setLinkedSwitch] = useState<LinkedControlSwitch | null>(null);
   // W587: the focus a fresh server read has answered. A Control link always
   // reads the server, even when a copy is cached: another admin may have
   // saved since this tab loaded it, and only the read shows that revision.
@@ -2519,9 +2525,11 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
     const item = match && freshestCard(items, focusedCard, match.access_id);
     if (!item) {
       if (!accessCardFocus.controlOnly) {
-        setAccessCardFocusState(
-          delegatedAccessLoading || projectAgentCardPending.current ? 'loading' : 'unavailable',
-        );
+        setAccessCardFocusState(unmatchedAccessCardFocusState({
+          loading: delegatedAccessLoading || projectAgentCardPending.current,
+          linkedSwitch,
+          accessId: accessCardFocus.accessId,
+        }));
       }
       return;
     }
@@ -2566,6 +2574,7 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
     delegatedAccessLoading,
     beginEdit,
     platformUserId,
+    linkedSwitch,
   ]);
   useEffect(() => {
     // The Card is not in this person's own list: ask for it through the
@@ -4973,18 +4982,23 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
     const target = linkedControlOpenTarget(item, binding);
     if (!target) return;
     setEditActionError('');
+    setOpenReadError('');
+    // The read replaces (or, refused, clears) the focused slot as soon as it lands, so the Card open now
+    // is kept to put back, and the link waits for a verified switch.
+    const before = { card: focusedCard, viewer: focusedViewer };
+    setLinkedSwitch({ from: item.access_id, verified: false });
+    let answer: { access?: DelegatedAccessRecord | null } | { error: unknown };
     try {
-      const result = await dispatch(loadControlCard(target)).unwrap();
-      if (!result.access || !isLinkedControlCard(result.access, target)) {
-        setEditActionError('The linked Control Card could not be matched to this Card. Nothing was opened.');
-        return;
-      }
-      switchEdit(result.access);
+      answer = { access: (await dispatch(loadControlCard(target)).unwrap()).access };
     } catch (error) {
-      setEditActionError(
-        error instanceof Error ? error.message : String(error || 'Failed to load the Control Card'),
-      );
+      answer = { error };
     }
+    const outcome = linkedControlOpenOutcome(item.access_id, target, answer);
+    setLinkedSwitch(outcome.linkedSwitch);
+    if (outcome.restore) dispatch(restoreFocusedCard(before));
+    // Shown in the granted pane, which is there with or without an open editor.
+    setOpenReadError(outcome.message);
+    if (outcome.open) switchEdit(outcome.open);
   };
   const renderLeaveDialog = () => (
     <ConfirmDialog
