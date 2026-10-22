@@ -20,7 +20,11 @@ from urllib.parse import urlsplit
 
 from connection_hub.delegated_credentials.cards.model import CardAuthority
 from connection_hub.delegated_credentials.cards.store import subject_hash_for
+from connection_hub.delegated_credentials.cards.version_link import is_version_link
 from connection_hub.delegated_credentials.oauth_issuance import OAuthIssuancePlan
+
+# The authority snapshot a W661 scope B plan no longer stores; the Hub derives it from the linked candidate.
+_DERIVED_PLAN_FIELDS = frozenset({"operations", "resource_grants", "resource_operations"})
 
 
 class OriginalExchangeHostingUnavailable(RuntimeError):
@@ -114,16 +118,24 @@ class OriginalTarget:
         raw = row.get("plan")
         if not isinstance(raw, Mapping):
             raise OriginalExchangeHostingUnavailable("original_exchange_plan_mismatch")
-        pinned = OAuthIssuancePlan.from_mapping({**raw, "transaction_id": plan.transaction_id,
-                                                 "intent_digest": plan.intent_digest})
+        # Since W661 scope B the stored plan keeps no authority snapshot (operations, resource grants and
+        # operations): the Hub derives it from the linked candidate, as the authenticated plan above did.
+        # Every field the row still stores must equal the authenticated plan's.
+        derived = {name: value for name, value in plan.to_dict().items()
+                   if name in _DERIVED_PLAN_FIELDS and name not in raw}
+        try:
+            pinned = OAuthIssuancePlan.from_mapping({**derived, **raw, "transaction_id": plan.transaction_id,
+                                                     "intent_digest": plan.intent_digest})
+        except (KeyError, TypeError, ValueError):
+            raise OriginalExchangeHostingUnavailable("original_exchange_plan_mismatch") from None
         if pinned.to_dict() != plan.to_dict():
             raise OriginalExchangeHostingUnavailable("original_exchange_plan_mismatch")
         intent = raw.get("intent")
         if not isinstance(intent, Mapping):
             raise OriginalExchangeHostingUnavailable("original_exchange_plan_mismatch")
-        candidate = CardAuthority.from_mapping(intent["candidate"])
+        candidate = await self._plan_card(raw, "candidate", plan.transaction_id)
         original = (None if intent.get("original") is None
-                    else CardAuthority.from_mapping(intent["original"]))
+                    else await self._plan_card(raw, "original", plan.transaction_id))
         identity = (plan.access_id, plan.grantor_subject, plan.client_id, plan.credential_subject)
         if ((candidate.access_id, candidate.grantor_subject, candidate.client_id, candidate.delegate_subject) != identity
                 or candidate.card_revision != plan.candidate_revision
@@ -137,6 +149,24 @@ class OriginalTarget:
                         original.delegate_subject) != identity))):
             raise OriginalExchangeHostingUnavailable("original_exchange_candidate_mismatch")
         return original, candidate
+
+    async def _plan_card(self, raw: Mapping[str, Any], which: str, transaction_id: str) -> CardAuthority:
+        """One of the plan's Cards: a stored version link (W661 scope B) through the Hub's own link-aware read,
+        which also checks the candidate's staging marker; an older plan's stored Card body as it is."""
+        value = raw["intent"][which]
+        if not is_version_link(value):
+            return CardAuthority.from_mapping(value)
+        read = getattr(self.hub, "_plan_card", None)
+        if not callable(read):
+            raise OriginalExchangeHostingUnavailable("original_exchange_card_reader_unavailable")
+        try:
+            card = await read(raw, which, transaction_id)
+        except Exception:
+            # A refused or unavailable link read; its text is not passed on.
+            raise OriginalExchangeHostingUnavailable("original_exchange_card_unavailable") from None
+        if type(card) is not CardAuthority:
+            raise OriginalExchangeHostingUnavailable("original_exchange_card_unavailable")
+        return card
 
     async def fence(self, *, plan: OAuthIssuancePlan, result: Any) -> bool:
         original, candidate = await self.candidate(plan)

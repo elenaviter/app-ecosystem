@@ -229,6 +229,60 @@ async def test_host_fences_refuse_changed_or_unavailable_original_evidence(host,
         await scene.target.fence(plan=scene.plan, result=SimpleNamespace(state="pending"))
 
 
+def _linked_scene(host, *, create=False):
+    """The row as a W661 scope B Hub stores it: no authority snapshot (operations, resource grants and
+    operations), and the plan's Cards as version links the Hub reads (W929: the token step answered a
+    silent 503 for every authorization-code exchange, because the host re-parsed the row as Card bodies)."""
+    from connection_hub.delegated_credentials.cards.version_link import version_link
+    scene = _scene(host, create=create)
+    stored = {name: value for name, value in scene.plan.to_dict().items()
+              if name not in {"operations", "resource_grants", "resource_operations"}}
+    links = {"candidate": version_link(card_revision=scene.candidate.card_revision, revision_name="candidate.json",
+                                       content_hash=scene.candidate.content_hash())}
+    links["original"] = None if scene.original is None else version_link(
+        card_revision=scene.original.card_revision, revision_name="original.json",
+        content_hash=scene.original.content_hash())
+    scene.row["plan"] = {**stored, "intent": links}
+    cards = {"candidate": scene.candidate, "original": scene.original}
+
+    async def plan_card(raw, which, transaction_id):
+        assert raw is scene.row["plan"] and transaction_id == scene.plan.transaction_id
+        return cards[which]
+
+    scene.hub._plan_card = AsyncMock(side_effect=plan_card)
+    return scene
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("create", [False, True])
+async def test_a_linked_plan_without_a_stored_snapshot_is_read_through_the_hub_and_fenced(host, create):
+    scene = _linked_scene(host, create=create)
+    assert await scene.target.candidate(scene.plan) == (scene.original, scene.candidate)
+    assert await scene.target.fence(plan=scene.plan, result=SimpleNamespace(state="pending")) is True
+    scene.cards.read_current_authority.return_value = (object(), scene.candidate)
+    assert await scene.target.fence(plan=scene.plan, result=SimpleNamespace(state="committed")) is True
+    assert {call.args[1] for call in scene.hub._plan_card.await_args_list} == (
+        {"candidate"} if create else {"candidate", "original"})
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("case", ["read_refused", "reader_missing", "public_field", "candidate_identity"])
+async def test_a_linked_plan_keeps_every_host_fence(host, case):
+    scene = _linked_scene(host)
+    if case == "read_refused":
+        scene.hub._plan_card.side_effect = RuntimeError("version_link_missing")
+    elif case == "reader_missing":
+        del scene.hub._plan_card
+    elif case == "public_field":
+        scene.row["plan"]["delivery_deadline"] += 1
+    else:
+        foreign = replace(scene.candidate, client_id="foreign-client")
+        scene.hub._plan_card.side_effect = None
+        scene.hub._plan_card.return_value = foreign
+    with pytest.raises(host.OriginalExchangeHostingUnavailable):
+        await scene.target.candidate(scene.plan)
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("failure", ["issuer", "pool", "signer", "session", "key_missing", "key_short", "owner", "none"])
 async def test_real_sdk_flow_is_bound_only_after_host_qualification(host, monkeypatch, failure):
