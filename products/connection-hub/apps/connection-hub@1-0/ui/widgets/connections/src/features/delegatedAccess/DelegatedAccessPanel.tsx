@@ -1,4 +1,5 @@
 import { FormEvent, Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { CONNECTORS_OWNER_ONLY_NOTE, connectorsOwnerOnly, isConnectorResource } from './connectorOwnership';
 import { useAppDispatch, useAppSelector } from '../../app/hooks';
 import { PaneGroup } from '../../components/Pane';
 import { CopyButton, DoorRef } from '../../components/CopyControls';
@@ -2534,8 +2535,14 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
         // W587: the requested operation is added only after beginEdit's read
         // seeded the draft; added before, the seed would drop it.
         const { resource, outerOperation } = accessCardFocus;
+        // W918: a link never seeds a change to another person's personal MCP server; it opens the Card to edit
+        // what this viewer may, with that connector read-only.
+        const seedsForbiddenConnector = isConnectorResource(resource)
+          && connectorsOwnerOnly(item.grantor_subject, platformUserId);
         void beginEdit(item).then((opened) => {
-          if (opened) setEditResourceOperations((current) => withLinkedOperation(current, resource, outerOperation));
+          if (opened && !seedsForbiddenConnector) {
+            setEditResourceOperations((current) => withLinkedOperation(current, resource, outerOperation));
+          }
         });
       }
     }
@@ -2558,6 +2565,7 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
     accounts,
     delegatedAccessLoading,
     beginEdit,
+    platformUserId,
   ]);
   useEffect(() => {
     // The Card is not in this person's own list: ask for it through the
@@ -3115,6 +3123,25 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
     const held = ((item.resource_grants || {})[resource] || []).filter((grant: string) => managed.has(grant));
     return Array.from(new Set([...claims.filter((claim) => !managed.has(claim)), ...held]));
   };
+  // W918: the Card may hold a connector this viewer's catalog cannot place (another owner's personal MCP server,
+  // absent from the viewer's own catalog). The viewer cannot tell which route serves it, so every route the Card
+  // holds stays exactly as held; dropping it would cut the owner's connector off its transport on an unrelated Save.
+  const holdsUnplacedConnector = (item: DelegatedAccessRecord): boolean => editResourceKeys(item).some((resource) => (
+    isConnectorResource(resource)
+    && editDirectResourceHasAuthority(item, resource)
+    && !editSelectionIndex.parentsByChild[(item.catalog_row_by_resource || {})[resource] || editRowFor(resource)]?.length
+  ));
+  const withHeldRoutes = (
+    item: DelegatedAccessRecord, routed: Record<string, string[]>, kept: Record<string, string[]>,
+  ): Record<string, string[]> => {
+    if (!holdsUnplacedConnector(item)) return routed;
+    const out = { ...routed };
+    Object.entries(kept).forEach(([resource, claims]) => {
+      const row = (item.catalog_row_by_resource || {})[resource] || editRowFor(resource);
+      if (editSelectionIndex.childrenByParent[row]?.length && claims.length && !out[resource]) out[resource] = claims;
+    });
+    return out;
+  };
   const editKeptClaimsSelected = (item: DelegatedAccessRecord, resource: string): string[] => {
     if (resource === APPLICATION_API_RESOURCE) {
       return editApplicationRolePolicy.defaultRole
@@ -3128,7 +3155,9 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
       const candidateRow = (item.catalog_row_by_resource || {})[candidate] || editRowFor(candidate);
       return childRows.has(candidateRow) && editDirectResourceHasAuthority(item, candidate);
     });
-    if (!hasSelectedChild) return [];
+    if (!hasSelectedChild) {
+      return holdsUnplacedConnector(item) ? [...((item.resource_grants || {})[resource] || [])] : [];
+    }
     const option = resources.find((candidate) => candidate.resource === row);
     return option ? grantsForResource(option) : [];
   };
@@ -3141,13 +3170,13 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
         .filter((resource) => editResourceHasAuthority(item, resource))
         .map((resource) => [resource, editKeptClaims(item, resource)]),
     );
-    const routed = materializeSelectionRouteGrants(
+    const routed = withHeldRoutes(item, materializeSelectionRouteGrants(
       resources,
       editSelectionIndex,
       kept,
       editRowFor,
       Object.keys(kept),
-    );
+    ), kept);
     const named = Object.fromEntries(
       Object.entries(editNamedServiceOperations)
         .filter(([resource]) => resource in routed)
@@ -3290,13 +3319,13 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
     // and the edit replaces the authority the operator reviewed. The credential
     // is untouched — a copied manual token, an agent's reusable bearer and an
     // OAuth client's handles all keep working, on their very next call.
-    const routedKept = materializeSelectionRouteGrants(
+    const routedKept = withHeldRoutes(item, materializeSelectionRouteGrants(
       resources,
       editSelectionIndex,
       kept,
       editRowFor,
       Object.keys(kept),
-    );
+    ), kept);
     // The edited selection, minus resources fully unchecked above.
     const keptNamedServiceOperations = Object.fromEntries(
       Object.entries(editNamedServiceOperations)
@@ -4327,7 +4356,12 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
             }
           }}
         />
-        <div className="resource-edit-section__body">
+        {/* W918: a viewer who is not the Card's owner keeps or removes a personal MCP server, never changes it.
+            The one owner-only line is drawn once for the list, below (renderEditResources). */}
+        <fieldset
+          className="resource-edit-section__body"
+          disabled={isConnectorResource(resource) && connectorsOwnerOnly(item.grantor_subject, platformUserId)}
+        >
           {resource !== '*' && !isSelectionRoute ? (
             <div className="edit-section__head resource-address-head">
               <span className="edit-section__name">
@@ -4693,7 +4727,7 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
             }))}
           />
           ) : null}
-        </div>
+        </fieldset>
       </details>
     );
   };
@@ -4745,6 +4779,16 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
       (offer) => !childOfferResources.has(catalogRow(offer.resource))
         && !resourceFamilyRoots.has(offer.resource),
     );
+    // W918: only the Card's owner adds a personal MCP server; others may keep or remove one.
+    const ownerOnlyConnectors = connectorsOwnerOnly(item.grantor_subject, platformUserId);
+    // W918 (operator: "once under the list because these custom services are a \"family of services\" that can
+    // be only edited by the owner because they are namely per owner"): one line for the personal MCP servers,
+    // under the family that lists them. Another owner's server is often not in this viewer's catalog and then
+    // shows as a top-level row; the line is then drawn once at the end of the list instead, never per row.
+    const familyHoldsConnector = roots.some((root) => childrenFor(root).some(isConnectorResource));
+    const ownerOnlyLine = (
+      <p className="resource-connectors-owner-only" role="note">{CONNECTORS_OWNER_ONLY_NOTE}</p>
+    );
     const renderResourceState = (resource: string, parent = '') => (
       editRemovedResources.includes(resource) ? (
         <RemovedResourceStub
@@ -4791,7 +4835,8 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
                   </div>
                   {children.map((child) => renderResourceState(child, resource))}
                   <ResourceOfferPicker
-                    offers={childOffers}
+                    offers={ownerOnlyConnectors
+                      ? childOffers.filter((offer) => !isConnectorResource(offer.resource)) : childOffers}
                     added={Array.from(new Set([
                       ...editAddedResources,
                       ...(composition?.mode === 'or' ? authorityResourceKeys(composition.control) : []),
@@ -4804,11 +4849,14 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
                   />
                 </div>
               ) : null}
+              {ownerOnlyConnectors && children.some(isConnectorResource) ? ownerOnlyLine : null}
             </section>
           );
         })}
+        {ownerOnlyConnectors && !familyHoldsConnector && roots.some(isConnectorResource) ? ownerOnlyLine : null}
         <ResourceOfferPicker
-          offers={topLevelOffers}
+          offers={ownerOnlyConnectors
+            ? topLevelOffers.filter((offer) => !isConnectorResource(offer.resource)) : topLevelOffers}
           added={Array.from(new Set([
             ...editAddedResources,
             ...(composition?.mode === 'or' ? authorityResourceKeys(composition.control) : []),
