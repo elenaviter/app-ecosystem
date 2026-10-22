@@ -46,6 +46,10 @@ async def test_a_safe_description_travels_with_the_registered_code():
 @pytest.mark.asyncio
 @pytest.mark.parametrize("description", [
     "echoes CANARY-CODE-123456 back",       # a submitted value
+    "code CANARY-CODE-1234 expired",        # a prefix of a submitted value
+    "bad canary-verifier value",            # part of one, in another case
+    "got CANARY%2DCODE%2D12 here",          # percent-encoded part of one
+    "token ABCdef0123456789xyzQ rejected",  # an opaque run, whatever it is
     "verifier CANARY-VERIFIER-abcdef",      # another submitted value
     "line one\nline two",                   # not printable on one line
     "x" * (discovery.MAX_TOKEN_ERROR_DESCRIPTION + 1),

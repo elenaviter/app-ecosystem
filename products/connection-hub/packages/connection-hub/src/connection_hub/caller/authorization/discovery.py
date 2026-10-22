@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 import secrets
 import time
 from collections.abc import Mapping
@@ -9,7 +10,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 from typing import Any, Protocol
-from urllib.parse import urlsplit, urlunsplit
+from urllib.parse import unquote, urlsplit, urlunsplit
 
 from connection_hub.caller.authorization.models import (
     AuthorizationServerMetadata,
@@ -144,6 +145,8 @@ def _token_error_code(body: bytes) -> str:
 # W929: the longest token-error description shown. A refused token request whose description was
 # dropped left the operator with only "temporarily_unavailable" for a deterministic server fault.
 MAX_TOKEN_ERROR_DESCRIPTION = 240
+# A run this long of token characters is a code, key or token, not prose.
+_TOKEN_RUN = re.compile(r"[A-Za-z0-9._~+/=-]{16,}")
 
 
 def _token_error_description(body: bytes, submitted: Mapping[str, str] | None) -> str:
@@ -166,10 +169,16 @@ def _token_error_description(body: bytes, submitted: Mapping[str, str] | None) -
         or any(not 0x20 <= ord(character) <= 0x7E for character in description)
     ):
         return ""
+    if _TOKEN_RUN.search(description):
+        return ""  # an opaque run (a code, key or token) is never server prose
+    haystacks = {description.lower(), unquote(description).lower()}
     for value in (submitted or {}).values():
-        text = str(value or "")
-        if len(text) >= 8 and text in description:
-            return ""
+        text = str(value or "").lower()
+        if len(text) < 8:
+            continue
+        windows = {text[start:start + 8] for start in range(len(text) - 7)}
+        if any(window in haystack for window in windows for haystack in haystacks):
+            return ""  # even part of a submitted value, in any case or percent-encoded
     return description.strip()
 
 
