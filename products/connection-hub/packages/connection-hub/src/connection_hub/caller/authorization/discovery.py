@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 import secrets
 import time
 from collections.abc import Mapping
@@ -9,7 +10,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 from typing import Any, Protocol
-from urllib.parse import urlsplit, urlunsplit
+from urllib.parse import unquote, urlsplit, urlunsplit
 
 from connection_hub.caller.authorization.models import (
     AuthorizationServerMetadata,
@@ -139,6 +140,46 @@ def _token_error_code(body: bytes) -> str:
         return ""
     code = payload.get("error")
     return code if isinstance(code, str) and code in OAUTH_TOKEN_ERROR_CODES else ""
+
+
+# W929: the longest token-error description shown. A refused token request whose description was
+# dropped left the operator with only "temporarily_unavailable" for a deterministic server fault.
+MAX_TOKEN_ERROR_DESCRIPTION = 240
+# A run this long of token characters is a code, key or token, not prose.
+_TOKEN_RUN = re.compile(r"[A-Za-z0-9._~+/=-]{16,}")
+
+
+def _token_error_description(body: bytes, submitted: Mapping[str, str] | None) -> str:
+    """The server's ``error_description`` when it is safe to show, or "".
+
+    Safe means printable ASCII, bounded, and containing none of the values this
+    request submitted (a code, verifier, refresh token or client id the server
+    might echo). Anything else stays out of the error and its message.
+    """
+
+    try:
+        payload = json.loads(body)
+    except (UnicodeError, ValueError):
+        return ""
+    description = payload.get("error_description") if isinstance(payload, Mapping) else None
+    if (
+        not isinstance(description, str)
+        or not description.strip()
+        or len(description) > MAX_TOKEN_ERROR_DESCRIPTION
+        or any(not 0x20 <= ord(character) <= 0x7E for character in description)
+    ):
+        return ""
+    if _TOKEN_RUN.search(description):
+        return ""  # an opaque run (a code, key or token) is never server prose
+    haystacks = {description.lower(), unquote(description).lower()}
+    for value in (submitted or {}).values():
+        text = str(value or "").lower()
+        if len(text) < 8:
+            continue
+        windows = {text[start:start + 8] for start in range(len(text) - 7)}
+        if any(window in haystack for window in windows for haystack in haystacks):
+            return ""  # even part of a submitted value, in any case or percent-encoded
+    return description.strip()
 
 
 # The longest wait a server's Retry-After is taken at, so a wrong or hostile
@@ -333,6 +374,9 @@ class HttpxOAuthTransport:
                     elif failure_code == "oauth_token_request_failed":
                         oauth_error = _token_error_code(bytes(body))
                         server_reason = oauth_error
+                        description = _token_error_description(bytes(body), form_payload)
+                        if oauth_error and description:
+                            server_reason = f"{oauth_error} ({description})"
                     raise _request_error(
                         failure_code=failure_code,
                         method=method,
