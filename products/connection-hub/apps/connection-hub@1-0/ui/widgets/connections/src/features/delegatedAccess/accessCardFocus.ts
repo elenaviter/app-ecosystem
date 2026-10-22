@@ -1,3 +1,5 @@
+import { isLinkedControlCard, type LinkedControlOpenTarget } from './projectPersonControl.ts';
+
 export interface AccessCardFocus {
   accessId: string;
   manualOnly: boolean;
@@ -90,22 +92,63 @@ export function findAccessCardFocus<T extends { access_id: string; source?: stri
   return candidates.find((candidate) => matchesAccessCardFocus(candidate, focus));
 }
 
+/** A switch from a Card to its linked Control Card: `verified` once the read
+ *  answered with exactly the Card the binding names. */
+export interface LinkedControlSwitch {
+  from: string;
+  verified: boolean;
+}
+
 /** What a link's focus shows when its Card is no longer among the loaded
  *  Cards. A Card opened through a project (W319) lives only in the one
- *  focused slot, so opening its linked Control Card replaces it there. That
- *  is the person moving on from the Card the link opened, not the Card
- *  becoming invisible: the focus stays resolved (operator, 2026-10-21: "i
- *  should be able to see. i also perfectly should be able to click on the
- *  project card linked"). */
+ *  focused slot, so opening its linked Control Card replaces it there. Once
+ *  that switch is verified, it is the person moving on from the Card the link
+ *  opened, not the Card becoming invisible: the focus stays resolved
+ *  (operator, 2026-10-21: "i should be able to see. i also perfectly should be
+ *  able to click on the project card linked"). While the switch is unverified
+ *  the focus is still loading, never resolved on a Card that is not there. */
 export function unmatchedAccessCardFocusState({
   loading,
-  movedToLinkedControl,
+  linkedSwitch,
+  accessId,
 }: {
   loading: boolean;
-  movedToLinkedControl: boolean;
+  linkedSwitch: LinkedControlSwitch | null;
+  accessId: string;
 }): 'loading' | 'resolved' | 'unavailable' {
-  if (loading) return 'loading';
-  return movedToLinkedControl ? 'resolved' : 'unavailable';
+  const switching = linkedSwitch?.from === accessId;
+  if (loading || (switching && !linkedSwitch?.verified)) return 'loading';
+  return switching ? 'resolved' : 'unavailable';
+}
+
+/** The outcome of reading a Card's linked Control Card. Only a read that
+ *  answered with the Card the binding names switches to it. A refusal, or an
+ *  answer naming another Card, opens nothing: the Card that was open before
+ *  the read is put back (the read already replaced or cleared the focused
+ *  slot) and the existing refusal text is shown. */
+export function linkedControlOpenOutcome<T extends { access_id: string }>(
+  from: string,
+  target: LinkedControlOpenTarget,
+  answer: { access?: T | null } | { error: unknown },
+): { open: T | null; restore: boolean; message: string; linkedSwitch: LinkedControlSwitch | null } {
+  if ('error' in answer) {
+    const { error } = answer;
+    return {
+      open: null,
+      restore: true,
+      message: error instanceof Error ? error.message : String(error || 'Failed to load the Control Card'),
+      linkedSwitch: null,
+    };
+  }
+  if (!answer.access || !isLinkedControlCard(answer.access, target)) {
+    return {
+      open: null,
+      restore: true,
+      message: 'The linked Control Card could not be matched to this Card. Nothing was opened.',
+      linkedSwitch: null,
+    };
+  }
+  return { open: answer.access, restore: false, message: '', linkedSwitch: { from, verified: true } };
 }
 
 const MY_CARD_PREFIX = 'person-my-card-';

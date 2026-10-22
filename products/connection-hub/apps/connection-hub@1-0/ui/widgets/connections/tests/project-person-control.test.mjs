@@ -162,7 +162,11 @@ test('the panel opens the linked Card through the helper and refuses a mismatch'
   const panel = readFileSync(new URL('../src/features/delegatedAccess/DelegatedAccessPanel.tsx', import.meta.url), 'utf8')
   assert.match(panel, /onClick=\{\(\) => void openLinkedControlCard\(item, binding\)\}/)
   assert.match(panel, /const target = linkedControlOpenTarget\(item, binding\);/)
-  assert.match(panel, /if \(!result\.access \|\| !isLinkedControlCard\(result\.access, target\)\) \{/)
+  // #871: the bound-Card check is the outcome helper's; the panel opens only what it verified.
+  assert.match(panel, /const outcome = linkedControlOpenOutcome\(item\.access_id, target, answer\);/)
+  assert.match(panel, /if \(outcome\.open\) switchEdit\(outcome\.open\)/)
+  const focus = readFileSync(new URL('../src/features/delegatedAccess/accessCardFocus.ts', import.meta.url), 'utf8')
+  assert.match(focus, /if \(!answer\.access \|\| !isLinkedControlCard\(answer\.access, target\)\) \{/)
   assert.doesNotMatch(panel, /loadControlCard\(\{ controlId: cleanControlId \}\)/)
 })
 

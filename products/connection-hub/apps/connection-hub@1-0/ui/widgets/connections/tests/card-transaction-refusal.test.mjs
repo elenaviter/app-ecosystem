@@ -204,3 +204,20 @@ test('a refused person removal says where to remove the person and keeps the Car
   const withdrawn = await other.store.dispatch(other.revokeDelegatedAccess({ ...revokeArgs, projectPersonControl: invitation }))
   assert.equal(withdrawn.payload, 'server reason')
 })
+
+// #871 review: a linked Control Card read that is refused clears the focused slot, and one answered with
+// another Card replaces it. The Card open before the read is put back exactly, viewer included.
+for (const [label, response] of [
+  ['refused', { ok: false, error: 'control_card_not_found', status: 404 }],
+  ['answered with another Card', { ok: true, access: { access_id: 'control-other', state: 'active' } }],
+]) {
+  test(`a linked Control Card read that is ${label} can put back the Card open before it`, async () => {
+    const { store, loadControlCard, restoreFocusedCard, before } = harness(response)
+    const kept = { card: before.focusedCard, viewer: before.focusedViewer }
+    await store.dispatch(loadControlCard({ controlId: 'control-linked', projectRef: 'work:project:example' }))
+    assert.notDeepEqual(store.getState().focusedCard, before.focusedCard, 'the read changed the focused slot')
+    store.dispatch(restoreFocusedCard(kept))
+    assert.deepEqual(store.getState().focusedCard, before.focusedCard)
+    assert.deepEqual(store.getState().focusedViewer, before.focusedViewer)
+  })
+}

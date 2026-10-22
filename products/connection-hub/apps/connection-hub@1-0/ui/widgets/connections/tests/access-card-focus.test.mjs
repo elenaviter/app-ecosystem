@@ -155,30 +155,64 @@ test('W435: a refusal by the request limit says so, and claims nothing about the
 // Card replaced the agent Card in the one focused slot, and the link's focus then reported it missing.
 // Operator: "i should be able to see. i also perfectly should be able to click on the project card linked".
 test('opening the linked Control Card from a link-opened Card leaves no unavailable banner', async () => {
-  const { readFileSync } = await import('node:fs')
-  const { unmatchedAccessCardFocusState } = await import('../src/features/delegatedAccess/accessCardFocus.ts')
+  const { unmatchedAccessCardFocusState, linkedControlOpenOutcome } = await import('../src/features/delegatedAccess/accessCardFocus.ts')
   const link = focus({ access_id: 'aut_55d0077e95c18b1e', project_ref: 'work:project:kdcube-maintenance' })
   const agentCard = { access_id: 'aut_55d0077e95c18b1e', source: 'grant' }
   const controlCard = { access_id: 'control-d0cc151b', source: 'control' }
+  const target = { controlId: 'control-d0cc151b', projectRef: 'work:project:kdcube-maintenance' }
+  const state = (linkedSwitch) => unmatchedAccessCardFocusState({ loading: false, linkedSwitch, accessId: link.accessId })
 
   // The panel's own lookup: before the open the link finds its Card, after it only the Control Card is held.
   assert.equal(findAccessCardFocus([agentCard], link), agentCard)
   assert.equal(findAccessCardFocus([controlCard], link), undefined)
 
-  // After moving on to the linked Control Card, the link is done, not unavailable.
-  assert.equal(unmatchedAccessCardFocusState({ loading: false, movedToLinkedControl: true }), 'resolved')
+  // While the read runs the link is loading, never resolved on a Card that is not there.
+  assert.equal(state({ from: link.accessId, verified: false }), 'loading')
+  // The read answered with exactly the bound Card: the switch is verified and the link is done.
+  const opened = linkedControlOpenOutcome(link.accessId, target, { access: controlCard })
+  assert.deepEqual(opened, { open: controlCard, restore: false, message: '', linkedSwitch: { from: link.accessId, verified: true } })
+  assert.equal(state(opened.linkedSwitch), 'resolved')
   // A Card the link never found is still reported, and a read in flight is still loading.
-  assert.equal(unmatchedAccessCardFocusState({ loading: false, movedToLinkedControl: false }), 'unavailable')
-  assert.equal(unmatchedAccessCardFocusState({ loading: true, movedToLinkedControl: true }), 'loading')
+  assert.equal(state(null), 'unavailable')
+  assert.equal(unmatchedAccessCardFocusState({ loading: true, linkedSwitch: opened.linkedSwitch, accessId: link.accessId }), 'loading')
+  // Another Card's switch says nothing about this link.
+  assert.equal(state({ from: 'aut_other', verified: true }), 'unavailable')
+})
 
-  // The panel wires it: the open marks the Card before its read, and the focus effect asks the rule.
+// #871 review (codex-app@spark1, 2026-10-22): a refused or mismatched read cleared or replaced the only
+// copy of the agent Card while the link already counted as moved on, leaving a blank pane and no error.
+test('a refused or mismatched linked read opens nothing, puts the Card back and shows the existing refusal', async () => {
+  const { readFileSync } = await import('node:fs')
+  const { linkedControlOpenOutcome } = await import('../src/features/delegatedAccess/accessCardFocus.ts')
+  const target = { controlId: 'control-d0cc151b', projectRef: 'work:project:kdcube-maintenance' }
+
+  const refused = linkedControlOpenOutcome('aut_55d0077e95c18b1e', target, { error: new Error('control_card_not_found') })
+  assert.deepEqual(refused, { open: null, restore: true, message: 'control_card_not_found', linkedSwitch: null })
+  assert.equal(linkedControlOpenOutcome('aut_x', target, { error: undefined }).message, 'Failed to load the Control Card')
+
+  const mismatched = linkedControlOpenOutcome('aut_55d0077e95c18b1e', target, { access: { access_id: 'control-other' } })
+  assert.deepEqual(mismatched, {
+    open: null,
+    restore: true,
+    message: 'The linked Control Card could not be matched to this Card. Nothing was opened.',
+    linkedSwitch: null,
+  })
+  assert.equal(linkedControlOpenOutcome('aut_x', target, { access: null }).restore, true)
+
+  // The panel applies it: the Card open before the read is kept and put back, the switch is set only from
+  // the outcome, and the refusal goes to the granted pane's error line, shown with or without an editor.
   const panel = readFileSync(new URL('../src/features/delegatedAccess/DelegatedAccessPanel.tsx', import.meta.url), 'utf8')
-  const open = panel.slice(panel.indexOf('const openLinkedControlCard = async'))
-  assert.ok(open.indexOf('movedToLinkedControlFrom.current = item.access_id') > -1)
-  assert.ok(
-    open.indexOf('movedToLinkedControlFrom.current = item.access_id') < open.indexOf('dispatch(loadControlCard(target))'),
-    'the mark is set before the read whose answer replaces the Card',
-  )
-  assert.match(panel, /movedToLinkedControl: movedToLinkedControlFrom\.current === accessCardFocus\.accessId/)
-  assert.doesNotMatch(panel, /projectAgentCardPending\.current \? 'loading' : 'unavailable'/)
+  const open = panel.slice(panel.indexOf('const openLinkedControlCard = async'), panel.indexOf('const renderLeaveDialog'))
+  assert.ok(open.indexOf('const before = { card: focusedCard, viewer: focusedViewer }') > -1)
+  assert.ok(open.indexOf('const before') < open.indexOf('dispatch(loadControlCard(target))'), 'kept before the read replaces it')
+  assert.match(open, /setLinkedSwitch\(\{ from: item\.access_id, verified: false \}\)/)
+  assert.match(open, /setLinkedSwitch\(outcome\.linkedSwitch\)/)
+  assert.match(open, /if \(outcome\.restore\) dispatch\(restoreFocusedCard\(before\)\)/)
+  assert.match(open, /setOpenReadError\(outcome\.message\)/)
+  assert.match(open, /if \(outcome\.open\) switchEdit\(outcome\.open\)/)
+  assert.doesNotMatch(open, /movedToLinkedControlFrom/)
+  assert.match(panel, /\{openReadError \? <div className="error" role="alert">\{openReadError\}<\/div> : null\}/)
+  // The focus effect re-runs when the switch changes.
+  const effect = panel.slice(panel.indexOf('unmatchedAccessCardFocusState({'))
+  assert.match(effect.slice(0, effect.indexOf(']);')), /\n    linkedSwitch,\n/)
 })

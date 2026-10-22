@@ -523,6 +523,15 @@ const delegatedAccessSlice = createSlice({
     clearDelegatedAccessError(state) {
       state.error = '';
     },
+    /** A linked Control Card read that was refused, or answered with another Card, puts back the Card that
+     *  was open before it: a Card opened through a project lives only in this slot (#871 review). */
+    restoreFocusedCard(
+      state,
+      action: PayloadAction<{ card?: DelegatedAccessRecord; viewer?: ProjectPersonControlViewer }>,
+    ) {
+      state.focusedCard = action.payload.card;
+      state.focusedViewer = action.payload.viewer;
+    },
     clearIssuedDelegatedAccess(state) {
       state.issuedToken = '';
       state.issuedHeader = '';
@@ -744,5 +753,10 @@ const delegatedAccessSlice = createSlice({
   },
 });
 
-export const { clearDelegatedAccessError, clearIssuedDelegatedAccess, retireControlReads } = delegatedAccessSlice.actions;
+export const {
+  clearDelegatedAccessError,
+  clearIssuedDelegatedAccess,
+  restoreFocusedCard,
+  retireControlReads,
+} = delegatedAccessSlice.actions;
 export default delegatedAccessSlice.reducer;
