@@ -1,7 +1,7 @@
 // W918: a Card's personal MCP servers change only by the Card's owner (the Hub's owner_only_connectors rule).
 // Mounted: the real DelegatedAccessPanel in Chromium (tests/fixtures/w918-connector-owner-only.tsx). A viewer who
 // is not the owner, and has no copy of the owner's connector in their own catalog, sees the connector row
-// disabled with the owner-only line, and can still remove the whole connector and undo that; the owner's own
+// disabled with the one owner-only line under the list, and can still remove the whole connector and undo that; the owner's own
 // editor is unchanged.
 import assert from 'node:assert/strict'
 import test from 'node:test'
@@ -76,7 +76,10 @@ async function withEditor(t, viewer, run, { link = false, catalog = '' } = {}) {
 test("a non-owner sees the owner's connector read-only with the line, and can remove and undo it", async (t) => {
   await withEditor(t, 'other', async ({ page, row }) => {
     assert.equal(await row.locator('fieldset.resource-edit-section__body').evaluate((element) => element.disabled), true)
-    assert.equal((await row.locator('.resource-edit-section__owner-only').innerText()).trim(), NOTE)
+    // Once for the list, not per row (operator, 2026-10-22: "once under the list").
+    const line = page.locator('.resource-connectors-owner-only')
+    assert.equal(await line.count(), 1)
+    assert.equal((await line.innerText()).trim(), NOTE)
     const controls = row.locator('fieldset.resource-edit-section__body').locator('input, button, select, textarea')
     for (let index = 0; index < await controls.count(); index += 1) {
       assert.equal(await controls.nth(index).isDisabled(), true, `control ${index} is disabled`)
@@ -92,9 +95,9 @@ test("a non-owner sees the owner's connector read-only with the line, and can re
 })
 
 test("the owner's own editor is unchanged", async (t) => {
-  await withEditor(t, 'owner', async ({ row }) => {
+  await withEditor(t, 'owner', async ({ page, row }) => {
     assert.equal(await row.locator('fieldset.resource-edit-section__body').evaluate((element) => element.disabled), false)
-    assert.equal(await row.locator('.resource-edit-section__owner-only').count(), 0)
+    assert.equal(await page.locator('.resource-connectors-owner-only').count(), 0)
   })
 })
 
@@ -109,7 +112,7 @@ test("a non-owner's Save of another change keeps the owner's connector exactly a
 
 test("a guided link naming the owner's connector seeds nothing for a non-owner", async (t) => {
   await withEditor(t, 'other', async ({ page, row }) => {
-    assert.equal(await row.locator('.resource-edit-section__owner-only').count(), 1)
+    assert.equal(await page.locator('.resource-connectors-owner-only').count(), 1)
     const body = await saveWithBoardChange(page)
     assert.deepEqual(body.resource_operations[CONNECTOR], ['search'], 'the linked fetch was not added')
   }, { link: true })
@@ -148,12 +151,15 @@ test("under the MCP route, a non-owner's Save keeps the foreign connector A and 
 })
 
 test("with A in the viewer's catalog, A's real tool controls render and are all disabled for a non-owner", async (t) => {
-  await withEditor(t, 'other', async ({ row }) => {
+  await withEditor(t, 'other', async ({ page, row }) => {
     const controls = row.locator('fieldset.resource-edit-section__body').locator('input, button, select, textarea')
     assert.ok(await controls.count() > 0, "A's tool controls render")
     for (let index = 0; index < await controls.count(); index += 1) {
       assert.equal(await controls.nth(index).isDisabled(), true, `control ${index} is disabled`)
     }
-    assert.equal((await row.locator('.resource-edit-section__owner-only').innerText()).trim(), NOTE)
+    // A is listed under the route here, so the one line is under that family.
+    const line = page.locator('.resource-selection-family .resource-connectors-owner-only')
+    assert.equal(await page.locator('.resource-connectors-owner-only').count(), 1)
+    assert.equal((await line.innerText()).trim(), NOTE)
   }, { catalog: 'full' })
 })

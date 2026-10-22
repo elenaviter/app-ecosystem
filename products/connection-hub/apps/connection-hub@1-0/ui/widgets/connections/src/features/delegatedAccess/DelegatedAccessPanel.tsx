@@ -4363,15 +4363,11 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
           }}
         />
         {/* W918: a viewer who is not the Card's owner keeps or removes a personal MCP server, never changes it.
-            The line is on the connector row itself: another person's server is often not in this viewer's
-            catalog, so it may render as a top-level row rather than under "Your configured MCP servers". */}
+            The one owner-only line is drawn once for the list, below (renderEditResources). */}
         <fieldset
           className="resource-edit-section__body"
           disabled={isConnectorResource(resource) && connectorsOwnerOnly(item.grantor_subject, platformUserId)}
         >
-          {isConnectorResource(resource) && connectorsOwnerOnly(item.grantor_subject, platformUserId) ? (
-            <p className="resource-edit-section__owner-only" role="note">{CONNECTORS_OWNER_ONLY_NOTE}</p>
-          ) : null}
           {resource !== '*' && !isSelectionRoute ? (
             <div className="edit-section__head resource-address-head">
               <span className="edit-section__name">
@@ -4791,6 +4787,14 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
     );
     // W918: only the Card's owner adds a personal MCP server; others may keep or remove one.
     const ownerOnlyConnectors = connectorsOwnerOnly(item.grantor_subject, platformUserId);
+    // W918 (operator: "once under the list because these custom services are a \"family of services\" that can
+    // be only edited by the owner because they are namely per owner"): one line for the personal MCP servers,
+    // under the family that lists them. Another owner's server is often not in this viewer's catalog and then
+    // shows as a top-level row; the line is then drawn once at the end of the list instead, never per row.
+    const familyHoldsConnector = roots.some((root) => childrenFor(root).some(isConnectorResource));
+    const ownerOnlyLine = (
+      <p className="resource-connectors-owner-only" role="note">{CONNECTORS_OWNER_ONLY_NOTE}</p>
+    );
     const renderResourceState = (resource: string, parent = '') => (
       editRemovedResources.includes(resource) ? (
         <RemovedResourceStub
@@ -4851,9 +4855,11 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
                   />
                 </div>
               ) : null}
+              {ownerOnlyConnectors && children.some(isConnectorResource) ? ownerOnlyLine : null}
             </section>
           );
         })}
+        {ownerOnlyConnectors && !familyHoldsConnector && roots.some(isConnectorResource) ? ownerOnlyLine : null}
         <ResourceOfferPicker
           offers={ownerOnlyConnectors
             ? topLevelOffers.filter((offer) => !isConnectorResource(offer.resource)) : topLevelOffers}

@@ -111,10 +111,14 @@ read every card.
   platform user id is not exactly the Card's `grantor_subject` (no alias is
   folded; an unknown viewer counts as not the owner), each connector row's
   grants, tools, "Accept update" and invocation choices are disabled. The
-  row's **Remove** stays, neither offer picker offers a connector, and the
-  connector row itself reads "Only the Card's owner changes these." (on the
-  row, because another person's server is usually not in the viewer's own
-  catalog and then shows as a top-level row). The owner's own editor is
+  row's **Remove** stays, and neither offer picker offers a connector. One
+  line, "Only the Card's owner changes these.", is shown once for the
+  servers as a family (operator, 2026-10-22: "once under the list because
+  these custom services are a \"family of services\" that can be only edited
+  by the owner because they are namely per owner"): under the route section
+  that lists them, or, when another person's server is not in the viewer's
+  own catalog and so shows as a top-level row, once at the end of the
+  resource list. Never per row. The owner's own editor is
   unchanged. A connector is recognised by the Hub's own id namespace,
   `urn:connection-hub:remote-mcp:`. The editor only shows this rule; the Hub
   enforces it on every Save whatever the editor sends.
