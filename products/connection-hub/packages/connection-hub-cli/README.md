@@ -240,6 +240,11 @@ management grants; a deployment administrator is.
    instead (`recovery.authorization_url`); open it, approve, and rerun the same
    command with the same `--invocation-id`.
 
+   Agents and automation always pass `--no-open --no-wait`: in a
+   pseudo-terminal with no person at it, the CLI would otherwise wait at its
+   prompt. They relay `recovery.authorization_url` to the person and rerun
+   with the same `--invocation-id`.
+
 5. **Check it.** Metadata is a separate operation, so it asks once more in the
    same way:
 
