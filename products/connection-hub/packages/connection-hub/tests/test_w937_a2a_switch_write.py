@@ -206,3 +206,10 @@ def test_a_direct_control_save_carrying_a_switch_is_refused_before_any_write(swi
     svc.update_access = update_access
     result = asyncio.run(svc.control_card_update({"user_id": "alice"}, control_id=record.access_id, **{switch: "on"}))
     assert result["ok"] is False and result["error"] == code
+
+
+def test_both_direct_write_refusals_are_registered_save_codes() -> None:
+    from connection_hub.card_save_codes import CARD_SAVE_CODES
+
+    for switch in SWITCH_PROPERTIES:
+        assert direct_switch_write_refusal("on", switch_property=switch)["error"] in CARD_SAVE_CODES

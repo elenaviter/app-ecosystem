@@ -9,6 +9,7 @@ tests/test_card_save_trace_hub.py re-scans them, so a new code cannot be missing
 from __future__ import annotations
 
 CARD_SAVE_CODES = frozenset({
+    "a2a_family_requires_project_transaction",  # W937: only the project's own Control edit sets A2A agents
     "agent_card",
     "agent_plan_already_bound",
     "agent_plan_authorization_invalid",
@@ -108,6 +109,7 @@ CARD_SAVE_CODES = frozenset({
     "control_selection_unresolved",
     "delegated_cards_unavailable",
     "delegated_catalog_unavailable",
+    "external_mcp_family_requires_project_transaction",  # W918: only the project's own Control edit sets External MCP
     "lifecycle_plan_authorization_decision_invalid",
     "lifecycle_plan_authorization_request_mismatch",
     "lifecycle_plan_authorization_step_unknown",
