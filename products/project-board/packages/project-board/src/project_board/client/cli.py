@@ -1016,8 +1016,9 @@ def build_parser() -> argparse.ArgumentParser:
     )
     command.add_argument(
         "--output", default="",
-        help="Write the bounded result to this file instead of printing it.",
+        help="Write the result (bounded at 64 KiB) to this owner-only file instead of printing it.",
     )
+    command.add_argument("--replace", action="store_true", help="Overwrite an existing --output file.")
 
     command = worker_commands.add_parser(
         "item-attach", help="Attach a local file to one current work item."
@@ -3820,6 +3821,29 @@ def _agent_service_arguments(args: Any) -> dict[str, Any]:
     return value
 
 
+def _write_private_result(path: Path, text: str, *, replace: bool) -> None:
+    """A service result may carry private data: owner-only, never a symlink, no clobber without --replace."""
+
+    if path.is_symlink():
+        raise DomainError("agent_service_output_unsafe", "The output path is a symbolic link.", status=409)
+    if path.exists() and not replace:
+        raise DomainError(
+            "agent_service_output_exists",
+            "The output file exists; pass --replace to overwrite it.",
+            status=409,
+            details={"output": str(path)},
+        )
+    temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o600)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            handle.write(text)
+        os.replace(temporary, path)
+    except BaseException:
+        temporary.unlink(missing_ok=True)
+        raise
+
+
 def _worker_agent_services(args: Any) -> dict[str, Any]:
     """W918: list, describe or call a service this worker's Card allows.
 
@@ -3888,8 +3912,10 @@ def _worker_agent_services(args: Any) -> dict[str, Any]:
     result = dict(result) if isinstance(result, Mapping) else {}
     output = str(getattr(args, "output", "") or "")
     if action == CALL_ACTION and output:
-        Path(output).write_text(
-            json.dumps(result.get("result"), ensure_ascii=False, indent=2), encoding="utf-8"
+        _write_private_result(
+            Path(output),
+            json.dumps(result.get("result"), ensure_ascii=False, indent=2),
+            replace=bool(getattr(args, "replace", False)),
         )
         result = {**{key: value for key, value in result.items() if key != "result"}, "output": output}
     return {"operation": f"agent_services.{command}", **result}
@@ -7841,6 +7867,7 @@ async def _relay(args: Any) -> Any:
                     return await run_agent_services(
                         action, payload,
                         open_tools=lambda: connect_remote_tools(endpoint=gateway, bearer=bearer_now),
+                        gateway=gateway,
                     )
 
                 yield ProblemBoardDataBusClient(

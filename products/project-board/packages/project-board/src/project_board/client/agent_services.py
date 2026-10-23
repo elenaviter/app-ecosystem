@@ -18,6 +18,7 @@ refusal (W918 design revision 2).
 from __future__ import annotations
 
 import json
+import re
 from contextlib import AbstractAsyncContextManager
 from typing import Any, Callable, Mapping
 from urllib.parse import urlsplit
@@ -140,34 +141,72 @@ def _bounded_result(result: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
-def _refusal(result: Mapping[str, Any]) -> DomainError:
-    """A refused call as a fixed code; upstream text is never echoed (W918)."""
+# Only the gateway itself names a refusal. A provider's own failed result (an
+# External MCP server's isError content) is upstream-controlled: trusting its
+# code or link would let a server plant a "consent" link the agent relays to
+# its owner (W918 review F2). The gateway's two markers are fixed.
+_GATEWAY_REFUSALS = frozenset({"delegated_mcp_gateway_denied", "delegated_mcp_gateway_failed"})
+_CODE = re.compile(r"[a-z][a-z0-9_]{0,63}")
+
+
+def _origin(url: str) -> str:
+    parts = urlsplit(url)
+    return f"{parts.scheme}://{parts.netloc}" if parts.scheme and parts.netloc else ""
+
+
+def _recovery_link(recovery: Any, *, origin: str) -> dict[str, str]:
+    """The gateway's recovery {code, href}, with a path made absolute against its origin."""
+
+    if not isinstance(recovery, Mapping):
+        return {}
+    code = str(recovery.get("code") or "")
+    href = str(recovery.get("href") or "").strip()
+    if not _CODE.fullmatch(code) or not href or len(href) > 4096:
+        return {}
+    if href.startswith("/") and not href.startswith("//") and origin:
+        href = origin + href
+    if not (href.startswith("https://") or (origin and href.startswith(origin + "/"))):
+        return {}
+    return {"code": code, "href": href}
+
+
+def _refusal(result: Mapping[str, Any], *, origin: str) -> DomainError:
+    """A refused call as a fixed code; only the gateway's own denial carries a code or link."""
 
     structured = result.get("structuredContent") if isinstance(result.get("structuredContent"), Mapping) else {}
-    error = structured.get("error") if isinstance(structured.get("error"), Mapping) else structured
-    code = str(error.get("code") or error.get("reason") or "agent_service_refused")
-    details: dict[str, Any] = {}
-    for key in ("recovery_url", "authorization_url", "invocation_id", "resource", "operation"):
-        value = error.get(key)
-        if isinstance(value, str) and value:
-            details[key] = value[:2048]
-    recovery = error.get("recovery")
-    if isinstance(recovery, Mapping):
-        details["recovery"] = {
-            str(key): str(value)[:2048]
-            for key, value in recovery.items()
-            if isinstance(value, (str, int)) and key in {"type", "reason", "authorization_url", "invocation_id", "expires_at"}
-        }
+    if str(structured.get("error") or "") not in _GATEWAY_REFUSALS:
+        return DomainError(
+            "agent_service_tool_failed",
+            "The service reported a failure; its own text is not shown.",
+            status=502,
+        )
+    code = str(structured.get("code") or structured.get("reason") or "")
+    if not _CODE.fullmatch(code):
+        code = "agent_service_refused"
+    details: dict[str, Any] = {"retryable": bool(structured.get("retryable"))}
+    for key in ("invocation_id", "resource_id", "operation", "tool_name"):
+        value = structured.get(key)
+        if isinstance(value, str) and value and len(value) <= 2048:
+            details[key] = value
+    link = _recovery_link(structured.get("recovery"), origin=origin)
+    if link:
+        details["recovery"] = link
     return DomainError(
-        code if code.replace("_", "").isalnum() else "agent_service_refused",
+        code,
         "Connection Hub refused this service call; the code and recovery link say why.",
         status=403,
         details=details,
     )
 
 
-async def run_agent_services(action: str, payload: Mapping[str, Any], *, open_tools: OpenTools) -> dict[str, Any]:
-    """Answer one agent-services request through the gateway session ``open_tools`` opens."""
+async def run_agent_services(
+    action: str, payload: Mapping[str, Any], *, open_tools: OpenTools, gateway: str = "",
+) -> dict[str, Any]:
+    """Answer one agent-services request through the gateway session ``open_tools`` opens.
+
+    ``gateway`` is the gateway's URL; a recovery link that is a path is made
+    absolute against its origin.
+    """
 
     if action not in ACTIONS:
         raise DomainError("work_agent_services_action_unknown", "Unknown agent services request.", status=400)
@@ -197,16 +236,27 @@ async def run_agent_services(action: str, payload: Mapping[str, Any], *, open_to
         invocation_id = str(payload.get("invocation_id") or "").strip()
         if not invocation_id:
             raise DomainError("agent_service_invocation_id_missing", "A call needs its invocation id.", status=400)
-        result = _dump(await remote.call_tool(
-            name=name,
-            arguments=dict(arguments),
-            input_responses=None,
-            request_state=None,
-            meta={INVOCATION_META_KEY: invocation_id},
-            progress_callback=None,
-        ))
+        try:
+            raw = await remote.call_tool(
+                name=name,
+                arguments=dict(arguments),
+                input_responses=None,
+                request_state=None,
+                meta={INVOCATION_META_KEY: invocation_id},
+                progress_callback=None,
+            )
+        except DomainError:
+            raise
+        except Exception as exc:  # noqa: BLE001 - a protocol failure carries no trusted text
+            raise DomainError(
+                "agent_service_unavailable",
+                "The service could not be reached through Connection Hub; retry with the same invocation id.",
+                status=503,
+                details={"invocation_id": invocation_id},
+            ) from exc
+        result = _dump(raw)
         if result.get("isError"):
-            raise _refusal(result)
+            raise _refusal(result, origin=_origin(gateway))
         answer = _bounded_result(result)
         answer["invocation_id"] = answer["invocation_id"] or invocation_id
         answer["name"] = name
