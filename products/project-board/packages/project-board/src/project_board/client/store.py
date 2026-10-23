@@ -10160,6 +10160,7 @@ class SharedFieldStore:
         revision: int,
         goal: Any = None,
         edit_allowed: bool | None = None,
+        worker_name: str = "",
     ) -> bool:
         """Keep where the project's files are, as the board last listed them (W370).
 
@@ -10214,14 +10215,32 @@ class SharedFieldStore:
                     }
                 )
                 changed = True
-            if edit_allowed is not None and record.get("edit_allowed") is not edit_allowed:
-                record["edit_allowed"] = edit_allowed
+            # W943 F2-D: the edit permission is the beating worker's own (its
+            # Card's project.files.edit). Kept in the shared files.json, every
+            # worker on the host read whichever worker beat last, and the file
+            # flipped between them. It lives per worker; the shared key goes.
+            if "edit_allowed" in record:
+                record.pop("edit_allowed")
                 changed = True
+            access_changed = False
+            if edit_allowed is not None and worker_name:
+                access_path = self._project_files_access_path(clean_id, worker_name)
+                access = read_json(access_path, required=False) or {}
+                if access.get("edit_allowed") is not edit_allowed:
+                    atomic_write_json(access_path, {"edit_allowed": edit_allowed, "updated_at": utc_now()})
+                    access_changed = True
             if not changed:
-                return False
+                return access_changed
             record["updated_at"] = utc_now()
             atomic_write_json(path, record)
             return True
+
+    def _project_files_access_path(self, clean_id: str, worker_name: str) -> Path:
+        return (
+            self._project_dir(clean_id)
+            / "files-access"
+            / f"{component(worker_name, field='worker_name').lower()}.json"
+        )
 
     def record_project_files_seen(
         self, worker_name: str, project_id: str, *, files_revision: int, files: Mapping[str, str]
@@ -10316,17 +10335,26 @@ class SharedFieldStore:
             taken.append({key: value for key, value in record.items() if key != "delivered"})
         return taken
 
-    def read_project_files(self, project_id: str) -> dict[str, Any]:
-        """The files list; ``known`` is False until a board that sends it answered (W370)."""
+    def read_project_files(self, project_id: str, *, worker_name: str = "") -> dict[str, Any]:
+        """The files list; ``known`` is False until a board that sends it answered (W370).
 
-        path = self._project_dir(component(project_id, field="project_id")) / "files.json"
-        record = read_json(path, required=False) or {}
+        ``edit_allowed`` is ``worker_name``'s own permission, False when that
+        worker's channel has not reported one or no worker is named (W943 F2-D).
+        """
+
+        clean_id = component(project_id, field="project_id")
+        record = read_json(self._project_dir(clean_id) / "files.json", required=False) or {}
+        access = (
+            read_json(self._project_files_access_path(clean_id, worker_name), required=False) or {}
+            if worker_name
+            else {}
+        )
         return {
             "known": bool(record),
             "files": [dict(row) for row in record.get("files") or [] if isinstance(row, Mapping)],
             "files_revision": int(record.get("files_revision") or 0),
             "goal": str(record.get("goal") or ""),
-            "edit_allowed": bool(record.get("edit_allowed")),
+            "edit_allowed": access.get("edit_allowed") is True,
         }
 
     def read_project_card(self, project_id: str) -> dict[str, Any]:

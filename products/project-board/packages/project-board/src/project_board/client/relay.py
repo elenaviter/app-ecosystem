@@ -4685,6 +4685,7 @@ class ProblemBoardHostRelayAdapter:
             revision=int(project.get("files_revision") or 0),
             goal=project.get("goal"),
             edit_allowed=allowed if isinstance(allowed, bool) else None,
+            worker_name=self.config.worker_name,
         )
 
     def _sync_project_card(self, project: Mapping[str, Any]) -> None:
