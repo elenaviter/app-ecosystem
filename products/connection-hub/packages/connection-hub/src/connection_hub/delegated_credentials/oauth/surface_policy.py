@@ -405,15 +405,8 @@ def authorize_credential_boundary(
                 description="delegated credential catalog is unavailable",
             )
         )
-    row = catalog.resource_config(
-        CapabilityRequest(
-            kind=CAPABILITY_RESOURCE,
-            resource=matched_resource,
-            request_resource=request_resource,
-        )
-    )
     refusal = entry_binding_refusal(
-        row=row,
+        bound=catalog.entry_bound(resource=matched_resource, request_resource=request_resource),
         grant_record=grant_record,
         request_resource=request_resource,
         matched_resource=matched_resource,
@@ -486,10 +479,7 @@ def authorize_credential_identity_boundary(
             )
         )
     for resource in view.resources:
-        row = catalog.resource_config(
-            CapabilityRequest(kind=CAPABILITY_RESOURCE, resource=resource, request_resource="")
-        )
-        if bool(getattr(row, "entry_bound", False)):
+        if catalog.entry_bound(resource=resource):
             return SurfacePolicyDecision.deny(
                 SurfacePolicyDenial(
                     reason=RESOURCE_OUTSIDE_ENTRY,

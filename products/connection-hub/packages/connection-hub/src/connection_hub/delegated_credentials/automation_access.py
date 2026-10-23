@@ -194,6 +194,7 @@ from connection_hub.delegated_credentials.project_invitation_binding import (
 from connection_hub.delegated_credentials.project_person_access import (
     ProjectPersonControlLifecycle,
 )
+from connection_hub.delegated_credentials.entry_binding import entry_bound_row
 from connection_hub.delegated_credentials.cards.identity import (
     CARD_KINDS,
     CARD_KIND_AGENT,
@@ -6596,7 +6597,7 @@ class AutomationAccessService:
             _clean(resource)
             for resource in resource_grants
             if _clean(resource)
-            and bool(getattr(self._configured_resource(resource, config=catalog_config), "entry_bound", False))
+            and entry_bound_row(getattr(catalog_config, "resources", ()) or (), resource=_clean(resource))
             and (
                 existing.card_kind != CARD_KIND_CONNECTOR
                 or _clean(resource) not in {_clean(held) for held in existing.resource_grants}

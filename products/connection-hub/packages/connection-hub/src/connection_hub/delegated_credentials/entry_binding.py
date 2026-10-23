@@ -16,10 +16,11 @@ base, never a request header. Anything that cannot be canonicalized refuses.
 from __future__ import annotations
 
 import re
-from typing import Any, Mapping
+from typing import Any, Iterable, Mapping
 from urllib.parse import unquote, urlsplit
 
 from connection_hub.delegated_credentials.cards.identity import CARD_KIND_CONNECTOR
+from connection_hub.delegated_credentials.resource_operations import normalize_resource, resource_matches
 
 RESOURCE_OUTSIDE_ENTRY = "resource_outside_entry"
 
@@ -112,9 +113,32 @@ def entry_covers(entry: Any, request: Any, *, public_base: Any) -> bool:
     return canonical_request == canonical_entry or canonical_request.startswith(canonical_entry + "/")
 
 
+def entry_bound_row(rows: Iterable[Any], *, resource: str, request_resource: str = "") -> bool:
+    """Whether any entry-bound row governs this Card key or this request.
+
+    Independent of declaration order: a broader, unbound row declared first
+    must not hide the bound one. A row counts when it equals or matches the
+    Card's key, or matches the request URL.
+    """
+
+    key = normalize_resource(resource)
+    request = normalize_resource(request_resource)
+    for row in rows or ():
+        if not bool(getattr(row, "entry_bound", False)):
+            continue
+        pattern = normalize_resource(getattr(row, "resource", ""))
+        if not pattern:
+            continue
+        if key and (pattern == key or resource_matches(pattern, key)):
+            return True
+        if request and resource_matches(pattern, request):
+            return True
+    return False
+
+
 def entry_binding_refusal(
     *,
-    row: Any,
+    bound: bool,
     grant_record: Mapping[str, Any] | None,
     request_resource: str,
     matched_resource: str,
@@ -127,7 +151,7 @@ def entry_binding_refusal(
     row is admitted; whole-Card, Control and entry-less Cards are refused.
     """
 
-    if not bool(getattr(row, "entry_bound", False)):
+    if not bound:
         return ""
     record = dict(grant_record or {})
     if str(record.get("card_kind") or "").strip() != CARD_KIND_CONNECTOR:
@@ -144,5 +168,6 @@ __all__ = [
     "RESOURCE_OUTSIDE_ENTRY",
     "canonical_entry_url",
     "entry_binding_refusal",
+    "entry_bound_row",
     "entry_covers",
 ]

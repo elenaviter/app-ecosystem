@@ -230,6 +230,27 @@ def test_a_row_that_is_not_entry_bound_is_unchanged() -> None:
     assert decision.allowed and decision.matched_resource == PATTERN
 
 
+def _broader_first_catalog() -> ActiveCatalogCapabilities:
+    connections = _connections()
+    rows = connections["delegated_credentials"]["oauth"]["resources"]
+    broader = {
+        "resource": "*/api/integrations/bundles/*/*/problem-board@1-0/public/*",
+        "grants": ["a2a:task"],
+        "tools": {name: {"grants": ["a2a:task"]} for name in OPERATIONS},
+    }
+    connections["delegated_credentials"]["oauth"]["resources"] = [broader, *rows]
+    return ActiveCatalogCapabilities(CatalogDocument.build(connections))
+
+
+def test_a_broader_unbound_row_declared_first_does_not_unbind_the_entry() -> None:
+    catalog = _broader_first_catalog()
+    refused = _admit(f"{DOOR}/agent-y", catalog=catalog)
+    assert not refused.allowed and refused.denial.reason == RESOURCE_OUTSIDE_ENTRY
+    assert _admit(ENTRY_X + "/message:send", catalog=catalog).allowed
+    automation = _admit(ENTRY_X, catalog=catalog, record=_record(kind="automation"))
+    assert not automation.allowed and automation.denial.reason == RESOURCE_OUTSIDE_ENTRY
+
+
 def test_no_door_can_omit_the_catalog_or_the_public_base() -> None:
     for function, names in (
         (authorize_credential_boundary, ("catalog", "public_base")),
