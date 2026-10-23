@@ -367,6 +367,21 @@ def _recipient_rows(recipients: Sequence[Mapping[str, Any]]) -> dict[str, dict[s
     return rows
 
 
+# W943 F2-D: keys a sync stamps on every write. Comparing a synced record
+# with what is stored ignores them, so an unchanged reply writes nothing.
+SYNC_WRITE_STAMPS = frozenset({"updated_at"})
+
+
+def _same_synced_content(stored: Mapping[str, Any] | None, record: Mapping[str, Any]) -> bool:
+    """Whether a stored synced record already holds ``record``, per-write stamps aside."""
+
+    if not stored:
+        return False
+    return {k: v for k, v in stored.items() if k not in SYNC_WRITE_STAMPS} == {
+        k: v for k, v in record.items() if k not in SYNC_WRITE_STAMPS
+    }
+
+
 FIELD_SCHEMA = "problem-board.shared-field.v1"
 MAIL_SCHEMA = "problem-board.local-mail.v1"
 MAIL_LEASE_PAGE_SCHEMA = "problem-board.local-mail-leases.v1"
@@ -2117,15 +2132,23 @@ class SharedFieldStore:
                     "Expected a work:assignment reference.",
                 )
             active_assignment_ids.add(parsed.object_id)
+        def stale(row: Mapping[str, Any]) -> bool:
+            return (
+                str(row.get("worker_name") or "").lower() == clean_worker
+                and str(row.get("state") or "") in {"assigned", "working", "blocked"}
+                and self._assignment_object_id(row) not in active_assignment_ids
+            )
+
+        # W943 F2-D: this worker's own pending rows only, read before the
+        # lock; the project lock is taken only to remove a stale one, because
+        # notice materialization writes assignment rows under it.
+        store = self._assignments(clean_project)
+        if not any(stale(row) for row in store.list_pending(worker_name=clean_worker)):
+            return 0
         removed = 0
         with exclusive_lock(self._project_lock(clean_project)):
-            for row in self.list_assignments(clean_project):
-                if (
-                    str(row.get("worker_name") or "").lower() != clean_worker
-                    or str(row.get("state") or "")
-                    not in {"assigned", "working", "blocked"}
-                    or self._assignment_object_id(row) in active_assignment_ids
-                ):
+            for row in store.list_pending(worker_name=clean_worker):
+                if not stale(row):
                     continue
                 parsed = parse_ref(str(row.get("assignment_ref") or ""))
                 self._assignments(clean_project).remove(
@@ -9958,66 +9981,73 @@ class SharedFieldStore:
         can write to a teammate without a control-plane round trip."""
         clean_id = component(project_id, field="project_id")
         path = self._project_dir(clean_id) / "team.json"
+        rows = []
+        for member in team:
+            if not isinstance(member, Mapping) or not str(member.get("worker_name") or "").strip():
+                continue
+            runtime_model = _team_runtime_model(member.get("runtime_model"))
+            raw_account = member.get("runtime_account")
+            if not isinstance(raw_account, Mapping):
+                raw_account = member.get("provider_account")
+            runtime_account = _team_runtime_account(raw_account)
+            if runtime_account:
+                runtime_account["source"] = str(
+                    runtime_account.get("source")
+                    or member.get("runtime_account_source")
+                    or member.get("provider_account_source")
+                    or ""
+                )[:64]
+                runtime_account["observed_at"] = str(
+                    runtime_account.get("observed_at")
+                    or member.get("runtime_account_observed_at")
+                    or member.get("provider_account_observed_at")
+                    or ""
+                )[:64]
+            rows.append(
+                {
+                    "worker_name": str(member.get("worker_name") or "").lower(),
+                    "worker_alias": str(member.get("worker_alias") or ""),
+                    "role": str(member.get("role") or "worker"),
+                    "runtime_kind": str(member.get("runtime_kind") or ""),
+                    "capabilities": [str(item) for item in (member.get("capabilities") or [])],
+                    "host_id": str(member.get("host_id") or ""),
+                    "host_label": str(member.get("host_label") or ""),
+                    "host_kind": str(member.get("host_kind") or ""),
+                    "pool_status": str(member.get("pool_status") or ""),
+                    "presence": str(member.get("presence") or ""),
+                    # W26 line 7: a teammate's usage limit as its runtime
+                    # last reported it; empty means not reported.
+                    "limit_state": _team_limit_state(member.get("limit_state")),
+                    # W393: the same relay packet carries model, reasoning
+                    # effort and token-free provider-account identity. Keep
+                    # their source and observation time for compact reads.
+                    "runtime_model": runtime_model,
+                    "runtime_account": runtime_account,
+                    # W330: the teammate's own line about itself; empty when none.
+                    "info_text": str(member.get("info_text") or ""),
+                    "info_set_at": str(member.get("info_set_at") or "")[:64],
+                    # W393: a held or recovered native wake, as the board
+                    # reports it for the teammate's live session; empty
+                    # from a board that does not report it.
+                    "wake_hold": _team_wake_record(
+                        member.get("wake_hold"), ("since", "until", "pending")
+                    ),
+                    "wake_recovery": _team_wake_record(
+                        member.get("wake_recovery"),
+                        ("wake_id", "state", "requested_at", "recorded_at"),
+                    ),
+                }
+            )
+        record = {"schema": FIELD_SCHEMA, "project_id": clean_id, "members": rows, "updated_at": utc_now()}
+        # W943 F2-D: compare before the lock; an unchanged team writes nothing.
+        stored = read_json(path, required=False)
+        if _same_synced_content(stored, record):
+            return dict(stored)
         with exclusive_lock(self._project_lock(clean_id)):
             self.read_project(clean_id)
-            rows = []
-            for member in team:
-                if not isinstance(member, Mapping) or not str(member.get("worker_name") or "").strip():
-                    continue
-                runtime_model = _team_runtime_model(member.get("runtime_model"))
-                raw_account = member.get("runtime_account")
-                if not isinstance(raw_account, Mapping):
-                    raw_account = member.get("provider_account")
-                runtime_account = _team_runtime_account(raw_account)
-                if runtime_account:
-                    runtime_account["source"] = str(
-                        runtime_account.get("source")
-                        or member.get("runtime_account_source")
-                        or member.get("provider_account_source")
-                        or ""
-                    )[:64]
-                    runtime_account["observed_at"] = str(
-                        runtime_account.get("observed_at")
-                        or member.get("runtime_account_observed_at")
-                        or member.get("provider_account_observed_at")
-                        or ""
-                    )[:64]
-                rows.append(
-                    {
-                        "worker_name": str(member.get("worker_name") or "").lower(),
-                        "worker_alias": str(member.get("worker_alias") or ""),
-                        "role": str(member.get("role") or "worker"),
-                        "runtime_kind": str(member.get("runtime_kind") or ""),
-                        "capabilities": [str(item) for item in (member.get("capabilities") or [])],
-                        "host_id": str(member.get("host_id") or ""),
-                        "host_label": str(member.get("host_label") or ""),
-                        "host_kind": str(member.get("host_kind") or ""),
-                        "pool_status": str(member.get("pool_status") or ""),
-                        "presence": str(member.get("presence") or ""),
-                        # W26 line 7: a teammate's usage limit as its runtime
-                        # last reported it; empty means not reported.
-                        "limit_state": _team_limit_state(member.get("limit_state")),
-                        # W393: the same relay packet carries model, reasoning
-                        # effort and token-free provider-account identity. Keep
-                        # their source and observation time for compact reads.
-                        "runtime_model": runtime_model,
-                        "runtime_account": runtime_account,
-                        # W330: the teammate's own line about itself; empty when none.
-                        "info_text": str(member.get("info_text") or ""),
-                        "info_set_at": str(member.get("info_set_at") or "")[:64],
-                        # W393: a held or recovered native wake, as the board
-                        # reports it for the teammate's live session; empty
-                        # from a board that does not report it.
-                        "wake_hold": _team_wake_record(
-                            member.get("wake_hold"), ("since", "until", "pending")
-                        ),
-                        "wake_recovery": _team_wake_record(
-                            member.get("wake_recovery"),
-                            ("wake_id", "state", "requested_at", "recorded_at"),
-                        ),
-                    }
-                )
-            record = {"schema": FIELD_SCHEMA, "project_id": clean_id, "members": rows, "updated_at": utc_now()}
+            stored = read_json(path, required=False)
+            if _same_synced_content(stored, record):
+                return dict(stored)
             atomic_write_json(path, record)
             return record
 
@@ -10047,15 +10077,22 @@ class SharedFieldStore:
         clean_id = component(project_id, field="project_id")
         path = self._project_dir(clean_id) / "repositories.json"
         email = str(commit_identity_email or "").strip() if commit_identity_email is not None else None
+
+        def held_already(current: Mapping[str, Any]) -> bool:
+            held = int(current.get("revision") or 0)
+            if held > int(revision) > 0:
+                return True
+            return held == int(revision) > 0 and (
+                email is None or str(current.get("commit_identity_email") or "") == email
+            )
+
+        # W943 F2-D: a revision this host holds is decided before the lock.
+        if held_already(read_json(path, required=False) or {}):
+            return False
         with exclusive_lock(self._project_lock(clean_id)):
             self.read_project(clean_id)
             current = read_json(path, required=False) or {}
-            held = int(current.get("revision") or 0)
-            if held > int(revision) > 0:
-                return False
-            if held == int(revision) > 0 and (
-                email is None or str(current.get("commit_identity_email") or "") == email
-            ):
+            if held_already(current):
                 return False
             rows: list[dict[str, Any]] = []
             for raw in repositories:
@@ -10133,6 +10170,10 @@ class SharedFieldStore:
                 rows.append({"label": label, "value": value})
             if len(rows) >= self.PROJECT_FACTS_MAX:
                 break
+        # W943 F2-D: a revision this host holds is decided before the lock.
+        stored = read_json(path, required=False) or {}
+        if stored and int(stored.get("facts_revision") or 0) >= int(revision):
+            return False
         with exclusive_lock(self._project_lock(clean_id)):
             self.read_project(clean_id)
             current = read_json(path, required=False) or {}
@@ -10200,6 +10241,18 @@ class SharedFieldStore:
                     "description": " ".join(str(raw.get("description") or "").split())[:200],
                 }
             )
+        access_changed = False
+        if edit_allowed is not None and worker_name and self._project_path(clean_id).exists():
+            # Only this worker's channel writes its own access file.
+            access_path = self._project_files_access_path(clean_id, worker_name)
+            access = read_json(access_path, required=False) or {}
+            if access.get("edit_allowed") is not edit_allowed:
+                atomic_write_json(access_path, {"edit_allowed": edit_allowed, "updated_at": utc_now()})
+                access_changed = True
+        # W943 F2-D: a list this host holds is decided before the lock.
+        stored = read_json(path, required=False) or {}
+        if stored and int(revision) <= int(stored.get("files_revision") or 0) and "edit_allowed" not in stored:
+            return access_changed
         with exclusive_lock(self._project_lock(clean_id)):
             self.read_project(clean_id)
             current = read_json(path, required=False) or {}
@@ -10222,13 +10275,6 @@ class SharedFieldStore:
             if "edit_allowed" in record:
                 record.pop("edit_allowed")
                 changed = True
-            access_changed = False
-            if edit_allowed is not None and worker_name:
-                access_path = self._project_files_access_path(clean_id, worker_name)
-                access = read_json(access_path, required=False) or {}
-                if access.get("edit_allowed") is not edit_allowed:
-                    atomic_write_json(access_path, {"edit_allowed": edit_allowed, "updated_at": utc_now()})
-                    access_changed = True
             if not changed:
                 return access_changed
             record["updated_at"] = utc_now()
@@ -10404,10 +10450,19 @@ class SharedFieldStore:
             "revision": int(coordinator.get("revision") or 0),
             "updated_at": utc_now(),
         }
+        def keep_stored(current: Mapping[str, Any]) -> bool:
+            return bool(current) and (
+                int(current.get("revision") or 0) > record["revision"]
+                or _same_synced_content(current, record)
+            )
+
+        # W943 F2-D: compare before the lock; an older or unchanged view writes nothing.
+        if keep_stored(read_json(path, required=False) or {}):
+            return None
         with exclusive_lock(self._project_lock(clean_id)):
             self.read_project(clean_id)
             current = read_json(path, required=False) or {}
-            if current and int(current.get("revision") or 0) > record["revision"]:
+            if keep_stored(current):
                 return None
             atomic_write_json(path, record)
             return record
@@ -10456,15 +10511,25 @@ class SharedFieldStore:
             for name, value in roles.items()
             if isinstance(name, str) and name
         }
-        with exclusive_lock(self._project_lock(clean_id)):
-            self.read_project(clean_id)
-            current = read_json(path, required=False) or {}
+        def merged(current: Mapping[str, Any]) -> dict[str, Any]:
             kept = dict(current.get("roles") or {})
             for name, record in incoming.items():
                 previous = kept.get(name) or {}
                 if int(previous.get("revision") or 0) > record["revision"]:
                     continue
                 kept[name] = record
+            return kept
+
+        # W943 F2-D: compare before the lock; roles that would not change write nothing.
+        stored = read_json(path, required=False) or {}
+        if stored and merged(stored) == dict(stored.get("roles") or {}):
+            return dict(stored)
+        with exclusive_lock(self._project_lock(clean_id)):
+            self.read_project(clean_id)
+            current = read_json(path, required=False) or {}
+            kept = merged(current)
+            if current and kept == dict(current.get("roles") or {}):
+                return dict(current)
             written = {
                 "schema": FIELD_SCHEMA,
                 "project_id": clean_id,
