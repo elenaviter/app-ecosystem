@@ -343,9 +343,12 @@ def test_an_editor_with_fewer_grants_than_the_card_saves_an_unrelated_change_but
     """
 
     service, creator, control_id, resource = _real_card()
-    asyncio.run(service.control_card_update(
-        creator, control_id=control_id, resource_grants={resource: ["named_services:use", "slack:read"]},
+    # W562 F3: the creator widens a project's Control Card through the project too.
+    widened = asyncio.run(ProjectControlCardAccess(service, _real_port(control_id, via="owner")).update(
+        creator, control_id=control_id, project_ref=PROJECT, request_id="req-widen",
+        resource_grants={resource: ["named_services:use", "slack:read"]},
     ))
+    assert widened.get("ok") is True, widened
     ada = {"user_id": "ada", "roles": ["kdcube:role:registered"], "permissions": []}
     access = ProjectControlCardAccess(service, _real_port(control_id))
     renamed = asyncio.run(access.update(

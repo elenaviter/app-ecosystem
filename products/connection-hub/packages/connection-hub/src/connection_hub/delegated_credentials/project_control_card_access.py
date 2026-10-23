@@ -309,6 +309,7 @@ class ProjectControlCardAccess:
             _platform_admin=_platform_admin(user),
             _record_transform=self._audit(user, decision, request_id=request_id),
             _acting_user=user,
+            _through_project=True,
             **changes,
         )
         if result.get("ok") is not True:
