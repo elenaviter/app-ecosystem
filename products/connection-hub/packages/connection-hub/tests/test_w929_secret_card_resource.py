@@ -116,6 +116,10 @@ def test_no_consent_offers_the_secret_row_as_a_child():
 DEPLOYMENT_ROW = "urn:kdcube:management:deployment:*:*"
 DOOR = "urn:kdcube:management:deployment:tenant-a:project-a"
 INSPECT = "kdcube.management.deployment.inspect"
+USER_PROPS_ROW = "urn:kdcube:management:user-props:*:*"
+USER_PROPS_DOOR = "urn:kdcube:management:user-props:tenant-a:project-a"
+IMPORT = "kdcube.management.user_props.import"
+OTHER_SECRET = "urn:kdcube:management:secret:tenant-a:project-a:bundle:connection-hub@1-0:connections.other_key"
 
 
 def _connections_with_door_and_secrets():
@@ -266,3 +270,55 @@ async def test_editor_save_refuses_a_secret_through_a_management_door_that_selec
     assert result["ok"] is False, result
     assert result["error"] == "oauth_client_resource_unreachable", result
     assert result["resources"] == [SECRET]
+
+
+@pytest.mark.asyncio
+async def test_editor_save_refuses_a_secret_on_a_card_entered_through_another_management_door(tmp_path):
+    connections = _connections_with_door_and_secrets()
+    oauth = connections["delegated_credentials"]["oauth"]
+    oauth["capabilities"].append(
+        {"grant": IMPORT, "label": "Import user props", "delegable_roles": ["kdcube:role:super-admin"]}
+    )
+    oauth["resources"].append({
+        "resource": USER_PROPS_ROW,
+        "label": "KDCube user props",
+        "admin_only": True,
+        "resource_selection": True,
+        "operations": {IMPORT: {"grants": [IMPORT]}},
+    })
+    harness = _Harness(tmp_path, connections=connections)
+    record = await harness.service.record_oauth_grant(
+        grantor_subject=GRANTOR, client_id=CLIENT, client_label="Connection Hub CLI",
+        scopes=[IMPORT], resource=USER_PROPS_DOOR, access_token="at-1", refresh_token="rt-1",
+    )
+    assert record is not None
+
+    result = await harness.service.update_access(
+        ADMIN, access_id=record.access_id,
+        resource_grants={USER_PROPS_ROW: [IMPORT], SECRET: [WRITE]},
+        resource_operations={USER_PROPS_ROW: [IMPORT], SECRET: [WRITE]},
+    )
+
+    assert result["ok"] is False, result
+    assert result["error"] == "oauth_client_resource_unreachable", result
+    assert result["resources"] == [SECRET]
+
+
+@pytest.mark.asyncio
+async def test_editor_save_adds_an_exact_secret_to_a_card_entered_through_one_exact_secret(tmp_path):
+    harness = _Harness(tmp_path, connections=_connections_with_door_and_secrets())
+    record = await harness.service.record_oauth_grant(
+        grantor_subject=GRANTOR, client_id=CLIENT, client_label="Connection Hub CLI",
+        scopes=[WRITE], resource=SECRET, access_token="at-1", refresh_token="rt-1",
+    )
+    assert record is not None
+
+    result = await harness.service.update_access(
+        ADMIN, access_id=record.access_id,
+        resource_grants={SECRET: [WRITE], OTHER_SECRET: [WRITE]},
+        resource_operations={SECRET: [WRITE], OTHER_SECRET: [WRITE]},
+    )
+
+    assert result.get("ok") is not False, result
+    card = await harness.card(record.access_id)
+    assert set(card.resource_grants) == {SECRET, OTHER_SECRET}
