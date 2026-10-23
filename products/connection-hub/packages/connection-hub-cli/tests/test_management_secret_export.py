@@ -485,7 +485,9 @@ async def test_http_transport_rejects_duplicate_response_fields() -> None:
                 ("Content-Type", "application/json"),
                 ("Content-Encoding", "gzip"),
             ],
-            gzip.compress(b'{"ok":true}'),
+            # mtime=0: gzip stamps the current time into its header, and the
+            # bytes are part of the test id, so workers must see the same ones.
+            gzip.compress(b'{"ok":true}', mtime=0),
         ),
     ],
 )
