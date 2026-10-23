@@ -87,7 +87,9 @@ references. Message bodies remain in the private local field.
 the worker's owner may see: the project team plus that owner's retired
 workers. Channels of different owners on one host therefore receive different
 lists, by design. Each list is stored per owner view, under
-`projects/<id>/mail-recipients/<view>.json`, never in one shared file, and a
+`projects/<id>/mail-recipients/<view>.json`, never in one shared file (the
+project-wide `mail-recipients.json` of earlier clients is removed at the first
+view write), and a
 run for one owner decides only the mailboxes whose reader belongs to that
 owner. A mailbox whose reader's owner is not recorded on the host is decided
 against all views merged, the freshest row per worker winning, so it stays
@@ -144,6 +146,25 @@ at the place it enforces them.
 | LS3 | Startup and per-cycle work is proportional to in-flight work, never to history. |
 | LS4 | A fact that gates expensive work (recovery done, retention due) is kept in the field, never in process memory. |
 | LS5 | Nothing whose cost grows with history runs on the relay's main loop. |
+| LS6 | Retention never holds a lock writers need for longer than one day of one agent's history. |
+
+Retention takes its inventory of hour folders (names and sizes) without any
+lock, then holds the store's own lock one day at a time for that day's
+removals and index rebuild; the host-wide outbox lock is not taken. This is
+safe because retention is the only remover of hour folders, and writers only
+add records: a writer puts a record in its creation hour, which can be an old
+one, but an hour past the cutoff is expired by its name whatever was added,
+and a stale inventory under-counts, so the size bounds remove fewer hours than
+a locked pass would, never more. Each hour is listed again under the lock
+before it is removed. Two passes at once are safe: a folder already gone is
+skipped. Readers of settled history treat a folder or record removed between
+their listing and their read as expired.
+
+A row in flight longer than the retention window is settled into its creation
+hour, which is already expired, so the next pass removes its history record.
+Nothing in flight is lost, and a resend replays under the same idempotency key,
+but `pb worker outbox-status` and mail replay then report the row expired, not
+settled. A retry bound shorter than the retention window removes the case.
 
 Records in flight live in a `pending/` folder, and recovery reads only that
 folder. Finished records live in hour folders,

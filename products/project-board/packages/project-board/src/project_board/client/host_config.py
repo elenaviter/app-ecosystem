@@ -159,10 +159,15 @@ DEFAULT_MAILBOX_RECONCILE_INTERVAL_SECONDS = 300
 
 
 def mailbox_reconcile_interval(relay: Mapping[str, Any]) -> int:
-    declared = relay.get("mailbox_reconcile_interval_seconds")
-    if not declared:
+    # A value that is not a number falls back to the default rather than
+    # stopping the relay from reading its config.
+    try:
+        declared = int(relay.get("mailbox_reconcile_interval_seconds") or 0)
+    except (TypeError, ValueError):
+        declared = 0
+    if declared <= 0:
         return DEFAULT_MAILBOX_RECONCILE_INTERVAL_SECONDS
-    return max(30, min(int(declared), 86_400))
+    return max(30, min(declared, 86_400))
 
 
 def _idle_reconcile_ceiling(relay: Mapping[str, Any]) -> int:

@@ -307,7 +307,14 @@ class OutboxStore:
         for ref, agents in by_project.items():
             path = self.partitioned(ref).find(outbox_id, agents=agents, within_days=OUTBOX_TERMINAL_RETENTION_DAYS)
             if path is not None:
-                return path, state_of_name(path.name) or str(read_json(path).get("state") or "")
+                state = state_of_name(path.name)
+                if state:
+                    return path, state
+                # Retention may remove a settled row between the lookup and
+                # this read (W943 F2-C): a row that is gone has expired.
+                row = read_json(path, required=False)
+                if row:
+                    return path, str(row.get("state") or "")
         for folder in OUTBOX_FOLDERS:
             path = self.legacy_root / folder / f"{outbox_id}.json"
             if path.is_file():
@@ -321,7 +328,10 @@ class OutboxStore:
 
     def read(self, outbox_id: str, **scope: str) -> dict[str, Any] | None:
         found = self.find(outbox_id, **scope)
-        return dict(read_json(found[0])) if found else None
+        if not found:
+            return None
+        row = read_json(found[0], required=False)
+        return dict(row) if row else None
 
     def settled_paths(self, *, project_ref: str, op: str) -> Iterator[Path]:
         """Every settled row of one project, oldest first: a full walk.
@@ -335,7 +345,10 @@ class OutboxStore:
             for agent in store.agents():
                 hours = list(store.hours_newest_first(agent))
                 for hour, start in reversed(hours):
-                    names = sorted(n for n in os.listdir(hour) if n.endswith(".json"))
+                    try:
+                        names = sorted(n for n in os.listdir(hour) if n.endswith(".json"))
+                    except FileNotFoundError:
+                        continue
                     read.opened(agent, start.strftime("%Y-%m-%dT%H"), len(names))
                     yield from (hour / name for name in names)
         for folder in ("sent", "refused"):

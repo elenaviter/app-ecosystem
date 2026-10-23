@@ -10493,6 +10493,10 @@ class SharedFieldStore:
             if view:
                 record["view"] = view
             atomic_write_json(path, record)
+            if view:
+                # Once a view exists, reads merge the views and never reach the
+                # project-wide file written before W943, so it is removed.
+                (self._project_dir(clean_id) / "mail-recipients.json").unlink(missing_ok=True)
             return record
 
     def read_project_mail_recipients(
@@ -13141,14 +13145,15 @@ class SharedFieldStore:
             # worker's delivery is refused as forbidden, not reported missing.
             found = self._outbox.find(clean_id)
             source = found[0] if found else None
-            if source is None:
+            # A settled row retention removed after the lookup is gone too.
+            original = read_json(source, required=False) if source is not None else {}
+            if not original:
                 raise DomainError(
                     "field_outbox_not_found",
                     "The requested outbound delivery does not exist.",
                     status=404,
                     details={"outbox_id": clean_id},
                 )
-            original = read_json(source)
         if str(original.get("kind") or "") != "mail.route":
             raise DomainError(
                 "field_mail_delivery_invalid",
@@ -13226,8 +13231,8 @@ class SharedFieldStore:
         with exclusive_lock(root / ".outbox.lock"):
             found = self._outbox.find(clean_id, worker_name=clean_worker)
             source = found[0] if found else None
-            if source is not None:
-                row = read_json(source)
+            row = read_json(source, required=False) if source is not None else {}
+            if row:
                 row.update(
                     replayed_at=row.get("replayed_at") or utc_now(),
                     replayed_to=str(resolution["worker_name"]),

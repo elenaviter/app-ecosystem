@@ -362,10 +362,7 @@ class PartitionedStore:
                     agent for start, agent in live if start == newest_start
                 ):
                     hour, start = heads[agent]  # type: ignore[misc]
-                    names = sorted(
-                        (n for n in os.listdir(hour) if n.endswith(".json")),
-                        reverse=True,
-                    )
+                    names = sorted(_record_names(hour) or (), reverse=True)
                     read.opened(
                         agent, start.strftime("%Y-%m-%dT%H"), len(names)
                     )
@@ -381,7 +378,7 @@ class PartitionedStore:
         """When the agent's newest record was created, from names alone."""
 
         for hour, start in self.hours_newest_first(agent):
-            names = sorted((n for n in os.listdir(hour) if n.endswith(".json")), reverse=True)
+            names = sorted(_record_names(hour) or (), reverse=True)
             if read is not None:
                 read.opened(agent_component(agent), start.strftime("%Y-%m-%dT%H"), 0)
             if names:
@@ -416,14 +413,16 @@ class PartitionedStore:
                             if day_end <= cutoff:
                                 break
                             ids = day / IDS_FILE
-                            if not ids.is_file():
+                            try:
+                                lines = ids.read_text(encoding="utf-8").splitlines()
+                            except (FileNotFoundError, NotADirectoryError):
                                 continue
                             read.opened(agent, f"{year.name}-{month.name}-{day.name}", 1)
-                            for line in reversed(ids.read_text(encoding="utf-8").splitlines()):
+                            for line in reversed(lines):
                                 parts = line.split()
                                 if len(parts) == 2 and parts[0] == record_id:
                                     folder = day / parts[1]
-                                    for name in os.listdir(folder) if folder.is_dir() else ():
+                                    for name in _record_names(folder) or ():
                                         if name.endswith(".json") and record_id_of(name) == record_id:
                                             return folder / name
                                     # A rewrite or removal can leave an older
@@ -448,23 +447,19 @@ class PartitionedStore:
         a record body. Once records older than ``cutoff`` are gone, the oldest
         remaining hour folders are removed until both optional per-agent
         bounds hold (W287, LS2).
+
+        W943 F2-C: the inventory (folder names and file sizes, the slow part)
+        is taken without :attr:`lock`; only each day's removals and index
+        rebuild hold it, so a writer waits at most one day's work, never a
+        whole store pass. This relies on retention being the only remover of
+        hour folders. Writers put a record in its creation hour, which can be
+        an old one, but they only add: an hour past ``cutoff`` is expired by
+        its name whatever was added, and a stale inventory under-counts, so the
+        size bounds remove fewer hours than a locked pass would, never more.
+        Each hour is listed again under the lock before it is removed, so the
+        counts are exact. Two passes at once are safe: a folder already gone
+        is skipped, and a day index is rebuilt from what exists.
         """
-
-        with exclusive_lock(self.lock):
-            return self._expire_unlocked(
-                cutoff=cutoff,
-                max_bytes_per_agent=max_bytes_per_agent,
-                max_records_per_agent=max_records_per_agent,
-            )
-
-    def _expire_unlocked(
-        self,
-        *,
-        cutoff: datetime,
-        max_bytes_per_agent: int,
-        max_records_per_agent: int,
-    ) -> dict[str, int]:
-        """Apply retention while :attr:`lock` excludes writers."""
 
         removed = {"partitions": 0, "records": 0}
         byte_limit = max(0, int(max_bytes_per_agent))
@@ -473,7 +468,9 @@ class PartitionedStore:
             inventory: list[tuple[Path, datetime, list[str], int]] = []
             with self.reading("retention") as read:
                 for hour, start in reversed(list(self.hours_newest_first(agent))):
-                    names = [name for name in os.listdir(hour) if name.endswith(".json")]
+                    names = _record_names(hour)
+                    if names is None:
+                        continue
                     size = 0
                     for name in names:
                         try:
@@ -484,17 +481,25 @@ class PartitionedStore:
                     inventory.append((hour, start, names, size))
 
                 retained: list[tuple[Path, datetime, list[str], int]] = []
+                days: dict[Path, list[Path]] = {}
                 for hour, start, names, size in inventory:
+                    days.setdefault(hour.parent, [])
                     if start + timedelta(hours=1) <= cutoff:
-                        shutil.rmtree(hour)
-                        removed["partitions"] += 1
-                        removed["records"] += len(names)
-                        read.removed_from(agent, len(names))
-                        continue
-                    retained.append((hour, start, names, size))
-
-                _rebuild_day_indexes(self.agent_root(agent), inventory)
-                _prune_empty_days(self.agent_root(agent))
+                        days[hour.parent].append(hour)
+                    else:
+                        retained.append((hour, start, names, size))
+                for day in sorted(days):
+                    with exclusive_lock(self.lock):
+                        for hour in days[day]:
+                            count = self._remove_hour(hour)
+                            if count is not None:
+                                removed["partitions"] += 1
+                                removed["records"] += count
+                                read.removed_from(agent, count)
+                        if day.is_dir() and _numbered(day, 2):
+                            rebuild_day_index(day, agent=agent, announce=False)
+                with exclusive_lock(self.lock):
+                    _prune_empty_days(self.agent_root(agent))
                 retained = [item for item in retained if item[0].is_dir()]
                 total_records = sum(len(names) for _hour, _start, names, _size in retained)
                 total_bytes = sum(size for _hour, _start, _names, size in retained)
@@ -505,24 +510,48 @@ class PartitionedStore:
                     or (byte_limit and total_bytes > byte_limit)
                 ):
                     hour, _start, names, size = retained.pop(0)
-                    shutil.rmtree(hour)
+                    with exclusive_lock(self.lock):
+                        count = self._remove_hour(hour)
+                        if hour.parent.is_dir() and _numbered(hour.parent, 2):
+                            rebuild_day_index(
+                                hour.parent,
+                                store=self.store,
+                                agent=agent,
+                                announce=False,
+                            )
+                        _prune_empty_days(self.agent_root(agent))
                     total_records -= len(names)
-                    removed["partitions"] += 1
-                    removed["records"] += len(names)
-                    read.removed_from(agent, len(names))
-                    if hour.parent.is_dir() and _numbered(hour.parent, 2):
-                        rebuild_day_index(
-                            hour.parent,
-                            store=self.store,
-                            agent=agent,
-                            announce=False,
-                        )
-                    _prune_empty_days(self.agent_root(agent))
+                    if count is not None:
+                        removed["partitions"] += 1
+                        removed["records"] += count
+                        read.removed_from(agent, count)
                     total_bytes = sum(
                         retained_size
                         for _retained_hour, _retained_start, _retained_names, retained_size in retained
                     ) + _index_bytes(self.agent_root(agent))
         return removed
+
+    @staticmethod
+    def _remove_hour(hour: Path) -> int | None:
+        """Remove one hour folder under :attr:`lock`; its record count, or None when it is gone.
+
+        The folder is listed again here, so the count includes a record a
+        writer added after the unlocked inventory. A folder another pass has
+        already removed is skipped. A folder that cannot be removed now (a
+        file appearing in it during removal) is left for the next pass.
+        """
+
+        names = _record_names(hour)
+        if names is None:
+            return None
+        try:
+            shutil.rmtree(hour)
+        except FileNotFoundError:
+            return None
+        except OSError:
+            logger.warning("Partition retention left an hour for the next pass: %s", hour, exc_info=True)
+            return None
+        return len(names)
 
 
 def rebuild_day_index(
@@ -581,13 +610,26 @@ def _index_bytes(agent_root: Path) -> int:
 
 
 def _numbered(parent: Path, width: int, *, reverse: bool = False) -> list[Path]:
-    if not parent.is_dir():
+    # W943 F2-C: retention removes folders without excluding readers, so a
+    # folder listed by a caller may be gone by the time it is read.
+    try:
+        children = list(parent.iterdir())
+    except (FileNotFoundError, NotADirectoryError):
         return []
     return sorted(
-        (child for child in parent.iterdir() if child.is_dir() and len(child.name) == width and child.name.isdigit()),
+        (child for child in children if child.is_dir() and len(child.name) == width and child.name.isdigit()),
         key=lambda child: child.name,
         reverse=reverse,
     )
+
+
+def _record_names(hour: Path) -> list[str] | None:
+    """The record file names in one hour folder, or None when retention removed it."""
+
+    try:
+        return [name for name in os.listdir(hour) if name.endswith(".json")]
+    except (FileNotFoundError, NotADirectoryError):
+        return None
 
 
 def _prune_empty_days(agent_root: Path) -> None:
@@ -599,22 +641,6 @@ def _prune_empty_days(agent_root: Path) -> None:
                     _rmdir(day)
             _rmdir(month)
         _rmdir(year)
-
-
-def _rebuild_day_indexes(
-    agent_root: Path,
-    inventory: list[tuple[Path, datetime, list[str], int]],
-) -> None:
-    """Compact every inventoried day before its index bytes enforce retention."""
-
-    days = {hour.parent for hour, _start, _names, _size in inventory}
-    for day in sorted(days):
-        if day.is_dir() and _numbered(day, 2):
-            rebuild_day_index(
-                day,
-                agent=agent_root.name,
-                announce=False,
-            )
 
 
 def _rmdir(path: Path) -> None:
