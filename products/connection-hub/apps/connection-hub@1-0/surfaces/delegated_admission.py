@@ -153,6 +153,15 @@ def _guard_denial_facts(response: Any) -> tuple[str, str, dict[str, Any]]:
     return code, message, payload
 
 
+# The guard's resource-boundary refusals (connection_hub ... oauth/surface_policy.authorize_credential_boundary),
+# which KDCube renders with no structured reason. Any other refusal (principal, authority) keeps its own code:
+# no grant can fix it.
+_RESOURCE_BOUNDARY_REFUSALS = frozenset({
+    "delegated credential resource mismatch",
+    "delegated credential resource is missing",
+})
+
+
 def _resource_not_held(result: Any, resource: str) -> bool:
     """Whether the caller's live Card holds no resource matching ``resource`` (a boundary refusal)."""
     envelope = getattr(result, "envelope", None)
@@ -533,7 +542,10 @@ async def handle_delegated_admission(
         # Hub CLI authorizes the deployment resource only, and its first secret request ended in a bare 403).
         # The service registers the resource (allows_resource passed above): the same consent link extends the
         # live Card with it, and the identical request is retried.
-        resource_extension = _resource_not_held(result, admission_request.resource)
+        resource_extension = (
+            str(guard_payload.get("error_description") or "").strip() in _RESOURCE_BOUNDARY_REFUSALS
+            and _resource_not_held(result, admission_request.resource)
+        )
         if resource_extension:
             code = "resource_not_consented"
             message = ("This connection's Card does not hold the requested resource. Grant it on the Card in "

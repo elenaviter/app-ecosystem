@@ -1228,21 +1228,21 @@ async def test_request_bound_direct_admission_accepts_only_exact_browser_permit(
     assert approved_body["provenance"]["request_permit_revision"] == 1
 
 
-def _boundary_refusal(*, held_resource: str):
+def _boundary_refusal(*, held_resource: str, description: str = "delegated credential resource mismatch"):
     """The guard's resource-boundary refusal as KDCube renders it: no structured reason, only the text."""
     base = _allowed_result(matched_resource=held_resource)
-    base.denial = JSONResponse(status_code=403, content={
-        "error": "forbidden", "error_description": "delegated credential resource mismatch"})
+    base.denial = JSONResponse(status_code=403, content={"error": "forbidden", "error_description": description})
     base.decision = None
     base.runtime = None
     base.catalog = None
     return base
 
 
-async def _admit_with_boundary_refusal(monkeypatch, *, held_resource, request_bound=False, operation="customers.search"):
+async def _admit_with_boundary_refusal(monkeypatch, *, held_resource, request_bound=False, operation="customers.search",
+                                       description="delegated credential resource mismatch"):
     module = _load_entrypoint_module()
     surface = sys.modules[module.handle_delegated_admission.__module__]
-    result = _boundary_refusal(held_resource=held_resource)
+    result = _boundary_refusal(held_resource=held_resource, description=description)
 
     async def _evaluate(**_kwargs):
         return result
@@ -1294,6 +1294,19 @@ async def test_a_boundary_refusal_for_a_held_resource_offers_no_consent(monkeypa
     """A Card that already holds the resource was refused for another boundary reason: no grant can fix that."""
     response, body, grant_calls, permit_calls = await _admit_with_boundary_refusal(
         monkeypatch, held_resource=RESOURCE)
+    assert response.status_code == 403
+    assert body["error"]["code"] != "resource_not_consented"
+    assert "consent" not in body or not body["consent"]
+    assert grant_calls == [] and permit_calls == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("description", ["delegated credential authority mismatch", "principal not allowed"])
+async def test_a_non_resource_refusal_keeps_its_code_even_when_the_resource_is_not_held(monkeypatch, description):
+    """claude-e-app's review of #875: only the resource boundary is fixed by a grant. An authority or principal
+    refusal on a Card that also lacks the resource keeps its own code and message, with no grant link."""
+    response, body, grant_calls, permit_calls = await _admit_with_boundary_refusal(
+        monkeypatch, held_resource="https://service.example/other", description=description)
     assert response.status_code == 403
     assert body["error"]["code"] != "resource_not_consented"
     assert "consent" not in body or not body["consent"]
