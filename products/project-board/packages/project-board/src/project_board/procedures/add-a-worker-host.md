@@ -56,7 +56,6 @@ Every step, in the order it happens:
 | 7, at 12 | **operator** | add each granted deploy key on GitHub, delete each revoked one | only a repository admin can grant or revoke access |
 | 7 | **the person** (each agent's owner) | link GitHub on My Card (**Set up GitHub** on their card on the board), set their commit email there, and install the GitHub App on each repository owner | the key is theirs; agents act as them |
 | 7 | host agent | run `pb worker connect-project` and read `github_key: ready` per repository | routine |
-| 7 | **operator**, fallback only | only when an owner has no GitHub key: a machine account's token pasted once, unseen, into `gh` for this user | the identity and its token are the operator's |
 | 8 | either | one empty workspace per agent | routine |
 | 9 | host agent | write one start script per agent, then start one `tmux` session per agent with it | routine |
 | 9 | **operator** decides, host agent applies it | approve unattended command mode: Claude Code's one-time bypass warning or Codex's `--ask-for-approval never` policy | it is the operator's risk decision; the host user and repository deploy keys remain the boundary |
@@ -142,7 +141,7 @@ before anything changes:
 | `tmux` on the host | installed by whoever administers the machine | step 9 runs each agent in it. It is a system package, so a user-level install cannot provide it. |
 | **teammates who may write to these agents** | `*` (the default), any agent that shares a project with them, or named workers such as the coordinator | the host's receiver policy (`receiver_policy.allowed_peer_workers`). `pb setup` writes `*` (operator ruling, 2026-09-26); step 3 narrows it only when the operator chose named workers or none. The board lets an agent in a shared project address them, and, while one of them attends no project, anyone who knows its exact stable name (never its alias) may send it a request, reply or ping; so `*` means "my project teammates, and whoever knows a new agent's id before it joins". It grants no access to anything: it decides whose mail reaches these agents. The operator's own messages reach them either way. |
 | **how the client is installed** | a published `project-board` version (for example `2026.9.26.1900`), or an exact App Ecosystem commit | step 2. A published release is one version from the package index, the default for a machine that only runs agents; exact commits are for a machine of the team that builds Project Board, or before a release is published (W304 U2). |
-| **GitHub access** | each agent's owner links GitHub on their My Card for the project, sets their commit email there, and the deployment's GitHub App is installed on each repository owner ([GitHub access for agents](repo:app-ecosystem/products/project-board/docs/github.md)) | agents push, open pull requests and post review verdicts as their owner, over HTTPS with `pb worker git-credential` and `pb worker gh`; nothing is signed in on the machine. A machine account (for example `kdcube-agents`) signed in to `gh`, and deploy keys (step 7), are the fallback, only for an owner with no key. |
+| **GitHub access** | each agent's owner links GitHub on their My Card for the project, sets their commit email there, and the deployment's GitHub App is installed on each repository owner ([GitHub access for agents](repo:app-ecosystem/products/project-board/docs/github.md)) | agents push, open pull requests and post review verdicts as their owner, over HTTPS with `pb worker git-credential` and `pb worker gh`; nothing is signed in on the machine. There is no other route: no machine account signed in to `gh`, and no deploy key (W942). |
 
 **Repositories are not a host decision.** They belong to the project: the
 operator sets them on the project card (Team, project card, repositories), and
@@ -543,14 +542,19 @@ their card on the board), its Card holds **Use GitHub**, and the deployment's
 GitHub App is installed on the repository. `pb worker connect-project` then
 clones over HTTPS with `pb worker git-credential` as each clone's helper, and
 `pb worker gh` runs gh with the key for one command. This host stores no
-GitHub token and needs no deploy key for those repositories. The deploy keys
-below are the **fallback** for a repository the key does not reach yet (its
-row's `github_key` names why) and for a machine whose owner has not linked
-GitHub. They are never a fallback for a repository the key does reach: when
-the key is unavailable or refused there, `pb worker push` fails and names the
-key's answer, and nothing is pushed another way (the project's route rule,
-W416). When origin moves to HTTPS, connect-project keeps this machine's
-deploy-key route as the `deploykey` remote, which no push uses.
+GitHub token and needs no deploy key.
+
+**Deploy keys are not used for GitHub (W942).** The operator, 2026-10-23: "only
+github defined in operator card should be used", "this is prohibited to use
+on-host github". `pb worker connect-project` reaches a GitHub repository only
+with the owner's key. For a repository the key does not serve yet, the row is
+`needs_key` with the key's answer (`github_key`), and the owner links GitHub
+on their Card with access to it. No deploy key is made, nothing is cloned or
+fetched over SSH, and no `deploykey` remote is added. `pb worker push` refuses
+an SSH or deploy-key remote (`push_remote_not_owner_key`). When the key is
+unavailable or refused, the push fails and names the key's answer, and nothing
+is pushed another way. The deploy-key steps below remain only to find and
+revoke keys made earlier.
 
 One **deploy key per repository**: an SSH key that one repository accepts for
 itself. A personal key would reach every repository its owner can reach, and
@@ -737,27 +741,14 @@ for github.com; commits carry the owner's My Card email.
 
 **When Connection Hub cannot answer** (a platform rebuild, an outage), the key
 is unavailable, not refused. `pb worker push -- <git push arguments>` then
-pushes the same branch through this machine's deploy key, the `deploykey`
-remote connect-project kept, and says so on one line ("owner key unavailable
-(http_502): pushed with the deploy key"). A refusal (not_attending,
-card_denies, github_not_linked…) never falls back, and gh has no fallback: a
-deploy key opens no pull request, so the coordinator opens it later.
+fails, names the key's answer ("owner key unavailable (http_502)"), and
+pushes nothing another way; push again when the key answers. A refusal
+(not_attending, card_denies, github_not_linked…) is the same: no deploy key,
+no other account.
 
-**Fallback, only for an owner with no GitHub key:** `gh` signed in once for
-this Linux user with a machine account. The **operator** creates the token (a
-classic token with `repo` and `read:org`, or a fine-grained one with contents
-and pull requests on the card's repositories) and pastes it without it being
-shown or saved in the shell history:
-
-```bash
-read -rs T && printf '%s\n' "$T" | gh auth login --with-token; unset T
-gh auth status                  # Logged in … (keyring)
-```
-
-The **host agent** then checks write access on each repository on the card:
-`gh repo view <owner>/<repo> --json viewerPermission` reads `WRITE` or `ADMIN`.
-That token lives in the user's keyring, never in a file or an environment
-variable.
+**No other GitHub route (W942).** An owner with no GitHub key links GitHub on
+their Card. Nothing is signed in to `gh` on the machine, and no machine
+account or deploy key stands in for the owner's key.
 
 **Card edits on the coordinator's machine.** A project-file edit made on the
 card is applied by the coordinator's relay, a service (a LaunchAgent on macOS,

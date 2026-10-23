@@ -368,16 +368,16 @@ def test_15_step_7_retires_a_moved_alias_and_reads_host_blocks_through_ssh(tmp_p
 
 def test_u5_gh_is_signed_in_per_user_with_the_operators_chosen_identity():
     # W304 U5 (2026-09-25): agents open their own PRs and post verdicts with gh.
-    # W371 (2026-09-28): under their owner's GitHub key; a machine account's
-    # token login stays as the fallback for an owner with no key.
+    # W371 (2026-09-28): under their owner's GitHub key. W942 (operator,
+    # 2026-10-23): "this is prohibited to use on-host github", so no machine
+    # account is signed in to gh and no deploy key stands in for the key.
     words = " ".join(HOST.split())
     assert "| **GitHub access** |" in HOST
     assert "### GitHub CLI for pull requests and review verdicts" in HOST
     assert "`gh` only has to be installed" in words and "Nothing is signed in" in words
-    assert "**Fallback, only for an owner with no GitHub key:**" in HOST
-    assert "read -rs T && printf '%s\\n' \"$T\" | gh auth login --with-token; unset T" in HOST
-    assert "never in a file or an environment variable" in words
-    assert "| 7 | **operator**, fallback only |" in HOST
+    assert "**No other GitHub route (W942).**" in HOST
+    assert "gh auth login" not in HOST
+    assert "| 7 | **operator**, fallback only |" not in HOST
     assert "command -v gh ||" in HOST
 
 

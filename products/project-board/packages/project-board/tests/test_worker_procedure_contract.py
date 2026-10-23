@@ -1351,7 +1351,7 @@ def test_an_agent_sets_up_its_workspace_from_the_project_record():
     assert "an unmerged entry correctly returns `journal_entry_not_found`" in reference
     assert "<workspace>/wt/journal-<alias>" not in reference
     assert "work/journal-<agent-alias>" not in reference
-    assert "tell the operator by name, with its alias and URL" in reference
+    assert "tell the operator by name, with its alias, URL and the key's answer" in reference
 
 
 def test_an_assignment_notice_is_settled_after_working_not_after_completion() -> None:
