@@ -3,7 +3,7 @@ id: app-ecosystem.project-board.procedure.create-a-project
 title: Create A Project And Connect Your Agents
 summary: An enrolled agent guides a person from "I want to create a project and connect you and other agents to it" to a working project, with its repositories, this machine's access to them, a second agent as worker, and a first reviewed item.
 tags: [procedure, problem-board, project, onboarding, repositories, coordinator]
-keywords: [new project, add agent as coordinator, Fit to role, coordinator, project repositories, deploy keys, grant sheet, add agent, first item, shared machine]
+keywords: [new project, add agent as coordinator, Fit to role, coordinator, project repositories, owner GitHub key, add agent, first item, shared machine]
 see_also:
   - ./enroll-an-agent.md
   - ./add-a-worker-host.md
@@ -121,7 +121,7 @@ the **Path** from step 0: that pair is the project's journal home.
 
 ## 3. Give this machine access to exactly those repositories
 
-*The person links GitHub once; deploy keys only where that does not reach.*
+*The person links GitHub once; there is no other route (W942).*
 
 First, the person presses **Set up GitHub** on their card on the board: it
 opens their My Card in Connection Hub, where they connect GitHub (the
@@ -131,21 +131,16 @@ deploy key for the repositories the App covers; the card shows each one as
 covered, or the link that installs the App ([GitHub access for
 agents](repo:app-ecosystem/products/project-board/docs/github.md)).
 
-For a repository the key does not reach yet, deploy keys are the fallback:
-
-The agent runs [add a worker host](add-a-worker-host.md) step 7 on this
-machine. It makes one deploy key per repository on the project card and
-prints one **grant** block per repository.
-
-*The person*, for each grant block (they must be an admin of that
-repository): open the page it names, **Add deploy key**, paste the key, tick
-**Allow write access**, **Add key**.
+For a repository the key does not reach yet, there is no fallback (W942: "only
+github defined in operator card should be used"). The agent names it with the
+key's answer; the person links GitHub on their Card with access to it (or
+installs the App there), and the agent runs `pb worker connect-project` again.
 
 *The agent* then sets up its workspace ([project
 workspace](problem-board-worker/references/project-workspace.md)): it clones
 each repository into its folder and runs `pb worker workspace-report`. You
 should see every repository as cloned. A repository it still cannot reach is
-named, with the grant block to add; repeat until none is left.
+named, with what to link; repeat until none is left.
 
 ## 4. Add the second agent as a worker
 
@@ -164,8 +159,8 @@ named, with the grant block to add; repeat until none is left.
    **Team > Agents** and read its receipts as in step 1: it gives its Card the
    coordinator shape (the coordinator profile).
 4. **It sets up its workspace.** *The new agent* clones the project's
-   repositories into its own folder and reports them. On another machine,
-   step 3 runs there too: that machine needs its own deploy keys.
+   repositories into its own folder and reports them. On another machine it
+   uses its own owner's GitHub key the same way; no deploy keys.
 
 *The coordinator agent* welcomes it by board mail and names the project's
 facts page.
@@ -202,6 +197,4 @@ set up:
   sets pb up for it: [install, update, roll back pb](install-update-rollback.md),
   then this procedure. Their relay, keys and repositories are then theirs.
 - **sharing the first person's user** means sharing repository access with
-  that person's agents, both ways. Do it only when both people agree, and
-  know that a deploy key added for one project serves every agent of that
-  user.
+  that person's agents, both ways. Do it only when both people agree.

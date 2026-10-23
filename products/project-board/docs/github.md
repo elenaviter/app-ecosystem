@@ -307,11 +307,11 @@ What pb does:
   from `PATH` and never a script. A wrapper that swaps `GH_TOKEN` (for example
   one that routes a machine's own accounts) therefore cannot replace the Card's
   token.
-- **Pushes are checked first.** In a clone that is stamped, or that pb's helper
-  answers, `pb worker push` (with or without `--owner-key-only`) refuses
-  before pushing when:
+- **Pushes are checked first.** `pb worker push` refuses before pushing when:
+  - no remote is named first (`push_remote_unnamed`);
+  - the named remote does not push over HTTPS, for example an SSH or deploy-key
+    remote (`push_remote_not_owner_key`); run `pb worker connect-project`;
   - the clone is unstamped (`clone_unstamped`);
-  - a remote does not push over HTTPS;
   - another credential helper or an `extraheader` could answer
     (`clone_credential_override`);
   - the key, the stamp or the email is not the Card's (`card_account_mismatch`);

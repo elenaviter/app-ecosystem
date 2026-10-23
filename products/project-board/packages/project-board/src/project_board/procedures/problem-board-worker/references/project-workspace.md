@@ -62,22 +62,23 @@ your owner has connected GitHub on the project's My Card and the GitHub App
 covers the repository, a new clone is made over HTTPS, an existing one's origin
 moves to HTTPS (`origin_switched: ssh_to_https`; fetch and push), and every clone gets
 `pb worker git-credential` as its credential helper for github.com, with your
-owner's commit email. Push with `pb worker push -- <git push arguments>`: it is
-`git push`, and when your owner's key is unavailable (Connection Hub cannot
-answer) it pushes the same branch through this machine's deploy key, the
-`deploykey` remote connect-project kept, and says so; after a refusal it never
-does. No token is stored: git asks the helper each time. The
+owner's commit email. Push with `pb worker push -- <remote> <git push arguments>`:
+it is `git push` with your owner's key or not at all. It refuses an SSH or
+deploy-key remote (`push_remote_not_owner_key`; run `pb worker connect-project`),
+and when the key is unavailable or refused it fails, names the key's answer, and
+pushes nothing another way (W942). A GitHub repository the key does not serve
+is `needs_key`: it is not cloned or fetched over SSH, and no deploy key is made.
+No token is stored: git asks the helper each time. The
 row's `github_key` reads `ready` or the reason it is not (`github_not_linked`,
 `commit_email_not_set`, `card_denies`, `not_attending`,
 `repository_not_on_card`: tell your owner its words; [GitHub access for
 agents](repo:app-ecosystem/products/project-board/docs/github.md)). `pb worker
 context` names the email you commit with and its `source`: your owner's My Card
 email (`owner_github_key`) once the key has answered, else the project's. When the key is
-refused, and for a GitHub repository this machine does not reach yet, it
-makes this machine's deploy key and prints the grant for the person
-(add-a-worker-host step 7). It
+refused or does not serve a GitHub repository, that repository is `needs_key`
+with the key's answer, and nothing is set up another way (W942). It
 then sets the commit identity and runs the workspace report. Run it again
-after the person adds a key. first-run's "Part 2: Connect To A Project" says
+after the owner links GitHub for that repository. first-run's "Part 2: Connect To A Project" says
 what to tell the person for each state. The script below is what the command
 does for one repository, and it is what to run by hand when the command is
 not available:
@@ -138,12 +139,11 @@ Without a declared branch, the remote's default branch is the one you work
 on, read from the remote each time, whatever branch the folder was left on.
 
 Two remotes name the same repository when they reach the same host and path.
-A host with deploy keys (add-a-worker-host step 7) gives each repository its
-own SSH alias, `github-<alias>`, so a clone there has an origin such as
+An older clone may still have an SSH origin, for example a deploy-key alias
 `github-applications:kdcube/applications.git`. That matches the declared
 `git@github.com:kdcube/applications.git`, because the alias resolves to
-github.com in the SSH configuration. A new clone uses that alias whenever it
-exists, since the deploy key is what grants access on that host.
+github.com in the SSH configuration. connect-project moves such a clone to
+HTTPS once the owner's key serves it, and never fetches over SSH (W942).
 
 The journal repository (role `journal`) is optional and cloned like any other.
 The project may assign that role to any repository and path; no common
@@ -177,9 +177,10 @@ project sets none; ask the coordinator before your first commit.
 
 ## 3. Report what you cannot reach
 
-A repository you cannot clone or fetch (no deploy key on this host, no
-access): tell the operator by name, with its alias and URL, and go on with the
-rest. The operator adds the key or the access, and you clone it then.
+A repository you cannot clone or fetch (the owner's GitHub key does not serve
+it, or no access): tell the operator by name, with its alias, URL and the key's
+answer, and go on with the rest. The owner links GitHub on their Card with
+access to it, and you clone it then.
 
 Then tell the board what your workspace holds, so the project card shows it
 next to your name:

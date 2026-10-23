@@ -1239,22 +1239,17 @@ def build_parser() -> argparse.ArgumentParser:
     command = worker_commands.add_parser(
         "push",
         help=(
-            "git push with your owner's GitHub key or not at all: when the key is unavailable or "
-            "refused, the push fails and names the key's answer; it is never retried through this "
-            "machine's deploy key. Example: `pb worker push -- origin HEAD:refs/heads/my-branch`."
+            "git push with your owner's GitHub key or not at all: the named remote must push over HTTPS "
+            "through pb's credential helper (an SSH or deploy-key remote is refused; run `pb worker "
+            "connect-project`), and a refused or unavailable key fails the push, never retried another way. "
+            "Example: `pb worker push -- origin HEAD:refs/heads/my-branch`."
         ),
     )
     _host_config(command)
     _agent_identity(command)
     command.add_argument("--project-ref", default="", help="The project, when this agent attends several.")
-    command.add_argument(
-        "--owner-key-only",
-        action="store_true",
-        help=(
-            "Also check before pushing that the named remote pushes over HTTPS, which only the "
-            "owner's key answers; a remote on SSH or a local path is refused. A release uses it."
-        ),
-    )
+    # W942: owner-key-only is the only behaviour; the flag stays accepted so existing commands keep working.
+    command.add_argument("--owner-key-only", action="store_true", help=argparse.SUPPRESS)
     command.add_argument("git_args", nargs=argparse.REMAINDER, help="git push's own arguments, after --.")
 
     command = worker_commands.add_parser(
@@ -5631,21 +5626,20 @@ PUSH_KEY_ANSWER_SECONDS = 600
 
 
 def _push_command(args: Any) -> int:
-    """`git push` with the owner's key or not at all (W371, W416).
+    """`git push` with the owner's key or not at all (W371, W416, W454, W942).
 
     The project's route rule (operator, recorded in the project's route
     rules): "Do not use a deploy key, provider account or another owner's
-    credentials when the platform-owner GitHub route is unavailable." So a
-    failed push is returned as it is and never retried through the
-    `deploykey` remote connect-project keeps. When the key's last answer for
-    the repository, within the last ten minutes, was a failure, the push
-    names it: unavailable (Connection Hub unreachable, a 5xx, a timeout) or
-    refused (not_attending, card_denies, github_not_linked...).
-
-    `--owner-key-only` (W454) also decides before anything is written: the
-    first positional argument must name a remote whose every push URL is
-    HTTPS, which only the owner key's credential helper answers (an SSH URL
-    would push with whatever key the machine has).
+    credentials when the platform-owner GitHub route is unavailable." W942
+    (operator, 2026-10-23): "only github defined in operator card should be
+    used", "this is prohibited to use on-host github". A plain push from an
+    SSH-only clone went out with the machine's deploy key, so every push now
+    decides before anything is written: the first positional argument names a
+    remote whose every push URL is HTTPS, which only pb's credential helper
+    answers (an SSH URL would push with whatever key the machine has), and the
+    Card's checks hold (W762). A failed push is returned as it is, never
+    retried another way; when the key's last answer for the repository, within
+    the last ten minutes, was a failure, the push names it.
     """
 
     push_args = list(args.git_args or [])
@@ -5659,59 +5653,38 @@ def _push_command(args: Any) -> int:
             return ""
         return found.stdout.strip() if found.returncode == 0 else ""
 
-    if getattr(args, "owner_key_only", False):
-        named = next((arg for arg in push_args if not arg.startswith("-")), "")
-        if not named or named not in set(git_out("remote").split()):
-            print("pb GitHub key: --owner-key-only needs the remote named first, for example "
-                  "`pb worker push --owner-key-only -- origin <branch>`; nothing was pushed", file=sys.stderr)
-            return 2
-        urls = git_out("remote", "get-url", "--push", "--all", named).split()
-        if not urls or not all(url.startswith("https://") for url in urls):
-            print(f"pb GitHub key: --owner-key-only pushes over HTTPS only; {named} pushes to "
-                  f"{', '.join(urls) or 'nothing'}; nothing was pushed", file=sys.stderr)
-            return 2
-        refused = _card_push_refusal(args, named, urls[0], push_args, git_out)
-        if refused:
-            print(f"pb GitHub key: {refused}; nothing was pushed", file=sys.stderr)
-            return 2
-        owned = subprocess.call(["git", "push", *push_args])
-        if owned != 0:
-            print("pb GitHub key: --owner-key-only: the push failed and is not retried through the deploy key",
-                  file=sys.stderr)
-        return owned
-
-    # W762: a Card-managed clone (stamped, or answered by pb's own helper) never
-    # pushes unchecked, with or without --owner-key-only.
-    helpers = git_out("config", "--get-all", "credential.https://github.com.helper")
-    if git_out("config", "--get", STAMP_ACCOUNT_KEY) or "!pb worker git-credential" in helpers:
-        remotes_now = set(git_out("remote").split())
-        named = next((arg for arg in push_args if not arg.startswith("-") and arg in remotes_now), "origin")
-        urls = git_out("remote", "get-url", "--push", "--all", named).split()
-        if not urls or not all(url.startswith("https://") for url in urls):
-            print(f"pb GitHub key: this clone acts as the Card's account and pushes over HTTPS only; {named} "
-                  f"pushes to {', '.join(urls) or 'nothing'}; nothing was pushed", file=sys.stderr)
-            return 2
-        refused = _card_push_refusal(args, named, urls[0], [named, *[a for a in push_args if a != named]], git_out)
-        if refused:
-            print(f"pb GitHub key: {refused}; nothing was pushed", file=sys.stderr)
-            return 2
-
-    first = subprocess.call(["git", "push", *push_args])
-    if first == 0:
-        return 0
-
     remotes = set(git_out("remote").split())
-    target = next((arg for arg in push_args if not arg.startswith("-") and arg in remotes), "origin")
-    repository = repository_name(git_out("remote", "get-url", target))
+    named = next((arg for arg in push_args if not arg.startswith("-")), "")
+    if not named or named not in remotes:
+        print("pb GitHub key: pb worker push needs the remote named first, for example "
+              "`pb worker push -- origin <branch>` (push_remote_unnamed); nothing was pushed", file=sys.stderr)
+        return 2
+    urls = git_out("remote", "get-url", "--push", "--all", named).split()
+    if not urls or not all(url.startswith("https://") for url in urls):
+        print(f"pb GitHub key: pb worker push pushes over HTTPS only, with the owner's key; {named} pushes to "
+              f"{', '.join(urls) or 'nothing'} (push_remote_not_owner_key): run `pb worker connect-project` to "
+              "give this clone its HTTPS origin and pb's credential helper; nothing was pushed", file=sys.stderr)
+        return 2
+    refused = _card_push_refusal(args, named, urls[0], push_args, git_out)
+    if refused:
+        print(f"pb GitHub key: {refused}; nothing was pushed", file=sys.stderr)
+        return 2
+
+    pushed = subprocess.call(["git", "push", *push_args])
+    if pushed == 0:
+        return 0
+    print("pb GitHub key: the push failed and is not retried through a deploy key or any other credential",
+          file=sys.stderr)
+    repository = repository_name(urls[0])
     if not repository:
-        return first
+        return pushed
     try:
         session = _GitHubKeySession(args)
         outcome = session.field.read_github_key_outcome(
             session.identity.worker_name, parse_ref(session.project_ref).object_id, repository
         )
     except Exception:  # noqa: BLE001 - without the record, git's own error stands
-        return first
+        return pushed
     recent = False
     try:
         at = datetime.fromisoformat(str(outcome.get("at") or "").replace("Z", "+00:00"))
@@ -5719,14 +5692,14 @@ def _push_command(args: Any) -> int:
     except ValueError:
         recent = False
     if not recent or not outcome.get("code"):
-        return first
+        return pushed
     state = "unavailable" if outcome.get("availability") else "refused"
     print(
         f"pb GitHub key: owner key {state} ({outcome['code']}): nothing was pushed through the deploy key "
         "or another credential; retry when the key answers, or report it",
         file=sys.stderr,
     )
-    return first
+    return pushed
 
 
 def _connect_project_command(args: Any, config: Any, field: Any, identity: Any) -> dict[str, Any]:
@@ -5744,7 +5717,7 @@ def _connect_project_command(args: Any, config: Any, field: Any, identity: Any) 
         Path(workspace),
         timeout=max(1.0, float(args.timeout_seconds)),
         transfer_timeout=max(1.0, float(getattr(args, "transfer_timeout_seconds", 1800.0))),
-        # W371: the owner's GitHub key first; the deploy key when it is refused.
+        # W371, W942: the owner's GitHub key or nothing; never a deploy key.
         github_key=key_session.token if key_session is not None else None,
         helper=key_session.helper() if key_session is not None else "",
         alias_name=alias,

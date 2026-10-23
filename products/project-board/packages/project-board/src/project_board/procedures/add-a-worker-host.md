@@ -52,11 +52,10 @@ Every step, in the order it happens:
 | 6 | **operator** | type the credential store password once per boot (until W258) | the password is theirs to keep |
 | 6 | either | install the relay service | routine |
 | after 6 | **machine administrator** | on a host set up before the user installer, remove the root-owned `/opt` install | removing root-owned files needs `sudo` |
-| 7, at 12 | host agent | reconcile this host's deploy keys with the cards of every attended project: grant and revoke sheets | routine; the cards decide |
-| 7, at 12 | **operator** | add each granted deploy key on GitHub, delete each revoked one | only a repository admin can grant or revoke access |
+| 7 | host agent | print a revoke sheet for any deploy key made on this host before W942; it makes none | routine |
+| 7 | **operator** | delete those deploy keys on GitHub, when they decide | only a repository admin can revoke access |
 | 7 | **the person** (each agent's owner) | link GitHub on My Card (**Set up GitHub** on their card on the board), set their commit email there, and install the GitHub App on each repository owner | the key is theirs; agents act as them |
 | 7 | host agent | run `pb worker connect-project` and read `github_key: ready` per repository | routine |
-| 7 | **operator**, fallback only | only when an owner has no GitHub key: a machine account's token pasted once, unseen, into `gh` for this user | the identity and its token are the operator's |
 | 8 | either | one empty workspace per agent | routine |
 | 9 | host agent | write one start script per agent, then start one `tmux` session per agent with it | routine |
 | 9 | **operator** decides, host agent applies it | approve unattended command mode: Claude Code's one-time bypass warning or Codex's `--ask-for-approval never` policy | it is the operator's risk decision; the host user and repository deploy keys remain the boundary |
@@ -94,7 +93,6 @@ new host
     │       └── <release-id>/venv/                       complete release environment
     ├── .kdcube/          (700)        selectors, snapshots, relay state, logs, mailboxes
     ├── src/app-ecosystem              the public clone the client is built from, read only
-    ├── .ssh/deploy_<alias>{,.pub}     one deploy key per repository on the project card
     ├── .config/systemd/user/kdcube-problem-board-relay-*.service
     └── workspaces/       (700)
         ├── <workspace-1>/             one agent, its own clones
@@ -133,7 +131,7 @@ before anything changes:
 |---|---|---|
 | host id and label | `host-two`, "host-two (Linux, headless)" | the machine's name on the board. "The agents on a host agree before a relay restart" is per host id. |
 | Linux user that runs the agents | `agent-user` | owns the keys, the relay and the credential store |
-| **the project the agents join** | `Project one` | its project card lists the repositories (alias, URL, role). Step 7 gives this host a deploy key for exactly those, and step 12 clones them into each agent's workspace. The agents reach nothing else through Project Board. Which repositories a project uses is decided on its card, not per host (W304 finding 15). |
+| **the project the agents join** | `Project one` | its project card lists the repositories (alias, URL, role). Step 12 clones them into each agent's workspace with the owner's GitHub key (step 7). The agents reach nothing else through Project Board. Which repositories a project uses is decided on its card, not per host (W304 finding 15). |
 | workspaces, one per agent | `~/.kdcube/pb/workspaces/agent-one`, `~/.kdcube/pb/workspaces/agent-two` | each agent edits only its own clones. The root is `~/.kdcube/pb/workspaces/<alias>` on every host (operator ruling, 2026-09-25: not in the user's home folder). An existing host keeps its old folders until a planned move. |
 | agent names | `agent-one@host-two`, `agent-two@host-two` | display names on the board. The board addresses a worker by a stable generated name. |
 | runtime of each agent | `claude-code` for both, or one of each | an agent session is described by its runtime, provider account, and session ID. Its stable worker address remains runtime plus session ID, and the board keeps its first host-login reading, as inference. One host can run Claude Code and Codex agents side by side, each in its own workspace. Needing another runtime means adding another agent. |
@@ -142,7 +140,7 @@ before anything changes:
 | `tmux` on the host | installed by whoever administers the machine | step 9 runs each agent in it. It is a system package, so a user-level install cannot provide it. |
 | **teammates who may write to these agents** | `*` (the default), any agent that shares a project with them, or named workers such as the coordinator | the host's receiver policy (`receiver_policy.allowed_peer_workers`). `pb setup` writes `*` (operator ruling, 2026-09-26); step 3 narrows it only when the operator chose named workers or none. The board lets an agent in a shared project address them, and, while one of them attends no project, anyone who knows its exact stable name (never its alias) may send it a request, reply or ping; so `*` means "my project teammates, and whoever knows a new agent's id before it joins". It grants no access to anything: it decides whose mail reaches these agents. The operator's own messages reach them either way. |
 | **how the client is installed** | a published `project-board` version (for example `2026.9.26.1900`), or an exact App Ecosystem commit | step 2. A published release is one version from the package index, the default for a machine that only runs agents; exact commits are for a machine of the team that builds Project Board, or before a release is published (W304 U2). |
-| **GitHub access** | each agent's owner links GitHub on their My Card for the project, sets their commit email there, and the deployment's GitHub App is installed on each repository owner ([GitHub access for agents](repo:app-ecosystem/products/project-board/docs/github.md)) | agents push, open pull requests and post review verdicts as their owner, over HTTPS with `pb worker git-credential` and `pb worker gh`; nothing is signed in on the machine. A machine account (for example `kdcube-agents`) signed in to `gh`, and deploy keys (step 7), are the fallback, only for an owner with no key. |
+| **GitHub access** | each agent's owner links GitHub on their My Card for the project, sets their commit email there, and the deployment's GitHub App is installed on each repository owner ([GitHub access for agents](repo:app-ecosystem/products/project-board/docs/github.md)) | agents push, open pull requests and post review verdicts as their owner, over HTTPS with `pb worker git-credential` and `pb worker gh`; nothing is signed in on the machine. There is no other route: no machine account signed in to `gh`, and no deploy key (W942). |
 
 **Repositories are not a host decision.** They belong to the project: the
 operator sets them on the project card (Team, project card, repositories), and
@@ -154,8 +152,8 @@ attending the project does:
 pb worker context --project-ref <project> --format brief | grep '^repositories\['
 ```
 
-Adding or removing a repository for the project is a change to the card; each
-host then gains or loses a deploy key at step 7.
+Adding or removing a repository for the project is a change to the card; the
+agents run `pb worker connect-project` again (step 12).
 
 ## 1. Give the host agent access to the host
 
@@ -533,7 +531,7 @@ the complete step 13 migration proof has passed for every configured target.
 
 ## 7. Give the host access to exactly the project's repositories
 
-Runs on: the host (keys, reconciliation), and GitHub in the operator's browser (adding and deleting keys).
+Runs on: the host (the revoke sheet), and GitHub in the operator's browser (deleting old deploy keys).
 
 **First, the owners' GitHub keys** (W371, [GitHub access for
 agents](repo:app-ecosystem/products/project-board/docs/github.md)). An agent
@@ -543,111 +541,34 @@ their card on the board), its Card holds **Use GitHub**, and the deployment's
 GitHub App is installed on the repository. `pb worker connect-project` then
 clones over HTTPS with `pb worker git-credential` as each clone's helper, and
 `pb worker gh` runs gh with the key for one command. This host stores no
-GitHub token and needs no deploy key for those repositories. The deploy keys
-below are the **fallback** for a repository the key does not reach yet (its
-row's `github_key` names why) and for a machine whose owner has not linked
-GitHub. They are never a fallback for a repository the key does reach: when
-the key is unavailable or refused there, `pb worker push` fails and names the
-key's answer, and nothing is pushed another way (the project's route rule,
-W416). When origin moves to HTTPS, connect-project keeps this machine's
-deploy-key route as the `deploykey` remote, which no push uses.
+GitHub token and needs no deploy key.
 
-One **deploy key per repository**: an SSH key that one repository accepts for
-itself. A personal key would reach every repository its owner can reach, and
-removing it would cut off every machine using it. Deleting a deploy key revokes
-exactly this host's access to exactly that repository.
+**Deploy keys are not used for GitHub (W942).** The operator, 2026-10-23: "only
+github defined in operator card should be used", "this is prohibited to use
+on-host github". `pb worker connect-project` reaches a GitHub repository only
+with the owner's key. For a repository the key does not serve yet, the row is
+`needs_key` with the key's answer (`github_key`), and the owner links GitHub
+on their Card with access to it. No deploy key is made, nothing is cloned or
+fetched over SSH, and no `deploykey` remote is added. `pb worker push` refuses
+an SSH or deploy-key remote (`push_remote_not_owner_key`). When the key is
+unavailable or refused, the push fails and names the key's answer, and nothing
+is pushed another way. The deploy-key steps below remain only to find and
+revoke keys made earlier.
 
-**The project card decides, in both directions** (W304 findings 3 and 15). The
-host keeps no list of its own: on 2026-09-24 a helper followed a stale one. The
-host agent **reconciles** this host's keys with the cards of **every project an
-agent of this Linux user attends on this host**, as `pb worker list` names them
-and each project's `pb worker context` reads them. Keys are shared by every
-agent of the user, so a key stays while any attended project needs it:
-
-- **When:** as soon as the first agent of this user attends the project
-  (step 12), and again whenever the card's repositories change or an agent
-  reports a repository it cannot reach.
-- **What it prints:** a **grant** block for each repository on an attended
-  card this host cannot reach yet, and a **revoke** block for each key this
-  procedure made whose alias is on no attended project's card. An alias that
-  names different repositories in two attended projects is refused as a
-  conflict. Nothing on GitHub changes without the operator.
-- **What it keeps:** a key pair and its `Host github-<alias>` SSH block are
-  each repaired on their own, so an interrupted run completes on the next one.
-  Whether a block already serves `github-<alias>` is asked of `ssh -G`, so a
-  block written with several names, a pattern or another case counts; one
-  that resolves elsewhere or without this key is refused, not overwritten.
-- **When the card moves an alias to another repository:** the key made for the
-  old repository is retired (`retired_<alias>_<time>`) and a new pair is made,
-  because GitHub accepts a deploy key on one repository only and the old one
-  still grants the old repository. The revoke block names the old repository
-  and fingerprint, and repeats until the retired files are removed.
-- **What stops it:** the cards are collected first, and any failure (the list
-  or a project's context failing, a project not yet on this host, no attended
-  project at all) prints `STOP: ...` and exits nonzero before any grant or
-  revoke line: a partial card would revoke keys a project still needs. The
-  script runs in a subshell, so a stop does not end the SSH session. Clones are never deleted: a repository leaving the card loses
-  this host's credential, not an agent's unfinished work.
-
-The key and its SSH alias are named by the card's `alias`, because the worker's
-workspace setup clones through `github-<alias>` whenever that alias exists
-(project-workspace reference).
-
-**Granting for one project: `pb worker connect-project`** (W304 finding 19).
-An agent that attends the project runs it itself, as Part 2 of connecting a
-machine (first-run, "Part 2: Connect To A Project"). For its project's
-repositories it makes the same key, the same `Host github-<alias>` block and
-the same grant as the script below: page, title `<host-id> agents`, Allow
-write access yes, and the key. It does this only for a GitHub repository this
-machine does not reach yet, and then clones, sets the commit identity and
-reports the workspace. A key and block that the script or another agent of
-this user made are reused. One that differs is refused, with its path, and
-never overwritten. It never revokes and never retires a key. **Revoking stays
-with the script below**, which sees every project an agent of this user
-attends on this host. Run it when a card drops a repository or moves an alias
-to another one, and whenever a host's keys are in doubt.
+**Deploy keys made earlier: the revoke sheet.** Before W942, this step and
+`pb worker connect-project` gave each repository a deploy key
+(`~/.ssh/deploy_<alias>`) and a `Host github-<alias>` SSH block. Nothing uses
+or makes them now. The operator decides when they are removed from GitHub
+(W942: the operator asked to wait). **Revoking stays with the script below**:
+it prints one **REVOKE** block for every key this procedure made on this host,
+and changes nothing.
 
 **Host agent**, as the Linux user that runs the agents, with the host id:
 
 ```bash
-# Input: HOST_ID. The projects are every one an agent of this Linux user attends on this host.
+# Input: HOST_ID. Prints a REVOKE block for every deploy key this procedure made on this host; makes nothing.
 ( set -euo pipefail
 KEYS=${KEYS:-$HOME/.ssh}; SSH_CONFIG=${SSH_CONFIG:-$KEYS/config}
-touch "$SSH_CONFIG"; chmod 600 "$SSH_CONFIG"
-CARD=$(mktemp); RAW=$(mktemp); trap 'rm -f "$CARD" "$RAW"' EXIT
-stop() { echo "STOP: $1. Nothing granted or revoked." >&2; exit 1; }
-# One spelling of a path: a leading ~/, $HOME/ or ${HOME}/ expanded (ssh -G
-# prints IdentityFile unexpanded), its directory with symlinks resolved, its
-# name kept. Not `realpath -m`, which macOS's realpath refuses (W346, W350).
-canon() { case $1 in "~/"*) set -- "$HOME/${1#\~/}";; '$HOME/'*) set -- "$HOME/${1#\$HOME/}";;
-    '${HOME}/'*) set -- "$HOME/${1#\$\{HOME\}/}";; esac
-  local dir; dir=$(cd -P -- "$(dirname -- "$1")" 2>/dev/null && pwd) &&
-  printf '%s/%s\n' "$dir" "$(basename -- "$1")" || printf '%s\n' "$1"; }
-# Collect every attended card first, and stop on any failure: a partial card
-# would revoke keys a project still needs.
-LIST=$(pb worker list --format brief </dev/null) || stop "pb worker list failed"
-[ "$(printf '%s\n' "$LIST" | head -n1)" = OK ] || stop "pb worker list did not answer OK"
-ATTENDED=$(printf '%s\n' "$LIST" |
-  awk '/^--- /{name=$NF; gsub(/[()]/, "", name)} /^runtime /{kind=$2} /^attends: /{print kind "\t" name "\t" $2}' |
-  # One agent per project is enough: every attendee reads the same project card.
-  sort -u -k3,3)
-[ -n "$ATTENDED" ] || stop "no agent of this Linux user attends a project on this host"
-while IFS=$'\t' read -r kind name project; do
-  CTX=$(pb worker context --runtime-kind "$kind" --runtime-session-id "${name#"$kind"-}" \
-      --project-ref "$project" --format brief </dev/null) || stop "pb worker context failed for $project"
-  [ "$(printf '%s\n' "$CTX" | head -n1)" = OK ] || stop "pb worker context did not answer OK for $project"
-  printf '%s\n' "$CTX" | grep -qx 'project_on_this_host = True' || stop "$project is not on this host yet"
-  printf '%s\n' "$CTX" |
-    awk -F' = ' '$1 ~ /^repositories\[[0-9]+\]\.alias$/ {a=$2} $1 ~ /^repositories\[[0-9]+\]\.url$/ {print a "\t" $2}' >> "$RAW"
-done <<< "$ATTENDED"
-while IFS=$'\t' read -r alias url; do
-  repo=${url%.git}; repo=${repo#*github.com[:/]}
-  if [ "$repo" = "${url%.git}" ]; then echo "SKIP $alias: $url is not a GitHub URL" >&2; continue; fi
-  printf '%s\t%s\n' "$alias" "$repo"
-done < "$RAW" | sort -u > "$CARD"
-for alias in $(cut -f1 "$CARD" | uniq -d); do
-  echo "CONFLICT alias $alias names different repositories in the attended projects: $(grep "^$alias	" "$CARD" | cut -f2 | tr '\n' ' ')Left unchanged." >&2
-done
 recorded_repo() {  # the owner/repo a key was made for, from its comment
   awk '$NF ~ /\// {print $NF; exit}' "$1"
 }
@@ -655,74 +576,27 @@ revoke_block() {  # $1 alias  $2 repository  $3 public key  $4 files to remove  
   printf '\n### REVOKE %s (%s)\n\nRepository: %s\nFind the deploy key titled "%s agents" with fingerprint %s and delete it.\nThen, on the host: rm %s. The clone stays for any unfinished work.\n' \
     "$1" "$5" "$2" "$HOST_ID" "$(ssh-keygen -lf "$3" </dev/null | awk '{print $2}')" "$4"
 }
-ensure_key() {  # key pair and SSH alias, each repaired on its own
-  local alias=$1 repo=$2 key="$KEYS/deploy_$1" host was retired
-  if [ -f "$key.pub" ]; then
-    was=$(recorded_repo "$key.pub")
-    if [ -n "$was" ] && [ "$was" != "$repo" ]; then
-      # The card moved this alias to another repository. GitHub accepts one
-      # deploy key per repository, and the old one still grants the old
-      # repository, so the pair is retired and a new one made.
-      retired="$KEYS/retired_${alias}_$(date -u +%Y%m%dT%H%M%SZ)"
-      mv "$key" "$retired"; mv "$key.pub" "$retired.pub"
-    fi
-  fi
-  [ -f "$key" ] || ssh-keygen -q -t ed25519 -N "" -C "$HOST_ID deploy key: $alias $repo" -f "$key" </dev/null
-  [ -f "$key.pub" ] || echo "$(ssh-keygen -y -f "$key" </dev/null | cut -d' ' -f1,2) $HOST_ID deploy key: $alias $repo" > "$key.pub"
-  # What github-<alias> resolves to, however the config spells its Host line
-  # (a pattern, several names, another case): itself means no block matches.
-  host=$(ssh -F "$SSH_CONFIG" -G "github-$alias" </dev/null | awk '$1=="hostname"{print $2; exit}')
-  if [ "$host" = "github-$alias" ]; then
-    printf '\n# problem-board deploy key\nHost github-%s\n  HostName github.com\n  User git\n  IdentityFile %s\n  IdentitiesOnly yes\n' "$alias" "$key" >> "$SSH_CONFIG"
-  elif [ "$host" != github.com ] || ! ssh -F "$SSH_CONFIG" -G "github-$alias" </dev/null |
-      awk '$1=="identityfile"{print $2}' | while read -r file; do canon "$file"; done |
-      grep -qx "$(canon "$key")"; then
-    echo "CONFLICT github-$alias in $SSH_CONFIG resolves to $host without $key. Left unchanged." >&2
-    return 1
-  fi
-}
-cut -f1 "$CARD" | uniq -u | while read -r alias; do
-  repo=$(grep "^$alias	" "$CARD" | cut -f2)
-  ensure_key "$alias" "$repo" || continue
-  # -T: a config that requests a terminal would print "Pseudo-terminal will
-  # not be allocated" for every alias (W304 finding 21).
-  if GIT_SSH_COMMAND="ssh -T -F $SSH_CONFIG" git ls-remote "github-$alias:$repo.git" HEAD </dev/null >/dev/null 2>&1; then
-    echo "ok $alias"
-  else
-    printf '\n### GRANT %s\n\nPage: https://github.com/%s/settings/keys\nTitle: %s agents\nAllow write access: yes\nKey:\n\n    %s\n' \
-      "$alias" "$repo" "$HOST_ID" "$(cat "$KEYS/deploy_$alias.pub")"
-  fi
-done
+found=0
 for pub in "$KEYS"/deploy_*.pub; do
   [ -e "$pub" ] || continue
-  alias=${pub##*/deploy_}; alias=${alias%.pub}
-  cut -f1 "$CARD" | grep -qx "$alias" && continue
+  found=1; alias=${pub##*/deploy_}; alias=${alias%.pub}
   revoke_block "$alias" "$(recorded_repo "$pub" || true)" "$pub" \
-    "${pub%.pub} $pub, and the \"Host github-$alias\" block in $SSH_CONFIG" "on no attended project's card"
+    "${pub%.pub} $pub, and the \"Host github-$alias\" block in $SSH_CONFIG" "deploy keys are not used (W942)"
 done
 for pub in "$KEYS"/retired_*.pub; do
   [ -e "$pub" ] || continue
-  alias=${pub##*/retired_}; alias=${alias%_*}
-  revoke_block "$alias" "$(recorded_repo "$pub" || true)" "$pub" "${pub%.pub} $pub" "the card moved this alias to another repository"
+  found=1; alias=${pub##*/retired_}; alias=${alias%_*}
+  revoke_block "$alias" "$(recorded_repo "$pub" || true)" "$pub" "${pub%.pub} $pub" "a retired key"
 done
+[ "$found" = 1 ] || echo "ok: this host has no deploy key made by this procedure"
 )
 ```
 
-**Operator**, for each **GRANT** block: open the page, **Add deploy key**,
-enter the title, paste the key line, tick **Allow write access** (the agents
-push their work branches), **Add key**. For each **REVOKE** block: open that
-repository's deploy keys, delete the key with that title and fingerprint, and
-tell the host agent, which then removes the key files and the SSH block the
-block names. Adding or deleting a deploy key needs admin rights on that
-repository. Merging into the default branch stays governed by review.
-
-The host agent runs the reconciliation again until it prints only `ok` lines,
-then the agents run their workspace setup again.
-
-Rules: one key per repository per host user; every agent of that user shares
-it. Another user on the machine who runs agents gets their own keys. The
-private key never leaves the host. Public keys are not secret: the sheet can be
-sent by any channel.
+**Operator**, for each **REVOKE** block, when they decide to remove the keys:
+open that repository's deploy keys, delete the key with that title and
+fingerprint, and tell the host agent, which then removes the key files and the
+SSH block the block names. Deleting a deploy key needs admin rights on that
+repository.
 
 [Worked example: a machine's sheet](#worked-example-a-machines-sheet).
 
@@ -737,27 +611,14 @@ for github.com; commits carry the owner's My Card email.
 
 **When Connection Hub cannot answer** (a platform rebuild, an outage), the key
 is unavailable, not refused. `pb worker push -- <git push arguments>` then
-pushes the same branch through this machine's deploy key, the `deploykey`
-remote connect-project kept, and says so on one line ("owner key unavailable
-(http_502): pushed with the deploy key"). A refusal (not_attending,
-card_denies, github_not_linked…) never falls back, and gh has no fallback: a
-deploy key opens no pull request, so the coordinator opens it later.
+fails, names the key's answer ("owner key unavailable (http_502)"), and
+pushes nothing another way; push again when the key answers. A refusal
+(not_attending, card_denies, github_not_linked…) is the same: no deploy key,
+no other account.
 
-**Fallback, only for an owner with no GitHub key:** `gh` signed in once for
-this Linux user with a machine account. The **operator** creates the token (a
-classic token with `repo` and `read:org`, or a fine-grained one with contents
-and pull requests on the card's repositories) and pastes it without it being
-shown or saved in the shell history:
-
-```bash
-read -rs T && printf '%s\n' "$T" | gh auth login --with-token; unset T
-gh auth status                  # Logged in … (keyring)
-```
-
-The **host agent** then checks write access on each repository on the card:
-`gh repo view <owner>/<repo> --json viewerPermission` reads `WRITE` or `ADMIN`.
-That token lives in the user's keyring, never in a file or an environment
-variable.
+**No other GitHub route (W942).** An owner with no GitHub key links GitHub on
+their Card. Nothing is signed in to `gh` on the machine, and no machine
+account or deploy key stands in for the owner's key.
 
 **Card edits on the coordinator's machine.** A project-file edit made on the
 card is applied by the coordinator's relay, a service (a LaunchAgent on macOS,
@@ -894,7 +755,7 @@ tmux -u new-session -d -s <agent-name> -x 220 -y 55 "bash -lc 'start-<agent-name
 
 - `--sandbox danger-full-access` gives Codex the rights of the dedicated host
   user. That user's home permissions, the workspace layout from step 8, and the
-  per-repository deploy keys from step 7 are the boundary. Codex can write Git
+  owner's GitHub key through `pb worker git-credential` (step 7) are the boundary. Codex can write Git
   metadata, create commits, run project tools, and reach the approved remotes.
 - `--ask-for-approval never` is the unattended worker policy: an approval prompt
   cannot hold the session while nobody is attached, and a failed command returns
@@ -1249,12 +1110,11 @@ project-workspace reference says:
 - it fetches and fast-forwards any it already has;
 - it tells the operator by name about any it cannot reach.
 
-A repository it cannot reach has no deploy key on this host yet: the first
-time, because keys are made from the attended card, and later because the card
-gained it. `pb worker connect-project` makes the key and prints its grant, the
-operator adds it on GitHub, and the agent runs the command again. Step 7's
-reconciliation remains for revoking keys the cards no longer need. Nothing is cloned by hand: a clone the card does not
-list is not the project's.
+A GitHub repository it cannot reach is one the owner's GitHub key does not
+serve yet: `pb worker connect-project` names it as `needs_key` with the key's
+answer, the owner links GitHub on their Card with access to it, and the agent
+runs the command again (W942: no deploy key). Nothing is cloned by hand: a
+clone the card does not list is not the project's.
 
 The workspace holding each listed alias at its branch is the proof. Joining a
 project sends the agent one welcome notice: the project, its role, the
@@ -1369,48 +1229,28 @@ same workspace. It keeps its board identity.
 
 ## 14. Retire an agent or the host
 
-Runs on: the host, and GitHub in the operator's browser (deleting deploy keys).
+Runs on: the host, and GitHub in the operator's browser (deleting old deploy keys).
 
 - One agent: `pb worker detach` in its session, then end its tmux session
   (`tmux kill-session -t <agent-name>`). Detaching only disables the agent's
   relay channel row; `pb host configure --remove-disabled-channels` removes
   every disabled row once no session on the host needs one back.
-- The host's access to one repository: remove it from the project card, and step 7's
-  reconciliation prints the revoke block. Without a card change, delete its deploy key
-  in that repository and the key files on the host.
+- The host's access to one repository: remove it from the project card. Any deploy
+  key made for it earlier is on step 7's revoke sheet.
 - The whole host: detach every agent, run `pb relay-service uninstall` and
   remove the inert `pb` launcher and its release store for each
-  user, delete the deploy keys on GitHub, then remove that user's Project Board
+  user, delete any old deploy keys on GitHub (step 7's revoke sheet), then remove that user's Project Board
   state after retaining any required audit material.
 
 ## Worked example: a machine's sheet
 
-The operator sheet from step 7 for a machine (host `host-two`, user
-`agent-user`). Public keys only: the private halves stay in `~/.ssh` on that
-host. Each page is that repository's deploy-key settings,
-`https://github.com/<owner>/<repository>/settings/keys`, which only its
-administrators can open. The keys below are placeholders.
+The revoke sheet from step 7 for a machine that had deploy keys (host
+`host-two`, user `agent-user`). Fingerprints only: the keys themselves stay
+in `~/.ssh` on that host until the operator deletes them on GitHub and the
+host agent removes the files. The fingerprint below is a placeholder.
 
-### applications
+### REVOKE applications (deploy keys are not used (W942))
 
-Title: host-two agents
-Allow write access: yes
-Key:
-
-    ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAA<public-key> host-two deploy key: applications
-
-### app-ecosystem
-
-Title: host-two agents
-Allow write access: yes
-Key:
-
-    ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAA<public-key> host-two deploy key: app-ecosystem
-
-### kdcube
-
-Title: host-two agents
-Allow write access: yes
-Key:
-
-    ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAA<public-key> host-two deploy key: kdcube
+Repository: kdcube/applications
+Find the deploy key titled "host-two agents" with fingerprint SHA256:<fingerprint> and delete it.
+Then, on the host: rm ~/.ssh/deploy_applications ~/.ssh/deploy_applications.pub, and the "Host github-applications" block in ~/.ssh/config. The clone stays for any unfinished work.

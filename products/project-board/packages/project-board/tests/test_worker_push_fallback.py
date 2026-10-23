@@ -29,8 +29,10 @@ def _setup(tmp_path: Path, monkeypatch, *, code: str, availability: bool, age_se
     deploy = _remote(tmp_path / "remotes", "deploy")
     clone = tmp_path / "clone"
     _git("clone", "-q", str(deploy), str(clone), cwd=tmp_path)
-    # origin fails like an HTTPS push with no credential; deploykey is this machine's deploy route.
-    _git("remote", "set-url", "origin", str(tmp_path / "unreachable.git"), cwd=clone)
+    # origin is an HTTPS route that refuses the connection, as when the owner key's route is down;
+    # deploykey is this machine's deploy route.
+    _git("remote", "set-url", "origin", "https://127.0.0.1:9/example-org/app-ecosystem.git", cwd=clone)
+    monkeypatch.setenv("GIT_TERMINAL_PROMPT", "0")
     _git("remote", "add", "deploykey", str(deploy), cwd=clone)
     _git("checkout", "-q", "-b", "work/fallback", cwd=clone)
     (clone / "NEW.md").write_text("new", encoding="utf-8")
@@ -82,6 +84,7 @@ def test_a_failed_owner_key_stops_the_push_with_its_code(tmp_path, monkeypatch, 
     err = capsys.readouterr().err
     assert f"owner key {word} ({code})" in err
     assert "nothing was pushed through the deploy key" in err
+    assert "not retried through a deploy key" in err
     assert "pushed with the deploy key" not in err
 
 
@@ -110,7 +113,7 @@ def test_owner_key_only_never_falls_back_after_an_availability_failure(tmp_path,
     assert _owner_only_push("origin", "work/fallback") != 0
     assert _branch(deploy) == "", "the deploy-key remote received nothing"
     err = capsys.readouterr().err
-    assert "not retried through the deploy key" in err
+    assert "not retried through a deploy key" in err
     assert "pushed with the deploy key" not in err
 
 
@@ -123,8 +126,11 @@ def test_owner_key_only_refuses_a_remote_that_does_not_push_over_https(tmp_path,
     _git("remote", "set-url", "origin", url, cwd=clone)
 
     assert _owner_only_push("origin", "work/fallback") == 2
+    assert _push() == 2, "W942: the same without the flag"
     assert _branch(deploy) == "", "nothing was pushed, not even to the local path"
-    assert "pushes over HTTPS only" in capsys.readouterr().err
+    err = capsys.readouterr().err
+    assert "pushes over HTTPS only" in err and "push_remote_not_owner_key" in err
+    assert "pb worker connect-project" in err
 
 
 def test_owner_key_only_checks_every_push_url_and_needs_the_remote_named(tmp_path, monkeypatch, capsys):
@@ -140,8 +146,19 @@ def test_owner_key_only_checks_every_push_url_and_needs_the_remote_named(tmp_pat
     assert "needs the remote named first" in capsys.readouterr().err
 
 
-def test_the_parser_offers_owner_key_only():
+def test_the_parser_still_accepts_owner_key_only_which_is_now_the_only_behaviour():
+    """W942: existing commands with the flag keep working; it no longer changes anything."""
     parser = cli.build_parser()
     args = parser.parse_args(["worker", "push", "--owner-key-only", "--", "origin", "main"])
     assert args.owner_key_only is True
     assert parser.parse_args(["worker", "push", "--", "origin", "main"]).owner_key_only is False
+
+
+def test_a_deploy_key_remote_is_never_pushed_to_with_or_without_the_flag(tmp_path, monkeypatch, capsys):
+    """W942 (operator, 2026-10-23): "only github defined in operator card should be used"."""
+    deploy, _clone = _setup(tmp_path, monkeypatch, code="http_502", availability=True)
+
+    assert cli._push_command(SimpleNamespace(git_args=["--", "deploykey", "work/fallback"])) == 2  # noqa: SLF001
+    assert _owner_only_push("deploykey", "work/fallback") == 2
+    assert _branch(deploy) == ""
+    assert capsys.readouterr().err.count("push_remote_not_owner_key") == 2
