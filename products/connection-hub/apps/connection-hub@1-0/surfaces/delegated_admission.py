@@ -26,6 +26,7 @@ from connection_hub.delegated_credentials.admission_replay import (
     AdmissionReplayClaimStore,
 )
 from connection_hub.delegated_credentials.credential_view import DelegatedCredentialView
+from connection_hub.delegated_credentials.resource_operations import resource_matches
 from connection_hub.delegated_credentials.controls.attribution import (
     CARD_ROLE_CALLER,
     CARD_ROLE_CONTROL,
@@ -150,6 +151,20 @@ def _guard_denial_facts(response: Any) -> tuple[str, str, dict[str, Any]]:
         or "The delegated operation was denied."
     ).strip()
     return code, message, payload
+
+
+def _resource_not_held(result: Any, resource: str) -> bool:
+    """Whether the caller's live Card holds no resource matching ``resource`` (a boundary refusal)."""
+    envelope = getattr(result, "envelope", None)
+    if envelope is None or not str(resource or "").strip():
+        return False
+    try:
+        view = DelegatedCredentialView.from_envelope(envelope, getattr(result, "grant_record", None))
+    except Exception:
+        return False
+    if not (view.client_id and view.registry_access_id):
+        return False
+    return not any(resource_matches(held, resource) for held in view.resources)
 
 
 def _policy_missing_grants(policy_denial: Any) -> list[str]:
@@ -513,10 +528,20 @@ async def handle_delegated_admission(
             and isinstance(requested, Mapping)
             and str(requested.get("kind") or "") == "outer_operation"
         )
+        # W929: a caller's Card that does not yet hold this registered resource is refused at the resource
+        # boundary, before any operation check, so the consent that adds it was never offered (the Connection
+        # Hub CLI authorizes the deployment resource only, and its first secret request ended in a bare 403).
+        # The service registers the resource (allows_resource passed above): the same consent link extends the
+        # live Card with it, and the identical request is retried.
+        resource_extension = _resource_not_held(result, admission_request.resource)
+        if resource_extension:
+            code = "resource_not_consented"
+            message = ("This connection's Card does not hold the requested resource. Grant it on the Card in "
+                       "Connection Hub (Delegated by KDCube; Once or Always), then retry the same request.")
         caller_card_recovery = not blocking_roles or blocking_roles == {
             CARD_ROLE_CALLER
         }
-        if recoverable_outer_operation and caller_card_recovery:
+        if (recoverable_outer_operation or resource_extension) and caller_card_recovery:
             view = DelegatedCredentialView.from_envelope(
                 result.envelope,
                 result.grant_record,
@@ -528,8 +553,11 @@ async def handle_delegated_admission(
             catalog_version = str(
                 getattr(result.catalog, "version", "") or ""
             ).strip()
+            # A resource extension is a plain grant first; a request-bound operation then gets its own
+            # request permit on the retry, with the Card's catalog version.
+            permit_now = request_bound and not resource_extension
             if (
-                request_bound
+                permit_now
                 and context.request_permit_recovery_url_builder is not None
             ):
                 approval_ticket, approval = _request_approval_ticket(
@@ -548,7 +576,7 @@ async def handle_delegated_admission(
                     service.request_permit_ttl_seconds,
                     approval_ticket,
                 )
-            elif request_bound:
+            elif permit_now:
                 return _denial_response(
                     status_code=503,
                     code="delegated_request_approval_unavailable",
@@ -575,7 +603,7 @@ async def handle_delegated_admission(
                     },
                     "invocation_change_id": change_id,
                 }
-                if request_bound:
+                if permit_now:
                     grant_payload.update(
                         {
                             "request_bound": True,
@@ -605,7 +633,7 @@ async def handle_delegated_admission(
                         "payload": grant_payload,
                     },
                 }
-                if request_bound:
+                if permit_now:
                     consent.update(
                         {
                             "kind": "delegated_request_permit",

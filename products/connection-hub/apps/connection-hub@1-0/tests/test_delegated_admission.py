@@ -1226,3 +1226,75 @@ async def test_request_bound_direct_admission_accepts_only_exact_browser_permit(
     assert approved.status_code == 200
     assert approved_body["request_permit"]["state"] == "consumed"
     assert approved_body["provenance"]["request_permit_revision"] == 1
+
+
+def _boundary_refusal(*, held_resource: str):
+    """The guard's resource-boundary refusal as KDCube renders it: no structured reason, only the text."""
+    base = _allowed_result(matched_resource=held_resource)
+    base.denial = JSONResponse(status_code=403, content={
+        "error": "forbidden", "error_description": "delegated credential resource mismatch"})
+    base.decision = None
+    base.runtime = None
+    base.catalog = None
+    return base
+
+
+async def _admit_with_boundary_refusal(monkeypatch, *, held_resource, request_bound=False, operation="customers.search"):
+    module = _load_entrypoint_module()
+    surface = sys.modules[module.handle_delegated_admission.__module__]
+    result = _boundary_refusal(held_resource=held_resource)
+
+    async def _evaluate(**_kwargs):
+        return result
+
+    monkeypatch.setattr(surface, "evaluate_delegated_rest_admission", _evaluate)
+    grant_calls, permit_calls = [], []
+
+    def grant(view, admission, change_id):
+        grant_calls.append((view.registry_access_id, admission.resource, admission.operation, change_id))
+        return "https://hub.example/grant?pending_agent_grant=1"
+
+    def permit(*args):
+        permit_calls.append(args)
+        return "https://hub.example/permit"
+
+    payload = {"resource": RESOURCE, "operation": operation, "invocation_id": "invoke-1",
+               "request_digest": canonical_request_digest({"value": "redacted"})}
+    response = await module.handle_delegated_admission(
+        context=module.AdmissionHostContext(
+            connections=_connections(request_bound=request_bound), redis=_Redis(), tenant="tenant-a",
+            project="project-a", resolve_secret=_secret, bind_delegated_request=lambda request: None,
+            operation_grant_url_builder=grant, request_permit_recovery_url_builder=permit),
+        payload=payload, request=_request(payload))
+    return response, json.loads(response.body), grant_calls, permit_calls
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("request_bound", [False, True])
+async def test_a_card_without_the_registered_resource_gets_the_consent_that_adds_it(monkeypatch, request_bound):
+    """W929: the Connection Hub CLI's Card holds only the deployment resource, so its first secret request was a
+    bare 403 at the resource boundary and the documented consent was never offered. The service registers the
+    resource; the answer is now the grant that extends the live Card (a plain grant even for a request-bound
+    operation, whose own permit follows on the retry)."""
+    response, body, grant_calls, permit_calls = await _admit_with_boundary_refusal(
+        monkeypatch, held_resource="https://service.example/other", request_bound=request_bound)
+    assert response.status_code == 403
+    assert body["error"]["code"] == "resource_not_consented"
+    consent = body["consent"]
+    assert consent["kind"] == "delegated_agent_grant"
+    assert consent["resource"] == RESOURCE and consent["outer_operation"] == "customers.search"
+    assert consent["connection_hub_url"] == "https://hub.example/grant?pending_agent_grant=1"
+    assert consent["grant"]["payload"]["resource_operations"] == {RESOURCE: ["customers.search"]}
+    assert "request_bound" not in consent["grant"]["payload"]
+    assert grant_calls == [("access-1", RESOURCE, "customers.search", "invoke-1")] and permit_calls == []
+
+
+@pytest.mark.asyncio
+async def test_a_boundary_refusal_for_a_held_resource_offers_no_consent(monkeypatch):
+    """A Card that already holds the resource was refused for another boundary reason: no grant can fix that."""
+    response, body, grant_calls, permit_calls = await _admit_with_boundary_refusal(
+        monkeypatch, held_resource=RESOURCE)
+    assert response.status_code == 403
+    assert body["error"]["code"] != "resource_not_consented"
+    assert "consent" not in body or not body["consent"]
+    assert grant_calls == [] and permit_calls == []
