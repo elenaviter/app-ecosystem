@@ -31,6 +31,7 @@ except ImportError:  # pragma: no cover - the relay runtime is a host-side depen
             self.message = str(message or "The host relay cycle can be retried.")
 
 
+from .agent_services import is_agent_services_action
 from .card_refusal import actionable_card_refusal
 from project_board.client.heartbeat_team import TeamRequest, TeamSnapshots
 from .heartbeat_reply import ReplyRequest, ReplySnapshots, ReplyDecodeError
@@ -7620,37 +7621,55 @@ class ProblemBoardRelaySupervisor:
                         wait_context=wait_context,
                     )
                     continue
-                stable_action = getattr(
-                    session.adapter.client,
-                    "action_with_transport_identity",
-                    None,
-                )
-                if not callable(stable_action):
-                    raise DomainError(
-                        "work_coordinate_transport_identity_unavailable",
-                        "The worker relay client cannot preserve retry identity.",
-                        status=503,
-                    )
-                arguments = {
-                    "object_ref": str(request.get("object_ref") or ""),
-                    "action": str(request.get("action") or ""),
-                    "payload": dict(request.get("payload") or {}),
-                }
-                action_started = time.monotonic()
-                try:
-                    # W574: a mutation whose earlier send ended with an unknown
-                    # outcome is settled by reading the board's durable receipt,
-                    # never by sending it again, on any board.
-                    settled = await _settle_unknown_by_receipt(stable_action, request, arguments)
-                    if settled is not None:
-                        result = settled
-                    else:
-                        result = await stable_action(
-                            **arguments,
-                            transport_request_id=str(request.get("request_id") or ""),
+                if is_agent_services_action(str(request.get("action") or "")):
+                    # W918: the services this Card allows, through Connection Hub's
+                    # gateway with this channel's Card; never the board's Data Bus.
+                    agent_services = getattr(session.adapter.client, "agent_services", None)
+                    if not callable(agent_services):
+                        raise DomainError(
+                            "work_agent_services_unavailable",
+                            "This relay cannot reach the services the Card allows.",
+                            status=503,
                         )
-                finally:
-                    governed_action_seconds = time.monotonic() - action_started
+                    action_started = time.monotonic()
+                    try:
+                        result = await agent_services(
+                            str(request.get("action") or ""), dict(request.get("payload") or {}),
+                        )
+                    finally:
+                        governed_action_seconds = time.monotonic() - action_started
+                else:
+                    stable_action = getattr(
+                        session.adapter.client,
+                        "action_with_transport_identity",
+                        None,
+                    )
+                    if not callable(stable_action):
+                        raise DomainError(
+                            "work_coordinate_transport_identity_unavailable",
+                            "The worker relay client cannot preserve retry identity.",
+                            status=503,
+                        )
+                    arguments = {
+                        "object_ref": str(request.get("object_ref") or ""),
+                        "action": str(request.get("action") or ""),
+                        "payload": dict(request.get("payload") or {}),
+                    }
+                    action_started = time.monotonic()
+                    try:
+                        # W574: a mutation whose earlier send ended with an unknown
+                        # outcome is settled by reading the board's durable receipt,
+                        # never by sending it again, on any board.
+                        settled = await _settle_unknown_by_receipt(stable_action, request, arguments)
+                        if settled is not None:
+                            result = settled
+                        else:
+                            result = await stable_action(
+                                **arguments,
+                                transport_request_id=str(request.get("request_id") or ""),
+                            )
+                    finally:
+                        governed_action_seconds = time.monotonic() - action_started
                 if not isinstance(result, Mapping):
                     raise DomainError(
                         "work_coordinate_response_invalid",

@@ -990,6 +990,36 @@ def build_parser() -> argparse.ArgumentParser:
     command.add_argument("--lease-id", required=True)
     command.add_argument("--file-ref", required=True)
 
+    # W918: the services this worker's Card allows, through Connection Hub.
+    command = worker_commands.add_parser(
+        "services", help="List the services this worker's Card allows now."
+    )
+    _host_config(command)
+    _agent_identity(command)
+    command = worker_commands.add_parser(
+        "service-describe", help="Describe one service: its arguments and schema."
+    )
+    _host_config(command)
+    _agent_identity(command)
+    command.add_argument("name")
+    command = worker_commands.add_parser(
+        "service-call", help="Call one service the Card allows; consent is the owner's."
+    )
+    _host_config(command)
+    _agent_identity(command)
+    command.add_argument("name")
+    command.add_argument("--args-file", default="", help="JSON object of arguments.")
+    command.add_argument("--args-json", default="", help="JSON object of arguments.")
+    command.add_argument(
+        "--invocation-id", default="",
+        help="Repeat the same id after consent; a new id is made when omitted.",
+    )
+    command.add_argument(
+        "--output", default="",
+        help="Write the result (bounded at 64 KiB) to this owner-only file instead of printing it.",
+    )
+    command.add_argument("--replace", action="store_true", help="Overwrite an existing --output file.")
+
     command = worker_commands.add_parser(
         "item-attach", help="Attach a local file to one current work item."
     )
@@ -3774,6 +3804,123 @@ def _worker_item(args: Any) -> dict[str, Any]:
     return dict(item)
 
 
+def _agent_service_arguments(args: Any) -> dict[str, Any]:
+    text = ""
+    if getattr(args, "args_file", ""):
+        text = Path(args.args_file).read_text(encoding="utf-8")
+    elif getattr(args, "args_json", ""):
+        text = args.args_json
+    if not text.strip():
+        return {}
+    try:
+        value = json.loads(text)
+    except ValueError as exc:
+        raise DomainError("agent_service_arguments_invalid", "Arguments must be a JSON object.") from exc
+    if not isinstance(value, dict):
+        raise DomainError("agent_service_arguments_invalid", "Arguments must be a JSON object.")
+    return value
+
+
+def _write_private_result(path: Path, text: str, *, replace: bool) -> None:
+    """A service result may carry private data: owner-only, never a symlink, no clobber without --replace."""
+
+    if path.is_symlink():
+        raise DomainError("agent_service_output_unsafe", "The output path is a symbolic link.", status=409)
+    if path.exists() and not replace:
+        raise DomainError(
+            "agent_service_output_exists",
+            "The output file exists; pass --replace to overwrite it.",
+            status=409,
+            details={"output": str(path)},
+        )
+    temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o600)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            handle.write(text)
+        os.replace(temporary, path)
+    except BaseException:
+        temporary.unlink(missing_ok=True)
+        raise
+
+
+def _worker_agent_services(args: Any) -> dict[str, Any]:
+    """W918: list, describe or call a service this worker's Card allows.
+
+    The request goes through this worker's relay channel, which holds the Card
+    session and asks Connection Hub's delegated gateway with the Card's own
+    bearer. The Card, its project Card and the External MCP switch decide.
+    """
+
+    from .agent_services import CALL_ACTION, DESCRIBE_ACTION, LIST_ACTION
+
+    command = args.worker_command
+    if command == "services":
+        action, payload = LIST_ACTION, {}
+    elif command == "service-describe":
+        action, payload = DESCRIBE_ACTION, {"name": str(args.name or "")}
+    else:
+        invocation_id = str(getattr(args, "invocation_id", "") or "").strip() or new_id("svc")
+        action = CALL_ACTION
+        payload = {
+            "name": str(args.name or ""),
+            "arguments": _agent_service_arguments(args),
+            "invocation_id": invocation_id,
+        }
+    identity = _identity(args)
+    path = resolve_host_config_path(getattr(args, "config", None))
+    config = HostRelayConfig.load(path)
+    channel = config.worker(identity)
+    if channel is None:
+        raise DomainError(
+            "work_worker_channel_missing",
+            "This session has no worker relay channel; run pb worker listen first.",
+            status=409,
+            details={"worker_name": identity.worker_name},
+        )
+    _raise_if_channel_not_usable(path, channel)
+    _raise_if_channel_reconnecting(path, channel.worker_name)
+    queue = CoordinateQueue(config.field_root)
+    request_id = new_id("agent-services")
+    queue.submit(
+        worker_name=channel.worker_name,
+        worker_identity=channel.worker_identity,
+        runtime_kind=channel.runtime_kind,
+        runtime_session_id=channel.runtime_session_id,
+        action=action,
+        object_ref="",
+        payload=payload,
+        timeout_seconds=DEFAULT_COORDINATE_TIMEOUT_SECONDS,
+        request_id=request_id,
+    )
+    response = _await_coordinate_response(
+        queue, path, worker_name=channel.worker_name, request_id=request_id,
+        timeout_seconds=DEFAULT_COORDINATE_TIMEOUT_SECONDS,
+    )
+    if not bool(response.get("ok")):
+        error = response.get("error") if isinstance(response.get("error"), Mapping) else {}
+        details = dict(error.get("details")) if isinstance(error.get("details"), Mapping) else {}
+        if action == CALL_ACTION:
+            details.setdefault("invocation_id", payload["invocation_id"])
+        raise DomainError(
+            str(error.get("code") or "work_agent_services_failed"),
+            str(error.get("message") or "The worker relay could not reach the service."),
+            status=int(error.get("status") or 502),
+            details=details,
+        )
+    result = response.get("result")
+    result = dict(result) if isinstance(result, Mapping) else {}
+    output = str(getattr(args, "output", "") or "")
+    if action == CALL_ACTION and output:
+        _write_private_result(
+            Path(output),
+            json.dumps(result.get("result"), ensure_ascii=False, indent=2),
+            replace=bool(getattr(args, "replace", False)),
+        )
+        result = {**{key: value for key, value in result.items() if key != "result"}, "output": output}
+    return {"operation": f"agent_services.{command}", **result}
+
+
 def _worker_item_attach(args: Any) -> dict[str, Any]:
     from .relay import _http_upload
 
@@ -6415,6 +6562,8 @@ def _worker_command(args: Any) -> dict[str, Any]:
             lease_owner=identity.runtime_session_id,
             file_ref=args.file_ref,
         )
+    if args.worker_command in {"services", "service-describe", "service-call"}:
+        return _worker_agent_services(args)
     if args.worker_command == "item-attach":
         return _worker_item_attach(args)
     if args.worker_command == "project-import":
@@ -7527,6 +7676,8 @@ def _source_command(args: Any) -> dict[str, Any]:
 
 async def _relay(args: Any) -> Any:
     from connection_hub.caller.paths import StatePaths
+    from connection_hub.caller.remote_mcp import connect_remote_tools
+    from .agent_services import gateway_url, run_agent_services
     from connection_hub.caller.profile_connection import (
         connect_profile_tools,
         resolve_profile_bearer,
@@ -7707,12 +7858,25 @@ async def _relay(args: Any) -> Any:
                         repository=repository,
                     )
 
+                gateway = gateway_url(host_config.endpoint, host_config.tenant, host_config.platform_project)
+
+                async def agent_services(action: str, payload: Mapping[str, Any]) -> dict[str, Any]:
+                    # W918: the services this Card allows, through Connection Hub's gateway
+                    # with the Card's own bearer; the bearer stays in this relay.
+                    bearer_now = await current_bearer()
+                    return await run_agent_services(
+                        action, payload,
+                        open_tools=lambda: connect_remote_tools(endpoint=gateway, bearer=bearer_now),
+                        gateway=gateway,
+                    )
+
                 yield ProblemBoardDataBusClient(
                     data_bus,
                     partition_ref=worker_stream_partition(
                         f"card:{profile.access_id}"
                     ),
                     github_key=github_key,
+                    agent_services=agent_services,
                     message_timing=host_config.message_timing,
                 )
             finally:

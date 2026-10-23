@@ -225,6 +225,52 @@ def _is_journal_search(result: Mapping[str, Any]) -> bool:
     )
 
 
+def _clip(text: str, limit: int) -> str:
+    return text if len(text) <= limit else text[:limit] + f" ... ({len(text) - limit} more characters)"
+
+
+def _render_agent_services(result: Mapping[str, Any]) -> list[str]:
+    """W918: the services a Card allows, one line each; a call's bounded result."""
+
+    operation = str(result.get("operation") or "")
+    lines = [f"operation: {operation}"]
+    if isinstance(result.get("services"), list):
+        services = result["services"]
+        lines.append(f"services: {len(services)}")
+        for row in services:
+            if not isinstance(row, Mapping):
+                continue
+            lines.append("- {} · {} · {} · args {}".format(
+                row.get("name") or "-", row.get("title") or "-", row.get("resource_kind") or "-",
+                ",".join(row.get("arguments") or ()) or "-",
+            ))
+        return lines
+    if isinstance(result.get("service"), Mapping):
+        row = result["service"]
+        lines.extend([
+            f"name: {row.get('name') or '-'}",
+            f"title: {row.get('title') or '-'}",
+            f"resource: {row.get('resource') or '-'} ({row.get('resource_kind') or '-'})",
+            f"operation_name: {row.get('operation') or '-'}",
+            f"arguments: {','.join(row.get('arguments') or ()) or '-'}",
+            f"required: {','.join(row.get('required') or ()) or '-'}",
+            f"description: {_clip(str(row.get('description') or ''), 600)}",
+        ])
+        return lines
+    lines.append(f"name: {result.get('name') or '-'}")
+    lines.append(f"invocation_id: {result.get('invocation_id') or '-'}")
+    if result.get("replay"):
+        lines.append("replay: True")
+    if result.get("output"):
+        lines.append(f"output: {result['output']}")
+    else:
+        lines.append(f"result_bytes: {result.get('result_bytes', 0)}{' (truncated)' if result.get('truncated') else ''}")
+        body = result.get("result")
+        text = body if isinstance(body, str) else json.dumps(body, ensure_ascii=False, sort_keys=True)
+        lines.append(f"result: {_clip(text, 4000)}")
+    return lines
+
+
 def _render_result(result: Any, flags: list[str]) -> list[str]:
     if not isinstance(result, Mapping):
         return _flatten(result, prefix="") or ["(empty result)"]
@@ -237,6 +283,8 @@ def _render_result(result: Any, flags: list[str]) -> list[str]:
         return _render_lease_read(result, flags)
     if "operation" in result and "object" in result:
         return _render_coordinate(result)
+    if str(result.get("operation") or "").startswith("agent_services."):
+        return _render_agent_services(result)
     if schema == "problem-board.worker-inbox.v1":
         return _render_worker_inbox(result, flags)
     if schema == "problem-board.first-run-status.v1":
