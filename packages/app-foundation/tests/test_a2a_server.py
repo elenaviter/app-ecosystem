@@ -15,9 +15,12 @@ import uuid
 
 import pytest
 
-httpx = pytest.importorskip("httpx")
+# Only what the a2a-server extra declares: the SDK (with starlette) and httpx2.
+httpx2 = pytest.importorskip("httpx2")
 pytest.importorskip("a2a.server.routes.jsonrpc_dispatcher")
-fastapi = pytest.importorskip("fastapi")
+
+from starlette.applications import Starlette  # noqa: E402
+from starlette.routing import Route  # noqa: E402
 
 from app_foundation.a2a.card import AgentSkill  # noqa: E402
 from app_foundation.a2a.server import (  # noqa: E402
@@ -123,19 +126,24 @@ class Limiter:
 
 
 def _app(server: A2AServer, caller: A2ACaller | None = ALICE):
-    app = fastapi.FastAPI()
     current = {"caller": caller}
 
-    @app.api_route(f"{PREFIX}/{{slug}}/{{path_tail:path}}", methods=["GET", "POST", "HEAD"])
-    @app.api_route(f"{PREFIX}/{{slug}}", methods=["GET", "POST", "HEAD"])
-    async def public(slug: str, request: fastapi.Request, path_tail: str = ""):
+    async def public(request):
+        path_tail = request.path_params.get("path_tail", "")
         return await server.handle(request, caller=current["caller"], path_tail=path_tail)
 
+    methods = ["GET", "POST", "HEAD"]
+    app = Starlette(
+        routes=[
+            Route(f"{PREFIX}/{{slug}}/{{path_tail:path}}", public, methods=methods),
+            Route(f"{PREFIX}/{{slug}}", public, methods=methods),
+        ]
+    )
     return app, current
 
 
 def _client(app):
-    return httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url=HOST)
+    return httpx2.AsyncClient(transport=httpx2.ASGITransport(app=app), base_url=HOST)
 
 
 def _server(target=None, **kwargs):
