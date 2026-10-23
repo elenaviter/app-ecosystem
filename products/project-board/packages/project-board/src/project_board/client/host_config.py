@@ -153,6 +153,18 @@ def _reconcile_ceiling(relay: Mapping[str, Any]) -> int:
     return max(5, min(int(_declared(relay, _CEILING_KEYS) or 60), 86_400))
 
 
+# W943 F2-A: how often mailbox reconciliation runs for an unchanged recipient
+# view. A change of the view runs it on the next heartbeat regardless.
+DEFAULT_MAILBOX_RECONCILE_INTERVAL_SECONDS = 300
+
+
+def mailbox_reconcile_interval(relay: Mapping[str, Any]) -> int:
+    declared = relay.get("mailbox_reconcile_interval_seconds")
+    if not declared:
+        return DEFAULT_MAILBOX_RECONCILE_INTERVAL_SECONDS
+    return max(30, min(int(declared), 86_400))
+
+
 def _idle_reconcile_ceiling(relay: Mapping[str, Any]) -> int:
     # Push wakes the relay immediately. This ceiling is the reconciliation
     # fallback when no project currently addresses the worker.
@@ -300,6 +312,8 @@ class HostRelayConfig:
     # --backup-root``). Unset, nothing is created: the operator chooses it.
     backup_root: str = ""
     message_timing: MessageTimingConfig = MessageTimingConfig()
+    # W943 F2-A: relay.json ``mailbox_reconcile_interval_seconds``.
+    mailbox_reconcile_interval_seconds: int = DEFAULT_MAILBOX_RECONCILE_INTERVAL_SECONDS
 
     @property
     def effective_agent_workspace_root(self) -> str:
@@ -440,6 +454,7 @@ class HostRelayConfig:
             relay_id=component(_required(relay.get("id"), "relay.id"), field="relay.id"),
             reconcile_ceiling_seconds=_reconcile_ceiling(relay),
             idle_reconcile_ceiling_seconds=_idle_reconcile_ceiling(relay),
+            mailbox_reconcile_interval_seconds=mailbox_reconcile_interval(relay),
             journal_workspace_root=journal_root,
             source_repositories=tuple(
                 sorted(

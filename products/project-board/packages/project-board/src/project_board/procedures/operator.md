@@ -107,7 +107,10 @@ reconciliation cycle immediately; `relay.reconcile_ceiling_seconds` and
 `relay.idle_reconcile_ceiling_seconds` are the ceilings on that wait, the
 longest the relay will go without a cycle when no push arrives, and they remain
 missed-event fallbacks rather than a polling schedule. A relay.json still
-carrying the older `poll_interval_seconds` spelling is read unchanged. A cycle in
+carrying the older `poll_interval_seconds` spelling is read unchanged.
+`relay.mailbox_reconcile_interval_seconds` (default 300, 30 to 86,400) is how
+often mailbox reconciliation reruns for an unchanged recipient view; a change
+runs it on the next heartbeat. A cycle in
 which every channel fails on a transport condition backs off and retries. A
 credential cannot change to a different runtime session, and a profile cannot
 be shared by two local channels.

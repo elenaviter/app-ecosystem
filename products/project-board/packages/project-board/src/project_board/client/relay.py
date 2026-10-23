@@ -75,9 +75,11 @@ from .plan_authority import PLAN_REF_RESOLUTION_SCHEMA
 from ..contract.plan_host import NOTE_VIEW_KIND, PLAN_HOST_CONTROL_KINDS
 from .host_config import (
     DEFAULT_ALLOWED_PEER_WORKERS,
+    DEFAULT_MAILBOX_RECONCILE_INTERVAL_SECONDS,
     HostRelayConfig,
     WorkerChannelConfig,
     agent_workspace,
+    mailbox_reconcile_interval,
     profile_name_of,
     set_worker_channel_state,
 )
@@ -845,6 +847,9 @@ class RelayConfig:
     # W913: the KDCube profile (pb setup target id) that selects this relay's
     # host config, empty when no name selects it; the resume line carries it.
     kdcube_profile: str = ""
+    # W943 F2-A: with an unchanged recipient view, how often mailbox
+    # reconciliation still runs (relay.json mailbox_reconcile_interval_seconds).
+    mailbox_reconcile_interval_seconds: int = DEFAULT_MAILBOX_RECONCILE_INTERVAL_SECONDS
 
     def repository_mapping(self) -> dict[str, Any]:
         return repository_entries(self.source_repositories, self.source_read_roots)
@@ -966,6 +971,7 @@ class RelayConfig:
             relay_id=_required(worker.get("relay_id"), "worker.relay_id"),
             reconcile_ceiling_seconds=_declared_ceiling(value),
             idle_reconcile_ceiling_seconds=_declared_idle_ceiling(value),
+            mailbox_reconcile_interval_seconds=mailbox_reconcile_interval(value),
             journal_workspace_root=(
                 journal_root_path.resolve() if journal_root_path else None
             ),
@@ -1034,6 +1040,11 @@ class RelayConfig:
             relay_id=f"{host.relay_id}-{channel.worker_name}",
             reconcile_ceiling_seconds=host.reconcile_ceiling_seconds,
             idle_reconcile_ceiling_seconds=host.idle_reconcile_ceiling_seconds,
+            mailbox_reconcile_interval_seconds=getattr(
+                host,
+                "mailbox_reconcile_interval_seconds",
+                DEFAULT_MAILBOX_RECONCILE_INTERVAL_SECONDS,
+            ),
             journal_workspace_root=host.journal_workspace_root,
             source_repositories=host.source_repositories,
             allowed_roots=host.allowed_roots,
@@ -5289,10 +5300,12 @@ class ProblemBoardHostRelayAdapter:
     def _reconcile_project_mailboxes(
         self, recipients: Sequence[Mapping[str, Any]]
     ) -> dict[str, Any]:
-        self.field.sync_project_mail_recipients(self.config.project_id, recipients)
-        return self.field.reconcile_project_mailboxes(
+        # W943 F2-A: once per owner view per change, else once per interval.
+        return self.field.reconcile_project_mailboxes_when_due(
             self.config.project_id,
+            recipients,
             reporter_worker_name=self.config.worker_name,
+            interval_seconds=self.config.mailbox_reconcile_interval_seconds,
         )
 
     async def _ensure_registration(
