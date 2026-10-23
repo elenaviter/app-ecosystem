@@ -173,8 +173,39 @@ which is how `pb worker project-import --wait` follows its import to committed
 or failed. `project.import.result` gives a person the result of a finished
 import: what was inserted and what was left out and why.
 
-How a person starts an import in the browser (the Create project choice and the
-project card's Import section) is described when that part ships.
+In the browser, a person imports in two places:
+
+- **Create project.** The dialog offers **From scratch** or **Import from a
+  project export**. With import, the project is created first, with you as
+  its owner, and then the **Import a project export** dialog opens on it.
+- **The project card's Import section.** It is shown while the project is
+  empty ("you can fill it from a project export, once"). While an import
+  runs, it says so, item creation is locked, and it offers **Cancel import**.
+  Once the project has content, the section is gone.
+
+The import itself:
+
+1. **Choose the file.** Choose the export archive (`.tar.gz`). The browser
+   reads the export's participants from the archive and shows them: people,
+   agents (alias, role, owner, runtime) and repositories. You can copy them
+   as Markdown or download them as `participants.md`. They are for
+   information only: nobody is invited or connected, so invite people and
+   agents again after the import. An export carries an agent's runtime, not
+   its workspace or session, so there is no start line to copy.
+2. **Import.** The progress line follows the steps above: checking the file,
+   uploading it part by part, finishing the upload, then checking the archive
+   and starting. If another import holds the board's turn, it says that this
+   one starts when the other finishes. Once the import is running, the dialog
+   can be closed: the import continues on the board, and the project card
+   shows it.
+3. **Cancel.** **Cancel import** asks for confirmation. Everything the import
+   wrote is removed, and the project stays, empty: you can import into it
+   again or work in it by hand.
+4. **Result.** A committed import shows "Imported." with how many of each
+   record it inserted. An import that did not finish shows its error code and
+   the choices: import again, delete the project, or keep it as a fresh
+   project. Each attempt has its own key, so the same file can be imported
+   again after a failure.
 
 ## People: members and project admins
 
