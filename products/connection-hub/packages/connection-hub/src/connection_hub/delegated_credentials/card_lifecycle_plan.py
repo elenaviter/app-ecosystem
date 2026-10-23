@@ -959,7 +959,7 @@ async def plan_card_lifecycle(
                                    "add_grants", "add_operations", "remove_operations", "operation_grants",
                                    "protected_grants", "accepted_operations", "expected_catalog_version",
                                    "composition_mode", "label", "invocation_modes", "external_mcp_family",
-                                   "grantor_proof"}
+                                   "a2a_family", "grantor_proof"}
                     or ("selection" in raw) != (raw.get("kind") in {"reselect", "reselect_project_control",
                                                                     "reselect_agent_card",
                                                                     "reselect_invitation_control", "set_person_properties"})
@@ -976,6 +976,9 @@ async def plan_card_lifecycle(
                     # W918: the project's External MCP switch travels only on the project Control's own edit.
                     or ("external_mcp_family" in raw and (raw.get("kind") != "reselect_project_control"
                                                           or raw["external_mcp_family"] not in {"on", "off"}))
+                    # W937: the project's A2A switch, the same rule.
+                    or ("a2a_family" in raw and (raw.get("kind") != "reselect_project_control"
+                                                 or raw["a2a_family"] not in {"on", "off"}))
                     # W735: a Card's display name travels only on a selection edit of that Card.
                     or ("label" in raw and (raw.get("kind") not in {"reselect", "reselect_project_control",
                                                                     "reselect_agent_card",
@@ -1087,6 +1090,7 @@ async def plan_card_lifecycle(
                     accepted_operations=raw.get("accepted_operations"),
                     composition_mode=raw.get("composition_mode"), label=raw.get("label"),
                     external_mcp_family=raw.get("external_mcp_family"),
+                    a2a_family=raw.get("a2a_family"),
                     invocation_modes=raw.get("invocation_modes"), grantor_proof=raw.get("grantor_proof"),
                     grantor_edit=_grantor_edit(raw), load_live=load_live,
                     allow_unchanged=_carries_held_mode(original, raw))

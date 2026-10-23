@@ -152,7 +152,11 @@ from connection_hub.delegated_credentials.controls.effective import (
     ControlCardMismatch,
     effective_card_authority,
 )
-from connection_hub.delegated_credentials.controls.external_mcp_switch import direct_switch_write_refusal
+from connection_hub.delegated_credentials.controls.external_mcp_switch import (
+    A2A_FAMILY_PROPERTY,
+    SWITCH_PROPERTIES,
+    direct_switch_write_refusal,
+)
 from connection_hub.delegated_credentials.controls.hierarchy import compose_control_hierarchy
 from connection_hub.delegated_credentials.conversation_target_policy import (
     conversation_targets,
@@ -2879,15 +2883,18 @@ class AutomationAccessService:
             except ManagedCardEditError as exc:
                 return exc.to_dict()
             # W918: a switch-only P Save changes no selection field; it is still a real edit.
-            switch_changes = (kind == "project_control" and changes.get("external_mcp_family") is not None
-                              and changes.get("external_mcp_family")
-                              != dict(record.properties or {}).get("external_mcp_family"))
+            # W937: either project switch (External MCP or A2A agents).
+            switch_changes = kind == "project_control" and any(
+                changes.get(switch) is not None
+                and changes.get(switch) != dict(record.properties or {}).get(switch)
+                for switch in SWITCH_PROPERTIES)
             if unchanged and not switch_changes:
                 return {"ok": True, "unchanged": True}
-        composition_mode = label = external_mcp_family = None
+        composition_mode = label = None
+        switch_values: dict[str, str] = {}
         stored_mode = record.composition_mode
         if kind == "project_control" and (changes.get("composition_mode") is not None
-                                          or changes.get("external_mcp_family") is not None):
+                                          or any(changes.get(switch) is not None for switch in SWITCH_PROPERTIES)):
             # W742: the rule is compared with P's durable current revision, never the serving projection (live
             # 10 Oct 22:49Z: a projection behind the committed revision), so a repeated rule is a no-op.
             current = await self._load_record_any_state(record.access_id, grantor_subject=record.grantor_subject)
@@ -2922,15 +2929,18 @@ class AutomationAccessService:
         if whole_selection is not None:
             selection = whole_selection
         # W918: the project's External MCP switch, compared with P's durable revision like the access rule.
-        requested_family = changes.get("external_mcp_family")
-        if requested_family is not None:
+        # W937: the A2A switch the same way, each on its own.
+        for switch in SWITCH_PROPERTIES:
+            requested_family = changes.get(switch)
+            if requested_family is None:
+                continue
             if kind != "project_control" or requested_family not in {"on", "off"}:
                 return {"ok": False, "error": "managed_card_edit_fields_unsupported", "status": 409,
-                        "message": "Only a project's Control carries its External MCP switch. Nothing was saved."}
-            if requested_family != dict(record.properties or {}).get("external_mcp_family"):
-                external_mcp_family = requested_family
+                        "message": "Only a project's Control carries its project switches. Nothing was saved."}
+            if requested_family != dict(record.properties or {}).get(switch):
+                switch_values[switch] = requested_family
         if (kind == "project_control" and not selection and not changes.get("accepted_operations")
-                and composition_mode is None and label is None and external_mcp_family is None):
+                and composition_mode is None and label is None and not switch_values):
             if revision != record.card_revision:
                 return {"ok": False, "error": "managed_card_edit_revision_changed", "status": 409,
                         "message": "Reload the Card and save again. Nothing was saved."}
@@ -2943,7 +2953,8 @@ class AutomationAccessService:
                 accepted_operations=changes.get("accepted_operations"),
                 expected_catalog_version=changes.get("expected_catalog_version"),
                 composition_mode=composition_mode, label=label, invocation_modes=whole_modes,
-                external_mcp_family=external_mcp_family)
+                external_mcp_family=switch_values.get("external_mcp_family"),
+                a2a_family=switch_values.get(A2A_FAMILY_PROPERTY))
             # W918 H1: the proof covers exactly the edit this body carries, its catalog pin included.
             from .grantor_authority_proof import edit_of
             proof = self._owner_authority_proof(user, record=record, kind=kind, revision=revision,
@@ -2997,9 +3008,10 @@ class AutomationAccessService:
                          ("resource_grants", "resource_operations", "named_service_operations", "account_scope")
                          if changes.get(field) is not None}
             identity = [_subject_from_user(user), record.access_id, changes.get("expected_card_revision"), selection]
-            if changes.get("external_mcp_family") is not None:
-                # W918: two different switch values are two Saves; every other Save keeps its old id.
-                identity.append({"external_mcp_family": changes["external_mcp_family"]})
+            for switch in SWITCH_PROPERTIES:
+                if changes.get(switch) is not None:
+                    # W918/W937: two different switch values are two Saves; every other Save keeps its old id.
+                    identity.append({switch: changes[switch]})
             digest = hashlib.sha256(json.dumps(
                 identity, sort_keys=True, separators=(",", ":"), default=str).encode("utf-8")).hexdigest()
             request_id = "project-control-save:" + digest[:48]
@@ -8144,6 +8156,7 @@ class AutomationAccessService:
         accepted_operations: Mapping[str, Iterable[str]] | None = None,
         request_id: str | None = None,
         external_mcp_family: str | None = None,
+        a2a_family: str | None = None,
         _delegable_grants: Iterable[str] | None = None,
         _record_transform: Callable[
             [AutomationAccessRecord, AutomationAccessRecord],
@@ -8190,10 +8203,13 @@ class AutomationAccessService:
                          "expected_card_revision": expected_card_revision,
                          "accepted_operations": accepted_operations,
                          "expected_catalog_version": expected_catalog_version, "_screen_save": _screen_save,
-                         "external_mcp_family": external_mcp_family})
+                         "external_mcp_family": external_mcp_family, "a2a_family": a2a_family})
             return forwarded if forwarded is not None else refused
         # W918: the switch is written only by its Control's own transaction; the switch owns that refusal.
         if (refused := direct_switch_write_refusal(external_mcp_family)) is not None:
+            return refused
+        # W937: the project's A2A switch, the same rule.
+        if (refused := direct_switch_write_refusal(a2a_family, switch_property=A2A_FAMILY_PROPERTY)) is not None:
             return refused
         updated = await self.update_access(
             user,

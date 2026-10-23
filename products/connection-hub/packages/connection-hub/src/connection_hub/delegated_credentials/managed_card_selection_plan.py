@@ -138,6 +138,7 @@ async def build_managed_card_selection_update(
     decision: ProjectAuthorizationDecision, project_ref: str, actor_subject: str, request_id: str, now: int,
     accepted_operations: Mapping[str, Any] | None = None, composition_mode: str | None = None,
     label: str | None = None, allow_unchanged: bool = False, external_mcp_family: str | None = None,
+    a2a_family: str | None = None,
     invocation_modes: Mapping[str, Any] | None = None, grantor_proof: str | None = None,
     grantor_edit: Mapping[str, Any] | None = None, load_live: Any = None,
 ) -> dict[str, Any]:
@@ -154,6 +155,11 @@ async def build_managed_card_selection_update(
     # W918: the project's External MCP switch, one field of P, like the access rule.
     if external_mcp_family is not None and (kind != "project_control" or external_mcp_family not in {"on", "off"}):
         raise _refuse("card_plan_selection_invalid")
+    # W937: the project's A2A switch, another field of P, the same way.
+    if a2a_family is not None and (kind != "project_control" or a2a_family not in {"on", "off"}):
+        raise _refuse("card_plan_selection_invalid")
+    switch_values = {name: value for name, value in (("external_mcp_family", external_mcp_family),
+                                                      ("a2a_family", a2a_family)) if value is not None}
     if type(now) is not int or now < 1:
         raise _refuse("card_plan_audit_time_invalid")
     managed_target_kind(original, project_ref=project_ref, kind=kind)
@@ -212,8 +218,7 @@ async def build_managed_card_selection_update(
         resource_acceptance=preserve_descriptor_acceptance(original.resource_acceptance, computed),
         **({"composition_mode": composition_mode} if composition_mode is not None else {}),
         **({"label": label} if label is not None else {}),
-        **({"properties": {**dict(selected.properties or {}), "external_mcp_family": external_mcp_family}}
-           if external_mcp_family is not None else {}))
+        **({"properties": {**dict(selected.properties or {}), **switch_values}} if switch_values else {}))
     if candidate.control_card != original.control_card:
         raise _refuse("card_plan_update_scope_invalid")  # an edit never moves a Card in the hierarchy
     if kind == "agent_card":
@@ -237,8 +242,8 @@ async def build_managed_card_selection_update(
         shown["composition_mode"] = candidate.to_dict().get("composition_mode")  # the one rule the person set
     if label is not None:
         shown["label"] = label  # the one display field the person renamed
-    if external_mcp_family is not None:
-        shown["properties"] = {**dict(shown.get("properties") or {}), "external_mcp_family": external_mcp_family}
+    if switch_values:
+        shown["properties"] = {**dict(shown.get("properties") or {}), **switch_values}
     if undisplayed_change(shown, candidate.to_dict()) is not None:
         raise _refuse("card_plan_undisplayed_change")
     return {"member": group_member(original=original, candidate=candidate, action="update")}
