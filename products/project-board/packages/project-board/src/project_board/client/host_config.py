@@ -764,7 +764,13 @@ def initialize_host_config(
     if path.exists():
         # W926: an identical rerun that names the host id or config path reuses
         # the record as the implicit rerun does; different values stay refused.
-        reused = reuse(path)
+        # A file there that is no relay record keeps today's refusal (review note).
+        try:
+            reused = reuse(path)
+        except DomainError as exc:
+            if exc.code == "work_relay_config_update_required":
+                raise
+            reused = None
         if reused is not None:
             return reused
         raise DomainError(

@@ -79,3 +79,26 @@ def test_another_target_at_the_same_host_path_is_still_refused(tmp_path):
     with pytest.raises(DomainError) as refused:
         _setup(root, host_id="", config_path=str(path), target_id="target-b", endpoint="https://target-b.example/mcp")
     assert refused.value.code == "work_relay_config_exists"
+
+
+def test_another_host_id_at_the_same_path_is_still_refused(tmp_path):
+    root = tmp_path / "work"
+    root.mkdir()
+    path = tmp_path / "configs" / "relay.json"
+    _setup(root, host_id="host-one", config_path=str(path))
+
+    with pytest.raises(DomainError) as refused:
+        _setup(root, host_id="host-two", config_path=str(path))
+    assert refused.value.code == "work_relay_config_exists"
+
+
+def test_a_file_that_is_no_relay_record_keeps_the_existing_refusal(tmp_path):
+    root = tmp_path / "work"
+    root.mkdir()
+    path = tmp_path / "configs" / "relay.json"
+    path.parent.mkdir(parents=True)
+    path.write_text('{"schema": "something-else"}')
+
+    with pytest.raises(DomainError) as refused:
+        _setup(root, host_id="", config_path=str(path))
+    assert refused.value.code == "work_relay_config_exists"
