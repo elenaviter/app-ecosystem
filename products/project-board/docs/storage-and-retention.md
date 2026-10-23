@@ -160,6 +160,12 @@ before it is removed. Two passes at once are safe: a folder already gone is
 skipped. Readers of settled history treat a folder or record removed between
 their listing and their read as expired.
 
+A row in flight longer than the retention window is settled into its creation
+hour, which is already expired, so the next pass removes its history record.
+Nothing in flight is lost, and a resend replays under the same idempotency key,
+but `pb worker outbox-status` and mail replay then report the row expired, not
+settled. A retry bound shorter than the retention window removes the case.
+
 Records in flight live in a `pending/` folder, and recovery reads only that
 folder. Finished records live in hour folders,
 `<store>/<agent>/<yyyy>/<mm>/<dd>/<hh>/`, and a record's file name starts with
