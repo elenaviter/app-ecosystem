@@ -64,6 +64,7 @@ FAMILY_SWITCHES = (
     ("remote_mcp", EXTERNAL_MCP_FAMILY_ID, EXTERNAL_MCP_FAMILY_PROPERTY),
     ("remote_a2a", EXTERNAL_A2A_FAMILY_ID, A2A_FAMILY_PROPERTY),
 )
+_KNOWN_FAMILY_KINDS = {family_id: kind for kind, family_id, _property in FAMILY_SWITCHES}
 # The project Control's issuer kind (as controls.project_person_composition).
 _PROJECT_CONTROL_ISSUER_KIND = "application"
 
@@ -101,6 +102,10 @@ class ProjectResourceFamily:
             kind = kinds[0]
         else:
             raise ProjectFamilyConfigError("project_resource_family_kind_unsupported")
+        # Only the known families, each for its own kind; an unknown or
+        # mislabelled family closes the whole declaration at load.
+        if _KNOWN_FAMILY_KINDS.get(family_id.strip()) != kind:
+            raise ProjectFamilyConfigError("project_resource_family_id_unknown")
         prefix = FAMILY_KINDS[kind][0]
         if (not isinstance(patterns, list) or not patterns
                 or not all(isinstance(p, str) and p.startswith(prefix) for p in patterns)):

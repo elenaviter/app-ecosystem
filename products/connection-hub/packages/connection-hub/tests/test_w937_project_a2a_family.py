@@ -190,3 +190,15 @@ async def test_a_family_declared_for_another_kind_never_opens_the_a2a_switch() -
     assert MCP not in result.effective_card.resource_grants
     assert A2A not in result.effective_card.resource_grants
     assert result.a2a_family == "off"
+
+
+@pytest.mark.parametrize("raw", [
+    {**MCP_FAMILY, "id": "user_external_mcp_extra"},
+    {**A2A_FAMILY, "id": "someone_elses_family"},
+    {**MCP_FAMILY, "id": "user_external_a2a"},
+])
+def test_unknown_or_mislabelled_family_ids_are_refused_at_load(raw) -> None:
+    with pytest.raises(ProjectFamilyConfigError) as refused:
+        ProjectResourceFamily.from_mapping(raw)
+    assert refused.value.reason in {"project_resource_family_id_unknown", "project_resource_family_patterns_invalid"}
+    assert ProjectFamilyPolicy.from_declaration([MCP_FAMILY, raw]).families == ()

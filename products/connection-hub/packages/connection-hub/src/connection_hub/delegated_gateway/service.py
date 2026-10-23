@@ -76,6 +76,7 @@ _POLICY_DENIAL_REASONS = frozenset(
 _PROVIDER_ADMISSION_REASONS = frozenset(
     {
         # Remote A2A connectors (W937): a task belongs to the Card that sent it.
+        "a2a_context_not_found",
         "a2a_task_not_found",
         "operation_arguments_invalid",
         "service_unavailable",

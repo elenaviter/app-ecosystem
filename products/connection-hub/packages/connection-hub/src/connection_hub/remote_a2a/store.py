@@ -25,6 +25,7 @@ from connection_hub.delegated_credentials.durable_io import (
 )
 from connection_hub.remote_a2a.models import (
     RemoteA2AConnector,
+    RemoteA2AContextRecord,
     RemoteA2ACurrentPointer,
     RemoteA2ARecordError,
     RemoteA2ATaskRecord,
@@ -38,6 +39,7 @@ OWNERS_DIRNAME = "owners"
 CONNECTORS_SUBDIRNAME = "connectors"
 REVISIONS_DIRNAME = "revisions"
 TASKS_DIRNAME = "tasks"
+CONTEXTS_DIRNAME = "contexts"
 CURRENT_FILENAME = "current.json"
 
 _REVISION_NAME_PATTERN = re.compile(r"^connector_revision_[0-9]{10}_[0-9]{8}_[0-9a-f]{12}\.json$")
@@ -75,6 +77,10 @@ class RemoteA2AConnectorStore(Protocol):
 
     async def write_task(self, *, owner_hash: str, record: RemoteA2ATaskRecord) -> None: ...
 
+    async def read_context(self, *, owner_hash: str, connector_id: str, context_id: str) -> RemoteA2AContextRecord | None: ...
+
+    async def write_context(self, *, owner_hash: str, record: RemoteA2AContextRecord) -> None: ...
+
 
 class BundleStorageRemoteA2AConnectorStore:
     def __init__(self, storage_root: str | os.PathLike[str]) -> None:
@@ -105,6 +111,13 @@ class BundleStorageRemoteA2AConnectorStore:
             self.connector_path(owner_hash=owner_hash, connector_id=connector_id)
             / TASKS_DIRNAME
             / f"{task_key(task_id)}.json"
+        )
+
+    def _context_path(self, *, owner_hash: str, connector_id: str, context_id: str) -> pathlib.Path:
+        return (
+            self.connector_path(owner_hash=owner_hash, connector_id=connector_id)
+            / CONTEXTS_DIRNAME
+            / f"{task_key(context_id)}.json"
         )
 
     async def read_current_connector(
@@ -180,6 +193,25 @@ class BundleStorageRemoteA2AConnectorStore:
     async def write_task(self, *, owner_hash: str, record: RemoteA2ATaskRecord) -> None:
         await write_json_atomic(
             self._task_path(owner_hash=owner_hash, connector_id=record.connector_id, task_id=record.task_id),
+            record.to_dict(),
+        )
+
+    async def read_context(self, *, owner_hash: str, connector_id: str, context_id: str) -> RemoteA2AContextRecord | None:
+        payload = await read_json_or_none(
+            self._context_path(owner_hash=owner_hash, connector_id=connector_id, context_id=context_id)
+        )
+        if payload is None:
+            return None
+        record = RemoteA2AContextRecord.from_mapping(payload)
+        if record.connector_id != validated_connector_id(connector_id) or record.context_id != context_id:
+            raise RemoteA2ARecordError("context_record_mismatch")
+        return record
+
+    async def write_context(self, *, owner_hash: str, record: RemoteA2AContextRecord) -> None:
+        await write_json_atomic(
+            self._context_path(
+                owner_hash=owner_hash, connector_id=record.connector_id, context_id=record.context_id
+            ),
             record.to_dict(),
         )
 

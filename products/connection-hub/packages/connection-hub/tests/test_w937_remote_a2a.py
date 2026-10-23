@@ -483,3 +483,73 @@ async def test_status_text_is_passed_on_only_for_a_question(tmp_path, state: str
     gateway = _gateway(service, _entry(connector, ("send_answer",)))
     result = (await _call(gateway, "send_answer", {"text": "q"}, "inv-1")).result.structured_content
     assert result["state"] == state and result["status_text"] == ""
+
+
+@pytest.mark.asyncio
+async def test_a_context_id_continues_only_a_context_this_card_started(tmp_path) -> None:
+    peer = _Peer()
+    service = _service(tmp_path, peer)
+    connector = await _connector(service)
+    a = _gateway(service, _entry(connector, ("send_answer",)), access_id="card-a")
+    sent = await _call(a, "send_answer", {"text": "first"}, "a-1")
+    context_id = sent.result.structured_content["context_id"]
+
+    again = await _call(a, "send_answer", {"text": "follow-up", "context_id": context_id}, "a-2")
+    assert again.result.is_error is False and peer.sent[-1]["context_id"] == context_id
+
+    policy = MemoryPolicy()
+    b = _gateway(service, _entry(connector, ("send_answer",)), access_id="card-b", policy=policy)
+    from connection_hub.delegated_gateway import DelegatedGatewayError
+
+    calls_before = len(peer.sent)
+    for candidate in (context_id, "ctx-never-seen"):
+        with pytest.raises(DelegatedGatewayError) as refused:
+            await _call(b, "send_answer", {"text": "hijack", "context_id": candidate}, f"b-{candidate}")
+        assert refused.value.reason == "a2a_context_not_found"
+    assert len(peer.sent) == calls_before and policy.begins == []
+
+
+@pytest.mark.asyncio
+async def test_a_repeated_task_id_never_moves_a_task_to_another_card(tmp_path) -> None:
+    peer = _Peer()
+    service = _service(tmp_path, peer)
+    connector = await _connector(service)
+
+    peer.next_send = _task(task_id="task-same", context_id="ctx-same")
+    await service.send(connector=connector, access_id="card-a", skill_id="answer", text="a")
+    peer.next_send = _task(task_id="task-same", context_id="ctx-same")
+    await service.send(connector=connector, access_id="card-b", skill_id="answer", text="b")
+
+    assert (await service.get_task(connector=connector, access_id="card-a", task_id="task-same")).task_id == "task-same"
+    with pytest.raises(RemoteA2ATaskNotFound):
+        await service.get_task(connector=connector, access_id="card-b", task_id="task-same")
+    from connection_hub.remote_a2a import RemoteA2AContextNotFound
+
+    await service.context_owned_by(connector=connector, access_id="card-a", context_id="ctx-same")
+    with pytest.raises(RemoteA2AContextNotFound):
+        await service.context_owned_by(connector=connector, access_id="card-b", context_id="ctx-same")
+
+
+@pytest.mark.asyncio
+async def test_one_call_fetches_the_live_card_once_for_admission_and_dispatch(tmp_path) -> None:
+    peer = _Peer()
+    service = _service(tmp_path, peer)
+    connector = await _connector(service)
+    fetches = 0
+    original = peer.fetch_card
+
+    async def counting(card_url: str):
+        nonlocal fetches
+        fetches += 1
+        return await original(card_url)
+
+    peer.fetch_card = counting
+    provider = ExternalRemoteA2AProvider(service)
+    context = _context(_entry(connector, ("send_answer",)))
+    admission = await provider.admit_call(context, operation="send_answer", arguments={"text": "q"}, invocation_id="inv-9")
+    assert admission.allowed
+    result = await provider.call_tool(context, operation="send_answer", arguments={"text": "q"}, invocation_id="inv-9")
+    assert result.is_error is False
+    assert fetches == 1
+    await provider.call_tool(context, operation="send_answer", arguments={"text": "q"}, invocation_id="inv-10")
+    assert fetches == 2

@@ -17,6 +17,8 @@ text. The gateway, not this provider, consumes invocation policies.
 
 from __future__ import annotations
 
+import time
+from collections import OrderedDict
 from collections.abc import Mapping, Sequence
 from typing import Any
 
@@ -48,6 +50,7 @@ from connection_hub.remote_a2a.service import (
     RemoteA2AConnectorConflict,
     RemoteA2AConnectorNotFound,
     RemoteA2AConnectorService,
+    RemoteA2AContextNotFound,
     RemoteA2ATaskNotFound,
 )
 from connection_hub.remote_mcp.models import CONNECTOR_ACTIVE
@@ -61,6 +64,10 @@ REMOTE_TASK_REJECTED = "remote_task_rejected"
 REMOTE_AUTH_REQUIRED = "remote_auth_required"
 SERVICE_UNAVAILABLE = "service_unavailable"
 A2A_TASK_NOT_FOUND = "a2a_task_not_found"
+A2A_CONTEXT_NOT_FOUND = "a2a_context_not_found"
+# One live card observation serves admission and dispatch of one invocation.
+OBSERVATION_TTL_SECONDS = 30.0
+OBSERVATION_CACHE_SIZE = 256
 
 _TASK_STATE_ERRORS = {
     "TASK_STATE_FAILED": REMOTE_TASK_FAILED,
@@ -164,8 +171,27 @@ def _failure(code: str) -> ProviderCallResult:
 
 
 class ExternalRemoteA2AProvider:
-    def __init__(self, service: RemoteA2AConnectorService) -> None:
+    def __init__(self, service: RemoteA2AConnectorService, *, clock: Any = time.monotonic) -> None:
         self._service = service
+        self._clock = clock
+        self._observed: OrderedDict[tuple[str, int, str], tuple[float, Any]] = OrderedDict()
+
+    async def _observe(self, connector: RemoteA2AConnector, invocation_id: str) -> Any:
+        """The live card, fetched once per invocation (admission, then call)."""
+
+        if not invocation_id:
+            return await self._service.observe(connector)
+        key = (connector.connector_id, int(connector.revision), invocation_id)
+        now = self._clock()
+        cached = self._observed.get(key)
+        if cached is not None and now - cached[0] <= OBSERVATION_TTL_SECONDS:
+            return cached[1]
+        live = await self._service.observe(connector)
+        self._observed[key] = (now, live)
+        self._observed.move_to_end(key)
+        while len(self._observed) > OBSERVATION_CACHE_SIZE:
+            self._observed.popitem(last=False)
+        return live
 
     @property
     def provider_id(self) -> str:
@@ -238,7 +264,7 @@ class ExternalRemoteA2AProvider:
         return tuple(tools)
 
     async def _admit(
-        self, context: GatewayProviderContext, operation: str, arguments: Mapping[str, Any]
+        self, context: GatewayProviderContext, operation: str, arguments: Mapping[str, Any], invocation_id: str = ""
     ) -> tuple[RemoteA2AConnector | None, str]:
         try:
             connector = await self._connector(context)
@@ -252,11 +278,18 @@ class ExternalRemoteA2AProvider:
             return None, "operation_not_consented"
         if operation not in connector.operations():
             return None, "operation_removed_by_server"
-        live = await self._service.observe(connector)
+        live = await self._observe(connector, invocation_id)
         if live.digest != connector.card_digest:
             return None, "operation_descriptor_changed"
         if not _arguments_valid(operation, arguments):
             return None, "operation_arguments_invalid"
+        if operation.startswith(SEND_OPERATION_PREFIX) and arguments.get("context_id"):
+            try:
+                await self._service.context_owned_by(
+                    connector=connector, access_id=context.card.access_id, context_id=str(arguments["context_id"])
+                )
+            except RemoteA2AContextNotFound:
+                return None, A2A_CONTEXT_NOT_FOUND
         if operation in TASK_OPERATIONS:
             try:
                 await self._service.task_owned_by(
@@ -274,9 +307,8 @@ class ExternalRemoteA2AProvider:
         arguments: Mapping[str, Any],
         invocation_id: str,
     ) -> ProviderCallAdmission:
-        del invocation_id
         try:
-            _connector, reason = await self._admit(context, operation, arguments)
+            _connector, reason = await self._admit(context, operation, arguments, invocation_id)
         except (A2AClientError, RemoteA2AConnectorConflict, RemoteA2ARecordError):
             return ProviderCallAdmission(allowed=False, reason=SERVICE_UNAVAILABLE, retryable=True)
         if reason:
@@ -291,9 +323,8 @@ class ExternalRemoteA2AProvider:
         arguments: Mapping[str, Any],
         invocation_id: str,
     ) -> ProviderCallResult:
-        del invocation_id
         try:
-            connector, reason = await self._admit(context, operation, arguments)
+            connector, reason = await self._admit(context, operation, arguments, invocation_id)
             if connector is None:
                 return _failure(reason)
             access_id = context.card.access_id
@@ -323,6 +354,8 @@ class ExternalRemoteA2AProvider:
             return _failure(_CLIENT_ERRORS.get(exc.code, SERVICE_UNAVAILABLE))
         except RemoteA2ATaskNotFound:
             return _failure(A2A_TASK_NOT_FOUND)
+        except RemoteA2AContextNotFound:
+            return _failure(A2A_CONTEXT_NOT_FOUND)
         except (RemoteA2AConnectorConflict, RemoteA2ARecordError):
             return _failure(SERVICE_UNAVAILABLE)
         return _task_result(task)

@@ -22,6 +22,7 @@ from connection_hub.remote_a2a.service import (
     RemoteA2AConnectorConflict,
     RemoteA2AConnectorNotFound,
     RemoteA2AConnectorService,
+    RemoteA2AContextNotFound,
     RemoteA2ATaskNotFound,
 )
 from connection_hub.remote_a2a.store import BundleStorageRemoteA2AConnectorStore
@@ -35,6 +36,7 @@ __all__ = [
     "RemoteA2AConnectorConflict",
     "RemoteA2AConnectorNotFound",
     "RemoteA2AConnectorService",
+    "RemoteA2AContextNotFound",
     "RemoteA2ARecordError",
     "RemoteA2AResourceRow",
     "RemoteA2ATaskNotFound",

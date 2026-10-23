@@ -35,6 +35,7 @@ from connection_hub.remote_mcp.models import (
 CONNECTOR_SCHEMA = "connection_hub.remote_a2a.connector.v1"
 POINTER_SCHEMA = "connection_hub.remote_a2a.current.v1"
 TASK_SCHEMA = "connection_hub.remote_a2a.task.v1"
+CONTEXT_SCHEMA = "connection_hub.remote_a2a.context.v1"
 RESOURCE_PREFIX = "urn:connection-hub:remote-a2a:"
 EXTERNAL_A2A_GRANT = "external_a2a:use"
 A2A_AUTH_MODES = frozenset({AUTH_NONE, AUTH_BEARER, AUTH_HEADER})
@@ -377,8 +378,42 @@ class RemoteA2ATaskRecord:
         return record
 
 
+@dataclass(frozen=True)
+class RemoteA2AContextRecord:
+    """Which Card first used one remote context. Only that Card may continue it."""
+
+    connector_id: str
+    context_id: str
+    access_id: str
+    created_at: int = 0
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "schema": CONTEXT_SCHEMA,
+            "connector_id": self.connector_id,
+            "context_id": self.context_id,
+            "access_id": self.access_id,
+            "created_at": int(self.created_at),
+        }
+
+    @classmethod
+    def from_mapping(cls, value: Any) -> "RemoteA2AContextRecord":
+        if not isinstance(value, Mapping) or _clean(value.get("schema")) != CONTEXT_SCHEMA:
+            raise RemoteA2ARecordError("context_record_invalid")
+        record = cls(
+            connector_id=validated_connector_id(value.get("connector_id")),
+            context_id=_clean(value.get("context_id")),
+            access_id=_clean(value.get("access_id")),
+            created_at=int(value.get("created_at") or 0),
+        )
+        if not record.context_id or not record.access_id:
+            raise RemoteA2ARecordError("context_record_invalid")
+        return record
+
+
 __all__ = [
     "A2A_AUTH_MODES",
+    "RemoteA2AContextRecord",
     "CANCEL_TASK_OPERATION",
     "CONNECTOR_SCHEMA",
     "EXTERNAL_A2A_GRANT",

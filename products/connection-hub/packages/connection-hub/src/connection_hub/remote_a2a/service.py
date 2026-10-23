@@ -23,6 +23,7 @@ from app_foundation.a2a import A2ATask, PinnedAgentCard
 
 from connection_hub.remote_a2a.models import (
     A2A_AUTH_MODES,
+    RemoteA2AContextRecord,
     RemoteA2AConnector,
     RemoteA2ARecordError,
     RemoteA2ATaskRecord,
@@ -59,6 +60,14 @@ class RemoteA2ATaskNotFound(LookupError):
     def __init__(self) -> None:
         super().__init__("a2a_task_not_found")
         self.reason = "a2a_task_not_found"
+
+
+class RemoteA2AContextNotFound(LookupError):
+    """This Card did not start a remote context with this id through this connector."""
+
+    def __init__(self) -> None:
+        super().__init__("a2a_context_not_found")
+        self.reason = "a2a_context_not_found"
 
 
 class A2AClientPort(Protocol):
@@ -399,6 +408,58 @@ class RemoteA2AConnectorService:
             raise RemoteA2ATaskNotFound()
         return record
 
+    async def context_owned_by(self, *, connector: RemoteA2AConnector, access_id: str, context_id: str) -> None:
+        """A non-empty context id continues only a context this Card started."""
+
+        context = str(context_id or "").strip()
+        if not context:
+            return
+        record = await self._store.read_context(
+            owner_hash=owner_hash_for(connector.owner_subject),
+            connector_id=connector.connector_id,
+            context_id=context,
+        )
+        if record is None or not access_id or record.access_id != access_id:
+            raise RemoteA2AContextNotFound()
+
+    async def _record_sent(self, *, connector: RemoteA2AConnector, access_id: str, task: A2ATask, now: int | None) -> None:
+        """Bind a new task and context to this Card. Create-only: a record that
+        another Card already holds is never replaced (an outside agent that
+        repeats ids cannot move a task or a context to another Card)."""
+
+        owner_hash = owner_hash_for(connector.owner_subject)
+        moment = int(now if now is not None else time.time())
+        async with self._critical_section(owner_hash=owner_hash, connector_id=connector.connector_id):
+            if task.task_id:
+                existing = await self._store.read_task(
+                    owner_hash=owner_hash, connector_id=connector.connector_id, task_id=task.task_id
+                )
+                if existing is None:
+                    await self._store.write_task(
+                        owner_hash=owner_hash,
+                        record=RemoteA2ATaskRecord(
+                            connector_id=connector.connector_id,
+                            task_id=task.task_id,
+                            access_id=access_id,
+                            context_id=task.context_id,
+                            created_at=moment,
+                        ),
+                    )
+            if task.context_id:
+                existing_context = await self._store.read_context(
+                    owner_hash=owner_hash, connector_id=connector.connector_id, context_id=task.context_id
+                )
+                if existing_context is None:
+                    await self._store.write_context(
+                        owner_hash=owner_hash,
+                        record=RemoteA2AContextRecord(
+                            connector_id=connector.connector_id,
+                            context_id=task.context_id,
+                            access_id=access_id,
+                            created_at=moment,
+                        ),
+                    )
+
     async def send(
         self,
         *,
@@ -414,21 +475,12 @@ class RemoteA2AConnectorService:
             raise RemoteA2ARecordError("skill_not_on_card")
         if not access_id:
             raise RemoteA2ARecordError("access_id_missing")
+        await self.context_owned_by(connector=connector, access_id=access_id, context_id=context_id)
         headers = await self._call_headers(connector)
         task = await self._client.send_message(
             connector.card, headers=headers, text=text, data=data, context_id=context_id
         )
-        if task.task_id:
-            await self._store.write_task(
-                owner_hash=owner_hash_for(connector.owner_subject),
-                record=RemoteA2ATaskRecord(
-                    connector_id=connector.connector_id,
-                    task_id=task.task_id,
-                    access_id=access_id,
-                    context_id=task.context_id,
-                    created_at=int(now if now is not None else time.time()),
-                ),
-            )
+        await self._record_sent(connector=connector, access_id=access_id, task=task, now=now)
         return task
 
     async def get_task(self, *, connector: RemoteA2AConnector, access_id: str, task_id: str) -> A2ATask:
@@ -473,6 +525,7 @@ class RemoteA2AConnectorService:
 
 __all__ = [
     "A2AClientPort",
+    "RemoteA2AContextNotFound",
     "RemoteA2AConnectorConflict",
     "RemoteA2AConnectorNotFound",
     "RemoteA2AConnectorService",
