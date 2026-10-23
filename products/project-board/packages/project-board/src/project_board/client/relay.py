@@ -90,7 +90,7 @@ from .coordinate_queue import COORDINATE_LEASE_LOST, CoordinateQueue
 from .credential_refusal import credential_refused
 from .relay_pacing import HANDSHAKE_TIMEOUT_REASON, PACING_FILENAME, RelayPacing
 from .relay_logging import relay_log_owner
-from .relay_trace import DiagnosticWriter, RelayActivityTrace
+from .relay_trace import DiagnosticWriter, RelayActivityTrace, record_outbox_send
 from .relay_admission import is_namespace_handshake_timeout, is_runtime_unavailable
 from .session_delivery import (
     WAKE_EVENT_KINDS,
@@ -4259,6 +4259,24 @@ class ProblemBoardHostRelayAdapter:
                 exc_info=task.exception(),
             )
 
+    async def _outbox_action(self, **kwargs: Any) -> Any:
+        """One outbox board send, timed apart from the flush's store calls (W943 F3)."""
+
+        started = time.monotonic()
+        try:
+            return await self.client.action(**kwargs)
+        finally:
+            record_outbox_send(time.monotonic() - started)
+
+    async def _outbox_upload(self, files: Any) -> Any:
+        """One outbox attachment upload, timed with the sends (W943 F3)."""
+
+        started = time.monotonic()
+        try:
+            return await self._upload_attachments(files)
+        finally:
+            record_outbox_send(time.monotonic() - started)
+
     async def _flush_outbox_unlocked(
         self,
         *,
@@ -4300,13 +4318,13 @@ class ProblemBoardHostRelayAdapter:
             kind = str(row.get("kind") or "")
             try:
                 if kind == "plan.nodes.publish":
-                    response = await self.client.action(
+                    response = await self._outbox_action(
                         object_ref=str(row.get("project_ref") or ""),
                         action=kind,
                         payload={"batch": payload},
                     )
                 elif kind == "project.plan.index":
-                    response = await self.client.action(
+                    response = await self._outbox_action(
                         object_ref=str(row.get("project_ref") or ""),
                         action=kind,
                         payload=payload,
@@ -4317,7 +4335,7 @@ class ProblemBoardHostRelayAdapter:
                         or row.get("project_ref")
                         or ""
                     )
-                    response = await self.client.action(
+                    response = await self._outbox_action(
                         object_ref=project_ref,
                         action=kind,
                         payload=payload,
@@ -4325,21 +4343,21 @@ class ProblemBoardHostRelayAdapter:
                 elif kind == "mail.route":
                     files = payload.pop("attachment_files", None) or []
                     if files:
-                        payload["attachments"] = await self._upload_attachments(files)
-                    response = await self.client.action(
+                        payload["attachments"] = await self._outbox_upload(files)
+                    response = await self._outbox_action(
                         object_ref=str(row.get("project_ref") or ""),
                         action=kind,
                         payload=payload,
                     )
                 elif kind == "mail.reconciliation.publish":
-                    response = await self.client.action(
+                    response = await self._outbox_action(
                         object_ref=str(row.get("project_ref") or ""),
                         action=kind,
                         payload=payload,
                     )
                 elif kind == "control.worker_settle":
                     command_ref = str(payload.pop("command_ref", "") or "")
-                    response = await self.client.action(
+                    response = await self._outbox_action(
                         object_ref=command_ref,
                         action=kind,
                         payload={
@@ -4351,7 +4369,7 @@ class ProblemBoardHostRelayAdapter:
                     )
                 elif kind == "assignment.report":
                     assignment_ref = str(payload.pop("assignment_ref", "") or "")
-                    response = await self.client.action(
+                    response = await self._outbox_action(
                         object_ref=assignment_ref,
                         action=kind,
                         payload=payload,
@@ -4359,14 +4377,14 @@ class ProblemBoardHostRelayAdapter:
                 elif kind == "project.report.publish":
                     files = payload.pop("attachment_files", None) or []
                     if files:
-                        payload["staged_refs"] = await self._upload_attachments(files)
-                    response = await self.client.action(
+                        payload["staged_refs"] = await self._outbox_upload(files)
+                    response = await self._outbox_action(
                         object_ref=str(row.get("object_ref") or ""),
                         action=kind,
                         payload=payload,
                     )
                 elif kind == "project.report.fail":
-                    response = await self.client.action(
+                    response = await self._outbox_action(
                         object_ref=str(row.get("object_ref") or ""),
                         action=kind,
                         payload=payload,
