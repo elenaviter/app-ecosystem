@@ -185,8 +185,21 @@ def _security_schemes(raw: Mapping[str, Any]) -> tuple[tuple[str, str], ...]:
 
 
 def parse_agent_card(raw: Any, *, card_url: str) -> PinnedAgentCard:
-    """Validate a decoded card. Raises ``A2AClientError`` with a fixed code."""
+    """Validate a decoded card. Raises ``A2AClientError`` with a fixed code.
 
+    One boundary: any shape the checks below did not anticipate is a card
+    error, never an exception carrying remote content.
+    """
+
+    try:
+        return _parse_agent_card(raw, card_url=card_url)
+    except A2AClientError:
+        raise
+    except (RecursionError, TypeError, ValueError, KeyError, AttributeError, IndexError):
+        raise A2AClientError(A2A_CARD_INVALID) from None
+
+
+def _parse_agent_card(raw: Any, *, card_url: str) -> PinnedAgentCard:
     if not isinstance(raw, Mapping):
         raise A2AClientError(A2A_CARD_INVALID)
     jsonrpc_url, protocol_version = _jsonrpc_interface(raw)

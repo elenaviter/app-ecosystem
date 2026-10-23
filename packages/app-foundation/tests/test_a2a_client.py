@@ -343,3 +343,93 @@ async def test_the_client_ignores_proxy_variables_and_pins_the_checked_address(m
     assert recorder.connected == [("93.184.216.34", 443)]
     assert recorder.tls_server_names == ["agents.example"]
 
+
+
+def _deep(depth: int) -> str:
+    return "[" * depth + "]" * depth
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "task",
+    [
+        _task(artifacts={"artifactId": "a", "parts": []}),
+        _task(artifacts=[{"artifactId": "a", "parts": 7}]),
+        _task(artifacts=[{"artifactId": "a", "name": ["not", "text"], "parts": [{"text": 5}, {"data": "x"}, 3]}]),
+        _task(status={"state": "TASK_STATE_WORKING", "message": {"parts": {"text": "q"}}}),
+        _task(status={"state": "TASK_STATE_WORKING", "message": {"parts": [None, 3, {"text": ["x"]}]}}),
+        _task(status=["TASK_STATE_WORKING"]),
+        _task(id=7),
+        _task(contextId={"x": 1}),
+    ],
+)
+async def test_malformed_tasks_are_fixed_codes_or_bounded_data(task: Any) -> None:
+    client = _client(_Server(rpc=lambda r: {"jsonrpc": "2.0", "id": r["id"], "result": task}))
+    card = await client.fetch_card(CARD_URL)
+    try:
+        result = await client.get_task(card, headers={}, task_id="task-1")
+    except A2AClientError as refused:
+        assert refused.code == "remote_response_invalid"
+        _assert_text_free(refused)
+    else:
+        assert result.state in {"TASK_STATE_WORKING"}
+        for artifact in result.artifacts:
+            assert all(part.text is None or isinstance(part.text, str) for part in artifact.parts)
+
+
+@pytest.mark.asyncio
+async def test_deeply_nested_responses_are_invalid_not_a_crash() -> None:
+    body = '{"jsonrpc": "2.0", "id": "%s", "result": ' + _deep(200_000) + "}"
+
+    def rpc(request: dict[str, Any]) -> Any:
+        return httpx2.Response(200, text=body.replace("%s", request["id"]), headers={"content-type": "application/json"})
+
+    client = _client(_Server(rpc=rpc), max_response_bytes=1_000_000)
+    card = await client.fetch_card(CARD_URL)
+    with pytest.raises(A2AClientError) as refused:
+        await client.get_task(card, headers={}, task_id="task-1")
+    assert refused.value.code == "remote_response_invalid"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "card",
+    [
+        _card(skills=[{"id": "answer", "name": "A", "description": "d", "tags": "qa"}]),
+        _card(skills=[{"id": "answer", "name": {"x": 1}, "description": ["d"], "tags": [1, None, {"t": 1}]}]),
+        _card(supportedInterfaces=[7, "x", None, {"url": RPC_URL, "protocolBinding": "JSONRPC", "protocolVersion": "1.0"}]),
+        _card(securitySchemes={"bearer": "not-a-mapping", 7: {"httpAuthSecurityScheme": {}}}),
+        _card(skills=[7, None, "answer", {"id": "answer"}]),
+    ],
+)
+async def test_malformed_card_fields_are_bounded_or_refused(card: Any) -> None:
+    try:
+        pinned = await _client(_Server(card=card)).fetch_card(CARD_URL)
+    except A2AClientError as refused:
+        assert refused.code in {"a2a_card_invalid", "a2a_version_unsupported"}
+    else:
+        assert all(isinstance(skill.name, str) and isinstance(skill.description, str) for skill in pinned.skills)
+        assert all(all(isinstance(tag, str) for tag in skill.tags) for skill in pinned.skills)
+
+
+@pytest.mark.asyncio
+async def test_a_deeply_nested_card_is_invalid_not_a_crash() -> None:
+    server = _Server(card=httpx2.Response(200, text='{"name": "x", "skills": ' + _deep(200_000) + "}"))
+    with pytest.raises(A2AClientError) as refused:
+        await _client(server).fetch_card(CARD_URL)
+    assert refused.value.code in {"remote_response_invalid", "a2a_card_invalid"}
+
+
+def test_parsers_map_unexpected_shapes_to_fixed_codes() -> None:
+    from app_foundation.a2a import parse_task
+
+    class Hostile(dict):
+        def get(self, *args: Any, **kwargs: Any) -> Any:
+            raise KeyError(PLANTED)
+
+    with pytest.raises(A2AClientError) as task_refused:
+        parse_task(Hostile())
+    assert task_refused.value.code == "remote_response_invalid" and PLANTED not in str(task_refused.value)
+    with pytest.raises(A2AClientError) as card_refused:
+        parse_agent_card(Hostile(), card_url=CARD_URL)
+    assert card_refused.value.code == "a2a_card_invalid" and PLANTED not in str(card_refused.value)

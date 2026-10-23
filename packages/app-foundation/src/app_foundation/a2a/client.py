@@ -135,15 +135,32 @@ def _status_text(status: Mapping[str, Any]) -> str:
     message = status.get("message")
     if not isinstance(message, Mapping):
         return ""
+    parts = message.get("parts")
+    if not isinstance(parts, list):
+        return ""
     texts = [
         part["text"]
-        for part in (message.get("parts") or [])
+        for part in parts
         if isinstance(part, Mapping) and isinstance(part.get("text"), str)
     ]
     return bounded_text(" ".join(texts), MAX_STATUS_TEXT_CHARS)
 
 
+_MALFORMED = (RecursionError, TypeError, ValueError, KeyError, AttributeError, IndexError)
+
+
 def parse_task(raw: Any) -> A2ATask:
+    """Validate a decoded Task. Any unexpected shape is REMOTE_RESPONSE_INVALID."""
+
+    try:
+        return _parse_task(raw)
+    except A2AClientError:
+        raise
+    except _MALFORMED:
+        raise A2AClientError(REMOTE_RESPONSE_INVALID) from None
+
+
+def _parse_task(raw: Any) -> A2ATask:
     if not isinstance(raw, Mapping):
         raise A2AClientError(REMOTE_RESPONSE_INVALID)
     status = raw.get("status")
@@ -154,7 +171,12 @@ def parse_task(raw: Any) -> A2ATask:
         raise A2AClientError(REMOTE_RESPONSE_INVALID)
     artifacts: list[TaskArtifact] = []
     dropped = 0
-    for entry in (raw.get("artifacts") or [])[: MAX_ARTIFACTS + 1]:
+    raw_artifacts = raw.get("artifacts")
+    if raw_artifacts is None:
+        raw_artifacts = []
+    if not isinstance(raw_artifacts, list):
+        raise A2AClientError(REMOTE_RESPONSE_INVALID)
+    for entry in raw_artifacts[: MAX_ARTIFACTS + 1]:
         if len(artifacts) >= MAX_ARTIFACTS or not isinstance(entry, Mapping):
             dropped += 1
             continue
@@ -172,6 +194,15 @@ def parse_task(raw: Any) -> A2ATask:
 
 
 def _message_as_task(raw: Any) -> A2ATask:
+    try:
+        return _parse_message_as_task(raw)
+    except A2AClientError:
+        raise
+    except _MALFORMED:
+        raise A2AClientError(REMOTE_RESPONSE_INVALID) from None
+
+
+def _parse_message_as_task(raw: Any) -> A2ATask:
     if not isinstance(raw, Mapping):
         raise A2AClientError(REMOTE_RESPONSE_INVALID)
     parts, dropped = _parts(raw.get("parts"))
@@ -253,7 +284,7 @@ class A2AClient:
             raise A2AClientError(REMOTE_UNAVAILABLE) from None
         try:
             return json.loads(b"".join(chunks).decode("utf-8"))
-        except (UnicodeDecodeError, ValueError):
+        except (UnicodeDecodeError, ValueError, RecursionError):
             raise A2AClientError(REMOTE_RESPONSE_INVALID) from None
 
     async def fetch_card(self, card_url: str) -> PinnedAgentCard:
