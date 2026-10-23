@@ -28,6 +28,10 @@ class ControlHierarchy:
     control_card: CardAuthority | None
     effective_control_card: CardAuthority | None
     dependencies: tuple[CardAuthority, ...]
+    # W918: how the project's External MCP switch decided the caller's own
+    # connectors on this chain: "on" (admitted), "off" (dropped), or "" when
+    # the chain is not a validated project chain and connectors fold as usual.
+    external_mcp_family: str = ""
 
 
 def compose_resolved_control_hierarchy(
@@ -97,8 +101,10 @@ def compose_resolved_control_hierarchy(
             )
     folded = dependencies if gate is None else tuple(strip_connectors(control) for control in dependencies)
     effective_control = compose_subtree(folded[0], folded[1:]) if folded else None
+    switch = "" if gate is None else ("on" if gate and project_families is not None
+                                      and project_families.family() is not None else "off")
     return ControlHierarchy(effective, dependencies[0] if dependencies else None,
-                            effective_control, dependencies)
+                            effective_control, dependencies, external_mcp_family=switch)
 
 
 async def compose_control_hierarchy(

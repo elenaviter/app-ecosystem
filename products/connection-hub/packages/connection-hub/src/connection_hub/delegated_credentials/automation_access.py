@@ -2128,12 +2128,9 @@ class AutomationAccessService:
             return None
         return await self._ensure_control_snapshot(record)
 
-    async def _compose_with_control(
-        self, record: AutomationAccessRecord
-    ) -> tuple[AutomationAccessRecord | None, CardAuthority | None]:
-        """The record's Control Card and its effective authority; (None, None) when unresolvable.
+    async def _control_hierarchy(self, record: AutomationAccessRecord) -> Any | None:
+        """The record's composed Control hierarchy; None when its Control is unresolvable.
 
-        The first result is the current parent-composed immediate Control.
         Exact project-held person edges use their derived holder; all other
         edges retain ordinary owner/holder checks. No read writes My Card.
         Raises ControlCardMismatch or CardUnavailable, never falls open.
@@ -2146,12 +2143,24 @@ class AutomationAccessService:
             return card_authority_from_record(current) if current is not None else None
 
         try:
-            result = await compose_control_hierarchy(caller, load_control=load_control,
-                                                     project_families=self._project_resource_families)
+            return await compose_control_hierarchy(caller, load_control=load_control,
+                                                   project_families=self._project_resource_families)
         except ControlCardMismatch as exc:
             if exc.reason == "control_card_unresolvable":
-                return None, None
+                return None
             raise
+
+    async def _compose_with_control(
+        self, record: AutomationAccessRecord
+    ) -> tuple[AutomationAccessRecord | None, CardAuthority | None]:
+        """The record's Control Card and its effective authority; (None, None) when unresolvable.
+
+        The first result is the current parent-composed immediate Control.
+        """
+
+        result = await self._control_hierarchy(record)
+        if result is None:
+            return None, None
         return (
             record_from_card(result.effective_control_card)
             if result.effective_control_card is not None else None,
@@ -2168,7 +2177,13 @@ class AutomationAccessService:
         if binding is None:
             return {"state": "not_controlled"}
         try:
-            control, composed = await self._compose_with_control(record)
+            hierarchy = await self._control_hierarchy(record)
+            control, composed = (
+                (record_from_card(hierarchy.effective_control_card)
+                 if hierarchy.effective_control_card is not None else None,
+                 hierarchy.effective_card)
+                if hierarchy is not None else (None, None)
+            )
         except CardUnavailable as exc:
             return {
                 "state": "unavailable",
@@ -2225,6 +2240,11 @@ class AutomationAccessService:
             },
             "composition_mode": control.composition_mode,
             "properties": copy.deepcopy(dict(control.properties or {})),
+            # W918: "on" or "off" when the project's External MCP switch decides
+            # the caller's own connectors on this chain; absent otherwise. The
+            # editor follows it instead of comparing connectors with the Control.
+            **({"external_mcp_family": hierarchy.external_mcp_family}
+               if hierarchy.external_mcp_family else {}),
         }
 
     async def _load_record(

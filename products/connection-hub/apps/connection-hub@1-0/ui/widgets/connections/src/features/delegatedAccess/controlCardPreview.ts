@@ -10,6 +10,7 @@ import {
   composeApplicationOperationRolePolicies,
   withApplicationOperationPolicy,
 } from './applicationOperationRoles.ts';
+import { CONNECTOR_RESOURCE_PREFIX } from './connectorOwnership.ts';
 
 export type ControlCompositionMode = 'and' | 'or';
 export type CompositionRowState = 'normal' | 'added' | 'removed' | 'absent';
@@ -159,14 +160,45 @@ export function compositionRowState(
   return callerSelected ? 'normal' : 'absent';
 }
 
+/** Whether a linked Control Card leaves one of the caller's own tools in force.
+ *
+ *  On a project chain the caller's own MCP connectors are decided by the
+ *  project's External MCP switch, which the server reports as
+ *  `externalMcpFamily` ("on" admits, "off" drops), never by the Control's
+ *  list: a project cannot know which servers its members connect (W918).
+ *  Every other resource is kept only when the Control selects it. */
+export function controlKeepsCallerOperation(
+  control: DelegatedControlCardAuthority,
+  resource: string,
+  operation: string,
+  externalMcpFamily?: string,
+): boolean {
+  return externalMcpSwitchDecides(resource, externalMcpFamily)
+    ?? authorityAllowsOuterOperation(control, resource, operation);
+}
+
+/** The project switch's verdict for one of the caller's own connectors, or
+ *  null when the switch does not decide this resource (not a connector, or
+ *  not a project chain) and the Control's own selection applies. */
+export function externalMcpSwitchDecides(
+  resource: string,
+  externalMcpFamily?: string,
+): boolean | null {
+  if (!resource.startsWith(CONNECTOR_RESOURCE_PREFIX)) return null;
+  if (externalMcpFamily === 'on') return true;
+  if (externalMcpFamily === 'off') return false;
+  return null;
+}
+
 /** Selected Caller Card tools that an AND-linked Control Card keeps inactive. */
 export function outerOperationsExcludedByControl(
   caller: DelegatedControlCardAuthority,
   control: DelegatedControlCardAuthority,
+  externalMcpFamily?: string,
 ): Array<{ resource: string; operation: string }> {
   return Object.entries(caller.resource_operations || {}).flatMap(([resource, operations]) => (
     values(operations)
-      .filter((operation) => !authorityAllowsOuterOperation(control, resource, operation))
+      .filter((operation) => !controlKeepsCallerOperation(control, resource, operation, externalMcpFamily))
       .map((operation) => ({ resource, operation }))
   ));
 }
