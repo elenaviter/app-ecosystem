@@ -199,6 +199,7 @@ class ProblemBoardDataBusClient:
         *,
         partition_ref: str,
         github_key: Callable[[str, str], Awaitable[Any]] | None = None,
+        agent_services: Callable[[str, Mapping[str, Any]], Awaitable[dict[str, Any]]] | None = None,
         message_timing: MessageTimingConfig | None = None,
     ) -> None:
         self.client = client
@@ -207,6 +208,9 @@ class ProblemBoardDataBusClient:
         # W371: the owner's GitHub key for (project_ref, repository), asked of Connection
         # Hub with this channel's Card; None where the relay has no Card bearer.
         self.github_key = github_key
+        # W918: the services this channel's Card allows, through Connection Hub's
+        # delegated gateway with the same Card bearer; None where there is no Card bearer.
+        self.agent_services = agent_services
         self.partition_ref = str(partition_ref or "").strip()
         if not self.partition_ref:
             raise ValueError("partition_ref is required")
