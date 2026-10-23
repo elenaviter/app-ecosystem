@@ -270,23 +270,38 @@ class OutboxStore:
 
     # -- lookups -------------------------------------------------------------
 
-    def find_in_flight(self, outbox_id: str) -> tuple[Path, str] | None:
+    def find_in_flight(self, outbox_id: str, *, relay_id: str = "") -> tuple[Path, str] | None:
         """``(path, folder)`` of one row in ``pending``/``leased`` of any agent, else None.
 
         Never the settled history: a leased row can only be in flight, and
         walking every agent's dated history under the outbox lock is what made
         a lost lease cost seconds on a large host (W943).
+
+        W966: one id can be in flight in several agents' folders (a retirement
+        publication every reporter enqueues under the same id). With
+        ``relay_id``, the leased copy that relay holds is returned; otherwise
+        the first copy, as before. Looking up by id alone settled or retried
+        another agent's copy, so no copy ever left flight.
         """
 
+        first: tuple[Path, str] | None = None
         for folder in OUTBOX_IN_FLIGHT_FOLDERS:
-            for _ref, root in self.agent_roots():
-                path = root / folder / f"{outbox_id}.json"
-                if path.is_file():
+            roots = [root for _ref, root in self.agent_roots()]
+            for path in [root / folder / f"{outbox_id}.json" for root in roots] + [
+                self.legacy_root / folder / f"{outbox_id}.json"
+            ]:
+                if not path.is_file():
+                    continue
+                if not relay_id:
                     return path, folder
-            path = self.legacy_root / folder / f"{outbox_id}.json"
-            if path.is_file():
-                return path, folder
-        return None
+                if first is None:
+                    first = (path, folder)
+                if folder == "leased":
+                    row = read_json(path, required=False) or {}
+                    lease = row.get("lease") if isinstance(row.get("lease"), Mapping) else {}
+                    if str(lease.get("relay_id") or "") == str(relay_id):
+                        return path, folder
+        return first
 
     def find(self, outbox_id: str, *, worker_name: str = "", project_ref: str = "") -> tuple[Path, str] | None:
         """``(path, folder)`` of one row by id, never listing the history.

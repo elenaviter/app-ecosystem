@@ -13440,7 +13440,10 @@ class SharedFieldStore:
         released: list[str] = []
         with exclusive_lock(self._outbox.lock, wait=wait):
             for outbox_id in outbox_ids:
-                found = self._outbox.find(component(outbox_id, field="outbox_id"))
+                # W966: the copy this relay holds, among agents sharing the id.
+                found = self._outbox.find_in_flight(
+                    component(outbox_id, field="outbox_id"), relay_id=relay_id
+                )
                 if found is None or found[1] != "leased":
                     continue
                 source = found[0]
@@ -13471,7 +13474,7 @@ class SharedFieldStore:
 
         clean_id = component(outbox_id, field="outbox_id")
         with exclusive_lock(self._outbox.lock, wait=wait):
-            source = self._leased_outbox_path(clean_id)
+            source = self._leased_outbox_path(clean_id, relay_id=relay_id)
             row = read_json(source)
             lease = row.get("lease") if isinstance(row.get("lease"), Mapping) else {}
             if str(lease.get("relay_id") or "") != str(relay_id):
@@ -13501,10 +13504,11 @@ class SharedFieldStore:
             self._outbox.move_in_flight(source, row, "pending")
             return row
 
-    def _leased_outbox_path(self, outbox_id: str) -> Path:
+    def _leased_outbox_path(self, outbox_id: str, *, relay_id: str = "") -> Path:
         # W943: in flight only; a row that is no longer leased is reported as
         # not leased, without walking the settled history under the lock.
-        found = self._outbox.find_in_flight(outbox_id)
+        # W966: the copy this relay holds, when one id is in flight for several agents.
+        found = self._outbox.find_in_flight(outbox_id, relay_id=relay_id)
         if found is None or found[1] != "leased":
             raise DomainError(
                 "field_outbox_not_leased",
@@ -13527,7 +13531,7 @@ class SharedFieldStore:
     ) -> dict[str, Any]:
         clean_id = component(outbox_id, field="outbox_id")
         with exclusive_lock(self._outbox.lock, wait=wait):
-            source = self._leased_outbox_path(clean_id)
+            source = self._leased_outbox_path(clean_id, relay_id=relay_id)
             row = read_json(source)
             lease = row.get("lease") if isinstance(row.get("lease"), Mapping) else {}
             if str(lease.get("relay_id") or "") != str(relay_id):
