@@ -22,6 +22,7 @@ CARD_SAVE_CODES = frozenset({
     "agent_plan_target_invalid",
     "agent_plan_update_invalid",
     "card_custom_mcp_owner_only",  # W918: only the Card's owner adds or changes their MCP connectors
+    "card_entry_bound_row_not_selectable",  # W937: a Card editor never adds an entry-bound row
     "card_grantor_inventory_unavailable",  # W918 H2: an addition only the Card's owner can prove
     "card_grantor_proof_invalid",  # W918 H1: the owner's authority proof does not verify for this edit
     "card_group_control_read_missing",

@@ -194,6 +194,7 @@ from connection_hub.delegated_credentials.project_invitation_binding import (
 from connection_hub.delegated_credentials.project_person_access import (
     ProjectPersonControlLifecycle,
 )
+from connection_hub.delegated_credentials.entry_binding import entry_bound_row
 from connection_hub.delegated_credentials.cards.identity import (
     CARD_KINDS,
     CARD_KIND_AGENT,
@@ -6589,6 +6590,25 @@ class AutomationAccessService:
                     "resources": outside_entry,
                     "entry_resource": entry_resource,
                 }
+        # W937: an entry-bound row is held only by the connector Card its OAuth grant created
+        # (record_oauth_grant with a concrete entry). A Card editor never adds one, and no other
+        # Card kind keeps one.
+        entry_bound_added = sorted(
+            _clean(resource)
+            for resource in resource_grants
+            if _clean(resource)
+            and entry_bound_row(getattr(catalog_config, "resources", ()) or (), resource=_clean(resource))
+            and (
+                existing.card_kind != CARD_KIND_CONNECTOR
+                or _clean(resource) not in {_clean(held) for held in existing.resource_grants}
+            )
+        )
+        if entry_bound_added:
+            return {
+                "ok": False,
+                "error": "card_entry_bound_row_not_selectable",
+                "resources": entry_bound_added,
+            }
         conflict = await self._save_precondition_conflict(
             existing=existing,
             active=active,

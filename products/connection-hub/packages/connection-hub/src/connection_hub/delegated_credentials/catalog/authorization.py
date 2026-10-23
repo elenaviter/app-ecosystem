@@ -241,6 +241,16 @@ class ActiveCatalogCapabilities:
             request_resource=_clean(request.request_resource),
         )
 
+    def entry_bound(self, *, resource: str, request_resource: str = "") -> bool:
+        """Whether an entry-bound row governs this Card key or request, in any row order."""
+        from connection_hub.delegated_credentials.entry_binding import entry_bound_row
+
+        return entry_bound_row(
+            getattr(self._config, "resources", ()) or (),
+            resource=_clean(resource),
+            request_resource=_clean(request_resource),
+        )
+
     def resource_claims(self, request: CapabilityRequest) -> frozenset[str]:
         """The claim ceiling the active catalog still allows for this resource."""
         resource_cfg = self.resource_config(request)
