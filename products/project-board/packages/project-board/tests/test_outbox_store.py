@@ -28,6 +28,21 @@ PROJECT = "project-one"
 PROJECT_REF = f"work:project:{PROJECT}"
 
 
+def _recent(hours: int, minute: int = 0) -> datetime:
+    """A creation time inside the 30-day terminal retention window.
+
+    Settled rows move into the hour they were created and are found only within
+    OUTBOX_TERMINAL_RETENTION_DAYS, so a fixed calendar date expires (W939).
+    """
+
+    now = datetime.now(timezone.utc).replace(minute=0, second=0, microsecond=0)
+    return (now - timedelta(hours=hours)).replace(minute=minute)
+
+
+def _stamp(moment: datetime) -> str:
+    return moment.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
 @pytest.fixture
 def field(tmp_path: Path) -> SharedFieldStore:
     store = SharedFieldStore(tmp_path / "shared-field")
@@ -139,11 +154,12 @@ def test_a_claim_never_opens_a_settled_row(field, monkeypatch):
 
 def test_flat_rows_from_before_2b_move_into_the_layout_with_their_lease(field):
     flat = field.control / "outbox"
+    SENT_AT = _recent(4, 30)
     rows = {
-        "pending": {"outbox_id": "outbox_flat_pending", "kind": "note.recorded", "worker_name": WORKER, "project_ref": PROJECT_REF, "state": "pending", "created_at": "2026-09-23T20:00:00Z"},
-        "leased": {"outbox_id": "outbox_flat_leased", "kind": "note.recorded", "worker_name": WORKER, "project_ref": PROJECT_REF, "state": "leased", "lease": {"relay_id": "relay-01", "expires_at": "2099-01-01T00:00:00Z"}, "created_at": "2026-09-23T20:01:00Z"},
-        "sent": {"outbox_id": "outbox_flat_sent", "kind": "mail.route", "worker_name": WORKER, "project_ref": PROJECT_REF, "state": "sent", "created_at": "2026-09-22T08:30:00Z"},
-        "refused": {"outbox_id": "outbox_flat_refused", "kind": "mail.reconciliation.publish", "worker_name": WORKER, "project_ref": PROJECT_REF, "state": "refused", "created_at": "2026-09-21T07:00:00Z"},
+        "pending": {"outbox_id": "outbox_flat_pending", "kind": "note.recorded", "worker_name": WORKER, "project_ref": PROJECT_REF, "state": "pending", "created_at": _stamp(_recent(3))},
+        "leased": {"outbox_id": "outbox_flat_leased", "kind": "note.recorded", "worker_name": WORKER, "project_ref": PROJECT_REF, "state": "leased", "lease": {"relay_id": "relay-01", "expires_at": "2099-01-01T00:00:00Z"}, "created_at": _stamp(_recent(3, 1))},
+        "sent": {"outbox_id": "outbox_flat_sent", "kind": "mail.route", "worker_name": WORKER, "project_ref": PROJECT_REF, "state": "sent", "created_at": _stamp(SENT_AT)},
+        "refused": {"outbox_id": "outbox_flat_refused", "kind": "mail.reconciliation.publish", "worker_name": WORKER, "project_ref": PROJECT_REF, "state": "refused", "created_at": _stamp(_recent(5))},
     }
     for folder, row in rows.items():
         (flat / folder).mkdir(parents=True, exist_ok=True)
@@ -158,7 +174,7 @@ def test_flat_rows_from_before_2b_move_into_the_layout_with_their_lease(field):
     agent = field.control / "projects" / PROJECT / "outbox" / WORKER
     assert json.loads((agent / "leased" / "outbox_flat_leased.json").read_text())["lease"]["relay_id"] == "relay-01"
     assert (agent / "pending" / "outbox_flat_pending.json").is_file()
-    sent = list((agent / "2026" / "09" / "22" / "08").glob("*.json"))
+    sent = list((agent / SENT_AT.strftime("%Y") / SENT_AT.strftime("%m") / SENT_AT.strftime("%d") / SENT_AT.strftime("%H")).glob("*.json"))
     assert [state_of_name(p.name) for p in sent] == ["sent"]
     # The leased row still settles through the relay that holds it.
     field.settle_outbox("outbox_flat_leased", relay_id="relay-01", outcome="sent")
@@ -214,7 +230,7 @@ def test_unreadable_flat_rows_are_quarantined_and_the_migration_ends(field):
     for index in range(2):
         (flat / f"outbox_good_{index}.json").write_text(json.dumps({
             "outbox_id": f"outbox_good_{index}", "kind": "mail.route", "worker_name": WORKER,
-            "project_ref": PROJECT_REF, "state": "sent", "created_at": "2026-09-22T08:00:00Z",
+            "project_ref": PROJECT_REF, "state": "sent", "created_at": _stamp(_recent(2)),
         }))
 
     totals = {"moved": {}, "unreadable": {}}
