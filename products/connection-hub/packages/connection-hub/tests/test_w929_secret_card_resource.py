@@ -96,3 +96,16 @@ def test_the_consent_for_one_secret_never_offers_the_whole_secret_row():
         rows = resource_selection_rows([WRITE, "memories:read"], config=config, resource=SECRET,
                                        seeded_operations=seeded)
         assert SECRET_ROW not in {row["resource"] for row in rows}, rows
+
+
+def test_no_consent_offers_the_secret_row_as_a_child():
+    from connection_hub.delegated_credentials.oauth.consent import resource_selection_rows
+
+    connections = _connections_with_secrets()
+    oauth = connections["delegated_credentials"]["oauth"]
+    oauth["resources"][0]["resource_selection"] = True  # a selection door that is not the secret row
+    config = oauth_delegated_config_from_connections(connections)
+
+    rows = resource_selection_rows([WRITE, "memories:read"], config=config, resource=CONCRETE)
+
+    assert SECRET_ROW not in {row["resource"] for row in rows}, rows

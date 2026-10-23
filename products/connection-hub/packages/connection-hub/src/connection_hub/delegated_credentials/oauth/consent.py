@@ -221,7 +221,9 @@ def resource_selection_rows(
     }
     rows: list[dict[str, Any]] = []
     for candidate in cfg.resources:
-        if candidate.resource == "*":
+        if candidate.resource == "*" or candidate.selector_type == "kdcube_secret":
+            # Secrets are offered one by one, as the request; the secret row's
+            # pattern is never a child row (W929).
             continue
         selector, literal = resolve_declared_resource(cfg, candidate.resource)
         if not selector or selector in seen:
