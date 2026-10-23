@@ -86,3 +86,13 @@ async def test_create_path_a_new_card_holds_the_exact_secret(tmp_path):
     card = next(iter(harness.persistence.cards.values()))[0]
     assert list(card.resource_grants) == [SECRET]
     assert list(card.resource_operations[SECRET]) == [WRITE]
+
+
+def test_the_consent_for_one_secret_never_offers_the_whole_secret_row():
+    from connection_hub.delegated_credentials.oauth.consent import resource_selection_rows
+
+    config = oauth_delegated_config_from_connections(_connections_with_secrets())
+    for seeded in (None, {SECRET: [WRITE]}):
+        rows = resource_selection_rows([WRITE, "memories:read"], config=config, resource=SECRET,
+                                       seeded_operations=seeded)
+        assert SECRET_ROW not in {row["resource"] for row in rows}, rows
