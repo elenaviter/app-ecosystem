@@ -95,6 +95,20 @@ bundles:
                 visibility: *default_visibility
               remote_mcp_connector_delete:
                 visibility: *default_visibility
+              remote_a2a_connectors_list:
+                visibility: *default_visibility
+              remote_a2a_connector_create:
+                visibility: *default_visibility
+              remote_a2a_connector_refresh:
+                visibility: *default_visibility
+              remote_a2a_connector_accept_descriptor:
+                visibility: *default_visibility
+              remote_a2a_connector_set_enabled:
+                visibility: *default_visibility
+              remote_a2a_connector_update_credential:
+                visibility: *default_visibility
+              remote_a2a_connector_delete:
+                visibility: *default_visibility
               delegated_mcp_gateway_access:
                 visibility: *default_visibility
           mcp:
@@ -183,6 +197,16 @@ bundles:
             allowed_tools: ["*"]
             max_resources: 8
             max_tools_per_resource: 64
+          # W937: the same for members' own A2A connectors
+          # (urn:connection-hub:remote-a2a:<id>), behind the project's A2A
+          # switch (a2a_family), which is off unless the project sets it.
+          - id: user_external_a2a
+            resource_kinds: [remote_a2a]
+            authority_sources: [delegated_card]
+            resource_patterns: ["urn:connection-hub:remote-a2a:*"]
+            allowed_tools: ["*"]
+            max_resources: 8
+            max_tools_per_resource: 36
           # Opaque external issuer ports; no policy or secret values here.
           # Missing required issuer providers fail closed. Enable only after
           # both peers, nonce/reservation stores and existing secret refs qualify.
@@ -360,6 +384,14 @@ bundles:
             - grant: "external_mcp:use"
               label: "Use connected external MCP tools"
               description: "Call only the external MCP tools selected on this delegated access card."
+              delegable_roles:
+              - "kdcube:role:registered"
+              - "kdcube:role:paid"
+              - "kdcube:role:privileged"
+              - "kdcube:role:super-admin"
+            - grant: "external_a2a:use"
+              label: "Use connected external agents"
+              description: "Send tasks only to the external A2A agents and skills selected on this delegated access card."
               delegable_roles:
               - "kdcube:role:registered"
               - "kdcube:role:paid"
@@ -1994,6 +2026,19 @@ bundles:
           outbound:
             # Public HTTPS endpoints are accepted by default. Development
             # deployments can explicitly allow a local fixture host.
+            allow_http: false
+            allow_private_networks: false
+            allowed_hosts: []
+        remote_a2a:
+          # W937: outbound A2A connectors. The credential lives in the user's
+          # secret store; the connector record keeps an opaque reference.
+          read_timeout_seconds: 30
+          max_response_bytes: 1048576
+          # The credential goes to the card's JSON-RPC endpoint. An endpoint on
+          # another origin than the card URL is refused at registration
+          # (card_endpoint_cross_origin) until this is set.
+          allow_cross_origin_endpoint: false
+          outbound:
             allow_http: false
             allow_private_networks: false
             allowed_hosts: []

@@ -42,11 +42,28 @@ from connection_hub.delegated_credentials.cards.model import CardAuthority, auth
 from connection_hub.delegated_credentials.controls.model import ControlCardError, control_card_id_for_issuer
 from connection_hub.delegated_credentials.controls.snapshot import control_snapshot_is_exact
 from connection_hub.delegated_credentials.controls.external_mcp_switch import (
-    EXTERNAL_MCP_FAMILY_PROPERTY, FAMILY_OFF, FAMILY_ON, FAMILY_VALUES, validate_family_property,
+    A2A_FAMILY_PROPERTY, EXTERNAL_MCP_FAMILY_PROPERTY, FAMILY_OFF, FAMILY_ON, FAMILY_VALUES, validate_family_property,
 )
-from connection_hub.remote_mcp.models import connector_id_from_resource
+from connection_hub.remote_a2a.models import (
+    RESOURCE_PREFIX as REMOTE_A2A_PREFIX, connector_id_from_resource as a2a_connector_id_from_resource,
+)
+from connection_hub.remote_mcp.models import RESOURCE_PREFIX as REMOTE_MCP_PREFIX, connector_id_from_resource
 
 EXTERNAL_MCP_FAMILY_ID = "user_external_mcp"
+EXTERNAL_A2A_FAMILY_ID = "user_external_a2a"
+
+# The closed set of the caller's own connector kinds a project switch decides
+# (W937 adds remote A2A next to W918's remote MCP): the resource kind, its URN
+# prefix, the Hub's own connector predicate, and the project Control property
+# that switches it. Each kind has its own switch; neither ever folds.
+FAMILY_KINDS = {
+    "remote_mcp": (REMOTE_MCP_PREFIX, connector_id_from_resource, EXTERNAL_MCP_FAMILY_PROPERTY),
+    "remote_a2a": (REMOTE_A2A_PREFIX, a2a_connector_id_from_resource, A2A_FAMILY_PROPERTY),
+}
+FAMILY_SWITCHES = (
+    ("remote_mcp", EXTERNAL_MCP_FAMILY_ID, EXTERNAL_MCP_FAMILY_PROPERTY),
+    ("remote_a2a", EXTERNAL_A2A_FAMILY_ID, A2A_FAMILY_PROPERTY),
+)
 # The project Control's issuer kind (as controls.project_person_composition).
 _PROJECT_CONTROL_ISSUER_KIND = "application"
 
@@ -66,6 +83,7 @@ class ProjectResourceFamily:
     allowed_tools: tuple[str, ...]
     max_resources: int
     max_tools_per_resource: int
+    resource_kind: str = "remote_mcp"
 
     @classmethod
     def from_mapping(cls, raw: Mapping[str, Any]) -> "ProjectResourceFamily":
@@ -77,10 +95,15 @@ class ProjectResourceFamily:
         kinds = raw.get("resource_kinds")
         if not isinstance(family_id, str) or not family_id.strip():
             raise ProjectFamilyConfigError("project_resource_family_id_invalid")
-        if kinds is not None and (not isinstance(kinds, list) or kinds != ["remote_mcp"]):
+        if kinds is None:
+            kind = "remote_mcp"
+        elif isinstance(kinds, list) and len(kinds) == 1 and kinds[0] in FAMILY_KINDS:
+            kind = kinds[0]
+        else:
             raise ProjectFamilyConfigError("project_resource_family_kind_unsupported")
+        prefix = FAMILY_KINDS[kind][0]
         if (not isinstance(patterns, list) or not patterns
-                or not all(isinstance(p, str) and p.startswith("urn:connection-hub:remote-mcp:") for p in patterns)):
+                or not all(isinstance(p, str) and p.startswith(prefix) for p in patterns)):
             raise ProjectFamilyConfigError("project_resource_family_patterns_invalid")
         if not isinstance(tools, list) or not tools or not all(isinstance(t, str) and t for t in tools):
             raise ProjectFamilyConfigError("project_resource_family_tools_invalid")
@@ -90,11 +113,12 @@ class ProjectResourceFamily:
             if type(value) is not int or value < 1:
                 raise ProjectFamilyConfigError(f"project_resource_family_{name}_invalid")
             limits.append(value)
-        return cls(family_id.strip(), tuple(patterns), tuple(tools), limits[0], limits[1])
+        return cls(family_id.strip(), tuple(patterns), tuple(tools), limits[0], limits[1], kind)
 
     def matches(self, resource: str) -> bool:
         """The Hub's own connector predicate AND a declared pattern; never a label or URL."""
-        return bool(connector_id_from_resource(resource)) and any(
+        predicate = FAMILY_KINDS[self.resource_kind][1]
+        return bool(predicate(resource)) and any(
             fnmatchcase(resource, pattern) for pattern in self.resource_patterns)
 
     def limits(self) -> dict[str, Any]:
@@ -135,6 +159,11 @@ class ProjectFamilyPolicy:
     def family(self, family_id: str = EXTERNAL_MCP_FAMILY_ID) -> ProjectResourceFamily | None:
         return next((family for family in self.families if family.family_id == family_id), None)
 
+    def switched_family(self, family_id: str, resource_kind: str) -> ProjectResourceFamily | None:
+        """The family with this id, only if it is declared for this connector kind."""
+        family = self.family(family_id)
+        return family if family is not None and family.resource_kind == resource_kind else None
+
 
 NO_PROJECT_FAMILIES = ProjectFamilyPolicy()
 
@@ -174,8 +203,12 @@ def _binds_project_control(child: CardAuthority, control: CardAuthority) -> str:
     return project_ref if _is_project_control(control, project_ref) else ""
 
 
-def project_family_gate(card: CardAuthority, dependencies: tuple[CardAuthority, ...]) -> bool | None:
+def project_family_gate(card: CardAuthority, dependencies: tuple[CardAuthority, ...], *,
+                        switch_property: str = EXTERNAL_MCP_FAMILY_PROPERTY) -> bool | None:
     """None off a validated project chain; otherwise whether the switch admits connectors.
+
+    ``switch_property`` names the project Control property of one family's
+    switch (``external_mcp_family`` by default, ``a2a_family`` for A2A).
 
     Validated chains: agent -> P, and My -> C -> P (C a project-person Control
     bound to P). Edge checks of the full hierarchy still run separately.
@@ -198,17 +231,18 @@ def project_family_gate(card: CardAuthority, dependencies: tuple[CardAuthority, 
         chain_controls = (person_control,)
     else:
         return None
-    if dict(project.properties or {}).get(EXTERNAL_MCP_FAMILY_PROPERTY) != FAMILY_ON:
+    if dict(project.properties or {}).get(switch_property) != FAMILY_ON:
         return False
     for control in chain_controls:
-        value = dict(control.properties or {}).get(EXTERNAL_MCP_FAMILY_PROPERTY)
+        value = dict(control.properties or {}).get(switch_property)
         if value is not None and value != FAMILY_ON:
             return False
     return True
 
 
 def _is_connector(resource: str) -> bool:
-    return bool(connector_id_from_resource(resource))
+    """Any of the caller's own connector kinds (remote MCP or remote A2A)."""
+    return any(bool(predicate(resource)) for _prefix, predicate, _property in FAMILY_KINDS.values())
 
 
 def strip_connectors(card: CardAuthority) -> CardAuthority:
@@ -262,7 +296,11 @@ def admitted_family_resources(family: ProjectResourceFamily, grants: Mapping[str
 
 
 __all__ = [
+    "A2A_FAMILY_PROPERTY",
+    "EXTERNAL_A2A_FAMILY_ID",
     "EXTERNAL_MCP_FAMILY_ID",
+    "FAMILY_KINDS",
+    "FAMILY_SWITCHES",
     "EXTERNAL_MCP_FAMILY_PROPERTY",
     "FAMILY_OFF",
     "FAMILY_ON",
