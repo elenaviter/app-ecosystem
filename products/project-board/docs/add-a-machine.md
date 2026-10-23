@@ -119,13 +119,14 @@ repositories on the project card, and in nothing else. Deleting the key in a rep
 takes that machine's access to it away and changes nothing else. Merging into
 the main branch still goes through review.
 
-**When the deploy key is used:** only for a repository the project owner's
-GitHub key does not reach yet, whose clone stays on SSH. Where the key does
-reach, agents push with `pb worker push`, which uses that key or nothing: when
-the key is unavailable (Connection Hub unreachable, a server error, a timeout)
-or refused, the push fails, names the key's answer, and is never retried
-through this machine's deploy key. `pb worker push --owner-key-only`, which a
-release uses, also checks first that the remote pushes over HTTPS.
+**Pushes never use the deploy key.** `pb worker push` uses the project
+owner's GitHub key or nothing. The named remote must push over HTTPS through
+pb's credential helper. A remote on SSH or a deploy-key remote is refused
+before anything is written (`push_remote_not_owner_key`); run
+`pb worker connect-project` to give the clone its HTTPS origin. When the key is
+unavailable (Connection Hub unreachable, a server error, a timeout) or refused,
+the push fails, names the key's answer, and is never retried another way.
+`--owner-key-only` is still accepted; it is now how every push behaves.
 
 ## 3. Log the coding agent in
 
