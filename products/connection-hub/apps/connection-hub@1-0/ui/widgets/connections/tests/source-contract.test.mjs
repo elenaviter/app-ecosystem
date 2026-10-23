@@ -427,7 +427,8 @@ test('the card editor shows a persisted account claim as granted, not pending', 
   assert.doesNotMatch(createCall.slice(0, 200), /existingScope/)
 
   const projection = source('src/features/delegatedAccess/pendingGrantProjection.ts')
-  assert.match(projection, /if \(alreadyGranted\) return 'Already granted'/)
+  // W929: a held operation whose Once is used up says so; it is still never shown as pending.
+  assert.match(projection, /if \(alreadyGranted\) return onceUsed \? 'Used once, approve again' : 'Already granted'/)
 })
 
 test('the resource editor never suggests another card for one resident profile', () => {

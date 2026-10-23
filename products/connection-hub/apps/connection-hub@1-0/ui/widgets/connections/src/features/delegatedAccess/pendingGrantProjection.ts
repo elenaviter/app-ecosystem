@@ -2,6 +2,7 @@ import type {
   DelegatedAccessNamedServiceNamespaceOption,
   DelegatedAccessOperationOption,
   DelegatedAccessResourceOption,
+  DelegatedInvocationPolicy,
 } from '../../api/types';
 import { isSecretResource, secretResourceLabel } from './secretResourceSelection.ts';
 
@@ -36,6 +37,7 @@ export type PendingAccountScope = Record<string, Record<string, string[]>>;
 
 export type PendingSelectionStatus =
   | 'Already granted'
+  | 'Used once, approve again'
   | 'Pending - not granted yet'
   | 'Required for this request'
   | null;
@@ -44,6 +46,22 @@ export interface PendingConnectedAccount {
   account_id?: string;
   provider_id?: string;
   claims?: string[];
+}
+
+/** The Card holds this exact operation under a Once policy whose one use is spent. */
+export function onceUsedUp(
+  policies: DelegatedInvocationPolicy[] | undefined,
+  resource: string,
+  operation: string,
+): boolean {
+  return (policies || []).some((policy) => (
+    policy.authority.resource === resource
+    && policy.authority.surface === 'outer'
+    && policy.authority.operation === operation
+    && !policy.authority.account
+    && policy.mode === 'once'
+    && policy.state === 'consumed'
+  ));
 }
 
 export function commonOperationGrants(resource: DelegatedAccessResourceOption): string[] {
@@ -59,13 +77,15 @@ function unique(items: string[]): string[] {
 
 /** Describe one control in the focused consent projection. Persisted
  *  authority wins, every other checked value is a pending proposal, and an
- *  unmet prerequisite remains visibly required. */
+ *  unmet prerequisite remains visibly required. A held operation whose Once
+ *  is used up asks again (W929, operator 2026-10-23: "Used once, approve again"). */
 export function pendingSelectionStatus(
   alreadyGranted: boolean,
   selected: boolean,
   required: boolean,
+  onceUsed = false,
 ): PendingSelectionStatus {
-  if (alreadyGranted) return 'Already granted';
+  if (alreadyGranted) return onceUsed ? 'Used once, approve again' : 'Already granted';
   if (selected) return 'Pending - not granted yet';
   if (required) return 'Required for this request';
   return null;
