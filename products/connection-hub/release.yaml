@@ -1,8 +1,8 @@
 product:
   id: connection-hub
-  ref: "2026.10.19.2200"
+  ref: "2026.10.23.1100"
   description: |
-    - Connection Hub Card lock: the Redis eviction-policy check reads `maxmemory_policy` from `INFO memory` when `CONFIG GET` is refused or answers without the policy, as on Redis services that restrict `CONFIG` (AWS ElastiCache). A policy that `CONFIG` reports is never overridden; when neither source reports one the lock still refuses as unverified, and any policy other than `noeviction` is still refused (#861).
+    - connection-hub-cli 2026.10.23.1100, released on its own; the connection-hub package stays at 2026.10.19.2200. A secret set on a KDCube deployment works end to end from the CLI. When the calling Card lacks the secret resource, the Hub's admission answers `resource_not_consented` with a Card-grant consent (#875); the CLI opens it, waits for approval on the controlling terminal even when the value is piped in, and retries the same request (#876). It requires kdcube-cli>=2026.10.23.1100, whose management service and `ConsentRecovery` carry that consent (kdcube/kdcube#412). A token error's safe `error_description` is shown (#873). The README walks through setting a secret on a fresh machine, installing from PyPI.
   documentation: docs/connection-hub
 
 components:
@@ -21,9 +21,9 @@ components:
     distribution: connection-hub-cli
     import_name: connection_hub_cli
     path: products/connection-hub/packages/connection-hub-cli
-    version: "2026.10.19.2200"
+    version: "2026.10.23.1100"
     version_source: products/connection-hub/packages/connection-hub-cli/pyproject.toml
     workflow: .github/workflows/publish-python-package.yml
 
 config:
-  version: "2026.10.19.2200"
+  version: "2026.10.23.1100"
