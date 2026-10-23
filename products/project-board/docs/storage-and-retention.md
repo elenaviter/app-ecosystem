@@ -83,6 +83,23 @@ each archive result, each failure-notice delivery and recipient, and every
 reporting failure with its code and reason. It records operational metadata and
 references. Message bodies remain in the private local field.
 
+**Once per owner view.** The board answers each heartbeat with the recipients
+the worker's owner may see: the project team plus that owner's retired
+workers. Channels of different owners on one host therefore receive different
+lists, by design. Each list is stored per owner view, under
+`projects/<id>/mail-recipients/<view>.json`, never in one shared file, and a
+run for one owner decides only the mailboxes whose reader belongs to that
+owner. A mailbox whose reader's owner is not recorded on the host is decided
+against all views merged, the freshest row per worker winning, so it stays
+while any view lists its reader as live. A durable marker per view
+(`projects/<id>/mail-reconciliation/<view>.json`, written under that view's
+file lock) makes the run happen once per change of the view, or of the local
+worker records, and otherwise once per `relay.mailbox_reconcile_interval_seconds`
+(default 300). A channel that finds the view current, or its lock held,
+skips the run and recovers only its own unpublished receipts. Rerunning is
+safe: each archived record carries its own sender-notice state, so a rerun
+never notifies a sender twice.
+
 The relay divides that receipt into independently retryable publications no
 larger than 48 KiB. PostgreSQL stores a receipt header, publication-batch
 ledger, and normalized evidence rows. One transaction accepts each batch,

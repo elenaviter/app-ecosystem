@@ -317,6 +317,55 @@ def _delivered_view(row: Mapping[str, Any]) -> dict[str, Any]:
     return dict(row)
 
 
+# W943 F2-A: the board answers each heartbeat with the recipients its OWNER may
+# see (owner-visible retirement tombstones), so channels of different owners on
+# one host legitimately receive different lists. Each owner's view is stored and
+# reconciled on its own; a shared file would flip between them on every beat.
+MAIL_RECIPIENT_VIEW_SCHEMA = "problem-board.mail-recipient-directory.v1"
+MAIL_RECONCILIATION_MARKER_SCHEMA = "problem-board.mail-reconciliation-marker.v1"
+# How many recently reconciled signatures of one view count as current, so two
+# channels whose replies lag one another do not rerun it on every heartbeat.
+MAIL_RECONCILIATION_RECENT_SIGNATURES = 4
+
+
+def mail_recipient_owner_view(worker_record: Mapping[str, Any]) -> str:
+    """The owner view a worker's mailbox belongs to, or "" when its owner is unknown."""
+
+    record = worker_record.get("board_record") if isinstance(worker_record, Mapping) else None
+    owner = record.get("owner") if isinstance(record, Mapping) else None
+    user_id = str(owner.get("user_id") or "").strip() if isinstance(owner, Mapping) else ""
+    if not user_id:
+        return ""
+    return "owner-" + hashlib.sha256(user_id.encode("utf-8")).hexdigest()[:16]
+
+
+def mail_recipient_view(worker_record: Mapping[str, Any], worker_name: str) -> str:
+    """The view a channel's heartbeat recipients are stored under."""
+
+    view = mail_recipient_owner_view(worker_record)
+    if view:
+        return view
+    name = str(worker_name or "").strip().lower()
+    return "worker-" + hashlib.sha256(name.encode("utf-8")).hexdigest()[:16]
+
+
+def _recipient_rows(recipients: Sequence[Mapping[str, Any]]) -> dict[str, dict[str, Any]]:
+    rows: dict[str, dict[str, Any]] = {}
+    for raw in recipients:
+        if not isinstance(raw, Mapping):
+            continue
+        worker_name = str(raw.get("worker_name") or "").strip().lower()
+        if not worker_name:
+            continue
+        rows[worker_name] = {
+            "worker_name": worker_name,
+            "worker_alias": str(raw.get("worker_alias") or ""),
+            "pool_status": str(raw.get("pool_status") or "active"),
+            "retired_at": str(raw.get("retired_at") or ""),
+            "retirement_reason": str(raw.get("retirement_reason") or ""),
+        }
+    return rows
+
 
 FIELD_SCHEMA = "problem-board.shared-field.v1"
 MAIL_SCHEMA = "problem-board.local-mail.v1"
@@ -10410,40 +10459,75 @@ class SharedFieldStore:
         record = read_json(path, required=False)
         return list((record or {}).get("members") or [])
 
+    def _mail_recipient_views(self, clean_id: str) -> Path:
+        return self._project_dir(clean_id) / "mail-recipients"
+
     def sync_project_mail_recipients(
-        self, project_id: str, recipients: Sequence[Mapping[str, Any]]
+        self,
+        project_id: str,
+        recipients: Sequence[Mapping[str, Any]],
+        *,
+        view: str = "",
     ) -> dict[str, Any]:
-        """Store the control plane's stable-address directory for one project."""
+        """Store the control plane's stable-address directory for one project.
+
+        With ``view`` (W943 F2-A) the list is that owner view's own file; the
+        project-wide ``mail-recipients.json`` is then only read as a fallback
+        for a host that has not written any view yet.
+        """
 
         clean_id = component(project_id, field="project_id")
-        path = self._project_dir(clean_id) / "mail-recipients.json"
+        if view:
+            path = self._mail_recipient_views(clean_id) / f"{component(view, field='view')}.json"
+        else:
+            path = self._project_dir(clean_id) / "mail-recipients.json"
         with exclusive_lock(self._project_lock(clean_id)):
             self.read_project(clean_id)
-            rows: dict[str, dict[str, Any]] = {}
-            for raw in recipients:
-                if not isinstance(raw, Mapping):
-                    continue
-                worker_name = str(raw.get("worker_name") or "").strip().lower()
-                if not worker_name:
-                    continue
-                rows[worker_name] = {
-                    "worker_name": worker_name,
-                    "worker_alias": str(raw.get("worker_alias") or ""),
-                    "pool_status": str(raw.get("pool_status") or "active"),
-                    "retired_at": str(raw.get("retired_at") or ""),
-                    "retirement_reason": str(raw.get("retirement_reason") or ""),
-                }
+            rows = _recipient_rows(recipients)
             record = {
-                "schema": "problem-board.mail-recipient-directory.v1",
+                "schema": MAIL_RECIPIENT_VIEW_SCHEMA,
                 "project_id": clean_id,
                 "recipients": [rows[name] for name in sorted(rows)],
                 "updated_at": utc_now(),
             }
+            if view:
+                record["view"] = view
             atomic_write_json(path, record)
             return record
 
-    def read_project_mail_recipients(self, project_id: str) -> dict[str, Any]:
+    def read_project_mail_recipients(
+        self, project_id: str, *, view: str = ""
+    ) -> dict[str, Any]:
+        """One owner view's directory, or without ``view`` all views merged.
+
+        The merge applies the views oldest first, so a worker listed in several
+        takes the row from the freshest one. A host with no view files reads
+        the project-wide file written before W943, then the local team.
+        """
+
         clean_id = component(project_id, field="project_id")
+        views = self._mail_recipient_views(clean_id)
+        if view:
+            record = read_json(views / f"{component(view, field='view')}.json", required=False)
+            if record:
+                return record
+        records = [
+            record
+            for path in sorted(views.glob("*.json")) if views.is_dir()
+            for record in [read_json(path, required=False)]
+            if record
+        ]
+        if records:
+            records.sort(key=lambda record: str(record.get("updated_at") or ""))
+            rows: dict[str, dict[str, Any]] = {}
+            for record in records:
+                rows.update(_recipient_rows(record.get("recipients") or []))
+            return {
+                "schema": MAIL_RECIPIENT_VIEW_SCHEMA,
+                "project_id": clean_id,
+                "recipients": [rows[name] for name in sorted(rows)],
+                "updated_at": str(records[-1].get("updated_at") or ""),
+            }
         record = read_json(
             self._project_dir(clean_id) / "mail-recipients.json",
             required=False,
@@ -10451,19 +10535,163 @@ class SharedFieldStore:
         if record:
             return record
         return {
-            "schema": "problem-board.mail-recipient-directory.v1",
+            "schema": MAIL_RECIPIENT_VIEW_SCHEMA,
             "project_id": clean_id,
             "recipients": self.read_project_team(clean_id),
             "updated_at": "",
         }
+
+    def _local_attendance(self, project_ref: str) -> list[tuple[str, dict[str, Any], bool]]:
+        """Each local worker record with whether it attends ``project_ref``."""
+
+        rows: list[tuple[str, dict[str, Any], bool]] = []
+        for row in json_records(self.control / "workers"):
+            worker_name = str(row.get("worker_name") or "").strip().lower()
+            if not worker_name:
+                continue
+            attends = project_ref in {
+                str(value) for value in row.get("attended_project_refs") or []
+            }
+            attendance_observed = bool(
+                str(row.get("attendances_observed_at") or "").strip()
+            )
+            not_linked = (
+                attendance_observed
+                and not attends
+                and str(row.get("pool_status") or "active").lower() != "retired"
+            )
+            rows.append((worker_name, row, not_linked))
+        return rows
+
+    @staticmethod
+    def _with_local_records(
+        directory_record: Mapping[str, Any],
+        local: Sequence[tuple[str, dict[str, Any], bool]],
+    ) -> dict[str, dict[str, Any]]:
+        recipients = {
+            str(row.get("worker_name") or "").strip().lower(): dict(row)
+            for row in directory_record.get("recipients") or []
+            if isinstance(row, Mapping)
+            and str(row.get("worker_name") or "").strip()
+        }
+        # The local record is the authority for a session hosted here.
+        for worker_name, row, not_linked in local:
+            recipients[worker_name] = (
+                {**row, "pool_status": "not_linked"} if not_linked else row
+            )
+        return recipients
+
+    def reconcile_project_mailboxes_when_due(
+        self,
+        project_id: str,
+        recipients: Sequence[Mapping[str, Any]],
+        *,
+        reporter_worker_name: str,
+        interval_seconds: int,
+    ) -> dict[str, Any]:
+        """Reconcile the reporter's owner view once per change, else once per interval.
+
+        W943 F2-A: every channel used to rewrite the directory and reconcile
+        the whole project on every heartbeat, about twenty times a cycle on
+        dev-main, queueing on the project lock. A durable marker per owner
+        view, written under that view's observed file lock, makes one channel
+        do it and the rest skip. A channel that finds the lock held skips too:
+        the holder is doing the same work. Each channel still recovers its own
+        unpublished receipts.
+        """
+
+        clean_project = component(project_id, field="project_id")
+        reporter_record = self.read_worker(reporter_worker_name)
+        reporter = str(reporter_record.get("worker_name") or "")
+        view = mail_recipient_view(reporter_record, reporter)
+        project_ref = make_ref("project", clean_project)
+        local = self._local_attendance(project_ref)
+        signature = hashlib.sha256(
+            json.dumps(
+                {
+                    "recipients": [
+                        row for _, row in sorted(_recipient_rows(recipients).items())
+                    ],
+                    "local": sorted(
+                        (
+                            name,
+                            str(row.get("pool_status") or "active").lower(),
+                            not_linked,
+                            mail_recipient_owner_view(row),
+                        )
+                        for name, row, not_linked in local
+                    ),
+                },
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        ).hexdigest()
+        folder = self._project_dir(clean_project) / "mail-reconciliation"
+        marker_path = folder / f"{view}.json"
+        try:
+            with exclusive_lock(folder / f"{view}.lock", wait=False):
+                marker = read_json(marker_path, required=False) or {}
+                ran_at = str(marker.get("ran_at") or "")
+                try:
+                    age = (
+                        datetime.now(timezone.utc) - parse_utc(ran_at)
+                    ).total_seconds() if ran_at else None
+                except (DomainError, TypeError, ValueError):
+                    age = None
+                recent = [
+                    str(value)
+                    for value in marker.get("signatures") or []
+                    if str(value)
+                ] if age is not None and 0 <= age < interval_seconds else []
+                if signature in recent:
+                    recover_unpublished_receipts(self, clean_project, worker_name=reporter)
+                    return {
+                        "state": "current",
+                        "view": view,
+                        "ran_at": ran_at,
+                        "ran_by": str(marker.get("ran_by") or ""),
+                    }
+                self.sync_project_mail_recipients(clean_project, recipients, view=view)
+                result = self.reconcile_project_mailboxes(
+                    clean_project,
+                    reporter_worker_name=reporter,
+                    view=view,
+                )
+                atomic_write_json(
+                    marker_path,
+                    {
+                        "schema": MAIL_RECONCILIATION_MARKER_SCHEMA,
+                        "project_id": clean_project,
+                        "view": view,
+                        "signatures": [
+                            *[value for value in recent if value != signature],
+                            signature,
+                        ][-MAIL_RECONCILIATION_RECENT_SIGNATURES:],
+                        "ran_at": utc_now(),
+                        "ran_by": reporter,
+                    },
+                )
+                return result
+        except FileLockBusy:
+            recover_unpublished_receipts(self, clean_project, worker_name=reporter)
+            return {"state": "current", "view": view, "reason": "reconciling_elsewhere"}
 
     def reconcile_project_mailboxes(
         self,
         project_id: str,
         *,
         reporter_worker_name: str,
+        view: str = "",
     ) -> dict[str, Any]:
-        """Archive mailboxes with no reader and notify each original sender."""
+        """Archive mailboxes with no reader and notify each original sender.
+
+        With ``view`` (W943 F2-A) this run decides only the mailboxes whose
+        reader belongs to that owner view, against that view's directory.
+        Another owner's mailbox is left to that owner's run, so one owner's
+        tombstones never archive or keep another owner's mailbox. A mailbox
+        whose reader's owner is not known here is decided against all views
+        merged, so it stays while any view still lists its reader as live.
+        """
 
         started_at = utc_now()
         clean_project = component(project_id, field="project_id")
@@ -10474,41 +10702,31 @@ class SharedFieldStore:
             clean_project,
             worker_name=reporter,
         )
-        directory_record = self.read_project_mail_recipients(clean_project)
-        recipients = {
-            str(row.get("worker_name") or "").strip().lower(): dict(row)
-            for row in directory_record.get("recipients") or []
-            if isinstance(row, Mapping)
-            and str(row.get("worker_name") or "").strip()
-        }
         project_ref = make_ref("project", clean_project)
-        for row in json_records(self.control / "workers"):
-            worker_name = str(row.get("worker_name") or "").strip().lower()
-            if worker_name:
-                attends = project_ref in {
-                    str(value)
-                    for value in row.get("attended_project_refs") or []
-                }
-                attendance_observed = bool(
-                    str(row.get("attendances_observed_at") or "").strip()
-                )
-                if (
-                    attendance_observed
-                    and not attends
-                    and str(row.get("pool_status") or "active").lower()
-                    != "retired"
-                ):
-                    recipients[worker_name] = {
-                        **row,
-                        "pool_status": "not_linked",
-                    }
-                else:
-                    recipients[worker_name] = row
-        aliases: dict[str, list[str]] = {}
-        for worker_name, row in recipients.items():
-            alias = str(row.get("worker_alias") or "").strip().casefold()
-            if alias:
-                aliases.setdefault(alias, []).append(worker_name)
+        local = self._local_attendance(project_ref)
+        owner_views = {
+            name: mail_recipient_owner_view(row) for name, row, _ in local
+        }
+        recipients = self._with_local_records(
+            self.read_project_mail_recipients(clean_project, view=view), local
+        )
+        merged = (
+            self._with_local_records(self.read_project_mail_recipients(clean_project), local)
+            if view
+            else recipients
+        )
+
+        def alias_map(directory: Mapping[str, Mapping[str, Any]]) -> dict[str, list[str]]:
+            aliases: dict[str, list[str]] = {}
+            for worker_name, row in directory.items():
+                alias = str(row.get("worker_alias") or "").strip().casefold()
+                if alias:
+                    aliases.setdefault(alias, []).append(worker_name)
+            return aliases
+
+        own_aliases = alias_map(recipients)
+        merged_aliases = alias_map(merged) if view else own_aliases
+        left_to_other_views = 0
 
         mail_root = self._project_dir(clean_project) / "mail"
         archive_root = mail_root / "undeliverable"
@@ -10525,7 +10743,14 @@ class SharedFieldStore:
                 }:
                     continue
                 address = source_root.name.lower()
-                recipient = recipients.get(address)
+                owner_view = owner_views.get(address, "")
+                if view and owner_view and owner_view != view:
+                    left_to_other_views += 1
+                    continue
+                own = not view or owner_view == view
+                directory = recipients if own else merged
+                aliases = own_aliases if own else merged_aliases
+                recipient = directory.get(address)
                 recipient_status = str(
                     (recipient or {}).get("pool_status") or "active"
                 ).lower()
@@ -10936,6 +11161,10 @@ class SharedFieldStore:
             # admitted to a server receipt or exposed in this summary.
             "retirement_pending": {'original_count': sum(retirement_pending_reasons.values()),
                                    'reasons': retirement_pending_reasons},
+            # W943 F2-A: the owner view this run decided for, and how many
+            # mailboxes it left to other owners' runs.
+            "view": view,
+            "mailboxes_left_to_other_views": left_to_other_views,
         }
 
     def record_journal_receipt(
