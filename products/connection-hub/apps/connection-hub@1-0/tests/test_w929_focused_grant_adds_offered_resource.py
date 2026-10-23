@@ -99,10 +99,11 @@ def _secret_row(resource=SECRET_SELECTOR, operations=(WRITE,)):
 
 
 @pytest.mark.asyncio
-async def test_a_secret_the_card_lacks_is_granted_with_its_policy_when_the_catalog_offers_it(monkeypatch, tmp_path):
+async def test_a_secret_the_card_lacks_is_granted_with_its_policy_when_the_catalog_offers_it(monkeypatch, tmp_path, caplog):
     policies, cards, save = _world(monkeypatch, tmp_path, [_secret_row()])
 
-    result = await save()
+    with caplog.at_level("INFO"):
+        result = await save()
 
     assert result["ok"] is True, result
     assert result["invocation_policy"]["mode"] == POLICY_ONCE
@@ -110,6 +111,12 @@ async def test_a_secret_the_card_lacks_is_granted_with_its_policy_when_the_catal
     policy = await policies.get(owner_subject="user-1", authority=InvocationAuthority(
         access_id=ACCESS_ID, resource=SECRET, surface=SURFACE_OUTER, operation=WRITE))
     assert policy is not None and policy.mode == POLICY_ONCE
+    # W929: the committed mode is logged, with no values.
+    committed = [record.getMessage() for record in caplog.records if "policy committed" in record.getMessage()]
+    assert committed == [
+        f"[delegated_agent_grant] policy committed access_id={ACCESS_ID} resource={SECRET} operation={WRITE} "
+        f"mode=once revision={policy.revision} change_id=consent-1"
+    ]
 
 
 @pytest.mark.asyncio

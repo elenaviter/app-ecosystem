@@ -7480,6 +7480,13 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
                     authority=invocation_authority,
                     change_id=invocation_change_id,
                 )
+                # W929: which policy a consent committed, so the chosen Once or Always can be checked afterwards.
+                LOGGER.info(
+                    "[delegated_agent_grant] policy committed access_id=%s resource=%s operation=%s mode=%s "
+                    "revision=%s change_id=%s",
+                    invocation_access_id, resource, requested_operation, policy.mode, policy.revision,
+                    invocation_change_id,
+                )
                 result = {
                     **result,
                     "invocation_policy": policy.to_public_dict(),
