@@ -29,7 +29,13 @@ data-bus = [
 a2a = [
     "httpx2>=2.5,<3",
 ]
+# The inbound server (app_foundation.a2a.server): the SDK's JSON-RPC and HTTP+JSON dispatchers.
+a2a-server = [
+    "httpx2>=2.5,<3",
+    "a2a-sdk[http-server]==1.2.3",
+]
 test = [
+    "a2a-sdk[http-server]==1.2.3",
     "httpx2>=2.5,<3",
     "keyring>=25,<26",
     "mcp==2.0.0",
