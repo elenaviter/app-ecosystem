@@ -16,7 +16,7 @@ import sys
 import pytest
 
 from project_board.client import release_smoke
-from project_board.client.prerequisites import Probes, check_prerequisites, hashlib_state
+from project_board.client.prerequisites import Probes, check_prerequisites, hashlib_prerequisite, hashlib_state
 from project_board.client.render import render_envelope
 
 LIBB2_MISSING = (
@@ -122,12 +122,20 @@ def test_a_real_python_whose_blake2_cannot_load_is_not_ready():
     assert "unsupported hash type blake2b" in done.stderr
 
 
-def test_the_release_smoke_refuses_a_candidate_without_blake2(monkeypatch):
-    monkeypatch.setattr("project_board.client.prerequisites.hashlib_state", lambda: LIBB2_MISSING)
-    monkeypatch.setattr("project_board.client.prerequisites.platform.system", lambda: "Darwin")
-    with pytest.raises(ImportError, match="hashlib prerequisite missing.*Fix: brew install libb2"):
+@pytest.mark.parametrize("system, fix", [
+    ("Darwin", "brew install libb2"),
+    ("Linux", "sudo apt install -y libb2-1"),
+])
+def test_the_release_smoke_refuses_a_candidate_without_blake2(monkeypatch, system, fix):
+    # Select the candidate platform through the public injectable probe, not
+    # the test host's OS (the dataclass's default callable is bound on import).
+    item = hashlib_prerequisite(_probes(system, LIBB2_MISSING, "ID=debian\n"))
+    assert item["fix"] == fix
+    monkeypatch.setattr("project_board.client.prerequisites.hashlib_prerequisite", lambda: item)
+    with pytest.raises(ImportError, match="hashlib prerequisite missing") as error:
         release_smoke.verify_hashlib()
-    monkeypatch.setattr("project_board.client.prerequisites.hashlib_state", lambda: (True, "load"))
+    assert f"Fix: {fix}" in str(error.value)
+    monkeypatch.setattr("project_board.client.prerequisites.hashlib_prerequisite", lambda: {"found": True})
     release_smoke.verify_hashlib()
 
 
