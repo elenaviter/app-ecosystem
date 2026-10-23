@@ -35,15 +35,18 @@ def verify_hashlib() -> None:
     activated release prints two tracebacks. ``pb status`` names the fix.
     """
 
-    from project_board.client.prerequisites import hashlib_state  # noqa: PLC0415
+    from project_board.client.prerequisites import hashlib_prerequisite  # noqa: PLC0415
 
-    usable, detail = hashlib_state()
-    if not usable:
-        raise ImportError(f"hashlib BLAKE2 is unavailable; run `pb status` for the fix: {detail}")
+    item = hashlib_prerequisite()
+    if not item["found"]:
+        raise ImportError(
+            f"hashlib prerequisite missing: {item['detail']}. {item['why']} "
+            f"Without it: {item['without_it']} Fix: {item['fix']}"
+        )
 
 
-verify_runtime_imports()
 verify_hashlib()
+verify_runtime_imports()
 
 
 __all__ = ["RUNTIME_IMPORTS", "verify_hashlib", "verify_runtime_imports"]

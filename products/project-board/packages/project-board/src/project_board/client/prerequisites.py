@@ -138,7 +138,7 @@ def _keyring_state_now() -> tuple[bool, str]:
 def hashlib_state() -> tuple[bool, str]:
     """Whether pb's own Python builds hashlib's BLAKE2 hashes, and why not.
 
-    W933 (mba-local, 2026-10-23): a pyenv Python whose ``_blake2`` module links
+    W933 (macOS, 2026-10-23): a pyenv Python whose ``_blake2`` module links
     Homebrew's libb2, with libb2 not installed. ``hashlib`` logs a traceback for
     blake2b and blake2s at import, so every pb command started with two, the
     device login included, while ``pb status`` called the machine ready.
@@ -146,16 +146,25 @@ def hashlib_state() -> tuple[bool, str]:
 
     import hashlib  # noqa: PLC0415 - already imported by the time pb runs
 
-    absent = [name for name in ("blake2b", "blake2s") if not hasattr(hashlib, name)]
-    if not absent:
-        return True, f"{sys.executable}: blake2b and blake2s load"
+    # Import the extension explicitly: OpenSSL advertising these algorithms
+    # does not prove that CPython's BLAKE2 implementation can load.
+    reason = ""
     try:
         import _blake2  # noqa: F401, PLC0415
-    except ImportError as exc:
-        reason = " ".join(str(exc).split())[:300]
-    else:
-        reason = "hashlib could not build them"
-    return False, f"{sys.executable}: {' and '.join(absent)} unavailable ({reason})"
+    except (ImportError, OSError) as exc:
+        reason = " ".join(str(exc).split())[:300] or type(exc).__name__
+    failed = []
+    for name in ("blake2b", "blake2s"):
+        try:
+            getattr(hashlib, name)(b"pb prerequisite").digest()
+        except Exception as exc:  # noqa: BLE001 - report a broken runtime instead of crashing status
+            failed.append(name)
+            if not reason:
+                reason = " ".join(str(exc).split())[:300] or type(exc).__name__
+    if not reason and not failed:
+        return True, f"{sys.executable}: _blake2, blake2b and blake2s load"
+    names = " and ".join(failed) if failed else "_blake2"
+    return False, f"{sys.executable}: {names} unavailable ({reason})"
 
 
 def _linux_family(os_release: str) -> str:
@@ -242,8 +251,19 @@ def _hashlib(probes: Probes, family: str, *, mac: bool) -> dict[str, Any]:
         "hashlib", usable,
         why="pb runs on Python's standard hashlib, which must build its BLAKE2 hashes.",
         fix=fix, admin=admin, detail=detail,
-        without="Every pb command first prints blake2 tracebacks, and anything that needs BLAKE2 fails.",
+        without=(
+            "Commands that do not use BLAKE2 can still succeed, but hashlib import prints blake2 tracebacks "
+            "and operations that need BLAKE2 fail."
+        ),
     )
+
+
+def hashlib_prerequisite(probes: Probes | None = None) -> dict[str, Any]:
+    """One diagnostic shared by status and the candidate-owned release smoke."""
+
+    probes = probes or Probes()
+    mac = probes.system() == "Darwin"
+    return _hashlib(probes, "" if mac else _linux_family(probes.os_release()), mac=mac)
 
 
 def _git(probes: Probes, family: str, *, mac: bool) -> dict[str, Any]:
@@ -344,7 +364,7 @@ def check_prerequisites(probes: Probes | None = None) -> dict[str, Any]:
     if mac:
         checked = [
             _python(probes, family),
-            _hashlib(probes, family, mac=True),
+            hashlib_prerequisite(probes),
             _git(probes, family, mac=True),
             _tmux(probes, family, mac=True),
             _gh(probes, family, mac=True),
@@ -353,7 +373,7 @@ def check_prerequisites(probes: Probes | None = None) -> dict[str, Any]:
     elif system == "Linux":
         checked = [
             _python(probes, family),
-            _hashlib(probes, family, mac=False),
+            hashlib_prerequisite(probes),
             _git(probes, family, mac=False),
             _tmux(probes, family, mac=False),
             _gh(probes, family, mac=False),
@@ -376,4 +396,4 @@ def check_prerequisites(probes: Probes | None = None) -> dict[str, Any]:
     }
 
 
-__all__ = ["ADMIN_NOTE", "KEYRING_UNLOCK_LINE", "Probes", "SCHEMA", "check_prerequisites", "hashlib_state"]
+__all__ = ["ADMIN_NOTE", "KEYRING_UNLOCK_LINE", "Probes", "SCHEMA", "check_prerequisites", "hashlib_prerequisite", "hashlib_state"]

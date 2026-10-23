@@ -1,6 +1,6 @@
 """pb status names a Python whose hashlib cannot build BLAKE2 (W933).
 
-On mba-local (2026-10-23) the release ran on a pyenv Python whose ``_blake2``
+On macOS (2026-10-23) the release ran on a pyenv Python whose ``_blake2``
 module links Homebrew's libb2, and libb2 was not installed. hashlib logged a
 traceback for blake2b and blake2s at import, so every pb command, the device
 login included, started with two of them, while ``pb status`` reported
@@ -17,6 +17,7 @@ import pytest
 
 from project_board.client import release_smoke
 from project_board.client.prerequisites import Probes, check_prerequisites, hashlib_state
+from project_board.client.render import render_envelope
 
 LIBB2_MISSING = (
     False,
@@ -83,6 +84,26 @@ def test_the_probe_names_a_hashlib_that_could_not_build_blake2(monkeypatch):
     assert usable is False and "blake2b and blake2s unavailable" in detail
 
 
+def test_present_but_broken_constructor_is_not_ready(monkeypatch):
+    import hashlib
+
+    def broken(*args, **kwargs):
+        raise ValueError("BLAKE2 backend unavailable")
+
+    monkeypatch.setattr(hashlib, "blake2b", broken)
+    usable, detail = hashlib_state()
+    assert usable is False and "blake2b unavailable (BLAKE2 backend unavailable)" in detail
+
+
+def test_extension_must_load_even_when_hashlib_is_already_cached(monkeypatch):
+    import hashlib
+
+    assert hashlib.blake2b().digest()
+    monkeypatch.setitem(sys.modules, "_blake2", None)
+    usable, detail = hashlib_state()
+    assert usable is False and "_blake2 unavailable" in detail
+
+
 def test_a_real_python_whose_blake2_cannot_load_is_not_ready():
     # The same failure as a missing libb2: hashlib's import of _blake2 raises,
     # it logs the traceback, and blake2b and blake2s are left undefined.
@@ -103,7 +124,35 @@ def test_a_real_python_whose_blake2_cannot_load_is_not_ready():
 
 def test_the_release_smoke_refuses_a_candidate_without_blake2(monkeypatch):
     monkeypatch.setattr("project_board.client.prerequisites.hashlib_state", lambda: LIBB2_MISSING)
-    with pytest.raises(ImportError, match="BLAKE2 is unavailable.*libb2"):
+    monkeypatch.setattr("project_board.client.prerequisites.platform.system", lambda: "Darwin")
+    with pytest.raises(ImportError, match="hashlib prerequisite missing.*Fix: brew install libb2"):
         release_smoke.verify_hashlib()
     monkeypatch.setattr("project_board.client.prerequisites.hashlib_state", lambda: (True, "load"))
     release_smoke.verify_hashlib()
+
+
+def test_a_configured_machine_status_prints_the_cause_impact_and_fix():
+    prerequisites = check_prerequisites(_probes("Darwin", LIBB2_MISSING))
+    text = render_envelope({"ok": True, "result": {
+        "schema": "problem-board.first-run-status.v1", "state": "ready",
+        "machine": {"prerequisites": prerequisites}, "session": {}, "next": {},
+    }})
+    assert "prerequisites: ok False · missing hashlib" in text
+    assert "hashlib: /home/u/venv/bin/python:" in text
+    assert "Library not loaded: /opt/homebrew/opt/libb2/lib/libb2.1.dylib" in text
+    assert "Commands that do not use BLAKE2 can still succeed" in text
+    assert "hashlib fix: brew install libb2" in text
+
+
+def test_importing_the_candidate_smoke_rejects_a_broken_extension():
+    # Cached hashlib constructors alone must not let the candidate activate.
+    # This is a disposable import failure, not a change to the host's Python.
+    done = subprocess.run([
+        sys.executable, "-c",
+        "import hashlib, sys; sys.modules['_blake2'] = None; "
+        "import project_board.client.release_smoke",
+    ], capture_output=True, text=True, check=False)
+    assert done.returncode != 0
+    assert "hashlib prerequisite missing:" in done.stderr
+    assert "_blake2 unavailable" in done.stderr
+    assert "reinstall this Python" in done.stderr

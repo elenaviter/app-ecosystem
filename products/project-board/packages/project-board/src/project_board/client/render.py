@@ -411,6 +411,11 @@ def _render_first_run_status(result: Mapping[str, Any]) -> list[str]:
             if keyring else "not checked",
         )
     )
+    hashlib = next((item for item in checked if item.get("name") == "hashlib"), {})
+    if hashlib and not hashlib.get("found"):
+        lines.append(f"hashlib: {_preview(hashlib.get('detail') or hashlib.get('why'), maximum_bytes=600)}")
+        lines.append(f"hashlib without it: {_preview(hashlib.get('without_it'), maximum_bytes=300)}")
+        lines.append(f"hashlib fix: {_preview(hashlib.get('fix'), maximum_bytes=400)}")
     target = _mapping(machine.get("default_target"))
     if target:
         lines.append(f"target: {target.get('target_id') or '-'} · host {target.get('host_id') or '-'}")
