@@ -115,6 +115,7 @@ import {
 import {
   commonOperationGrants,
   doorGrantsForOperation,
+  onceUsedUp,
   pendingCatalogResource,
   pendingOuterApprovalReady,
   pendingServiceApprovalReady,
@@ -326,7 +327,7 @@ function PendingStatus({ status }: { status: PendingSelectionStatus }) {
   if (!status) return null;
   const state = status === 'Already granted'
     ? 'granted'
-    : status === 'Pending - not granted yet'
+    : status === 'Pending - not granted yet' || status === 'Used once, approve again'
       ? 'pending'
       : 'required';
   return <span className="pending-selection-status" data-state={state}>{status}</span>;
@@ -2049,6 +2050,10 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
         && policy.authority.operation !== pendingGrant.outerOperation)
       .map((policy) => `${policy.authority.operation}: ${policy.mode}`))
     : [];
+  // W929: the Card holds the operation, but its Once is used up, so this consent asks again.
+  const pendingOnceUsed = Boolean(pendingGrant?.outerOperation) && pendingExistingRecords.some((record) => (
+    onceUsedUp(record.invocation_policies, pendingGrant?.resource || '', pendingGrant?.outerOperation || '')
+  ));
   const pendingOperationAlreadyGranted = Boolean(
     pendingGrant?.outerOperation
       ? pendingExistingRecords.some((record) => (
@@ -4004,6 +4009,7 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
                       pendingOperationAlreadyGranted,
                       pendingOperationSelected,
                       true,
+                      pendingOnceUsed,
                     )} />
                   </small>
                 </span>
@@ -4116,7 +4122,7 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
                       <div className="account-title"><code>{claim}</code></div>
                       {option?.label ? <div className="account-sub">{option.label}</div> : null}
                       {option?.description ? <div className="account-sub">{option.description}</div> : null}
-                      <PendingStatus status={pendingSelectionStatus(alreadyGranted, selected, true)} />
+                      <PendingStatus status={pendingSelectionStatus(alreadyGranted, selected, true, pendingOnceUsed)} />
                     </div>
                   </label>
                 </li>
