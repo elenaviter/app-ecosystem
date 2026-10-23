@@ -180,6 +180,8 @@ HEARTBEAT_CONTROL_REF_LIMIT = 20
 # Adapters built without their channel's store executor (tests, one-shot
 # commands) still keep blocking work off the event loop (W461).
 _ADAPTER_EXECUTORS = ChannelExecutors(thread_name_prefix="problem-board-adapter")
+# W943: a retry or settle of an outbox row whose lease this relay no longer holds.
+_OUTBOX_LOST_LEASE_CODES = frozenset({"field_outbox_not_leased", "field_outbox_lease_mismatch"})
 
 # W423: how often the relay re-measures an agent's workspace size (W461:
 # held per path by WorkspaceSizes, which the per-poll adapters share).
@@ -4165,6 +4167,20 @@ class ProblemBoardHostRelayAdapter:
                 except FileLockBusy:
                     await asyncio.sleep(delay)
                     delay = min(delay * 2, self.OUTBOX_LOCK_RETRY_MAX_SECONDS)
+                except DomainError as exc:
+                    # W943: a retry or settle of a row this relay no longer
+                    # holds (its lease expired and another claim took it) is
+                    # that row's business, never the channel's: skip it. On
+                    # 2026-10-23 each such retry failed the whole channel and
+                    # cost a 40-60 s reconnect.
+                    if not finish or exc.code not in _OUTBOX_LOST_LEASE_CODES:
+                        raise
+                    logger.warning(
+                        "Problem Board outbox row skipped: its lease is no longer this relay's "
+                        "worker=%s outbox_id=%s code=%s",
+                        self.config.worker_name, str(args[0] if args else ""), exc.code,
+                    )
+                    return None
 
         if not finish:
             return attempt

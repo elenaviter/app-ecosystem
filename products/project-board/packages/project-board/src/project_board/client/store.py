@@ -13175,13 +13175,15 @@ class SharedFieldStore:
             return row
 
     def _leased_outbox_path(self, outbox_id: str) -> Path:
-        found = self._outbox.find(outbox_id)
+        # W943: in flight only; a row that is no longer leased is reported as
+        # not leased, without walking the settled history under the lock.
+        found = self._outbox.find_in_flight(outbox_id)
         if found is None or found[1] != "leased":
             raise DomainError(
                 "field_outbox_not_leased",
                 "This outbox record is not leased to a relay.",
                 status=409,
-                details={"outbox_id": outbox_id, "state": found[1] if found else "missing"},
+                details={"outbox_id": outbox_id, "state": found[1] if found else "not_in_flight"},
             )
         return found[0]
 
