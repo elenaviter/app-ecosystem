@@ -432,3 +432,63 @@ def test_the_identity_lifecycle_uses_its_host_services_policy():
     bare = ProjectIdentityLifecycle(host=SimpleNamespace(), authority_from_record=lambda r: r,
                                     record_from_authority=lambda a: a)
     assert bare.project_families is None
+
+
+async def _hierarchy(card, controls, *, families=POLICY):
+    from connection_hub.delegated_credentials.controls.hierarchy import compose_control_hierarchy
+
+    by_coordinate = {(c.grantor_subject, c.access_id): c for c in controls}
+
+    async def load_control(control_id, *, grantor_subject):
+        return by_coordinate.get((grantor_subject, control_id))
+
+    return await compose_control_hierarchy(card, load_control=load_control, project_families=families)
+
+
+@pytest.mark.parametrize(("switch", "families", "reported"), [
+    ("on", POLICY, "on"),
+    ("off", POLICY, "off"),
+    (None, POLICY, "off"),
+    ("on", None, "off"),  # no deployment policy closes the gate
+])
+async def test_the_hierarchy_reports_how_the_switch_decided_the_connectors(switch, families, reported):
+    """W918: the editor follows this verdict instead of comparing connectors with the project Card's list."""
+    p = project_control(switch)
+    hierarchy = await _hierarchy(agent(p), [p], families=families)
+    assert hierarchy.external_mcp_family == reported
+    assert (CONNECTOR_A in hierarchy.effective_card.resource_grants) is (reported == "on")
+
+
+async def test_off_a_project_chain_the_hierarchy_reports_no_switch():
+    p = project_control("on")
+    service = new_credentialless_card(
+        grantor_subject=OWNER, catalog_version="catalog", control_id="svc", issuer_ref="issuer:svc",
+        issuer_kind="service", initial_selection=agent(p), composition_mode="and",
+        properties={EXTERNAL_MCP_FAMILY_PROPERTY: "on"}, now=1,
+    )
+    card = dataclasses.replace(agent(p), control_card=ControlCardBinding(
+        control_id=service.access_id, issuer_ref=service.issuer_ref, issuer_kind="service",
+        control_revision=service.card_revision))
+    assert (await _hierarchy(card, [service])).external_mcp_family == ""
+
+
+@pytest.mark.parametrize("reported", ["on", "off", ""])
+async def test_the_owner_view_carries_the_switch_verdict_to_the_editor(reported):
+    from connection_hub.delegated_credentials.automation_access import AutomationAccessService, record_from_card
+    from connection_hub.delegated_credentials.controls.hierarchy import ControlHierarchy
+
+    p = project_control("on")
+    card = agent(p)
+    service = AutomationAccessService.__new__(AutomationAccessService)
+
+    async def hierarchy(_record):
+        return ControlHierarchy(card, p, p, (p,), external_mcp_family=reported)
+
+    service._control_hierarchy = hierarchy
+    view = await service._effective_control_view(record_from_card(card))
+
+    assert view["state"] == "active", view
+    if reported:
+        assert view["external_mcp_family"] == reported
+    else:
+        assert "external_mcp_family" not in view

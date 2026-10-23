@@ -9,6 +9,8 @@ import {
   compositionRowState,
   composeControlCardAuthority,
   controlSnapshotIsExact,
+  controlKeepsCallerOperation,
+  externalMcpSwitchDecides,
   outerOperationsExcludedByControl,
 } from '../src/features/delegatedAccess/controlCardPreview.ts'
 
@@ -224,4 +226,25 @@ test('Effective Card row states expose AND removals and OR additions', () => {
   assert.equal(compositionRowState(true, false, 'or'), 'normal')
   assert.equal(compositionRowState(false, true, 'or'), 'added')
   assert.equal(compositionRowState(false, false, 'or'), 'absent')
+})
+
+test('W918: the project External MCP switch, not the Control list, decides the caller\'s own connectors', () => {
+  const connector = 'urn:connection-hub:remote-mcp:mcp_d538f6ab38ed27bbd51c184d'
+  const caller = { resource_operations: { [connector]: ['search', 'delete'], 'https://svc.example/mcp': ['read'] } }
+  const control = { resource_operations: { 'https://svc.example/mcp': [] } }
+
+  // On: the connector's tools stay in force although the project Card lists none of them.
+  assert.deepEqual(outerOperationsExcludedByControl(caller, control, 'on'), [
+    { resource: 'https://svc.example/mcp', operation: 'read' },
+  ])
+  assert.equal(controlKeepsCallerOperation(control, connector, 'search', 'on'), true)
+  // Off: they are excluded.
+  assert.deepEqual(outerOperationsExcludedByControl(caller, control, 'off').map((row) => row.operation).sort(),
+    ['delete', 'read', 'search'])
+  // Off a project chain (no switch reported), connectors fold against the Control as before.
+  assert.equal(controlKeepsCallerOperation(control, connector, 'search', undefined), false)
+  assert.equal(externalMcpSwitchDecides(connector, undefined), null)
+  // The switch never decides a resource that is not a connector.
+  assert.equal(externalMcpSwitchDecides('https://svc.example/mcp', 'on'), null)
+  assert.equal(controlKeepsCallerOperation(control, 'https://svc.example/mcp', 'read', 'on'), false)
 })

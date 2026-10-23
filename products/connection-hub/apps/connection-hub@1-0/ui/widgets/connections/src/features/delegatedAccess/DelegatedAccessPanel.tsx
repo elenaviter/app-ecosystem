@@ -213,7 +213,8 @@ import {
 } from './projectControlCard';
 import {
   authorityAccountCount,
-  authorityAllowsOuterOperation,
+  controlKeepsCallerOperation,
+  externalMcpSwitchDecides,
   authorityNamedOperationCount,
   authorityOuterOperationCount,
   authorityResourceKeys,
@@ -4321,7 +4322,8 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
     const callerHasResource = !editRemovedResources.includes(resource)
       && (resource in (item.resource_grants || {}) || editAddedResources.includes(resource));
     const controlHasResource = composition
-      ? authorityResourceKeys(composition.control).includes(resource)
+      ? externalMcpSwitchDecides(resource, linkedControl?.external_mcp_family)
+        ?? authorityResourceKeys(composition.control).includes(resource)
       : false;
     const resourceDiffState = composition
       ? compositionRowState(callerHasResource, controlHasResource, composition.mode)
@@ -4419,7 +4421,8 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
                       const diffState = composition
                         ? compositionRowState(
                             callerSelected,
-                            authorityValueSelected(composition.control.resource_grants?.[resource], claim),
+                            externalMcpSwitchDecides(resource, linkedControl?.external_mcp_family)
+                              ?? authorityValueSelected(composition.control.resource_grants?.[resource], claim),
                             composition.mode,
                           )
                         : 'absent';
@@ -4556,7 +4559,8 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
                 const alreadyGranted = editGrantedOperations(item, resource).includes(operation.name);
                 const policy = invocationPolicyFor(item, resource, operation.name);
                 const controlSelected = composition
-                  ? authorityAllowsOuterOperation(composition.control, resource, operation.name)
+                  ? controlKeepsCallerOperation(composition.control, resource, operation.name,
+                    linkedControl?.external_mcp_family)
                   : false;
                 const diffState: CompositionRowState = composition
                   ? compositionRowState(selected, controlSelected, composition.mode)
@@ -4564,8 +4568,9 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
                 // W775: an agent-only operation on a person's Card is not the person's to allow; no Control warning.
                 const excludedByControl = operation.agent_only !== true
                   && controlCapsCaller
-                  && !authorityAllowsOuterOperation(
+                  && !controlKeepsCallerOperation(
                     linkedControl?.control_authority || {}, resource, operation.name,
+                    linkedControl?.external_mcp_family,
                   );
                 return (
                   <div
@@ -5401,6 +5406,7 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
       && linkedControl.control_authority
       ? outerOperationsExcludedByControl(
           pendingCallerAuthority(record), linkedControl.control_authority,
+          linkedControl.external_mcp_family,
         )
       : []).filter(({ resource, operation }) => !(personsCard && agentOnlyOnPersonCard(
       catalogRowFor(catalogResources, resource, (key) => (record.catalog_row_by_resource || {})[key] || key),
