@@ -252,6 +252,43 @@ def _denial_response(
     )
 
 
+def _card_grant_consent(
+    *,
+    view: DelegatedCredentialView,
+    request: Any,
+    code: str,
+    claims: list[str],
+    change_id: str,
+    recovery_url: str,
+) -> dict[str, Any]:
+    """The Card-grant consent: choose Once or Always for this exact operation on the caller's Card."""
+    return {
+        "kind": "delegated_agent_grant",
+        "reason": code,
+        "agent_client_id": view.client_id,
+        "access_id": view.registry_access_id,
+        "resource": request.resource,
+        "claims": claims,
+        "tool_name": request.operation,
+        "outer_operation": request.operation,
+        "connection_hub_url": recovery_url,
+        "invocation_policy": "choose",
+        "invocation_change_id": change_id,
+        "available_choices": ["allow_once", "allow_always"],
+        "grant": {
+            "operation": "delegated_agent_grant_create",
+            "payload": {
+                "client_id": view.client_id,
+                "access_id": view.registry_access_id,
+                "resource": request.resource,
+                "claims": claims,
+                "resource_operations": {request.resource: [request.operation]},
+                "invocation_change_id": change_id,
+            },
+        },
+    }
+
+
 def _provider_invocation_policy(policy: Any) -> dict[str, Any]:
     """Project invocation state without the owner's card coordinates."""
 
@@ -605,16 +642,15 @@ async def handle_delegated_admission(
             else:
                 recovery_url = ""
             if view.client_id and view.registry_access_id:
-                grant_payload = {
-                    "client_id": view.client_id,
-                    "access_id": view.registry_access_id,
-                    "resource": admission_request.resource,
-                    "claims": missing_grants,
-                    "resource_operations": {
-                        admission_request.resource: [admission_request.operation]
-                    },
-                    "invocation_change_id": change_id,
-                }
+                consent = _card_grant_consent(
+                    view=view,
+                    request=admission_request,
+                    code=code,
+                    claims=missing_grants,
+                    change_id=change_id,
+                    recovery_url=recovery_url,
+                )
+                grant_payload = consent["grant"]["payload"]
                 if permit_now:
                     grant_payload.update(
                         {
@@ -627,24 +663,6 @@ async def handle_delegated_admission(
                             ),
                         }
                     )
-                consent = {
-                    "kind": "delegated_agent_grant",
-                    "reason": code,
-                    "agent_client_id": view.client_id,
-                    "access_id": view.registry_access_id,
-                    "resource": admission_request.resource,
-                    "claims": missing_grants,
-                    "tool_name": admission_request.operation,
-                    "outer_operation": admission_request.operation,
-                    "connection_hub_url": recovery_url,
-                    "invocation_policy": "choose",
-                    "invocation_change_id": change_id,
-                    "available_choices": ["allow_once", "allow_always"],
-                    "grant": {
-                        "operation": "delegated_agent_grant_create",
-                        "payload": grant_payload,
-                    },
-                }
                 if permit_now:
                     consent.update(
                         {
@@ -916,6 +934,45 @@ async def handle_delegated_admission(
                     decision_id=decision_id,
                     retryable=True,
                 )
+            elif (
+                invocation_decision.reason == "delegated_invocation_limit_exhausted"
+                and view.client_id
+                and view.registry_access_id
+                and context.operation_grant_url_builder is not None
+            ):
+                # W929: a used-up Once offers the same Once/Always choice as a first request, through the same
+                # Card-grant consent the CLI and chat already follow; approving it commits the policy again
+                # (the operation stays on the Card), and the identical request is retried.
+                change_id = admission_request.invocation_id or f"admission-{decision_id}"
+                recovery_url = context.operation_grant_url_builder(
+                    view,
+                    admission_request,
+                    change_id,
+                )
+                if recovery_url:
+                    consent = _card_grant_consent(
+                        view=view,
+                        request=admission_request,
+                        code=invocation_decision.reason,
+                        claims=[],
+                        change_id=change_id,
+                        recovery_url=recovery_url,
+                    )
+                    details["access_id"] = view.registry_access_id
+                    details["client_id"] = view.client_id
+                    details["recovery"] = consent
+                    return _denial_response(
+                        status_code=403,
+                        code=invocation_decision.reason,
+                        message=(
+                            "This operation was allowed once and that use is spent. Choose Once or Always on the "
+                            "Card in Connection Hub, then retry the same request."
+                        ),
+                        decision_id=decision_id,
+                        retryable=invocation_decision.retryable,
+                        details=details,
+                        consent=consent,
+                    )
             elif context.invocation_recovery_url_builder is not None:
                 recovery_url = context.invocation_recovery_url_builder(
                     view,
