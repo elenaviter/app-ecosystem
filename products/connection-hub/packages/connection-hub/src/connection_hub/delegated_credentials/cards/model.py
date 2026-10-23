@@ -643,6 +643,12 @@ class CardAuthority:
                 raise CardRecordError("control_card_external_mcp_family_invalid")
             if self.source != CREDENTIALLESS_CARD_SOURCE:
                 raise CardRecordError("external_mcp_family_requires_control_card")
+        if "a2a_family" in self.properties:
+            # W937: the project's A2A switch; the same rule as external_mcp_family.
+            if self.properties["a2a_family"] not in {"on", "off"}:
+                raise CardRecordError("control_card_a2a_family_invalid")
+            if self.source != CREDENTIALLESS_CARD_SOURCE:
+                raise CardRecordError("a2a_family_requires_control_card")
         if self.source == CREDENTIALLESS_CARD_SOURCE:
             if not self.issuer_ref:
                 raise CardRecordError("credentialless_card_issuer_ref_missing")

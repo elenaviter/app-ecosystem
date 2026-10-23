@@ -576,9 +576,11 @@ def compose_card_authority_selection(
     # W918: a Control's External MCP switch is that Control's own policy. It is
     # never inherited by composition (a C keeps only its own value; a caller
     # never carries one); the hierarchy reads it from the raw validated chain.
-    properties.pop("external_mcp_family", None)
-    if authority_is_credentialless(card) and "external_mcp_family" in card.properties:
-        properties["external_mcp_family"] = card.properties["external_mcp_family"]
+    # W937: the project's A2A switch (a2a_family) is the same kind of policy.
+    for switch_property in ("external_mcp_family", "a2a_family"):
+        properties.pop(switch_property, None)
+        if authority_is_credentialless(card) and switch_property in card.properties:
+            properties[switch_property] = card.properties[switch_property]
     # Target authority is a finite set, not an ordinary last-writer-wins Card
     # property. An absent side contributes no cross-application reads.
     properties[CONVERSATION_TARGETS_PROPERTY] = list(

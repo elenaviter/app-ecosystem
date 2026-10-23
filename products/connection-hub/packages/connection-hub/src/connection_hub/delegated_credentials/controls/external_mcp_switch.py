@@ -14,6 +14,9 @@ from __future__ import annotations
 from typing import Any, Mapping
 
 EXTERNAL_MCP_FAMILY_PROPERTY = "external_mcp_family"
+# W937: the project's A2A switch, the same shape for the caller's own remote
+# A2A connectors. Absent is off; this delivery reads it, a later one writes it.
+A2A_FAMILY_PROPERTY = "a2a_family"
 FAMILY_ON = "on"
 FAMILY_OFF = "off"
 FAMILY_VALUES = frozenset({FAMILY_ON, FAMILY_OFF})
@@ -35,6 +38,6 @@ def direct_switch_write_refusal(value: Any) -> dict[str, Any] | None:
 
 
 __all__ = [
-    "DIRECT_WRITE_REFUSED", "EXTERNAL_MCP_FAMILY_PROPERTY", "FAMILY_OFF", "FAMILY_ON", "FAMILY_VALUES",
+    "A2A_FAMILY_PROPERTY", "DIRECT_WRITE_REFUSED", "EXTERNAL_MCP_FAMILY_PROPERTY", "FAMILY_OFF", "FAMILY_ON", "FAMILY_VALUES",
     "direct_switch_write_refusal", "validate_family_property",
 ]

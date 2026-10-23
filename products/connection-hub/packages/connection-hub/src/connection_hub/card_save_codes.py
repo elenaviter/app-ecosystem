@@ -99,6 +99,7 @@ CARD_SAVE_CODES = frozenset({
     "card_revision",
     "catalog_digest",
     "catalog_version",
+    "control_card_a2a_family_invalid",  # W937: the project's A2A switch is on or off
     "control_card_composition_mode_invalid",
     "control_card_external_mcp_family_invalid",  # W918: the project's External MCP switch is on or off
     "control_card_initial_selection",

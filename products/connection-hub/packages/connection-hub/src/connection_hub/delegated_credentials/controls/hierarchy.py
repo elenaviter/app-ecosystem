@@ -18,7 +18,8 @@ from connection_hub.delegated_credentials.controls.project_person_composition im
     project_held_control,
 )
 from connection_hub.delegated_credentials.controls.project_mcp_family import (
-    ProjectFamilyPolicy, admitted_family_resources, project_family_gate, split_family_resources, strip_connectors,
+    FAMILY_SWITCHES, ProjectFamilyPolicy, admitted_family_resources, project_family_gate,
+    split_family_resources, strip_connectors,
 )
 
 
@@ -32,6 +33,9 @@ class ControlHierarchy:
     # connectors on this chain: "on" (admitted), "off" (dropped), or "" when
     # the chain is not a validated project chain and connectors fold as usual.
     external_mcp_family: str = ""
+    # W937: the same for the caller's own remote A2A connectors and the
+    # project's A2A switch (``a2a_family``).
+    a2a_family: str = ""
 
 
 def compose_resolved_control_hierarchy(
@@ -78,16 +82,26 @@ def compose_resolved_control_hierarchy(
     # the leaf gives P op_P (C op_C My), not (P op_P C) op_C My.
     # W918: on a validated project chain the caller's own MCP connectors are
     # decided by the project's External MCP switch, not folded: no Control can
-    # list them, and none may contribute one. Every other chain is unchanged.
+    # list them, and none may contribute one. W937: the caller's own A2A
+    # connectors the same way, by the project's A2A switch. Every other chain
+    # is unchanged.
     gate = project_family_gate(card, dependencies)
+    switches: dict[str, str] = {}
     if gate is None:
         effective = compose_subtree(card, dependencies)
     else:
-        family = project_families.family() if project_families is not None else None
-        rest, connector_grants, connector_operations = split_family_resources(card, family)
-        # No Control on a project chain contributes or folds a connector, whatever its mode (AND or OR).
-        effective = compose_subtree(rest, tuple(strip_connectors(control) for control in dependencies))
-        if gate and family is not None and connector_grants:
+        # No Control on a project chain contributes or folds a connector of
+        # any kind, whatever its mode (AND or OR).
+        effective = compose_subtree(strip_connectors(card), tuple(strip_connectors(control) for control in dependencies))
+        # Each connector kind is decided by its own switch and its own family.
+        for resource_kind, family_id, switch_property in FAMILY_SWITCHES:
+            family = (project_families.switched_family(family_id, resource_kind)
+                      if project_families is not None else None)
+            switch_on = bool(project_family_gate(card, dependencies, switch_property=switch_property))
+            switches[resource_kind] = "on" if switch_on and family is not None else "off"
+            _rest, connector_grants, connector_operations = split_family_resources(card, family)
+            if not (switch_on and family is not None and connector_grants):
+                continue
             admitted_grants, admitted_operations = admitted_family_resources(
                 family, connector_grants, connector_operations)
             # The caller's own acceptance evidence for an admitted connector stays the caller's.
@@ -101,10 +115,10 @@ def compose_resolved_control_hierarchy(
             )
     folded = dependencies if gate is None else tuple(strip_connectors(control) for control in dependencies)
     effective_control = compose_subtree(folded[0], folded[1:]) if folded else None
-    switch = "" if gate is None else ("on" if gate and project_families is not None
-                                      and project_families.family() is not None else "off")
     return ControlHierarchy(effective, dependencies[0] if dependencies else None,
-                            effective_control, dependencies, external_mcp_family=switch)
+                            effective_control, dependencies,
+                            external_mcp_family=switches.get("remote_mcp", ""),
+                            a2a_family=switches.get("remote_a2a", ""))
 
 
 async def compose_control_hierarchy(

@@ -318,6 +318,7 @@ async def test_entrypoint_builds_request_scoped_delegated_gateway(monkeypatch):
 
     monkeypatch.setattr(module, "_automation_access_service", _access_service)
     monkeypatch.setattr(module, "_remote_mcp_service", lambda _entrypoint: "remote")
+    monkeypatch.setattr(module, "_remote_a2a_service", lambda _entrypoint: "remote-a2a")
     monkeypatch.setattr(module, "_invocation_policy_service", lambda _entrypoint: "policy")
     monkeypatch.setattr(module, "_connections_config", lambda _entrypoint: {"gateway": True})
     request = object()
@@ -332,6 +333,7 @@ async def test_entrypoint_builds_request_scoped_delegated_gateway(monkeypatch):
         "request": request,
         "access_service": "cards",
         "remote_mcp_service": "remote",
+        "remote_a2a_service": "remote-a2a",
         "invocation_policy_service": "policy",
         "tenant": "t",
         "project": "p",
