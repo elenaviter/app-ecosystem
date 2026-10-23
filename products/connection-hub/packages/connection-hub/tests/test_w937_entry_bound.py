@@ -281,6 +281,30 @@ def test_the_proxy_door_refuses_a_card_holding_an_entry_bound_row() -> None:
     assert identity(None).denial.reason == "catalog_unavailable"
 
 
+def test_an_agent_card_holding_star_passes_the_proxy_door_beside_the_a2a_row() -> None:
+    connections = _connections()
+    connections["delegated_credentials"]["oauth"]["resources"].append(
+        {"resource": "*", "grants": ["a2a:task"]}
+    )
+    agent = CredentialEnvelope(
+        credential_kind="delegated_client_access",
+        issuer_authority_id="delegated_client",
+        subject="integration:kdcube-agent:card-1:user-1",
+        attrs={"resource_grants": {"*": ["a2a:task"]}, "resource_operations": {"*": []}, "scopes": ["a2a:task"]},
+    )
+    decision = authorize_credential_identity_boundary(
+        authority_id="delegated_client",
+        required_roles=(),
+        required_permissions=(),
+        user_roles=("user",),
+        user_permissions=(),
+        envelope=agent,
+        grant_record={"card_kind": "agent", "operations": []},
+        catalog=ActiveCatalogCapabilities(CatalogDocument.build(connections)),
+    )
+    assert decision.allowed
+
+
 # --- registries (condition 5) ---------------------------------------------------------------------
 
 
