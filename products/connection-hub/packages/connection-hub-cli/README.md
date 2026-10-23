@@ -180,16 +180,86 @@ missing parent, an existing destination without `--replace`, or a non-file
 replacement target. The atomic writer repeats these checks when publishing so
 a filesystem race cannot silently clobber another path.
 
-`host authorize` grants the CLI's Card the deployment resource only. Secret
-operations use the Card's `Once`/`Always` policy on exact or broad secret
-resources, not a per-request permit, so grant the secret resource on the CLI's
-Card first: in Connection Hub, Delegated by KDCube, open the Connection Hub CLI
-Card and add the key (or a namespace or scope) with the operations you need,
-for example `kdcube.management.secret.value.write` and
-`kdcube.management.secret.metadata.read`. Until then a `secrets host` request
-for that key is refused with `resource_not_consented`, which names the step.
-The stored session needs no new authorization: the Card is the live authority,
-so the grant applies to the next request.
+### Set a secret on a KDCube deployment, step by step
+
+This is the whole path for a person with no delegated bearer, on a fresh
+machine.
+
+**Before you start.** The deployment's Connection Hub must register the
+management secret resources for admission: the `kdcube-management` service
+under `connections.delegated_credentials.admission.services` lists
+`urn:kdcube:management:secret:*:*:*:*:*`. That is the default in the Connection
+Hub descriptor template. Your platform account must be allowed to approve
+management grants; a deployment administrator is.
+
+1. **Run the CLI.** Install it with `uv tool install connection-hub-cli`. If
+   that package is not published for your platform, run it from source at the
+   revision your Connection Hub runs:
+
+   ```bash
+   CH() { uvx --from "git+https://github.com/elenaviter/app-ecosystem@<commit>#subdirectory=products/connection-hub/packages/connection-hub-cli" connection-hub "$@"; }
+   CH --version
+   ```
+
+   Every command below works the same with `connection-hub` or `CH`.
+
+2. **Select the deployment by its public address.** Use the address the
+   deployment's OAuth issuer is configured for. A local workdir or `localhost`
+   URL is refused at authorization with `oauth_issuer_mismatch` when the
+   deployment publishes a public issuer.
+
+   ```bash
+   connection-hub setup --endpoint https://<public address>
+   ```
+
+3. **Authorize.** Your browser opens the deployment's login; sign in and
+   approve.
+
+   ```bash
+   connection-hub host authorize
+   ```
+
+   This gives the CLI a Card for the deployment resource only. Secrets are
+   added to that Card one key, namespace or scope at a time, when you first use
+   them.
+
+4. **Set the secret.** Pass the value on standard input so it never appears on
+   the command line or in your history:
+
+   ```bash
+   openssl rand -base64 48 | tr -d '\n' | connection-hub secrets host set <key> \
+     --scope bundle --bundle-id <application id> --value-stdin
+   ```
+
+   The first request for a key the Card does not hold yet answers with a
+   consent. The CLI opens Connection Hub's grant page for that exact secret and
+   operation, and asks you, on your terminal, to press Enter once you have
+   approved it. Choose `Once` for this request only, or `Always` for later
+   requests too. The CLI then retries the identical request and prints a
+   receipt with no value. With `--no-open --no-wait`, it prints the consent
+   instead (`recovery.authorization_url`); open it, approve, and rerun the same
+   command with the same `--invocation-id`.
+
+   Agents and automation always pass `--no-open --no-wait`: in a
+   pseudo-terminal with no person at it, the CLI would otherwise wait at its
+   prompt. They relay `recovery.authorization_url` to the person and rerun
+   with the same `--invocation-id`.
+
+5. **Check it.** Metadata is a separate operation, so it asks once more in the
+   same way:
+
+   ```bash
+   connection-hub secrets host metadata <key> --scope bundle --bundle-id <application id>
+   ```
+
+   It reports that the secret exists and which provider holds it, never the
+   value.
+
+Secret operations use the Card's `Once`/`Always` policy on exact or broad
+secret resources; an administrator can also grant a key, namespace or scope in
+advance from the Card editor (Connection Hub, Delegated by KDCube, the
+Connection Hub CLI Card). The Card is the live authority, so any grant applies
+to the next request without authorizing again.
 
 Descriptor export is an administrator-performed path with independent authority:
 
