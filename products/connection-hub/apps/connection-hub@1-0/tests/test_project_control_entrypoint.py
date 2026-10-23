@@ -174,9 +174,17 @@ def test_linked_control_card_explains_composed_authority() -> None:
     assert "Operations governed by this link are closed." in source
     # W424: the linked Card is read through whoever holds it, and opened only
     # when it is the Card the binding names.
+    # The decision is accessCardFocus.linkedControlOpenOutcome (#871): it opens only a verified
+    # read of that Card and otherwise puts the open Card back.
     assert "dispatch(loadControlCard(target)).unwrap()" in source
-    assert "if (!result.access || !isLinkedControlCard(result.access, target)) {" in source
-    assert "switchEdit(result.access);" in source
+    assert "const outcome = linkedControlOpenOutcome(item.access_id, target, answer);" in source
+    assert "if (outcome.restore) dispatch(restoreFocusedCard(before));" in source
+    assert "if (outcome.open) switchEdit(outcome.open);" in source
+    focus = (
+        Path(__file__).resolve().parents[1]
+        / "ui/widgets/connections/src/features/delegatedAccess/accessCardFocus.ts"
+    ).read_text(encoding="utf-8")
+    assert "if (!answer.access || !isLinkedControlCard(answer.access, target)) {" in focus
     assert "<a href={binding.manage_url}" not in source
     assert "Open {label}" in source
     assert "The linked card applies at every guarded operation." in source
