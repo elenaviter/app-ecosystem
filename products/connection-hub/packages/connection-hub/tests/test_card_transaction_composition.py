@@ -24,6 +24,7 @@ from test_card_transaction_store import _setup, _visible
 # Admission must survive scheduling/DB work under the full parallel suite.
 # Recovery still waits for the real PostgreSQL deadline; this is no expiry-policy override.
 EXPIRY_TEST_ADMISSION_SECONDS = 30
+_DATABASE_EPOCH_SQL = "SELECT floor(extract(epoch from clock_timestamp()))::bigint"
 
 
 @pytest.mark.parametrize(("connections", "enabled"), [
@@ -144,7 +145,7 @@ def _hub_draft(before, after, *, request_id, expires_at):
 
 async def _database_epoch(decisions):
     async with decisions.pool.acquire() as connection:
-        return await connection.fetchval("SELECT floor(extract(epoch from clock_timestamp()))::bigint")
+        return await connection.fetchval(_DATABASE_EPOCH_SQL)
 
 
 async def _begin(decisions, before, after, *, request_id, expires_in=300):
@@ -155,17 +156,28 @@ async def _begin(decisions, before, after, *, request_id, expires_in=300):
 
 
 async def _wait_until_expired(decisions, transaction_ids):
-    deadlines = [(await decisions.read(txid)).intent.expires_at for txid in transaction_ids]
-    deadline = max(deadlines)
-    async with decisions.pool.acquire() as connection:
-        # Separate the admission budget from the recovery boundary. Do not
-        # fake Python time or rewrite persisted intent bytes/deadline columns.
-        await connection.execute(
-            "SELECT pg_sleep(GREATEST(0, $1::bigint - extract(epoch from clock_timestamp()))"
-            "::double precision + 0.01)", deadline,
-            timeout=EXPIRY_TEST_ADMISSION_SECONDS + 10,
-        )
-    assert await _database_epoch(decisions) >= deadline
+    import asyncio
+
+    assert transaction_ids, "the expiry barrier must name existing transactions"
+
+    async def wait_for_database_deadline():
+        records = [await decisions.read(txid) for txid in transaction_ids]
+        assert all(record is not None for record in records), "an admitted transaction is missing"
+        deadline = max(record.intent.expires_at for record in records)
+        async with decisions.pool.acquire() as connection:
+            # Separate admission from recovery without faking time or
+            # rewriting sealed intents. Observe time on this same connection.
+            await connection.execute(
+                "SELECT pg_sleep(GREATEST(0, $1::bigint - extract(epoch from clock_timestamp()))"
+                "::double precision + 0.01)", deadline,
+            )
+            now = await connection.fetchval(_DATABASE_EPOCH_SQL)
+        records = [await decisions.read(txid) for txid in transaction_ids]
+        assert all(record is not None and record.intent.expires_at <= now for record in records)
+
+    # Bound pool acquisition, all reads, the wait and the final predicate check
+    # together. wait_for uses a monotonic timeout, not either wall clock.
+    await asyncio.wait_for(wait_for_database_deadline(), timeout=EXPIRY_TEST_ADMISSION_SECONDS + 10)
 
 
 async def _staged(composition, decisions, persistence, store, before, after, *, request_id, expires_in=300):
