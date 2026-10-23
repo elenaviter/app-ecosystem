@@ -84,7 +84,7 @@ async def test_a_composed_service_commits_an_edit_through_the_real_postgres_deci
 
 
 @pytest.mark.asyncio
-async def test_concurrent_first_creation_of_the_decision_store_succeeds(tmp_path):
+async def test_concurrent_first_creation_of_the_decision_store_succeeds(tmp_path, monkeypatch):
     # EMain #599 N1: concurrent CREATE ... IF NOT EXISTS can fail; creation is serialized.
     dsn = os.environ.get("CONNECTION_HUB_TEST_POSTGRES_DSN")
     if not dsn:
@@ -95,6 +95,8 @@ async def test_concurrent_first_creation_of_the_decision_store_succeeds(tmp_path
 
     from connection_hub.delegated_credentials.cards import composition
 
+    # A fresh-schema probe must not DROP a parallel recovery test's rows.
+    monkeypatch.setattr(composition, "DECISION_SCHEMA", "hub_creation_" + uuid.uuid4().hex)
     pools = [await asyncpg.create_pool(dsn, min_size=1, max_size=2) for _ in range(4)]
     try:
         async with pools[0].acquire() as connection:
@@ -103,6 +105,8 @@ async def test_concurrent_first_creation_of_the_decision_store_succeeds(tmp_path
                                         for i, pool in enumerate(pools)))
         assert len(stores) == 4
     finally:
+        async with pools[0].acquire() as connection:
+            await connection.execute(f"DROP SCHEMA IF EXISTS {composition.DECISION_SCHEMA} CASCADE")
         for pool in pools:
             await pool.close()
 
@@ -252,7 +256,7 @@ async def test_a_failing_participant_is_reported_and_retried_not_hidden(tmp_path
 
 
 @pytest.mark.asyncio
-async def test_first_creation_works_with_a_pool_of_one_connection():
+async def test_first_creation_works_with_a_pool_of_one_connection(monkeypatch):
     # EMain #599 edge: ensure_schema must not wait for a second connection while the lock is held.
     dsn = os.environ.get("CONNECTION_HUB_TEST_POSTGRES_DSN")
     if not dsn:
@@ -263,6 +267,7 @@ async def test_first_creation_works_with_a_pool_of_one_connection():
 
     from connection_hub.delegated_credentials.cards import composition
 
+    monkeypatch.setattr(composition, "DECISION_SCHEMA", "hub_creation_" + uuid.uuid4().hex)
     pool = await asyncpg.create_pool(dsn, min_size=1, max_size=1)
     try:
         async with pool.acquire() as connection:
@@ -270,6 +275,8 @@ async def test_first_creation_works_with_a_pool_of_one_connection():
         store = await asyncio.wait_for(composition.postgres_decision_store(pool, tenant="t", project="one"), 10)
         assert await store.list_in_doubt(limit=1) == []
     finally:
+        async with pool.acquire() as connection:
+            await connection.execute(f"DROP SCHEMA IF EXISTS {composition.DECISION_SCHEMA} CASCADE")
         await pool.close()
 
 
