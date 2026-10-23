@@ -270,6 +270,24 @@ class OutboxStore:
 
     # -- lookups -------------------------------------------------------------
 
+    def find_in_flight(self, outbox_id: str) -> tuple[Path, str] | None:
+        """``(path, folder)`` of one row in ``pending``/``leased`` of any agent, else None.
+
+        Never the settled history: a leased row can only be in flight, and
+        walking every agent's dated history under the outbox lock is what made
+        a lost lease cost seconds on a large host (W943).
+        """
+
+        for folder in OUTBOX_IN_FLIGHT_FOLDERS:
+            for _ref, root in self.agent_roots():
+                path = root / folder / f"{outbox_id}.json"
+                if path.is_file():
+                    return path, folder
+            path = self.legacy_root / folder / f"{outbox_id}.json"
+            if path.is_file():
+                return path, folder
+        return None
+
     def find(self, outbox_id: str, *, worker_name: str = "", project_ref: str = "") -> tuple[Path, str] | None:
         """``(path, folder)`` of one row by id, never listing the history.
 
