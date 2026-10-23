@@ -82,4 +82,6 @@ project's Controls. The project's A2A switch decides them: the property
 `a2a_family` on the project Control, with the deployment family
 `user_external_a2a` in `project_resource_families`. It works exactly like the
 External MCP switch, and the two are independent. When the switch is absent it
-is off. Writing the switch from the project's Card is a later change.
+is off. Only the project's own Control edit writes it: the signed edit carries
+`a2a_family`, exactly like `external_mcp_family`, and a direct Control write
+that carries it is refused (`a2a_family_requires_project_transaction`).

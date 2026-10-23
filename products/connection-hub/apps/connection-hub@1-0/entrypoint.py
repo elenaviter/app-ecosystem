@@ -492,6 +492,12 @@ def _control_card_changes(payload: Mapping[str, Any]) -> Dict[str, Any]:
             if "external_mcp_family" in payload
             else None
         ),
+        # W937: the project's A2A switch, the same rule.
+        "a2a_family": (
+            str(payload.get("a2a_family") or "").strip()
+            if "a2a_family" in payload
+            else None
+        ),
     }
 
 
