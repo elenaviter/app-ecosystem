@@ -89,9 +89,14 @@ lists them under `machine.prerequisites`. On a machine not configured yet, a
 missing one is named in `next.before` (`step: prepare_machine`): handle it
 before `next.step`. Each item says why it
 is needed, what still works without it, and the exact fix line. On headless
-Linux they are Python with `venv`, `git`, `tmux`, linger
-(`loginctl enable-linger`), the systemd user manager and a usable keyring; on
-macOS, Python, `git`, `tmux` and the login keychain.
+Linux they are Python with `venv`, a `hashlib` that builds BLAKE2, `git`,
+`tmux`, linger (`loginctl enable-linger`), the systemd user manager and a
+usable keyring; on macOS, Python, a `hashlib` that builds BLAKE2, `git`, `tmux`
+and the login keychain. A Python whose `_blake2` module cannot load (for
+example a pyenv Python linked to a Homebrew `libb2` that is not installed)
+makes every `pb` command print `blake2b` and `blake2s` tracebacks first; the
+`hashlib` item names its fix, and `pb source use-release` refuses to activate a
+release on such a Python (W933).
 
 When an item has `needs_admin: true`, say so plainly: the fix needs an
 administrator, **any administrator account on this machine can run it** (for

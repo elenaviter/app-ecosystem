@@ -27,7 +27,23 @@ def verify_runtime_imports() -> None:
         import_module(module)
 
 
+def verify_hashlib() -> None:
+    """The candidate's Python builds hashlib's BLAKE2 hashes (W933).
+
+    A Python whose ``_blake2`` cannot load still imports hashlib, logging a
+    traceback, so the import smoke alone passes and every pb command of the
+    activated release prints two tracebacks. ``pb status`` names the fix.
+    """
+
+    from project_board.client.prerequisites import hashlib_state  # noqa: PLC0415
+
+    usable, detail = hashlib_state()
+    if not usable:
+        raise ImportError(f"hashlib BLAKE2 is unavailable; run `pb status` for the fix: {detail}")
+
+
 verify_runtime_imports()
+verify_hashlib()
 
 
-__all__ = ["RUNTIME_IMPORTS", "verify_runtime_imports"]
+__all__ = ["RUNTIME_IMPORTS", "verify_hashlib", "verify_runtime_imports"]

@@ -42,6 +42,7 @@ def _linux(*, tools=("python3", "git", "tmux"), linger="yes", systemd=True, keyr
         user=lambda: "elena",
         os_release=lambda: MINT,
         keyring_state=lambda: keyring,
+        hashlib_state=lambda: (True, "blake2b and blake2s load"),
     )
 
 
@@ -52,7 +53,7 @@ def _by_name(result):
 def test_a_ready_linux_host_has_nothing_missing():
     result = check_prerequisites(_linux())
     assert result["os"] == "linux" and result["ok"] is True and result["missing"] == []
-    assert set(_by_name(result)) == {"python", "git", "tmux", "gh", "linger", "systemd user manager", "keyring"}
+    assert set(_by_name(result)) == {"python", "hashlib", "git", "tmux", "gh", "linger", "systemd user manager", "keyring"}
     # W304 finding 23: gh is recommended, never blocking: without it the coordinator opens the pull requests.
     assert result["recommended"] == ["gh"]
     assert "coordinator opens their pull requests" in _by_name(result)["gh"]["without_it"]
@@ -80,6 +81,7 @@ def test_a_fedora_host_gets_dnf_lines_and_a_mac_its_own_set():
         system=lambda: "Darwin", which=lambda name: None if name == "tmux" else f"/usr/bin/{name}",
         run=lambda command: _done("3.11\n"), user=lambda: "elena", os_release=lambda: "",
         keyring_state=lambda: (True, "keyring.backends.macOS.Keyring"),
+        hashlib_state=lambda: (True, "blake2b and blake2s load"),
     )
     result = check_prerequisites(mac)
     # W304 finding 24: at a Mac a terminal tab is enough, so tmux is recommended, not missing.
