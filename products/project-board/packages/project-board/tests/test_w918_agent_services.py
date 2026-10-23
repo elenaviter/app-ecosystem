@@ -43,11 +43,25 @@ TOOLS = [
 ]
 
 
+def _hosted_success(structured, *, invocation_id="inv-1", replay=False, content=()):
+    """What the hosted surface returns for a call: structuredContent = GatewayCallResult.to_public_dict()."""
+
+    from connection_hub.delegated_gateway.models import GatewayCallResult, ProviderCallResult
+
+    value = GatewayCallResult(
+        result=ProviderCallResult(structured_content=structured, content=tuple(content)),
+        access_id="card-1", card_revision=3,
+        resource_id="urn:connection-hub:remote-mcp:mcp_aaaaaaaaaaaaaaaaaaaaaaaa", resource_kind="remote_mcp",
+        operation="search", tool_name=SEARCH, invocation_id=invocation_id, provider_id="external_remote_mcp",
+        descriptor_revision="r1", descriptor_digest="d" * 64, replay=replay,
+    ).to_public_dict()
+    return {"content": list(content) or [{"type": "text", "text": "ok"}], "structuredContent": value, "isError": False}
+
+
 class _Remote:
     def __init__(self, result=None):
         self.calls = []
-        self.result = result or {"content": [{"type": "text", "text": "ok"}], "structuredContent": {"hits": 1},
-                                  "_meta": {"connection_hub": {"invocation_id": "inv-1", "replay": False}}}
+        self.result = result or _hosted_success({"hits": 1})
 
     async def list_tools(self, *, params=None):
         return {"tools": TOOLS}
@@ -101,12 +115,24 @@ async def test_a_call_carries_its_invocation_id_and_returns_a_bounded_result():
     assert remote.calls[0]["arguments"] == {"query": "x"}
     assert remote.calls[0]["meta"] == {INVOCATION_META_KEY: "inv-1"}
     assert result["result"] == {"hits": 1} and result["truncated"] is False
-    assert result["invocation_id"] == "inv-1"
+    assert result["invocation_id"] == "inv-1" and result["replay"] is False
+
+
+@pytest.mark.asyncio
+async def test_a_replayed_call_says_so_and_text_only_results_are_read():
+    replayed = _hosted_success(None, invocation_id="inv-9", replay=True,
+                               content=[{"type": "text", "text": "line one"}, {"type": "text", "text": "line two"}])
+    result = await run_agent_services(
+        CALL_ACTION, {"name": SEARCH, "arguments": {"query": "x"}, "invocation_id": "inv-9"},
+        open_tools=_opener(_Remote(replayed)),
+    )
+    assert result["replay"] is True and result["invocation_id"] == "inv-9"
+    assert result["result"] == "line one\nline two"
 
 
 @pytest.mark.asyncio
 async def test_an_oversized_result_is_truncated_to_the_bound():
-    big = {"structuredContent": {"text": "x" * (MAX_RESULT_BYTES * 2)}, "content": []}
+    big = _hosted_success({"text": "x" * (MAX_RESULT_BYTES * 2)})
     result = await run_agent_services(
         CALL_ACTION, {"name": SEARCH, "arguments": {"query": "x"}, "invocation_id": "inv-2"},
         open_tools=_opener(_Remote(big)),

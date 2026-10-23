@@ -118,20 +118,28 @@ def _offered(tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 
 def _bounded_result(result: Mapping[str, Any]) -> dict[str, Any]:
-    """The call's result as the agent may read it, at most MAX_RESULT_BYTES."""
+    """The call's result as the agent may read it, at most MAX_RESULT_BYTES.
 
-    structured = result.get("structuredContent")
+    The hosted gateway wraps a provider's result: structuredContent is
+    {structured_content, content, is_error, _meta: {connection_hub: route}}
+    (GatewayCallResult.to_public_dict). The agent reads the provider's own
+    structured content, or else its text blocks.
+    """
+
+    wrapper = result.get("structuredContent") if isinstance(result.get("structuredContent"), Mapping) else {}
+    inner = wrapper.get("structured_content")
+    blocks = wrapper.get("content") if isinstance(wrapper.get("content"), list) else result.get("content") or ()
     texts = [
         str(item.get("text") or "")
-        for item in result.get("content") or ()
+        for item in blocks
         if isinstance(item, Mapping) and item.get("type") == "text"
     ]
-    body = structured if structured is not None else "\n".join(texts)
+    body = inner if inner is not None else "\n".join(texts)
     encoded = json.dumps(body, ensure_ascii=False, sort_keys=True)
     truncated = len(encoded.encode("utf-8")) > MAX_RESULT_BYTES
     if truncated:
         body = encoded.encode("utf-8")[:MAX_RESULT_BYTES].decode("utf-8", errors="ignore")
-    route = _route(result)
+    route = _route(wrapper)
     return {
         "result": body,
         "truncated": truncated,
