@@ -24,6 +24,7 @@ from app_foundation.a2a.server import (  # noqa: E402
     A2ACaller,
     A2AServer,
     A2ATargetError,
+    NoLimit,
     OutboundPart,
     PartLimits,
     PublishedAgent,
@@ -138,6 +139,7 @@ def _client(app):
 
 
 def _server(target=None, **kwargs):
+    kwargs.setdefault("limiter", NoLimit())
     return A2AServer(agent=AGENT, target=target or Target(), **kwargs)
 
 
@@ -358,6 +360,21 @@ async def test_a_target_failure_leaks_no_text() -> None:
     assert "secret" not in response.text and "abc123" not in response.text
 
 
+@pytest.mark.parametrize("planted", ["InvalidParamsError", "TaskNotFoundError", "UnsupportedOperationError"])
+async def test_an_sdk_error_raised_by_the_target_leaves_no_text(planted) -> None:
+    from a2a.utils import errors
+
+    target = Target()
+    target.raise_on_submit = getattr(errors, planted)(
+        message="secret internal path /srv/board", data={"token": "abc123"}
+    )
+    app, _ = _app(_server(target))
+    async with _client(app) as client:
+        response = await client.post(f"{PREFIX}/agent-x", json=_rpc("SendMessage", _message()), headers=V1)
+    assert response.json()["error"]["code"] == -32603
+    assert "secret" not in response.text and "abc123" not in response.text
+
+
 # --- rate limits ------------------------------------------------------------------------------
 
 
@@ -377,6 +394,14 @@ async def test_rate_limits_refuse_before_the_target_on_both_bindings() -> None:
     assert read.json()["error"]["code"] == -32001  # reads are not counted
     assert target.messages == []
     assert limiter.calls[0] == ((("client:oauth-a", 5), ("agent:agent-x", 50)), 3600)
+
+
+async def test_a_server_cannot_be_built_without_a_limiter() -> None:
+    with pytest.raises(TypeError):
+        A2AServer(agent=AGENT, target=Target())  # type: ignore[call-arg]
+    with pytest.raises(TypeError, match="a2a_limiter_required"):
+        A2AServer(agent=AGENT, target=Target(), limiter=None)  # type: ignore[arg-type]
+    assert await NoLimit().admit((("client:x", 1),), window_seconds=3600) == 0
 
 
 async def test_an_unreadable_budget_refuses() -> None:

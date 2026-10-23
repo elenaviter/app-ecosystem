@@ -132,6 +132,13 @@ class A2ALimiter(Protocol):
         """
 
 
+class NoLimit:
+    """Admits every request. A host that wants no limit passes it explicitly."""
+
+    async def admit(self, counters: Sequence[tuple[str, int]], *, window_seconds: int) -> int:
+        return 0
+
+
 @dataclass(frozen=True, slots=True)
 class InboundPart:
     kind: str  # "text" | "data" | "file"
@@ -305,12 +312,15 @@ class A2AServer:
         *,
         agent: PublishedAgent,
         target: A2ATarget,
-        limiter: A2ALimiter | None = None,
+        limiter: A2ALimiter,
         rate_limits: RateLimits = RateLimits(),
         part_limits: PartLimits = PartLimits(),
     ) -> None:
         self._agent = agent
         self._target = target
+        if limiter is None or not callable(getattr(limiter, "admit", None)):
+            # No limit by omission is not possible: pass NoLimit() to admit everything.
+            raise TypeError("a2a_limiter_required")
         self._limiter = limiter
         self._rate_limits = rate_limits
         self._part_limits = part_limits
@@ -387,8 +397,6 @@ class A2AServer:
         return bool(entry_origin) and entry_origin == base_origin and entry_path == base_path
 
     async def _admit(self, caller: A2ACaller) -> int:
-        if self._limiter is None:
-            return 0
         counters = (
             (f"client:{caller.card_access_id}", int(self._rate_limits.per_client_per_hour)),
             (f"agent:{self._agent.slug}", int(self._rate_limits.per_agent_per_hour)),
@@ -513,10 +521,9 @@ class _TargetRequestHandler(RequestHandler):
         self._server = server
 
     async def _call(self, method, *args, **kwargs):
+        """Call the target. Whatever it raises, SDK errors included, leaves only as a fixed code."""
         try:
             return await method(*args, **kwargs)
-        except (TaskNotFoundError, TaskNotCancelableError, InvalidParamsError, UnsupportedOperationError):
-            raise
         except Exception as exc:  # noqa: BLE001 - only fixed codes leave
             raise _target_error(exc) from None
 
@@ -552,9 +559,8 @@ class _TargetRequestHandler(RequestHandler):
             page_token=params.page_token,
         )
         tasks = [task_proto(view) for view in page.tasks[:size]]
-        return pb.ListTasksResponse(
-            tasks=tasks, next_page_token=page.next_page_token, page_size=len(tasks), total_size=len(tasks)
-        )
+        # No total_size: a target pages its tasks and need not count them all.
+        return pb.ListTasksResponse(tasks=tasks, next_page_token=page.next_page_token, page_size=len(tasks))
 
     async def on_message_send_stream(
         self, params: pb.SendMessageRequest, context: ServerCallContext
@@ -626,6 +632,7 @@ __all__ = [
     "CARD_TAILS",
     "InboundMessage",
     "InboundPart",
+    "NoLimit",
     "OutboundPart",
     "PartLimits",
     "PublishedAgent",
