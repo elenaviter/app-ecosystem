@@ -21,6 +21,11 @@ from test_card_coordinated_writes import _Persistence
 from test_card_transaction_store import _setup, _visible
 
 
+# Admission must survive scheduling/DB work under the full parallel suite.
+# Recovery still waits for the real PostgreSQL deadline; this is no expiry-policy override.
+EXPIRY_TEST_ADMISSION_SECONDS = 30
+
+
 @pytest.mark.parametrize(("connections", "enabled"), [
     (None, False), ({}, False), ({"card_transactions": {}}, False),
     ({"card_transactions": {"enabled": "true"}}, False), ({"card_transactions": {"enabled": 1}}, False),
@@ -125,18 +130,42 @@ async def _recovery_setup(tmp_path):
     return composition, decisions, persistence, store, before, after, drop
 
 
-def _hub_draft(before, after, *, request_id, expires_in):
-    import time
-
+def _hub_draft(before, after, *, request_id, expires_at):
     from service_foundation.coordination.durable_decision_log import IntentDraft
 
     from connection_hub.delegated_credentials.cards.card_participant import hub_participant_input
     from test_card_service import SUBJECT_HASH
     return IntentDraft(replay_scope="recovery-test", request_id=request_id,
-                       expires_at=int(time.time()) + expires_in, participants=(PARTICIPANT,),
+                       expires_at=expires_at, participants=(PARTICIPANT,),
                        payload={"participant_inputs": {PARTICIPANT: hub_participant_input(
                            original=before, candidate=after, subject_hash=SUBJECT_HASH, action="update",
                            actor_subject="person", actor_kind="caller")}})
+
+
+async def _database_epoch(decisions):
+    async with decisions.pool.acquire() as connection:
+        return await connection.fetchval("SELECT floor(extract(epoch from clock_timestamp()))::bigint")
+
+
+async def _begin(decisions, before, after, *, request_id, expires_in=300):
+    # begin/abort_expired use PostgreSQL's clock, so construct the deadline
+    # there too. A one-second draft can expire before begin's INSERT runs.
+    deadline = await _database_epoch(decisions) + expires_in
+    return await decisions.begin(_hub_draft(before, after, request_id=request_id, expires_at=deadline))
+
+
+async def _wait_until_expired(decisions, transaction_ids):
+    deadlines = [(await decisions.read(txid)).intent.expires_at for txid in transaction_ids]
+    deadline = max(deadlines)
+    async with decisions.pool.acquire() as connection:
+        # Separate the admission budget from the recovery boundary. Do not
+        # fake Python time or rewrite persisted intent bytes/deadline columns.
+        await connection.execute(
+            "SELECT pg_sleep(GREATEST(0, $1::bigint - extract(epoch from clock_timestamp()))"
+            "::double precision + 0.01)", deadline,
+            timeout=EXPIRY_TEST_ADMISSION_SECONDS + 10,
+        )
+    assert await _database_epoch(decisions) >= deadline
 
 
 async def _staged(composition, decisions, persistence, store, before, after, *, request_id, expires_in=300):
@@ -144,7 +173,7 @@ async def _staged(composition, decisions, persistence, store, before, after, *, 
     from test_card_service import SUBJECT_HASH
     coordinator, intents = composition.card_transaction_coordinator(
         persistence=persistence, decisions=decisions, grant_store=None, policies=None)
-    row = await decisions.begin(_hub_draft(before, after, request_id=request_id, expires_in=expires_in))
+    row = await _begin(decisions, before, after, request_id=request_id, expires_in=expires_in)
     await intents.record(CardIntent(transaction_id=row.transaction_id, intent_digest=row.intent.digest,
                                     subject_hash=SUBJECT_HASH, original=before, candidate=after,
                                     action="update", actor_subject="person", actor_kind="caller"))
@@ -173,14 +202,13 @@ async def test_recovery_finishes_a_commit_a_crash_left_unfinished(tmp_path):
 
 @pytest.mark.asyncio
 async def test_recovery_presumes_abort_for_an_expired_undecided_transaction(tmp_path):
-    import asyncio
-
     composition, decisions, persistence, store, before, after, drop = await _recovery_setup(tmp_path)
     try:
         coordinator, txid = await _staged(composition, decisions, persistence, store, before, after,
-                                          request_id="crash-after-prepare", expires_in=2)
+                                          request_id="crash-after-prepare",
+                                          expires_in=EXPIRY_TEST_ADMISSION_SECONDS)
         assert (await composition.recover_card_transactions(coordinator))["pending"] == 1  # not expired: kept
-        await asyncio.sleep(3)
+        await _wait_until_expired(decisions, [txid])
         report = await composition.recover_card_transactions(coordinator)
         assert report == {"ok": True, "finished": 1, "pending": 0, "failed": 0, "pages": 1, "next_after": ""}
         assert (await decisions.read(txid)).state == "aborted"
@@ -236,13 +264,11 @@ async def test_first_creation_works_with_a_pool_of_one_connection():
 @pytest.mark.asyncio
 async def test_a_backlog_larger_than_one_pass_drains_over_passes_each_row_once(tmp_path):
     # EMain 18:42: limit 2, 2 pages per pass, 5 expired rows: two passes abort every row once.
-    import asyncio
-
     composition, decisions, persistence, store, before, after, drop = await _recovery_setup(tmp_path)
     try:
-        ids = sorted([(await decisions.begin(_hub_draft(before, after, request_id=f"backlog-{index}",
-                                                         expires_in=1))).transaction_id for index in range(5)])
-        await asyncio.sleep(2)
+        ids = sorted([(await _begin(decisions, before, after, request_id=f"backlog-{index}",
+                                    expires_in=EXPIRY_TEST_ADMISSION_SECONDS)).transaction_id for index in range(5)])
+        await _wait_until_expired(decisions, ids)
         coordinator, _ = composition.card_transaction_coordinator(persistence=persistence, decisions=decisions,
                                                                   grant_store=None, policies=None)
         first = await composition.recover_card_transactions(coordinator, limit=2, max_pages=2)
@@ -262,7 +288,6 @@ async def test_a_backlog_larger_than_one_pass_drains_over_passes_each_row_once(t
 
 @pytest.mark.asyncio
 async def test_a_failing_row_never_blocks_the_rows_after_it(tmp_path, caplog):
-    import asyncio
     import logging
 
     composition, decisions, persistence, store, before, after, drop = await _recovery_setup(tmp_path)
@@ -270,9 +295,9 @@ async def test_a_failing_row_never_blocks_the_rows_after_it(tmp_path, caplog):
         coordinator, txid = await _staged(composition, decisions, persistence, store, before, after,
                                           request_id="always-fails")
         await coordinator.decide(txid, "committed", witness_digest="c" * 64)
-        others = [(await decisions.begin(_hub_draft(before, after, request_id=f"other-{index}",
-                                                     expires_in=1))).transaction_id for index in range(3)]
-        await asyncio.sleep(2)  # expired: recovery presumes ABORT for each, whatever its order around txid
+        others = [(await _begin(decisions, before, after, request_id=f"other-{index}",
+                                expires_in=EXPIRY_TEST_ADMISSION_SECONDS)).transaction_id for index in range(3)]
+        await _wait_until_expired(decisions, others)  # recovery presumes ABORT, whatever their order around txid
         hub = coordinator.participants[PARTICIPANT]
         real_finish = hub.finish
 
