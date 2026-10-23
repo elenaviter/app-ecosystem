@@ -6589,6 +6589,25 @@ class AutomationAccessService:
                     "resources": outside_entry,
                     "entry_resource": entry_resource,
                 }
+        # W937: an entry-bound row is held only by the connector Card its OAuth grant created
+        # (record_oauth_grant with a concrete entry). A Card editor never adds one, and no other
+        # Card kind keeps one.
+        entry_bound_added = sorted(
+            _clean(resource)
+            for resource in resource_grants
+            if _clean(resource)
+            and bool(getattr(self._configured_resource(resource, config=catalog_config), "entry_bound", False))
+            and (
+                existing.card_kind != CARD_KIND_CONNECTOR
+                or _clean(resource) not in {_clean(held) for held in existing.resource_grants}
+            )
+        )
+        if entry_bound_added:
+            return {
+                "ok": False,
+                "error": "card_entry_bound_row_not_selectable",
+                "resources": entry_bound_added,
+            }
         conflict = await self._save_precondition_conflict(
             existing=existing,
             active=active,

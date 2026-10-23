@@ -99,6 +99,8 @@ def _boundary(*, grants: tuple[str, ...] = ("records:read",), operations=None):
             envelope=_envelope(grants=grants),
             grant_record=record,
             request_resource=RESOURCE,
+            catalog=_catalog(),
+            public_base="https://host.example",
         ),
         record,
     )
@@ -371,6 +373,8 @@ def test_equal_tool_names_are_authorized_only_on_the_selected_resource() -> None
         envelope=envelope,
         grant_record=record,
         request_resource=RESOURCE,
+        catalog=_catalog(),
+        public_base="https://host.example",
     )
     second = authorize_credential_boundary(
         authority_id="delegated_client",
@@ -381,6 +385,8 @@ def test_equal_tool_names_are_authorized_only_on_the_selected_resource() -> None
         envelope=envelope,
         grant_record=record,
         request_resource=OTHER_RESOURCE,
+        catalog=_catalog(),
+        public_base="https://host.example",
     )
 
     assert first.allowed and first.granted_operations == frozenset({"search"})
@@ -421,6 +427,8 @@ def test_wildcard_role_row_does_not_steal_the_resource_match() -> None:
         envelope=envelope,
         grant_record={"operations": []},
         request_resource=door,
+        catalog=_catalog(),
+        public_base="https://host.example",
     )
     assert decision.allowed
     assert decision.matched_resource == pattern
@@ -447,5 +455,7 @@ def test_wildcard_role_row_does_not_steal_the_resource_match() -> None:
         envelope=exact_envelope,
         grant_record={"operations": []},
         request_resource=door,
+        catalog=_catalog(),
+        public_base="https://host.example",
     )
     assert exact.allowed and exact.matched_resource == door

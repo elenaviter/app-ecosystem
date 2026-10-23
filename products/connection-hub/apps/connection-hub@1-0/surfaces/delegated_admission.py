@@ -159,6 +159,7 @@ def _guard_denial_facts(response: Any) -> tuple[str, str, dict[str, Any]]:
 _RESOURCE_BOUNDARY_REFUSALS = frozenset({
     "delegated credential resource mismatch",
     "delegated credential resource is missing",
+    "delegated credential is bound to another entry",  # resource_outside_entry (W937)
 })
 
 
