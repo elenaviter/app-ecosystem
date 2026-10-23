@@ -7176,7 +7176,13 @@ def _worker_project_context(
     # W370, operator 2026-09-27: the project's files live in its repositories
     # and the card lists where. Once the board sends that list, it decides the
     # instructions, facts and environment refs, and the label/value facts retire.
-    files = field.read_project_files(parsed.object_id) if on_host else {"known": False}
+    files = (
+        field.read_project_files(
+            parsed.object_id, worker_name=str(getattr(channel, "worker_name", "") or "")
+        )
+        if on_host
+        else {"known": False}
+    )
     files_fields: dict[str, Any] = files_context(workspace, files) if files.get("known") else {}
     # W802: the workspace's AGENTS.md / CLAUDE.md come only from this project's files; none, no block.
     rules = _project_files_block(workspace, channel, parsed.object_id, files) if on_host else {}
