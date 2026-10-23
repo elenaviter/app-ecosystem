@@ -192,7 +192,18 @@ def test_the_relay_calls_the_per_view_reconciliation_with_its_interval(field, mo
     assert seen == {"project": PROJECT, "worker": A1, "interval": 120}
 
 
-@pytest.mark.parametrize("declared, expected", [(None, 300), (0, 300), (5, 30), (600, 600), (10**9, 86_400)])
+@pytest.mark.parametrize("declared, expected", [(None, 300), (0, 300), (5, 30), (600, 600), (10**9, 86_400), ("five", 300), ("600", 600)])
 def test_the_interval_is_configured_in_relay_json_and_bounded(declared, expected):
     relay_json = {} if declared is None else {"mailbox_reconcile_interval_seconds": declared}
     assert mailbox_reconcile_interval(relay_json) == expected
+
+
+def test_the_first_view_write_removes_the_project_wide_file(field):
+    field.sync_project_mail_recipients(PROJECT, _team())
+    legacy = field._project_dir(PROJECT) / "mail-recipients.json"
+    assert legacy.exists()
+
+    _beat(field, A1, _team())
+
+    assert not legacy.exists()
+    assert {row["worker_name"] for row in field.read_project_mail_recipients(PROJECT)["recipients"]} >= {A1, A2, B1}
