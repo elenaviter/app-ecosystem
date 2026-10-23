@@ -115,6 +115,7 @@ import {
 import {
   commonOperationGrants,
   doorGrantsForOperation,
+  pendingCatalogResource,
   pendingOuterApprovalReady,
   pendingServiceApprovalReady,
   pendingSelectionStatus,
@@ -3879,7 +3880,7 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
   // demote to small code hints.
   const pendingAgent = pendingGrant ? parseAgentClientId(pendingGrant.clientId) : null;
   const pendingResourceLabel = pendingGrant
-    ? (resources.find((r) => r.resource === pendingGrant.resource)?.label || '')
+    ? (pendingCatalogResource(pendingGrant.resource, resources)?.label || '')
     : '';
   const pendingAccountLabel = pendingGrant?.accountId
     ? (accountLabelById.get(pendingGrant.accountId) || pendingGrant.accountId)
