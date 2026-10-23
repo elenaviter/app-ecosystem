@@ -811,6 +811,11 @@ class GrantStore:
             "named_services": rec.get("named_services") or {},
             "client_metadata": dict(rec.get("client_metadata") or {}),
         }
+        if rec.get("resources"):
+            # An original-exchange family (W676) names its plan's Card selectors
+            # here; the refresh reads them, so rotation keeps them and the
+            # family never narrows after its first refresh (W929).
+            replacement["resources"] = [str(value) for value in rec.get("resources") or () if str(value or "").strip()]
         encoded_replacement = json.dumps(replacement)
 
         if self._authority_store is not None:
