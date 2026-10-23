@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "app-foundation"
 version = "2026.10.19.2200"
-description = "Host-neutral MCP client and native credential-value primitives for applications."
+description = "Host-neutral MCP and A2A clients, outbound network policy, and native credential-value primitives for applications."
 readme = "README.md"
 license = "MIT"
 authors = [{ name = "Elena Viter" }]
@@ -25,6 +25,9 @@ native-secrets = [
 ]
 data-bus = [
     "python-socketio[asyncio-client]>=5.13,<6",
+]
+a2a = [
+    "httpx2>=2.5,<3",
 ]
 test = [
     "httpx2>=2.5,<3",

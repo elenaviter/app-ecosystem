@@ -23,6 +23,10 @@ dependencies = [
     "jwcrypto>=1.5.6,<2",
     # The Hub's Card decisions use service_foundation.coordination (durable wire, decision kernel).
     "service-foundation>=2026.10.19.2200,<2027",
+    # remote_mcp.security is app_foundation.net's outbound endpoint policy. The
+    # floor rises to the release that first ships app_foundation.net, once it is
+    # on PyPI (docs/releases.md); the set is released together.
+    "app-foundation>=2026.10.19.2200,<2027",
 ]
 
 [project.optional-dependencies]
