@@ -6,10 +6,11 @@ repository on the project card in ``<workspace>/<alias>``, one state each:
 
 - ``reachable``: this machine reaches it, and it is cloned, or fetched and
   fast-forwarded, as project-workspace.md step 2 says;
-- ``needs_key``: a GitHub repository this machine does not reach yet. The
-  machine's deploy key for it is made (or reused) with its ``github-<alias>``
-  SSH block, exactly as add-a-worker-host step 7 makes them, and a grant is
-  printed for the person to add on GitHub;
+- ``needs_key``: a GitHub repository the project owner's GitHub key (the
+  account linked on the owner's Card) does not reach, with the key's answer.
+  The operator links or grants that account; nothing else is tried (W942:
+  "only github defined in operator card should be used", "this is prohibited
+  to use on-host github"). No deploy key, SSH route or host gh login is used;
 - ``unreachable``: not reachable and not on GitHub (a local path that is not
   on this machine reads "local to another machine"), or a key or SSH block
   that differs from what this command would make, with the reason;
@@ -17,15 +18,13 @@ repository on the project card in ``<workspace>/<alias>``, one state each:
   uncommitted work or a history that does not fast-forward. Nothing is forced.
 
 Each row also says whether this agent can open pull requests there
-(``pull_requests``, W304 finding 23): ``ready`` when gh is signed in with
-write access, ``missing`` with the reason, ``not_applicable`` for a local or
-non-GitHub repository. It never blocks the clone: deploy keys push branches,
-and without gh the coordinator opens the pull requests.
+(``pull_requests``, W304 finding 23): ``ready`` through ``pb worker gh`` when
+the owner's key serves the repository, ``missing`` with the reason,
+``not_applicable`` for a local or non-GitHub repository.
 
-A repository this machine already reaches, by any route, is not given a key.
-A key and block another agent of this Linux user made are reused; one that
-differs is named with its path and never overwritten. Revoking keys stays in
-add-a-worker-host step 7, which sees every project of the host.
+A GitHub clone is fetched and pushed over HTTPS with pb's credential helper
+only; an existing SSH origin moves to HTTPS once the key serves it, and no
+``deploykey`` remote is added (W942).
 
 Every call takes list arguments, no shell, a timeout, and never waits on a
 prompt. Clone and fetch move a whole repository, so they get their own limit
@@ -48,24 +47,20 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
-from .github_key import DEPLOY_KEY_REMOTE, clone_config
+from .github_key import clone_config
 from .workspace_report import comparable_url
 
 CONNECT_STATES = ("reachable", "needs_key", "unreachable", "left_unchanged")
 # The workspace report's reason for a needs_key repository: the panel shows it
-# under "not reachable yet" (agreed with the board panel, 2026-09-27).
-NEEDS_KEY_REASON = "needs this machine's deploy key"
+# under "not reachable yet" (agreed with the board panel, 2026-09-27; W942: the
+# owner's key, never a deploy key).
+NEEDS_KEY_REASON = "needs the project owner's GitHub key"
 # A repository whose URL is a path that is not on this machine (a local-only
 # project, whose repository lives on the operator's computer).
 LOCAL_ELSEWHERE_REASON = "local to another machine"
 PULL_REQUEST_FALLBACK = (
-    "Ask the operator to sign in gh as add-a-worker-host step 7 says; until then, push your branch "
-    "and ask the coordinator to open the pull request, with the branch, base and title."
-)
-WRITE_PERMISSIONS = frozenset({"WRITE", "MAINTAIN", "ADMIN"})
-GRANT_STEPS = (
-    "Open the page, choose Add deploy key, enter the title, paste the key, "
-    "tick Allow write access, and choose Add key."
+    "Ask the operator to link GitHub on the project owner's Card with access to the repository; "
+    "until the owner's key serves it, nothing is pushed or opened there from this machine."
 )
 
 Runner = Callable[[Sequence[str], "Path | None", float, "Mapping[str, str] | None"], "subprocess.CompletedProcess[str]"]
@@ -149,12 +144,6 @@ class Machine:
     def ssh_config(self) -> Path:
         return self.ssh_dir / "config"
 
-    def key(self, alias: str) -> Path:
-        return self.ssh_dir / f"deploy_{alias}"
-
-    def grant_title(self) -> str:
-        return f"{self.host_id} agents"
-
 
 class Connector:
     """One connect run: the machine, the workspace, and the runner every command goes through."""
@@ -177,8 +166,6 @@ class Connector:
         self.timeout = timeout
         self.transfer_timeout = max(float(transfer_timeout), float(timeout))
         self.run = run or _run
-        # gh auth status, asked once per run: "" when signed in, else why not.
-        self._gh_signed_in: str | None = None
         # W371: the owner's GitHub key. github_key(repo) returns a token or
         # raises GitHubKeyRefused; helper is this session's credential-helper
         # line. Asked once per repository per run; the token is never kept.
@@ -221,21 +208,6 @@ class Connector:
             project_ref=self.project_ref,
         ):
             self._git(step, folder)
-
-    def _set_deploy_remote(self, folder: Path, url: str) -> None:
-        """Keep this machine's deploy-key route as the `deploykey` remote (W371 fallback)."""
-
-        if not url or url.startswith("https://"):
-            return
-        found = self._git(["remote", "get-url", DEPLOY_KEY_REMOTE], folder)
-        verb = "set-url" if found.returncode == 0 else "add"
-        self._git(["remote", verb, DEPLOY_KEY_REMOTE, url], folder)
-
-    def _key_config_with_deploy_route(self, folder: Path, alias_url: str) -> None:
-        self._key_config(folder)
-        # A new HTTPS clone gains the deploy-key route only when this machine's key reaches it.
-        if alias_url and self._answers(alias_url, through_alias=True):
-            self._set_deploy_remote(folder, alias_url)
 
     def _key_flags(self) -> list[str]:
         return [
@@ -309,97 +281,20 @@ class Connector:
         except (OSError, subprocess.TimeoutExpired):
             return False
 
-    # -- the deploy key ----------------------------------------------------
-
-    def ensure_key(self, alias: str, repo: str) -> tuple[str, str]:
-        """Make or reuse this machine's deploy key and github-<alias> block: (public key, refusal)."""
-
-        key = self.machine.key(alias)
-        public = key.with_name(key.name + ".pub")
-        comment = f"{self.machine.host_id} deploy key: {alias} {repo}"
-        if public.is_file():
-            # The repository a key was made for is the last word of its comment, as step 7 reads it.
-            words = public.read_text(encoding="utf-8").split()
-            recorded = words[-1] if len(words) > 2 and "/" in words[-1] else ""
-            if recorded and recorded.lower() != repo.lower():
-                return "", (
-                    f"{public} was made for {recorded}, and the project lists {repo} under {alias}: "
-                    "add-a-worker-host step 7 retires it. Left unchanged."
-                )
-        self.machine.ssh_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
-        if not key.is_file():
-            made = self.run(
-                ["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-C", comment, "-f", str(key)], None, self.timeout, None
-            )
-            if made.returncode != 0 or not key.is_file():
-                return "", f"ssh-keygen could not make {key} (exit {made.returncode})."
-        if not public.is_file():
-            derived = self.run(["ssh-keygen", "-y", "-f", str(key)], None, self.timeout, None)
-            if derived.returncode != 0:
-                return "", f"ssh-keygen could not read {key} (exit {derived.returncode})."
-            public.write_text(" ".join(derived.stdout.split()[:2]) + f" {comment}\n", encoding="utf-8")
-        host, files = self._resolve(alias)
-        config = self.machine.ssh_config
-        if host == f"github-{alias}":
-            existed = config.is_file()
-            with config.open("a", encoding="utf-8") as handle:
-                handle.write(
-                    f"\n# problem-board deploy key\nHost github-{alias}\n  HostName github.com\n"
-                    f"  User git\n  IdentityFile {key}\n  IdentitiesOnly yes\n"
-                )
-            if not existed:
-                config.chmod(0o600)
-        elif host != "github.com" or self._canon(str(key)) not in {self._canon(file) for file in files}:
-            return "", f"github-{alias} in {config} resolves to {host} without {key}. Left unchanged."
-        return " ".join(public.read_text(encoding="utf-8").split()), ""
-
-    def grant(self, alias: str, repo: str, public_key: str) -> dict[str, str]:
-        return {
-            "alias": alias,
-            "repository": repo,
-            "page": f"https://github.com/{repo}/settings/keys",
-            "title": self.machine.grant_title(),
-            "allow_write_access": "yes",
-            "key": public_key,
-        }
-
     # -- pull requests -----------------------------------------------------
 
     def pull_requests(self, url: str) -> dict[str, str]:
-        """Whether gh can open a pull request on this repository for this Linux user."""
+        """Whether this agent can open a pull request on this repository: only through `pb worker gh`."""
 
         repo = github_repository(url)
         if not repo:
             return {"state": "not_applicable", "reason": ""}
-        if self.key_state(repo) == "ready":
+        key = self.key_state(repo)
+        if key == "ready":
             # The owner's key opens pull requests through `pb worker gh` (W371).
             return {"state": "ready", "reason": "", "via": "pb worker gh"}
-        if self._gh_signed_in is None:
-            try:
-                status = self.run(["gh", "auth", "status"], None, self.timeout, None)
-                self._gh_signed_in = "" if status.returncode == 0 else "gh is not signed in on this machine"
-            except FileNotFoundError:
-                self._gh_signed_in = "gh is not installed on this machine"
-            except (OSError, subprocess.TimeoutExpired):
-                self._gh_signed_in = "gh did not answer"
-        if self._gh_signed_in:
-            return {"state": "missing", "reason": self._gh_signed_in}
-        try:
-            viewed = self.run(
-                ["gh", "repo", "view", repo, "--json", "viewerPermission", "-q", ".viewerPermission"],
-                None,
-                self.timeout,
-                None,
-            )
-        except (OSError, subprocess.TimeoutExpired):
-            return {"state": "missing", "reason": "gh did not answer"}
-        permission = viewed.stdout.strip().upper() if viewed.returncode == 0 else ""
-        if permission in WRITE_PERMISSIONS:
-            return {"state": "ready", "reason": ""}
-        return {
-            "state": "missing",
-            "reason": f"the GitHub account gh is signed in with has {permission or 'no'} access to {repo}, not write",
-        }
+        # W942: never the host's own gh login.
+        return {"state": "missing", "reason": f"the project owner's GitHub key does not serve {repo}: {key}"}
 
     # -- one repository ----------------------------------------------------
 
@@ -409,7 +304,6 @@ class Connector:
         branch = str(repository.get("branch") or "").strip()
         folder = self.workspace / alias
         repo = github_repository(url)
-        alias_url = f"github-{alias}:{repo}.git" if repo else ""
 
         def row(state: str, reason: str = "", **extra: Any) -> dict[str, Any]:
             return {"alias": alias, "url": url, "state": state, "reason": reason, **extra}
@@ -431,6 +325,15 @@ class Connector:
         key = self.key_state(repo)
         if key:
             row = _with(row, github_key=key)
+        if repo and key != "ready":
+            # W942: a GitHub repository goes only through the owner's key. The operator sets that up;
+            # no deploy key, SSH route or host login is tried.
+            return row(
+                "needs_key",
+                f"the project owner's GitHub key does not serve {repo}: {key}. The operator links GitHub on the "
+                "project owner's Card with access to this repository, then run `pb worker connect-project` again.",
+                report_reason=NEEDS_KEY_REASON,
+            )
         if key == "ready" and not exists:
             # W371: a new clone goes over HTTPS with the owner's GitHub key.
             https_url = f"https://github.com/{repo}.git"
@@ -442,7 +345,7 @@ class Connector:
                 through_alias=False,
                 row=row,
                 flags=self._key_flags(),
-                after_clone=lambda cloned: self._key_config_with_deploy_route(cloned, alias_url),
+                after_clone=self._key_config,
             )
             return {**result, "route": "github_key"} if result.get("state") == "reachable" else result
         origin = ""
@@ -459,24 +362,11 @@ class Connector:
                 # where the key does not answer.
                 return self._update_over_key(folder, origin, repo, branch, row)
         else:
-            # Project-workspace step 2: a new clone goes through github-<alias> when it resolves to github.com.
-            source = alias_url if repo and self._resolve(alias)[0] == "github.com" else url
-        through_alias = bool(alias_url) and source == alias_url
-        if not self._answers(source, through_alias=through_alias):
-            if not repo:
-                return row("unreachable", "The remote did not answer and is not on GitHub: ask the operator for access.")
-            public_key, refusal = self.ensure_key(alias, repo)
-            if refusal:
-                return row("unreachable", refusal)
-            if through_alias or not self._answers(alias_url, through_alias=True):
-                return row(
-                    "needs_key", NEEDS_KEY_REASON, report_reason=NEEDS_KEY_REASON, grant=self.grant(alias, repo, public_key)
-                )
-            source, through_alias = alias_url, True
-            if exists:
-                # The same repository, through the key that reaches it.
-                self._git(["remote", "set-url", "origin", alias_url], folder)
-        return self._clone_or_update(folder, source, branch, exists=exists, through_alias=through_alias, row=row)
+            source = url
+        # Only a repository that is not on GitHub gets here (a local path or another host).
+        if not self._answers(source, through_alias=False):
+            return row("unreachable", "The remote did not answer and is not on GitHub: ask the operator for access.")
+        return self._clone_or_update(folder, source, branch, exists=exists, through_alias=False, row=row)
 
     def _update_over_key(
         self, folder: Path, origin: str, repo: str, branch: str, row: Callable[..., dict[str, Any]]
@@ -487,8 +377,7 @@ class Connector:
         self._key_config(folder)
         switched = origin != https_url
         if switched:
-            # The SSH route stays aside for `pb worker push` when the key is unavailable.
-            self._set_deploy_remote(folder, origin)
+            # W942: no SSH route is kept aside; pushes go with the owner's key or not at all.
             self._git(["remote", "set-url", "origin", https_url], folder)
         # A push URL of its own would keep pushes on the old route.
         self._git(["config", "--unset-all", "remote.origin.pushurl"], folder)
@@ -601,7 +490,8 @@ def next_step(rows: Sequence[Mapping[str, Any]]) -> str:
     parts = []
     if "needs_key" in states:
         parts.append(
-            "Show the person each grant: " + GRANT_STEPS + " When they say the keys are added, "
+            "Tell the operator each repository the project owner's GitHub key does not serve, with its reason: "
+            "they link GitHub on the project owner's Card with access to it. When they say it is done, "
             "run `pb worker connect-project` again."
         )
     if states & {"unreachable", "left_unchanged"}:
@@ -616,7 +506,6 @@ def next_step(rows: Sequence[Mapping[str, Any]]) -> str:
 __all__ = [
     "CONNECT_STATES",
     "Connector",
-    "GRANT_STEPS",
     "Machine",
     "LOCAL_ELSEWHERE_REASON",
     "NEEDS_KEY_REASON",

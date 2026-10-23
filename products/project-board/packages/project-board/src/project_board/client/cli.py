@@ -5717,7 +5717,7 @@ def _connect_project_command(args: Any, config: Any, field: Any, identity: Any) 
         Path(workspace),
         timeout=max(1.0, float(args.timeout_seconds)),
         transfer_timeout=max(1.0, float(getattr(args, "transfer_timeout_seconds", 1800.0))),
-        # W371: the owner's GitHub key first; the deploy key when it is refused.
+        # W371, W942: the owner's GitHub key or nothing; never a deploy key.
         github_key=key_session.token if key_session is not None else None,
         helper=key_session.helper() if key_session is not None else "",
         alias_name=alias,
