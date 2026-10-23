@@ -142,9 +142,9 @@ class RemoteA2AConnectorService:
     async def _fetch_card(self, card_url: str) -> PinnedAgentCard:
         card = await self._client.fetch_card(card_url)
         if not self._allow_cross_origin_endpoint and _origin(card.jsonrpc_url) != _origin(card.card_url):
-            # The credential goes to the card's endpoint. An endpoint on another
-            # origin than the card the owner named stays refused until the
-            # deployment decides otherwise.
+            # The credential goes to the card's endpoint, so an endpoint on another
+            # origin than the card the owner named is refused. Only a deployment
+            # that sets allow_cross_origin_endpoint accepts one.
             raise RemoteA2ARecordError("card_endpoint_cross_origin")
         return card
 
