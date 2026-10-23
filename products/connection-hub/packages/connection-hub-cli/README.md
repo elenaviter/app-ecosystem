@@ -180,6 +180,17 @@ missing parent, an existing destination without `--replace`, or a non-file
 replacement target. The atomic writer repeats these checks when publishing so
 a filesystem race cannot silently clobber another path.
 
+`host authorize` grants the CLI's Card the deployment resource only. Secret
+operations use the Card's `Once`/`Always` policy on exact or broad secret
+resources, not a per-request permit, so grant the secret resource on the CLI's
+Card first: in Connection Hub, Delegated by KDCube, open the Connection Hub CLI
+Card and add the key (or a namespace or scope) with the operations you need,
+for example `kdcube.management.secret.value.write` and
+`kdcube.management.secret.metadata.read`. Until then a `secrets host` request
+for that key is refused with `resource_not_consented`, which names the step.
+The stored session needs no new authorization: the Card is the live authority,
+so the grant applies to the next request.
+
 Descriptor export is an administrator-performed path with independent authority:
 
 ```bash
