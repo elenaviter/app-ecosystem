@@ -19,6 +19,7 @@ import getpass
 import platform
 import shutil
 import subprocess
+import sys
 import threading
 
 from dataclasses import dataclass
@@ -73,6 +74,7 @@ class Probes:
     user: Callable[[], str] = getpass.getuser
     os_release: Callable[[], str] = lambda: _read(Path("/etc/os-release"))
     keyring_state: Callable[[], tuple[bool, str]] = lambda: _keyring_state()
+    hashlib_state: Callable[[], tuple[bool, str]] = lambda: hashlib_state()
 
 
 def _read(path: Path) -> str:
@@ -131,6 +133,29 @@ def _keyring_state_now() -> tuple[bool, str]:
         except Exception as exc:  # noqa: BLE001
             return False, f"the Secret Service does not answer ({type(exc).__name__})"
     return True, name
+
+
+def hashlib_state() -> tuple[bool, str]:
+    """Whether pb's own Python builds hashlib's BLAKE2 hashes, and why not.
+
+    W933 (mba-local, 2026-10-23): a pyenv Python whose ``_blake2`` module links
+    Homebrew's libb2, with libb2 not installed. ``hashlib`` logs a traceback for
+    blake2b and blake2s at import, so every pb command started with two, the
+    device login included, while ``pb status`` called the machine ready.
+    """
+
+    import hashlib  # noqa: PLC0415 - already imported by the time pb runs
+
+    absent = [name for name in ("blake2b", "blake2s") if not hasattr(hashlib, name)]
+    if not absent:
+        return True, f"{sys.executable}: blake2b and blake2s load"
+    try:
+        import _blake2  # noqa: F401, PLC0415
+    except ImportError as exc:
+        reason = " ".join(str(exc).split())[:300]
+    else:
+        reason = "hashlib could not build them"
+    return False, f"{sys.executable}: {' and '.join(absent)} unavailable ({reason})"
 
 
 def _linux_family(os_release: str) -> str:
@@ -200,6 +225,25 @@ def _python(probes: Probes, family: str) -> dict[str, Any]:
             fix="install Python 3.10 or newer", admin=True, detail=f"{python} is {version}",
         )
     return _item("python", True, why="pb and its relay run in a Python virtual environment.", detail=f"{python} {version}")
+
+
+def _hashlib(probes: Probes, family: str, *, mac: bool) -> dict[str, Any]:
+    usable, detail = probes.hashlib_state()
+    if "libb2" in detail:
+        fix = "brew install libb2" if mac else _package_line(family, "libb2-1" if family == "debian" else "libb2")
+        admin = not mac
+    else:
+        fix = (
+            "reinstall this Python so its `_blake2` module loads (pyenv: `pyenv install --force <version>`), "
+            "or install pb with another Python"
+        )
+        admin = False
+    return _item(
+        "hashlib", usable,
+        why="pb runs on Python's standard hashlib, which must build its BLAKE2 hashes.",
+        fix=fix, admin=admin, detail=detail,
+        without="Every pb command first prints blake2 tracebacks, and anything that needs BLAKE2 fails.",
+    )
 
 
 def _git(probes: Probes, family: str, *, mac: bool) -> dict[str, Any]:
@@ -300,6 +344,7 @@ def check_prerequisites(probes: Probes | None = None) -> dict[str, Any]:
     if mac:
         checked = [
             _python(probes, family),
+            _hashlib(probes, family, mac=True),
             _git(probes, family, mac=True),
             _tmux(probes, family, mac=True),
             _gh(probes, family, mac=True),
@@ -308,6 +353,7 @@ def check_prerequisites(probes: Probes | None = None) -> dict[str, Any]:
     elif system == "Linux":
         checked = [
             _python(probes, family),
+            _hashlib(probes, family, mac=False),
             _git(probes, family, mac=False),
             _tmux(probes, family, mac=False),
             _gh(probes, family, mac=False),
@@ -330,4 +376,4 @@ def check_prerequisites(probes: Probes | None = None) -> dict[str, Any]:
     }
 
 
-__all__ = ["ADMIN_NOTE", "KEYRING_UNLOCK_LINE", "Probes", "SCHEMA", "check_prerequisites"]
+__all__ = ["ADMIN_NOTE", "KEYRING_UNLOCK_LINE", "Probes", "SCHEMA", "check_prerequisites", "hashlib_state"]
