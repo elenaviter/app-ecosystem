@@ -210,6 +210,7 @@ from connection_hub.delegated_credentials.cards.read_model import (
     compatible_resource_offers,
 )
 from connection_hub.delegated_credentials.secret_resources import (
+    SECRET_SELECTOR_TYPE,
     SecretResource,
     SecretResourceError,
     validate_secret_card_resource,
@@ -271,6 +272,8 @@ AUTOMATION_ACCESS_SCHEMA = "connection_hub.automation_access.v1"
 AUTOMATION_CLIENT_PREFIX = "automation"
 AUTOMATION_ACCESS_DEFAULT_TTL_SECONDS = ACCESS_TOKEN_TTL_SECONDS
 ALL_RESOURCES_RESOURCE = "*"
+# KDCube management doors (deployment, secret, user props): urn:kdcube:management:<kind>:...
+KDCUBE_MANAGEMENT_RESOURCE_PREFIX = "urn:kdcube:management:"
 DELEGATED_SESSION_MAX_TTL_SECONDS = 7 * 24 * 3600
 # W918 H1: an owner's authority proof covers one Save's transaction window, never longer.
 GRANTOR_PROOF_TTL_SECONDS = 300
@@ -4329,6 +4332,40 @@ class AutomationAccessService:
         allowed.update(self._reachable_through_door(entry, config=config))
         return allowed
 
+    def _secret_reachable_through_door(
+        self, resource: str, *, entry_resource: str, config: Any
+    ) -> bool:
+        """An exact secret of this deployment, through a KDCube management door (W929).
+
+        Secrets are offered one by one, never as a child row of a door, so the
+        exact reach of ``_oauth_allowed_resources`` cannot name them. A Card
+        entered through a management selection door reaches one exact secret of
+        this tenant and project that the catalog's secret row governs. A
+        selector (a ``*`` scope or key) and another deployment's secret stay
+        unreachable. Who may hold the secret (``admin_only``) is the save's
+        authority check, unchanged.
+        """
+
+        text = _clean(resource)
+        try:
+            parsed = validate_secret_card_resource(
+                text, tenant=self._tenant, project=self._project
+            )
+        except SecretResourceError:
+            return False
+        if parsed is None or parsed.broad:
+            return False
+        row = self._configured_resource(text, config=config)
+        if row is None or _clean(getattr(row, "selector_type", "")) != SECRET_SELECTOR_TYPE:
+            return False
+        door = _clean(entry_resource)
+        door_row = self._configured_resource(door, config=config)
+        return (
+            door.startswith(KDCUBE_MANAGEMENT_RESOURCE_PREFIX)
+            and door_row is not None
+            and bool(getattr(door_row, "resource_selection", False))
+        )
+
     def _configured_resource(
         self, resource: str, *, config: Any = None
     ) -> Any | None:
@@ -6508,6 +6545,9 @@ class AutomationAccessService:
                 if _clean(resource)
                 and allowed_resources is not None
                 and _clean(resource) not in allowed_resources
+                and not self._secret_reachable_through_door(
+                    resource, entry_resource=entry_resource, config=catalog_config
+                )
             )
             if outside_entry:
                 return {
