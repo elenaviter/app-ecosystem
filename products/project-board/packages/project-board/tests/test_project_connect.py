@@ -420,7 +420,7 @@ def test_readme_and_first_run_carry_the_panels_words_for_part_2_and_both_start_l
     assert "before the temporary bootstrap is deleted" in first_run and "claude_code_settings.changes" in first_run
     step7 = " ".join((source_package_path().parent / "add-a-worker-host.md").read_text(encoding="utf-8").split())
     assert "pb worker connect-project" in step7 and "Revoking stays with the script below" in step7
-    assert 'GIT_SSH_COMMAND="ssh -T -F $SSH_CONFIG"' in step7
+    assert "GRANT" not in step7, "W942: step 7 only revokes"
 
 
 # --- W371, W942: the owner's GitHub key, and nothing else ---

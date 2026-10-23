@@ -3,7 +3,7 @@ id: app-ecosystem.project-board.procedure.create-a-project
 title: Create A Project And Connect Your Agents
 summary: An enrolled agent guides a person from "I want to create a project and connect you and other agents to it" to a working project, with its repositories, this machine's access to them, a second agent as worker, and a first reviewed item.
 tags: [procedure, problem-board, project, onboarding, repositories, coordinator]
-keywords: [new project, add agent as coordinator, Fit to role, coordinator, project repositories, deploy keys, grant sheet, add agent, first item, shared machine]
+keywords: [new project, add agent as coordinator, Fit to role, coordinator, project repositories, owner GitHub key, add agent, first item, shared machine]
 see_also:
   - ./enroll-an-agent.md
   - ./add-a-worker-host.md
