@@ -4,6 +4,7 @@ import test from 'node:test'
 import {
   commonOperationGrants,
   doorGrantsForOperation,
+  pendingCatalogResource,
   pendingOuterApprovalReady,
   pendingServiceApprovalReady,
   pendingSelectionStatus,
@@ -244,4 +245,39 @@ test('an account is never guessed when the denial names no account', () => {
     undefined,
     'slack:post',
   ), {})
+})
+
+const secretSelector = {
+  resource: 'urn:kdcube:management:secret:*:*:*:*:*',
+  selector_type: 'kdcube_secret',
+  label: 'KDCube secrets',
+  operations: [
+    { name: 'kdcube.management.secret.value.write', grants: ['kdcube.management.secret.write'] },
+  ],
+}
+const concreteSecret = 'urn:kdcube:management:secret:demo-tenant:demo-project:bundle:connection-hub@1-0:connections.signing_key'
+
+test('a consent for one concrete secret resolves through the catalog secret selector (W929)', () => {
+  const capability = resolvePendingOuterCapability(
+    { resource: concreteSecret, outerOperation: 'kdcube.management.secret.value.write' },
+    [resource, secretSelector],
+  )
+
+  assert.equal(capability?.operation.name, 'kdcube.management.secret.value.write')
+  assert.equal(capability?.resource.resource, concreteSecret)
+  assert.equal(capability?.resource.label, 'Application connection-hub@1-0: connections.signing_key')
+  assert.equal(pendingCatalogResource(concreteSecret, [secretSelector])?.selector_type, 'kdcube_secret')
+})
+
+test('the secret fallback applies only to secret resources and a matching kdcube_secret row', () => {
+  assert.equal(pendingCatalogResource('https://elsewhere.example/mcp', [secretSelector]), null)
+  assert.equal(pendingCatalogResource(concreteSecret, [{ ...secretSelector, selector_type: undefined }]), null)
+  assert.equal(pendingCatalogResource(
+    concreteSecret,
+    [{ ...secretSelector, resource: 'urn:kdcube:management:secret:other-tenant:*:*:*:*' }],
+  ), null)
+  assert.equal(resolvePendingOuterCapability(
+    { resource: concreteSecret, outerOperation: 'kdcube.management.secret.value.delete' },
+    [secretSelector],
+  ), null)
 })

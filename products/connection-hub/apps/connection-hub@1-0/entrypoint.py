@@ -114,6 +114,7 @@ from connection_hub.delegated_credentials.consent_denial import (
     connection_hub_grant_url,
     connection_hub_invocation_policy_url,
 )
+from connection_hub.delegated_credentials.resource_operations import resource_matches
 from connection_hub.delegated_credentials.request_approval import (
     RequestApprovalTicket,
     RequestApprovalTicketError,
@@ -7234,12 +7235,6 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
                     "error": "invocation_policy_client_mismatch",
                     "status": 409,
                 }
-            if resource not in dict(card.get("resource_grants") or {}):
-                return {
-                    "ok": False,
-                    "error": "invocation_policy_resource_not_granted",
-                    "status": 409,
-                }
             requested_operation = selected_outer_operations[0]
             catalog_resource = str(
                 dict(card.get("catalog_row_by_resource") or {}).get(resource)
@@ -7253,6 +7248,27 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
                 ),
                 None,
             )
+            if resource not in dict(card.get("resource_grants") or {}):
+                # W929: a resource the Card does not hold yet (the admission's
+                # resource_not_consented consent, e.g. one concrete secret) is
+                # added by this same focused grant when a catalog row offers
+                # it, so the grant and its policy still commit together. The
+                # all-resource selector never stands in for a concrete request.
+                resource_option = resource_option or next(
+                    (
+                        item
+                        for item in listing.get("resources") or []
+                        if str(item.get("resource") or "").strip() not in {"", "*"}
+                        and resource_matches(str(item.get("resource") or ""), resource)
+                    ),
+                    None,
+                )
+                if resource_option is None:
+                    return {
+                        "ok": False,
+                        "error": "invocation_policy_resource_not_granted",
+                        "status": 409,
+                    }
             offered_operations = {
                 str(item.get("name") or "").strip()
                 for item in (resource_option or {}).get("operations") or []
