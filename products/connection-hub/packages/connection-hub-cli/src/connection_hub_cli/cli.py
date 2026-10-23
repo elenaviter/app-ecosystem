@@ -593,10 +593,35 @@ async def _management_result_with_consent(
                 opened = bool(webbrowser.open(recovery.authorization_url))
             except Exception:  # noqa: BLE001
                 opened = False
-        if opened and sys.stdin.isatty() and not args.no_wait:
-            input("Approve the exact operation in the browser, then press Enter: ")
+        if opened and not args.no_wait and _confirm_on_terminal(
+            "Approve the exact operation in the browser, then press Enter: "
+        ):
             result = await services.management_service.execute(request)
     return result
+
+
+def _open_terminal():
+    """The controlling terminal, for a prompt while stdin carries a piped value (W929)."""
+    return open("/dev/tty", "r+", encoding="utf-8")
+
+
+def _confirm_on_terminal(prompt: str) -> bool:
+    """Wait for Enter on the person's terminal; False when there is none (the caller then returns the recovery).
+
+    A secret piped through --value-stdin leaves stdin at its end, not a terminal, so the prompt goes to the
+    controlling terminal instead: the consent is approved and the identical request retried in one command.
+    """
+    if sys.stdin.isatty():
+        input(prompt)
+        return True
+    try:
+        with _open_terminal() as terminal:
+            terminal.write(prompt)
+            terminal.flush()
+            terminal.readline()
+    except OSError:
+        return False
+    return True
 
 
 async def _execute_management(

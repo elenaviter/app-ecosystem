@@ -1749,3 +1749,84 @@ def test_secret_import_stops_on_first_denial_and_reports_progress_without_values
     assert len(services.management_service.calls) == 2
     assert marker not in captured.out
     assert marker not in captured.err
+
+
+def _grant_denial(request: ManagementRequest) -> ManagementDenial:
+    """W929: a Card grant consent (Once/Always) for a secret the CLI's Card does not hold yet."""
+    return ManagementDenial(
+        status=403,
+        code="resource_not_consented",
+        retryable=False,
+        recovery=ConsentRecovery(
+            authorization_url=(
+                "https://hub.example/api/integrations/bundles/acme/prod/"
+                "connection-hub%401-0/widgets/connections_settings?pending_agent_grant=1"
+            ),
+            access_id="access-cli",
+            resource=request.resource,
+            operation=request.operation,
+            application_id=request.application_id,
+            invocation_id=request.invocation_id,
+            request_digest=request.request_digest or ("a" * 64),
+            card_revision=4,
+            catalog_version="",
+            expires_at=int(time.time()) + 600,
+            choices=("allow_once", "allow_always"),
+            reason="delegated_grant_required",
+        ),
+    )
+
+
+def _secret_write_with_grant(tmp_path, monkeypatch, *, terminal):
+    services = _services(tmp_path)
+    request = ManagementRequest.secret_write(
+        services.host_service.management_target(),
+        scope="bundle",
+        key="connections.signing_key",
+        value="grant-flow-marker",
+        bundle_id="connection-hub@1-0",
+        invocation_id="secret-grant-1",
+    )
+    services.management_service.results = [_grant_denial(request), _management_result(request)]
+    opened: list[str] = []
+    monkeypatch.setattr(cli, "build_services", lambda: services)
+    monkeypatch.setattr(cli.sys, "stdin", io.StringIO("grant-flow-marker"))  # the piped value, not a terminal
+    monkeypatch.setattr(cli.webbrowser, "open", lambda url: opened.append(url) is None)
+    monkeypatch.setattr(cli, "_open_terminal", terminal)
+    result = cli.main([
+        "secrets", "host", "set", "connections.signing_key", "--scope", "bundle",
+        "--bundle-id", "connection-hub@1-0", "--value-stdin", "--invocation-id", "secret-grant-1",
+    ])
+    return result, opened, services
+
+
+def test_a_piped_secret_set_approves_the_card_grant_on_the_terminal_and_retries(tmp_path, monkeypatch, capsys):
+    """W929: the README's flow pipes the value into `secrets host set --value-stdin`. The CLI opens the grant
+    page, waits for Enter on the controlling terminal (stdin is the pipe), and retries the identical request."""
+    prompts: list[str] = []
+
+    class _Terminal(io.StringIO):
+        def write(self, text):
+            prompts.append(text)
+            return len(text)
+
+    result, opened, services = _secret_write_with_grant(
+        tmp_path, monkeypatch, terminal=lambda: _Terminal("\n"))
+    captured = capsys.readouterr()
+    assert result == 0
+    assert opened and "pending_agent_grant=1" in opened[0]
+    assert prompts and "press Enter" in prompts[0]
+    assert len(services.management_service.calls) == 2
+    assert "grant-flow-marker" not in captured.out and "grant-flow-marker" not in captured.err
+
+
+def test_without_a_terminal_the_piped_secret_set_returns_the_grant_recovery(tmp_path, monkeypatch, capsys):
+    def no_terminal():
+        raise OSError("no controlling terminal")
+
+    result, opened, services = _secret_write_with_grant(tmp_path, monkeypatch, terminal=no_terminal)
+    payload = json.loads(capsys.readouterr().out)
+    assert result == 3
+    assert payload["recovery"]["reason"] == "delegated_grant_required"
+    assert payload["recovery"]["invocation_id"] == "secret-grant-1"
+    assert len(services.management_service.calls) == 1
