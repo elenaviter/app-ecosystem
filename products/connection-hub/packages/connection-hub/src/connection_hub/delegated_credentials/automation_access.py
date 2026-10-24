@@ -9308,6 +9308,36 @@ class AutomationAccessService:
             return None
         return await self._card_view(record)
 
+    async def effective_card_for_access_id(
+        self,
+        *,
+        grantor_subject: str,
+        access_id: str,
+    ) -> DelegatedCardView | None:
+        """The read model of one active card as the guarded surfaces judge it (W981).
+
+        A card linked to a Control is composed with it exactly as the platform
+        guard composes it: ``compose_control_hierarchy`` with this service's own
+        family policy, so the Control's rule and its External MCP and A2A
+        switches apply. A card with no Control is its own authority. The grantor
+        coordinate comes from authenticated credential facts only. Raises
+        ``ControlCardMismatch`` or ``CardUnavailable`` rather than falling open.
+        """
+
+        grantor = _clean(grantor_subject)
+        selected_access_id = _clean(access_id)
+        if not grantor or not selected_access_id:
+            return None
+        record = await self._load_record(selected_access_id, grantor_subject=grantor)
+        if record is None or record.grantor_subject != grantor:
+            return None
+        if record.control_card is None:
+            return await self._card_view(record)
+        hierarchy = await self._control_hierarchy(record)
+        if hierarchy is None:
+            raise ControlCardMismatch("control_card_unresolvable")
+        return await self._card_view(record_from_card(hierarchy.effective_card))
+
     async def resident_profile_card(
         self,
         *,

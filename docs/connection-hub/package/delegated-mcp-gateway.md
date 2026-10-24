@@ -83,6 +83,18 @@ coordinates: caller type, caller profile id, and access id. A mismatch, absent
 card, revocation, or expiry is a denial. The portable gateway does not read Card
 persistence and does not reproduce Card identity hashing.
 
+The view is the authority the platform guard judges, not the stored Card alone
+(W981). For a card linked to a Control, the Hosted reader returns
+`AutomationAccessService.effective_card_for_access_id`, which is the card
+composed with its Control by `compose_control_hierarchy` and the service's own
+family policy. So the Control's AND/OR rule and its External MCP and A2A
+switches decide what is listed and what may be called. The gateway re-reads
+this view for every list and call. A card with no Control is its own
+authority. A Control that cannot be resolved, or an OR Control over another
+holder's agent, is a fixed `card_authority_unavailable` denial, never the
+stored Card. Managed KDCube surfaces are gated the same way: the gateway checks
+every listed tool and every call against this view before it dispatches.
+
 `adapt_card_view()` is the pure adapter over Card's published
 `delegated_credentials.cards.read_model.DelegatedCardView`. It derives a
 resident caller profile coordinate from `ResidentCallerProfile.client_id` and
