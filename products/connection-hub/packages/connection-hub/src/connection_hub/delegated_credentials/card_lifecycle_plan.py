@@ -505,10 +505,14 @@ def retired_project_control(
 
 
 def _grantor_edit(raw: Mapping[str, Any]) -> dict[str, Any]:
-    """W918 H1: the edit an owner's authority proof must cover, read from the planned update itself."""
-    from .grantor_authority_proof import edit_of
+    """W918 H1: the edit a saver's authority proof must cover, read from the planned update itself.
 
-    return edit_of(raw)
+    W941: a project Control's edit covers its whole edit, the access rule and the switches included.
+    """
+    from .grantor_authority_proof import AGENT_CARD, PROJECT_CONTROL, edit_of
+
+    return edit_of(raw, target_kind=PROJECT_CONTROL if raw.get("kind") == "reselect_project_control"
+                   else AGENT_CARD)
 
 
 async def plan_card_lifecycle(
@@ -968,8 +972,10 @@ async def plan_card_lifecycle(
                     or ("accepted_operations" in raw and "selection" not in raw)
                     or ("expected_catalog_version" in raw and "selection" not in raw)
                     or ("invocation_modes" in raw and raw.get("kind") not in {"reselect", "reselect_agent_card"})
-                    # W918 H1: the owner's own authority proof travels only with an agent Card's edit.
-                    or ("grantor_proof" in raw and raw.get("kind") != "reselect_agent_card")
+                    # W918 H1: the owner's own authority proof travels only with an agent Card's edit;
+                    # W941: and with the project Control's own edit, as the saver's proof.
+                    or ("grantor_proof" in raw and raw.get("kind") not in {"reselect_agent_card",
+                                                                           "reselect_project_control"})
                     # W742: the project access rule travels only on the project Control's own edit.
                     or ("composition_mode" in raw and (raw.get("kind") != "reselect_project_control"
                                                        or raw["composition_mode"] not in {"and", "or"}))

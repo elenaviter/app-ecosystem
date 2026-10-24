@@ -1,0 +1,213 @@
+"""W941: a project Control (P) Save is bounded per resource by the saver's own proof.
+
+The managing application names the resources its delegable grants bound
+(``governed_resources``, its own). Every other resource of P is bounded by the
+saving person's own admission-time authority, from a Hub-signed proof typed to
+the project Control (v2 ``target_kind``) and covering the whole P edit. Without
+a proof an addition there is refused ``card_grantor_inventory_unavailable``;
+keeping or removing what P carries is never refused.
+"""
+
+from __future__ import annotations
+
+import asyncio
+from types import SimpleNamespace
+
+import pytest
+
+from connection_hub.delegated_credentials.grantor_authority_proof import (
+    AGENT_CARD, PROJECT_CONTROL, GrantorProofError, edit_of, issue_grantor_proof, verify_grantor_proof,
+)
+from connection_hub.delegated_credentials.managed_card_selection_plan import (
+    _verified_saver_authority, build_managed_card_selection_update,
+)
+from service_foundation.coordination.durable_decision_log import DecisionRefused
+
+SECRET = "k" * 40
+SAVER = {"user_id": "user:admin", "roles": ["kdcube:role:registered", "docs:editor"], "permissions": []}
+NOW = 1_800_000_000
+
+
+def _proof(*, kind=PROJECT_CONTROL, subject="user:admin", access_id="p-1", revision=4, request_id="save-1",
+           edit=None, user=SAVER):
+    return issue_grantor_proof(secret=SECRET, user=user, grantor_subject=subject, access_id=access_id,
+                               original_revision=revision, request_id=request_id, edit=edit or {},
+                               now=NOW, ttl_seconds=60, target_kind=kind)
+
+
+def test_a_proof_names_its_card_kind_and_is_never_read_as_the_other() -> None:
+    token = _proof(kind=AGENT_CARD)
+    with pytest.raises(GrantorProofError):
+        verify_grantor_proof(token, secret=SECRET, now=NOW + 1, grantor_subject="user:admin", access_id="p-1",
+                             original_revision=4, request_id="save-1", edit={}, target_kind=PROJECT_CONTROL)
+    verified = verify_grantor_proof(token, secret=SECRET, now=NOW + 1, grantor_subject="user:admin",
+                                    access_id="p-1", original_revision=4, request_id="save-1", edit={},
+                                    target_kind=AGENT_CARD)
+    assert verified.target_kind == AGENT_CARD
+
+
+def test_a_project_control_proof_covers_the_whole_p_edit() -> None:
+    body = {"selection": {"resource_grants": {}}, "composition_mode": "or", "external_mcp_family": "on",
+            "a2a_family": "off", "label": "P", "unrelated": 1}
+    assert edit_of(body, target_kind=PROJECT_CONTROL) == {key: body[key] for key in (
+        "selection", "composition_mode", "external_mcp_family", "a2a_family", "label")}
+    assert "composition_mode" not in edit_of(body), "an agent Card edit keeps its own fields"
+    token = _proof(edit=edit_of(body, target_kind=PROJECT_CONTROL))
+    changed = edit_of({**body, "composition_mode": "and"}, target_kind=PROJECT_CONTROL)
+    with pytest.raises(GrantorProofError):
+        verify_grantor_proof(token, secret=SECRET, now=NOW + 1, grantor_subject="user:admin", access_id="p-1",
+                             original_revision=4, request_id="save-1", edit=changed, target_kind=PROJECT_CONTROL)
+
+
+def test_the_saver_proof_attests_the_saver_and_only_them() -> None:
+    original = SimpleNamespace(access_id="p-1", card_revision=4, grantor_subject="user:creator")
+    host = SimpleNamespace(_grantor_authority_secret=SECRET)
+    token = _proof()
+    identity = _verified_saver_authority(host, original, token, edit={}, actor_subject="user:admin",
+                                         request_id="save-1", now=NOW + 1)
+    assert identity["user_id"] == "user:admin" and "docs:editor" in identity["roles"]
+    assert _verified_saver_authority(host, original, None, edit={}, actor_subject="user:admin",
+                                     request_id="save-1", now=NOW + 1) is None
+    with pytest.raises(DecisionRefused, match="card_grantor_proof_invalid"):
+        _verified_saver_authority(host, original, token, edit={}, actor_subject="user:someone-else",
+                                  request_id="save-1", now=NOW + 1)
+
+
+def test_a_session_cannot_get_a_proof_for_another_person() -> None:
+    with pytest.raises(GrantorProofError):
+        _proof(subject="user:creator")  # the session is user:admin
+
+
+class _Captured(Exception):
+    pass
+
+
+class _Host:
+    _grantor_authority_secret = SECRET
+
+    def __init__(self):
+        self.bound = "unset"
+
+    async def _catalog_config(self, active, *, owner_subject):
+        return SimpleNamespace(resources=())
+
+    async def _resolve_card_authority(self, **kwargs):
+        self.bound = kwargs.get("_grantor_bound")
+        raise _Captured()
+
+
+def _plan(host, *, governed=None, proof=None, kind="project_control"):
+    from connection_hub.delegated_credentials.managed_card_selection_plan import OPERATIONS
+    from connection_hub.delegated_credentials.project_authorization import (
+        ProjectAuthorizationDecision, ProjectAuthorizationRequest,
+    )
+    from test_w638_managed_card_selection_plan import PROJECT, project_control
+
+    original = project_control()
+    request = ProjectAuthorizationRequest.build(actor_subject="user:admin", project_ref=PROJECT,
+        target_subject=original.access_id, operation=OPERATIONS["project_control"], request_id="save-1")
+    decision = ProjectAuthorizationDecision.allow(request, delegable_grants=("work:admin",))
+    token = proof(original) if callable(proof) else proof
+    return asyncio.run(build_managed_card_selection_update(
+        host, original=original, kind=kind, selection={}, active=SimpleNamespace(version=original.catalog_version),
+        decision=decision, project_ref=PROJECT, actor_subject="user:admin", request_id="save-1", now=NOW + 1,
+        grantor_proof=token, grantor_edit={"selection": {}}, governed_resources=governed))
+
+
+def test_with_governed_resources_the_planner_splits_by_the_savers_proof() -> None:
+    host = _Host()
+    with pytest.raises(_Captured):
+        _plan(host, governed=["problem_board"],
+              proof=lambda original: _proof(access_id=original.access_id, revision=original.card_revision,
+                                            edit={"selection": {}}))
+    assert host.bound["governed"] == ("problem_board",)
+    assert host.bound["authority"]["user_id"] == "user:admin"
+
+    unproven = _Host()
+    with pytest.raises(_Captured):
+        _plan(unproven, governed=["problem_board"])
+    assert unproven.bound == {"governed": ("problem_board",), "authority": None}, (
+        "no proof: every non-governed addition is refused card_grantor_inventory_unavailable")
+
+
+def test_without_governed_resources_a_p_save_is_bounded_as_before() -> None:
+    host = _Host()
+    with pytest.raises(_Captured):
+        _plan(host)
+    assert host.bound is None
+    with pytest.raises(DecisionRefused, match="card_plan_selection_invalid"):
+        _plan(_Host(), proof="x.y")  # a proof without governed resources is not admitted
+
+
+def test_governed_resources_are_admitted_on_a_project_control_only() -> None:
+    with pytest.raises(DecisionRefused, match="card_plan_"):
+        _plan(_Host(), governed=["problem_board"], kind="invitation_control")
+    for bad in ("problem_board", [""], [" x"]):
+        with pytest.raises(DecisionRefused, match="card_plan_selection_invalid"):
+            _plan(_Host(), governed=bad)
+
+
+def test_the_lifecycle_plan_admits_a_proof_on_the_project_controls_own_edit() -> None:
+    import inspect
+
+    from connection_hub.delegated_credentials import card_lifecycle_plan
+
+    source = inspect.getsource(card_lifecycle_plan)
+    assert '"grantor_proof" in raw and raw.get("kind") not in {"reselect_agent_card",' in source
+    assert "PROJECT_CONTROL if raw.get(\"kind\") == \"reselect_project_control\"" in source
+
+
+def test_the_hub_issues_a_project_control_proof_only_when_enabled() -> None:
+    from connection_hub.delegated_credentials.automation_access import AutomationAccessService
+
+    record = SimpleNamespace(access_id="p-1", grantor_subject="user:creator")
+    service = AutomationAccessService.__new__(AutomationAccessService)
+    service._grantor_authority_secret = SECRET
+    issue = lambda: service._owner_authority_proof(SAVER, record=record, kind="project_control", revision=4,
+                                                   request_id="save-1", edit={})
+    assert issue() is None, "off until the managing application accepts one"
+    service._project_control_saver_proof = True
+    token = issue()
+    import time
+
+    verified = verify_grantor_proof(token, secret=SECRET, now=int(time.time()), grantor_subject="user:admin",
+                                    access_id="p-1", original_revision=4, request_id="save-1", edit={},
+                                    target_kind=PROJECT_CONTROL)
+    assert verified.grantor_subject == "user:admin", "the saver, not the Control's storage owner"
+
+
+def test_the_editor_catalog_offers_a_non_admin_no_admin_only_service() -> None:
+    # The operator (23:36Z): "catalog does not show to non admin the admin services". The editor's rows come
+    # from resource_options, bounded by the person's own delegable set: the same set a P Save's proof bounds.
+    from connection_hub.delegated_credentials.automation_access import AutomationAccessService
+    from connection_hub.delegated_credentials.oauth.config import oauth_delegated_config_from_connections
+
+    connections = {"delegated_credentials": {"oauth": {
+        "enabled": True,
+        "capabilities": [
+            {"grant": "docs:read", "label": "Read docs", "delegable_roles": ["kdcube:role:registered"]},
+            {"grant": "secrets:read", "label": "Read secrets", "delegable_roles": ["kdcube:role:super-admin"]},
+        ],
+        "resources": [
+            {"resource": "docs", "label": "Docs", "tools": {"docs.search": {"label": "Search", "grants": ["docs:read"]}}},
+            {"resource": "secrets", "label": "Secrets", "admin_only": True,
+             "tools": {"secrets.get": {"label": "Get", "grants": ["secrets:read"]}}},
+        ],
+    }}}
+
+    class _Resolver:
+        async def resolve_active(self):
+            return SimpleNamespace(version="catalog-1", connections=connections)
+
+    service = AutomationAccessService(redis=object(), tenant="t", project="p",
+                                      config=oauth_delegated_config_from_connections(connections),
+                                      catalog_resolver=_Resolver())
+    member = {"user_id": "user:member", "roles": ["kdcube:role:registered"], "permissions": []}
+    admin = {"user_id": "user:root", "roles": ["kdcube:role:super-admin", "kdcube:role:registered"],
+             "permissions": []}
+
+    member_rows = {row["resource"] for row in asyncio.run(service.resource_options(member))}
+    admin_rows = {row["resource"] for row in asyncio.run(service.resource_options(admin))}
+
+    assert "docs" in member_rows and "secrets" not in member_rows
+    assert {"docs", "secrets"} <= admin_rows

@@ -127,7 +127,33 @@ def _verified_owner_authority(host: Any, original: CardAuthority, grantor_proof:
         authority = verify_grantor_proof(
             grantor_proof, secret=getattr(host, "_grantor_authority_secret", "") or "", now=now,
             grantor_subject=original.grantor_subject, access_id=original.access_id,
-            original_revision=original.card_revision, request_id=request_id, edit=edit)
+            original_revision=original.card_revision, request_id=request_id, edit=edit, target_kind="agent_card")
+    except GrantorProofError as exc:
+        raise _refuse(exc.reason) from exc
+    return authority.identity()
+
+
+def _verified_saver_authority(host: Any, original: CardAuthority, grantor_proof: str | None, *,
+                              edit: Mapping[str, Any], actor_subject: str, request_id: str,
+                              now: int) -> dict[str, Any] | None:
+    """W941: the saving person's admission-time identity from a verified project-Control proof, or None.
+
+    The proof attests the saver (this plan's authorized actor), not the Control's storage owner. It is checked
+    against the stored Control (id, revision), its target kind, this plan's request, the exact planned edit,
+    its expiry and the Hub's own key, as an agent Card owner's proof is.
+    """
+    from .grantor_authority_proof import GrantorProofError, verify_grantor_proof
+
+    if grantor_proof is None:
+        return None
+    if type(grantor_proof) is not str or not actor_subject:
+        raise _refuse("card_grantor_proof_invalid")
+    try:
+        authority = verify_grantor_proof(
+            grantor_proof, secret=getattr(host, "_grantor_authority_secret", "") or "", now=now,
+            grantor_subject=actor_subject, access_id=original.access_id,
+            original_revision=original.card_revision, request_id=request_id, edit=edit,
+            target_kind="project_control")
     except GrantorProofError as exc:
         raise _refuse(exc.reason) from exc
     return authority.identity()
@@ -141,7 +167,7 @@ async def build_managed_card_selection_update(
     a2a_family: str | None = None,
     invocation_modes: Mapping[str, Any] | None = None, grantor_proof: str | None = None,
     grantor_edit: Mapping[str, Any] | None = None, load_live: Any = None,
-    account_scope_policy: str | None = None,
+    account_scope_policy: str | None = None, governed_resources: Any = None,
 ) -> dict[str, Any]:
     """One exact P or agent-Card update from a host-authorized selection, without a write (W723: and its acceptance).
 
@@ -189,7 +215,17 @@ async def build_managed_card_selection_update(
                          "authority": _verified_owner_authority(
                              host, original, grantor_proof, edit=grantor_edit or {}, actor_subject=actor_subject,
                              request_id=request_id, now=now)}
-    elif grantor_proof is not None:
+    elif kind == "project_control" and governed_resources:
+        # W941: the managing application names the resources its delegable grants bound (its own); every
+        # other resource of the Control is bounded by the saver's own proven authority, refused without it.
+        if (not isinstance(governed_resources, (list, tuple))
+                or not all(type(item) is str and item and item == item.strip() for item in governed_resources)):
+            raise _refuse("card_plan_selection_invalid")
+        grantor_bound = {"governed": tuple(sorted(set(governed_resources))),
+                         "authority": _verified_saver_authority(
+                             host, original, grantor_proof, edit=grantor_edit or {}, actor_subject=actor_subject,
+                             request_id=request_id, now=now)}
+    elif grantor_proof is not None or governed_resources:
         raise _refuse("card_plan_selection_invalid")
     catalog_config = await host._catalog_config(active, owner_subject=original.grantor_subject)
     from .whole_card_save import normalize_selection
