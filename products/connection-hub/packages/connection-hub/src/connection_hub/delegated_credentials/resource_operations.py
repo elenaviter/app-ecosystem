@@ -63,9 +63,14 @@ def resolve_declared_resource(
     requested = _clean(resource)
     row = config.card_selector_config(requested)
     declared = _clean(getattr(row, "resource", "")) if row is not None else ""
+    is_literal = bool(requested) and not any(mark in requested for mark in ("*", "["))
+    if _clean(getattr(row, "selector_type", "")) == "kdcube_secret":
+        # The secret row offers secrets one by one: a Card names each exact
+        # secret. Its pattern is not a Card resource (it fails secret-resource
+        # validation) and would cover every secret (W929).
+        return requested, is_literal
     if declared and declared != "*" and declared != requested:
         return declared, False
-    is_literal = bool(requested) and not any(mark in requested for mark in ("*", "["))
     return requested, is_literal
 
 

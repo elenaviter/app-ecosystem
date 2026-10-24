@@ -127,7 +127,33 @@ def _verified_owner_authority(host: Any, original: CardAuthority, grantor_proof:
         authority = verify_grantor_proof(
             grantor_proof, secret=getattr(host, "_grantor_authority_secret", "") or "", now=now,
             grantor_subject=original.grantor_subject, access_id=original.access_id,
-            original_revision=original.card_revision, request_id=request_id, edit=edit)
+            original_revision=original.card_revision, request_id=request_id, edit=edit, target_kind="agent_card")
+    except GrantorProofError as exc:
+        raise _refuse(exc.reason) from exc
+    return authority.identity()
+
+
+def _verified_saver_authority(host: Any, original: CardAuthority, grantor_proof: str | None, *,
+                              edit: Mapping[str, Any], actor_subject: str, request_id: str,
+                              now: int) -> dict[str, Any] | None:
+    """W941: the saving person's admission-time identity from a verified project-Control proof, or None.
+
+    The proof attests the saver (this plan's authorized actor), not the Control's storage owner. It is checked
+    against the stored Control (id, revision), its target kind, this plan's request, the exact planned edit,
+    its expiry and the Hub's own key, as an agent Card owner's proof is.
+    """
+    from .grantor_authority_proof import GrantorProofError, verify_grantor_proof
+
+    if grantor_proof is None:
+        return None
+    if type(grantor_proof) is not str or not actor_subject:
+        raise _refuse("card_grantor_proof_invalid")
+    try:
+        authority = verify_grantor_proof(
+            grantor_proof, secret=getattr(host, "_grantor_authority_secret", "") or "", now=now,
+            grantor_subject=actor_subject, access_id=original.access_id,
+            original_revision=original.card_revision, request_id=request_id, edit=edit,
+            target_kind="project_control")
     except GrantorProofError as exc:
         raise _refuse(exc.reason) from exc
     return authority.identity()
@@ -138,8 +164,10 @@ async def build_managed_card_selection_update(
     decision: ProjectAuthorizationDecision, project_ref: str, actor_subject: str, request_id: str, now: int,
     accepted_operations: Mapping[str, Any] | None = None, composition_mode: str | None = None,
     label: str | None = None, allow_unchanged: bool = False, external_mcp_family: str | None = None,
+    a2a_family: str | None = None,
     invocation_modes: Mapping[str, Any] | None = None, grantor_proof: str | None = None,
     grantor_edit: Mapping[str, Any] | None = None, load_live: Any = None,
+    account_scope_policy: str | None = None, governed_resources: Any = None,
 ) -> dict[str, Any]:
     """One exact P or agent-Card update from a host-authorized selection, without a write (W723: and its acceptance).
 
@@ -154,6 +182,18 @@ async def build_managed_card_selection_update(
     # W918: the project's External MCP switch, one field of P, like the access rule.
     if external_mcp_family is not None and (kind != "project_control" or external_mcp_family not in {"on", "off"}):
         raise _refuse("card_plan_selection_invalid")
+    # W937: the project's A2A switch, another field of P, the same way.
+    if a2a_family is not None and (kind != "project_control" or a2a_family not in {"on", "off"}):
+        raise _refuse("card_plan_selection_invalid")
+    # W941: a Control's account policy, set by the managing application's own transaction on the Controls it
+    # manages (the project's P and an invitation's Control), never on an agent Card.
+    if account_scope_policy is not None and (kind not in {"project_control", "invitation_control"}
+                                             or account_scope_policy != "caller"):
+        raise _refuse("card_plan_selection_invalid")
+    switch_values = {name: value for name, value in (("external_mcp_family", external_mcp_family),
+                                                      ("a2a_family", a2a_family),
+                                                      ("account_scope_policy", account_scope_policy))
+                     if value is not None}
     if type(now) is not int or now < 1:
         raise _refuse("card_plan_audit_time_invalid")
     managed_target_kind(original, project_ref=project_ref, kind=kind)
@@ -175,7 +215,17 @@ async def build_managed_card_selection_update(
                          "authority": _verified_owner_authority(
                              host, original, grantor_proof, edit=grantor_edit or {}, actor_subject=actor_subject,
                              request_id=request_id, now=now)}
-    elif grantor_proof is not None:
+    elif kind == "project_control" and governed_resources:
+        # W941: the managing application names the resources its delegable grants bound (its own); every
+        # other resource of the Control is bounded by the saver's own proven authority, refused without it.
+        if (not isinstance(governed_resources, (list, tuple))
+                or not all(type(item) is str and item and item == item.strip() for item in governed_resources)):
+            raise _refuse("card_plan_selection_invalid")
+        grantor_bound = {"governed": tuple(sorted(set(governed_resources))),
+                         "authority": _verified_saver_authority(
+                             host, original, grantor_proof, edit=grantor_edit or {}, actor_subject=actor_subject,
+                             request_id=request_id, now=now)}
+    elif grantor_proof is not None or governed_resources:
         raise _refuse("card_plan_selection_invalid")
     catalog_config = await host._catalog_config(active, owner_subject=original.grantor_subject)
     from .whole_card_save import normalize_selection
@@ -212,8 +262,7 @@ async def build_managed_card_selection_update(
         resource_acceptance=preserve_descriptor_acceptance(original.resource_acceptance, computed),
         **({"composition_mode": composition_mode} if composition_mode is not None else {}),
         **({"label": label} if label is not None else {}),
-        **({"properties": {**dict(selected.properties or {}), "external_mcp_family": external_mcp_family}}
-           if external_mcp_family is not None else {}))
+        **({"properties": {**dict(selected.properties or {}), **switch_values}} if switch_values else {}))
     if candidate.control_card != original.control_card:
         raise _refuse("card_plan_update_scope_invalid")  # an edit never moves a Card in the hierarchy
     if kind == "agent_card":
@@ -237,8 +286,8 @@ async def build_managed_card_selection_update(
         shown["composition_mode"] = candidate.to_dict().get("composition_mode")  # the one rule the person set
     if label is not None:
         shown["label"] = label  # the one display field the person renamed
-    if external_mcp_family is not None:
-        shown["properties"] = {**dict(shown.get("properties") or {}), "external_mcp_family": external_mcp_family}
+    if switch_values:
+        shown["properties"] = {**dict(shown.get("properties") or {}), **switch_values}
     if undisplayed_change(shown, candidate.to_dict()) is not None:
         raise _refuse("card_plan_undisplayed_change")
     return {"member": group_member(original=original, candidate=candidate, action="update")}

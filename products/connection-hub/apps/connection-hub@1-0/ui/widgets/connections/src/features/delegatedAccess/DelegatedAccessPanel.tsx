@@ -115,6 +115,8 @@ import {
 import {
   commonOperationGrants,
   doorGrantsForOperation,
+  onceUsedUp,
+  pendingCatalogResource,
   pendingOuterApprovalReady,
   pendingServiceApprovalReady,
   pendingSelectionStatus,
@@ -212,7 +214,8 @@ import {
 } from './projectControlCard';
 import {
   authorityAccountCount,
-  authorityAllowsOuterOperation,
+  controlKeepsCallerOperation,
+  externalMcpSwitchDecides,
   authorityNamedOperationCount,
   authorityOuterOperationCount,
   authorityResourceKeys,
@@ -324,7 +327,7 @@ function PendingStatus({ status }: { status: PendingSelectionStatus }) {
   if (!status) return null;
   const state = status === 'Already granted'
     ? 'granted'
-    : status === 'Pending - not granted yet'
+    : status === 'Pending - not granted yet' || status === 'Used once, approve again'
       ? 'pending'
       : 'required';
   return <span className="pending-selection-status" data-state={state}>{status}</span>;
@@ -2047,6 +2050,10 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
         && policy.authority.operation !== pendingGrant.outerOperation)
       .map((policy) => `${policy.authority.operation}: ${policy.mode}`))
     : [];
+  // W929: the Card holds the operation, but its Once is used up, so this consent asks again.
+  const pendingOnceUsed = Boolean(pendingGrant?.outerOperation) && pendingExistingRecords.some((record) => (
+    onceUsedUp(record.invocation_policies, pendingGrant?.resource || '', pendingGrant?.outerOperation || '')
+  ));
   const pendingOperationAlreadyGranted = Boolean(
     pendingGrant?.outerOperation
       ? pendingExistingRecords.some((record) => (
@@ -3879,7 +3886,7 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
   // demote to small code hints.
   const pendingAgent = pendingGrant ? parseAgentClientId(pendingGrant.clientId) : null;
   const pendingResourceLabel = pendingGrant
-    ? (resources.find((r) => r.resource === pendingGrant.resource)?.label || '')
+    ? (pendingCatalogResource(pendingGrant.resource, resources)?.label || '')
     : '';
   const pendingAccountLabel = pendingGrant?.accountId
     ? (accountLabelById.get(pendingGrant.accountId) || pendingGrant.accountId)
@@ -4002,6 +4009,7 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
                       pendingOperationAlreadyGranted,
                       pendingOperationSelected,
                       true,
+                      pendingOnceUsed,
                     )} />
                   </small>
                 </span>
@@ -4114,7 +4122,7 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
                       <div className="account-title"><code>{claim}</code></div>
                       {option?.label ? <div className="account-sub">{option.label}</div> : null}
                       {option?.description ? <div className="account-sub">{option.description}</div> : null}
-                      <PendingStatus status={pendingSelectionStatus(alreadyGranted, selected, true)} />
+                      <PendingStatus status={pendingSelectionStatus(alreadyGranted, selected, true, pendingOnceUsed)} />
                     </div>
                   </label>
                 </li>
@@ -4320,7 +4328,8 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
     const callerHasResource = !editRemovedResources.includes(resource)
       && (resource in (item.resource_grants || {}) || editAddedResources.includes(resource));
     const controlHasResource = composition
-      ? authorityResourceKeys(composition.control).includes(resource)
+      ? externalMcpSwitchDecides(resource, linkedControl?.external_mcp_family)
+        ?? authorityResourceKeys(composition.control).includes(resource)
       : false;
     const resourceDiffState = composition
       ? compositionRowState(callerHasResource, controlHasResource, composition.mode)
@@ -4418,7 +4427,8 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
                       const diffState = composition
                         ? compositionRowState(
                             callerSelected,
-                            authorityValueSelected(composition.control.resource_grants?.[resource], claim),
+                            externalMcpSwitchDecides(resource, linkedControl?.external_mcp_family)
+                              ?? authorityValueSelected(composition.control.resource_grants?.[resource], claim),
                             composition.mode,
                           )
                         : 'absent';
@@ -4555,7 +4565,8 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
                 const alreadyGranted = editGrantedOperations(item, resource).includes(operation.name);
                 const policy = invocationPolicyFor(item, resource, operation.name);
                 const controlSelected = composition
-                  ? authorityAllowsOuterOperation(composition.control, resource, operation.name)
+                  ? controlKeepsCallerOperation(composition.control, resource, operation.name,
+                    linkedControl?.external_mcp_family)
                   : false;
                 const diffState: CompositionRowState = composition
                   ? compositionRowState(selected, controlSelected, composition.mode)
@@ -4563,8 +4574,9 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
                 // W775: an agent-only operation on a person's Card is not the person's to allow; no Control warning.
                 const excludedByControl = operation.agent_only !== true
                   && controlCapsCaller
-                  && !authorityAllowsOuterOperation(
+                  && !controlKeepsCallerOperation(
                     linkedControl?.control_authority || {}, resource, operation.name,
+                    linkedControl?.external_mcp_family,
                   );
                 return (
                   <div
@@ -5400,6 +5412,7 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
       && linkedControl.control_authority
       ? outerOperationsExcludedByControl(
           pendingCallerAuthority(record), linkedControl.control_authority,
+          linkedControl.external_mcp_family,
         )
       : []).filter(({ resource, operation }) => !(personsCard && agentOnlyOnPersonCard(
       catalogRowFor(catalogResources, resource, (key) => (record.catalog_row_by_resource || {})[key] || key),

@@ -9,6 +9,9 @@ tests/test_card_save_trace_hub.py re-scans them, so a new code cannot be missing
 from __future__ import annotations
 
 CARD_SAVE_CODES = frozenset({
+    "a2a_family_requires_project_transaction",  # W937: only the project's own Control edit sets A2A agents
+    "account_scope_policy_requires_control_card",  # W941: only a Control Card carries an account policy
+    "account_scope_policy_requires_control_transaction",  # W941: only the Control's own transaction sets its account policy
     "agent_card",
     "agent_plan_already_bound",
     "agent_plan_authorization_invalid",
@@ -21,6 +24,7 @@ CARD_SAVE_CODES = frozenset({
     "agent_plan_target_invalid",
     "agent_plan_update_invalid",
     "card_custom_mcp_owner_only",  # W918: only the Card's owner adds or changes their MCP connectors
+    "card_entry_bound_row_not_selectable",  # W937: a Card editor never adds an entry-bound row
     "card_grantor_inventory_unavailable",  # W918 H2: an addition only the Card's owner can prove
     "card_grantor_proof_invalid",  # W918 H1: the owner's authority proof does not verify for this edit
     "card_group_control_read_missing",
@@ -51,6 +55,8 @@ CARD_SAVE_CODES = frozenset({
     "card_plan_invitation_seed_invalid",
     "card_plan_kind_invalid",
     "card_plan_invitation_identity_invalid",
+    "card_transactions_direct_write_refused",  # W578: a managed project Card; W562 F3: a W260 project Control Card on its creator's path
+    "control_card_account_scope_policy_invalid",  # W941: a Control's account policy is "caller"
     "project_invitation_control_selection_empty",
     "card_plan_my_parent_invalid",
     "card_plan_person_settings_invalid",
@@ -99,6 +105,7 @@ CARD_SAVE_CODES = frozenset({
     "card_revision",
     "catalog_digest",
     "catalog_version",
+    "control_card_a2a_family_invalid",  # W937: the project's A2A switch is on or off
     "control_card_composition_mode_invalid",
     "control_card_external_mcp_family_invalid",  # W918: the project's External MCP switch is on or off
     "control_card_initial_selection",
@@ -107,6 +114,7 @@ CARD_SAVE_CODES = frozenset({
     "control_selection_unresolved",
     "delegated_cards_unavailable",
     "delegated_catalog_unavailable",
+    "external_mcp_family_requires_project_transaction",  # W918: only the project's own Control edit sets External MCP
     "lifecycle_plan_authorization_decision_invalid",
     "lifecycle_plan_authorization_request_mismatch",
     "lifecycle_plan_authorization_step_unknown",

@@ -270,6 +270,39 @@ class OutboxStore:
 
     # -- lookups -------------------------------------------------------------
 
+    def find_in_flight(self, outbox_id: str, *, relay_id: str = "") -> tuple[Path, str] | None:
+        """``(path, folder)`` of one row in ``pending``/``leased`` of any agent, else None.
+
+        Never the settled history: a leased row can only be in flight, and
+        walking every agent's dated history under the outbox lock is what made
+        a lost lease cost seconds on a large host (W943).
+
+        W966: one id can be in flight in several agents' folders (a retirement
+        publication every reporter enqueues under the same id). With
+        ``relay_id``, the leased copy that relay holds is returned; otherwise
+        the first copy, as before. Looking up by id alone settled or retried
+        another agent's copy, so no copy ever left flight.
+        """
+
+        first: tuple[Path, str] | None = None
+        for folder in OUTBOX_IN_FLIGHT_FOLDERS:
+            roots = [root for _ref, root in self.agent_roots()]
+            for path in [root / folder / f"{outbox_id}.json" for root in roots] + [
+                self.legacy_root / folder / f"{outbox_id}.json"
+            ]:
+                if not path.is_file():
+                    continue
+                if not relay_id:
+                    return path, folder
+                if first is None:
+                    first = (path, folder)
+                if folder == "leased":
+                    row = read_json(path, required=False) or {}
+                    lease = row.get("lease") if isinstance(row.get("lease"), Mapping) else {}
+                    if str(lease.get("relay_id") or "") == str(relay_id):
+                        return path, folder
+        return first
+
     def find(self, outbox_id: str, *, worker_name: str = "", project_ref: str = "") -> tuple[Path, str] | None:
         """``(path, folder)`` of one row by id, never listing the history.
 
@@ -289,7 +322,14 @@ class OutboxStore:
         for ref, agents in by_project.items():
             path = self.partitioned(ref).find(outbox_id, agents=agents, within_days=OUTBOX_TERMINAL_RETENTION_DAYS)
             if path is not None:
-                return path, state_of_name(path.name) or str(read_json(path).get("state") or "")
+                state = state_of_name(path.name)
+                if state:
+                    return path, state
+                # Retention may remove a settled row between the lookup and
+                # this read (W943 F2-C): a row that is gone has expired.
+                row = read_json(path, required=False)
+                if row:
+                    return path, str(row.get("state") or "")
         for folder in OUTBOX_FOLDERS:
             path = self.legacy_root / folder / f"{outbox_id}.json"
             if path.is_file():
@@ -303,7 +343,10 @@ class OutboxStore:
 
     def read(self, outbox_id: str, **scope: str) -> dict[str, Any] | None:
         found = self.find(outbox_id, **scope)
-        return dict(read_json(found[0])) if found else None
+        if not found:
+            return None
+        row = read_json(found[0], required=False)
+        return dict(row) if row else None
 
     def settled_paths(self, *, project_ref: str, op: str) -> Iterator[Path]:
         """Every settled row of one project, oldest first: a full walk.
@@ -317,7 +360,10 @@ class OutboxStore:
             for agent in store.agents():
                 hours = list(store.hours_newest_first(agent))
                 for hour, start in reversed(hours):
-                    names = sorted(n for n in os.listdir(hour) if n.endswith(".json"))
+                    try:
+                        names = sorted(n for n in os.listdir(hour) if n.endswith(".json"))
+                    except FileNotFoundError:
+                        continue
                     read.opened(agent, start.strftime("%Y-%m-%dT%H"), len(names))
                     yield from (hour / name for name in names)
         for folder in ("sent", "refused"):

@@ -153,6 +153,23 @@ def _reconcile_ceiling(relay: Mapping[str, Any]) -> int:
     return max(5, min(int(_declared(relay, _CEILING_KEYS) or 60), 86_400))
 
 
+# W943 F2-A: how often mailbox reconciliation runs for an unchanged recipient
+# view. A change of the view runs it on the next heartbeat regardless.
+DEFAULT_MAILBOX_RECONCILE_INTERVAL_SECONDS = 300
+
+
+def mailbox_reconcile_interval(relay: Mapping[str, Any]) -> int:
+    # A value that is not a number falls back to the default rather than
+    # stopping the relay from reading its config.
+    try:
+        declared = int(relay.get("mailbox_reconcile_interval_seconds") or 0)
+    except (TypeError, ValueError):
+        declared = 0
+    if declared <= 0:
+        return DEFAULT_MAILBOX_RECONCILE_INTERVAL_SECONDS
+    return max(30, min(declared, 86_400))
+
+
 def _idle_reconcile_ceiling(relay: Mapping[str, Any]) -> int:
     # Push wakes the relay immediately. This ceiling is the reconciliation
     # fallback when no project currently addresses the worker.
@@ -300,6 +317,8 @@ class HostRelayConfig:
     # --backup-root``). Unset, nothing is created: the operator chooses it.
     backup_root: str = ""
     message_timing: MessageTimingConfig = MessageTimingConfig()
+    # W943 F2-A: relay.json ``mailbox_reconcile_interval_seconds``.
+    mailbox_reconcile_interval_seconds: int = DEFAULT_MAILBOX_RECONCILE_INTERVAL_SECONDS
 
     @property
     def effective_agent_workspace_root(self) -> str:
@@ -440,6 +459,7 @@ class HostRelayConfig:
             relay_id=component(_required(relay.get("id"), "relay.id"), field="relay.id"),
             reconcile_ceiling_seconds=_reconcile_ceiling(relay),
             idle_reconcile_ceiling_seconds=_idle_reconcile_ceiling(relay),
+            mailbox_reconcile_interval_seconds=mailbox_reconcile_interval(relay),
             journal_workspace_root=journal_root,
             source_repositories=tuple(
                 sorted(
@@ -688,55 +708,68 @@ def initialize_host_config(
     if not existing_pointer:
         existing_pointer = read_json(pointer, required=False)
     existing_path = str(existing_pointer.get("config") or "").strip()
+    def reuse(candidate_path: Path) -> HostRelayConfig | None:
+        """The existing record when it is this exact configuration; None when its target differs.
+
+        A rerun with identical values reuses the record and rewrites nothing in it (W926).
+        """
+
+        candidate = HostRelayConfig.load(candidate_path)
+        requested_target = (
+            component(target_id, field="target_id"),
+            _endpoint(endpoint),
+            component(tenant, field="tenant"),
+            component(platform_project, field="platform_project"),
+        )
+        existing_target = (
+            candidate.target_id,
+            candidate.endpoint,
+            candidate.tenant,
+            candidate.platform_project,
+        )
+        if requested_target != existing_target:
+            return None
+        if host_id and component(host_id, field="host_id") != candidate.host_id:
+            return None
+        requested_roots = tuple(
+            sorted(str(Path(root).expanduser().resolve()) for root in allowed_roots)
+        )
+        requested_repositories = tuple(
+            sorted(
+                (
+                    component(str(alias), field="repository alias"),
+                    str(Path(root).expanduser().resolve()),
+                )
+                for alias, root in source_repositories.items()
+            )
+        )
+        if (
+            requested_roots != candidate.allowed_roots
+            or requested_repositories != candidate.source_repositories
+        ):
+            raise DomainError(
+                "work_relay_config_update_required",
+                "This target is already configured with different local roots; use host configure after reviewing the authority change.",
+                status=409,
+                details={"config": str(candidate_path)},
+            )
+        _write_default_pointer(pointer, candidate_path, make_default=make_default)
+        atomic_write_json(
+            target_pointer,
+            {
+                "schema": HOST_CONFIG_POINTER_SCHEMA,
+                "config": str(candidate_path),
+                "updated_at": utc_now(),
+            },
+        )
+        return candidate
+
     if not config_path and not host_id and existing_path:
         candidate_path = Path(existing_path).expanduser().resolve()
         if candidate_path.exists():
-            candidate = HostRelayConfig.load(candidate_path)
-            requested_target = (
-                component(target_id, field="target_id"),
-                _endpoint(endpoint),
-                component(tenant, field="tenant"),
-                component(platform_project, field="platform_project"),
-            )
-            existing_target = (
-                candidate.target_id,
-                candidate.endpoint,
-                candidate.tenant,
-                candidate.platform_project,
-            )
-            requested_roots = tuple(
-                sorted(str(Path(root).expanduser().resolve()) for root in allowed_roots)
-            )
-            requested_repositories = tuple(
-                sorted(
-                    (
-                        component(str(alias), field="repository alias"),
-                        str(Path(root).expanduser().resolve()),
-                    )
-                    for alias, root in source_repositories.items()
-                )
-            )
-            if requested_target == existing_target:
-                if (
-                    requested_roots != candidate.allowed_roots
-                    or requested_repositories != candidate.source_repositories
-                ):
-                    raise DomainError(
-                        "work_relay_config_update_required",
-                        "This target is already configured with different local roots; use host configure after reviewing the authority change.",
-                        status=409,
-                        details={"config": str(candidate_path)},
-                    )
-                _write_default_pointer(pointer, candidate_path, make_default=make_default)
-                atomic_write_json(
-                    target_pointer,
-                    {
-                        "schema": HOST_CONFIG_POINTER_SCHEMA,
-                        "config": str(candidate_path),
-                        "updated_at": utc_now(),
-                    },
-                )
-                return candidate
+            reused = reuse(candidate_path)
+            if reused is not None:
+                return reused
     selected_host_id = component(
         host_id or f"host-{uuid.uuid4().hex[:12]}", field="host_id"
     )
@@ -749,6 +782,17 @@ def initialize_host_config(
     )
     path = Path(config_path).expanduser().resolve() if config_path else host_root / "relay.json"
     if path.exists():
+        # W926: an identical rerun that names the host id or config path reuses
+        # the record as the implicit rerun does; different values stay refused.
+        # A file there that is no relay record keeps today's refusal (review note).
+        try:
+            reused = reuse(path)
+        except DomainError as exc:
+            if exc.code == "work_relay_config_update_required":
+                raise
+            reused = None
+        if reused is not None:
+            return reused
         raise DomainError(
             "work_relay_config_exists",
             "This host relay is already configured; inspect or update the existing record.",

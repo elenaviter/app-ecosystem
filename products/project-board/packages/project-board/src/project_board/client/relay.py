@@ -31,6 +31,7 @@ except ImportError:  # pragma: no cover - the relay runtime is a host-side depen
             self.message = str(message or "The host relay cycle can be retried.")
 
 
+from .agent_services import is_agent_services_action
 from .card_refusal import actionable_card_refusal
 from project_board.client.heartbeat_team import TeamRequest, TeamSnapshots
 from .heartbeat_reply import ReplyRequest, ReplySnapshots, ReplyDecodeError
@@ -74,9 +75,11 @@ from .plan_authority import PLAN_REF_RESOLUTION_SCHEMA
 from ..contract.plan_host import NOTE_VIEW_KIND, PLAN_HOST_CONTROL_KINDS
 from .host_config import (
     DEFAULT_ALLOWED_PEER_WORKERS,
+    DEFAULT_MAILBOX_RECONCILE_INTERVAL_SECONDS,
     HostRelayConfig,
     WorkerChannelConfig,
     agent_workspace,
+    mailbox_reconcile_interval,
     profile_name_of,
     set_worker_channel_state,
 )
@@ -87,7 +90,7 @@ from .coordinate_queue import COORDINATE_LEASE_LOST, CoordinateQueue
 from .credential_refusal import credential_refused
 from .relay_pacing import HANDSHAKE_TIMEOUT_REASON, PACING_FILENAME, RelayPacing
 from .relay_logging import relay_log_owner
-from .relay_trace import DiagnosticWriter, RelayActivityTrace
+from .relay_trace import DiagnosticWriter, RelayActivityTrace, record_outbox_send
 from .relay_admission import is_namespace_handshake_timeout, is_runtime_unavailable
 from .session_delivery import (
     WAKE_EVENT_KINDS,
@@ -179,6 +182,8 @@ HEARTBEAT_CONTROL_REF_LIMIT = 20
 # Adapters built without their channel's store executor (tests, one-shot
 # commands) still keep blocking work off the event loop (W461).
 _ADAPTER_EXECUTORS = ChannelExecutors(thread_name_prefix="problem-board-adapter")
+# W943: a retry or settle of an outbox row whose lease this relay no longer holds.
+_OUTBOX_LOST_LEASE_CODES = frozenset({"field_outbox_not_leased", "field_outbox_lease_mismatch"})
 
 # W423: how often the relay re-measures an agent's workspace size (W461:
 # held per path by WorkspaceSizes, which the per-poll adapters share).
@@ -842,6 +847,9 @@ class RelayConfig:
     # W913: the KDCube profile (pb setup target id) that selects this relay's
     # host config, empty when no name selects it; the resume line carries it.
     kdcube_profile: str = ""
+    # W943 F2-A: with an unchanged recipient view, how often mailbox
+    # reconciliation still runs (relay.json mailbox_reconcile_interval_seconds).
+    mailbox_reconcile_interval_seconds: int = DEFAULT_MAILBOX_RECONCILE_INTERVAL_SECONDS
 
     def repository_mapping(self) -> dict[str, Any]:
         return repository_entries(self.source_repositories, self.source_read_roots)
@@ -963,6 +971,7 @@ class RelayConfig:
             relay_id=_required(worker.get("relay_id"), "worker.relay_id"),
             reconcile_ceiling_seconds=_declared_ceiling(value),
             idle_reconcile_ceiling_seconds=_declared_idle_ceiling(value),
+            mailbox_reconcile_interval_seconds=mailbox_reconcile_interval(value),
             journal_workspace_root=(
                 journal_root_path.resolve() if journal_root_path else None
             ),
@@ -1031,6 +1040,11 @@ class RelayConfig:
             relay_id=f"{host.relay_id}-{channel.worker_name}",
             reconcile_ceiling_seconds=host.reconcile_ceiling_seconds,
             idle_reconcile_ceiling_seconds=host.idle_reconcile_ceiling_seconds,
+            mailbox_reconcile_interval_seconds=getattr(
+                host,
+                "mailbox_reconcile_interval_seconds",
+                DEFAULT_MAILBOX_RECONCILE_INTERVAL_SECONDS,
+            ),
             journal_workspace_root=host.journal_workspace_root,
             source_repositories=host.source_repositories,
             allowed_roots=host.allowed_roots,
@@ -4164,6 +4178,20 @@ class ProblemBoardHostRelayAdapter:
                 except FileLockBusy:
                     await asyncio.sleep(delay)
                     delay = min(delay * 2, self.OUTBOX_LOCK_RETRY_MAX_SECONDS)
+                except DomainError as exc:
+                    # W943: a retry or settle of a row this relay no longer
+                    # holds (its lease expired and another claim took it) is
+                    # that row's business, never the channel's: skip it. On
+                    # 2026-10-23 each such retry failed the whole channel and
+                    # cost a 40-60 s reconnect.
+                    if not finish or exc.code not in _OUTBOX_LOST_LEASE_CODES:
+                        raise
+                    logger.warning(
+                        "Problem Board outbox row skipped: its lease is no longer this relay's "
+                        "worker=%s outbox_id=%s code=%s",
+                        self.config.worker_name, str(args[0] if args else ""), exc.code,
+                    )
+                    return None
 
         if not finish:
             return attempt
@@ -4231,6 +4259,24 @@ class ProblemBoardHostRelayAdapter:
                 exc_info=task.exception(),
             )
 
+    async def _outbox_action(self, **kwargs: Any) -> Any:
+        """One outbox board send, timed apart from the flush's store calls (W943 F3)."""
+
+        started = time.monotonic()
+        try:
+            return await self.client.action(**kwargs)
+        finally:
+            record_outbox_send(time.monotonic() - started)
+
+    async def _outbox_upload(self, files: Any) -> Any:
+        """One outbox attachment upload, timed with the sends (W943 F3)."""
+
+        started = time.monotonic()
+        try:
+            return await self._upload_attachments(files)
+        finally:
+            record_outbox_send(time.monotonic() - started)
+
     async def _flush_outbox_unlocked(
         self,
         *,
@@ -4272,13 +4318,13 @@ class ProblemBoardHostRelayAdapter:
             kind = str(row.get("kind") or "")
             try:
                 if kind == "plan.nodes.publish":
-                    response = await self.client.action(
+                    response = await self._outbox_action(
                         object_ref=str(row.get("project_ref") or ""),
                         action=kind,
                         payload={"batch": payload},
                     )
                 elif kind == "project.plan.index":
-                    response = await self.client.action(
+                    response = await self._outbox_action(
                         object_ref=str(row.get("project_ref") or ""),
                         action=kind,
                         payload=payload,
@@ -4289,7 +4335,7 @@ class ProblemBoardHostRelayAdapter:
                         or row.get("project_ref")
                         or ""
                     )
-                    response = await self.client.action(
+                    response = await self._outbox_action(
                         object_ref=project_ref,
                         action=kind,
                         payload=payload,
@@ -4297,21 +4343,21 @@ class ProblemBoardHostRelayAdapter:
                 elif kind == "mail.route":
                     files = payload.pop("attachment_files", None) or []
                     if files:
-                        payload["attachments"] = await self._upload_attachments(files)
-                    response = await self.client.action(
+                        payload["attachments"] = await self._outbox_upload(files)
+                    response = await self._outbox_action(
                         object_ref=str(row.get("project_ref") or ""),
                         action=kind,
                         payload=payload,
                     )
                 elif kind == "mail.reconciliation.publish":
-                    response = await self.client.action(
+                    response = await self._outbox_action(
                         object_ref=str(row.get("project_ref") or ""),
                         action=kind,
                         payload=payload,
                     )
                 elif kind == "control.worker_settle":
                     command_ref = str(payload.pop("command_ref", "") or "")
-                    response = await self.client.action(
+                    response = await self._outbox_action(
                         object_ref=command_ref,
                         action=kind,
                         payload={
@@ -4323,7 +4369,7 @@ class ProblemBoardHostRelayAdapter:
                     )
                 elif kind == "assignment.report":
                     assignment_ref = str(payload.pop("assignment_ref", "") or "")
-                    response = await self.client.action(
+                    response = await self._outbox_action(
                         object_ref=assignment_ref,
                         action=kind,
                         payload=payload,
@@ -4331,14 +4377,14 @@ class ProblemBoardHostRelayAdapter:
                 elif kind == "project.report.publish":
                     files = payload.pop("attachment_files", None) or []
                     if files:
-                        payload["staged_refs"] = await self._upload_attachments(files)
-                    response = await self.client.action(
+                        payload["staged_refs"] = await self._outbox_upload(files)
+                    response = await self._outbox_action(
                         object_ref=str(row.get("object_ref") or ""),
                         action=kind,
                         payload=payload,
                     )
                 elif kind == "project.report.fail":
-                    response = await self.client.action(
+                    response = await self._outbox_action(
                         object_ref=str(row.get("object_ref") or ""),
                         action=kind,
                         payload=payload,
@@ -4657,6 +4703,7 @@ class ProblemBoardHostRelayAdapter:
             revision=int(project.get("files_revision") or 0),
             goal=project.get("goal"),
             edit_allowed=allowed if isinstance(allowed, bool) else None,
+            worker_name=self.config.worker_name,
         )
 
     def _sync_project_card(self, project: Mapping[str, Any]) -> None:
@@ -5272,10 +5319,12 @@ class ProblemBoardHostRelayAdapter:
     def _reconcile_project_mailboxes(
         self, recipients: Sequence[Mapping[str, Any]]
     ) -> dict[str, Any]:
-        self.field.sync_project_mail_recipients(self.config.project_id, recipients)
-        return self.field.reconcile_project_mailboxes(
+        # W943 F2-A: once per owner view per change, else once per interval.
+        return self.field.reconcile_project_mailboxes_when_due(
             self.config.project_id,
+            recipients,
             reporter_worker_name=self.config.worker_name,
+            interval_seconds=self.config.mailbox_reconcile_interval_seconds,
         )
 
     async def _ensure_registration(
@@ -7620,37 +7669,55 @@ class ProblemBoardRelaySupervisor:
                         wait_context=wait_context,
                     )
                     continue
-                stable_action = getattr(
-                    session.adapter.client,
-                    "action_with_transport_identity",
-                    None,
-                )
-                if not callable(stable_action):
-                    raise DomainError(
-                        "work_coordinate_transport_identity_unavailable",
-                        "The worker relay client cannot preserve retry identity.",
-                        status=503,
-                    )
-                arguments = {
-                    "object_ref": str(request.get("object_ref") or ""),
-                    "action": str(request.get("action") or ""),
-                    "payload": dict(request.get("payload") or {}),
-                }
-                action_started = time.monotonic()
-                try:
-                    # W574: a mutation whose earlier send ended with an unknown
-                    # outcome is settled by reading the board's durable receipt,
-                    # never by sending it again, on any board.
-                    settled = await _settle_unknown_by_receipt(stable_action, request, arguments)
-                    if settled is not None:
-                        result = settled
-                    else:
-                        result = await stable_action(
-                            **arguments,
-                            transport_request_id=str(request.get("request_id") or ""),
+                if is_agent_services_action(str(request.get("action") or "")):
+                    # W918: the services this Card allows, through Connection Hub's
+                    # gateway with this channel's Card; never the board's Data Bus.
+                    agent_services = getattr(session.adapter.client, "agent_services", None)
+                    if not callable(agent_services):
+                        raise DomainError(
+                            "work_agent_services_unavailable",
+                            "This relay cannot reach the services the Card allows.",
+                            status=503,
                         )
-                finally:
-                    governed_action_seconds = time.monotonic() - action_started
+                    action_started = time.monotonic()
+                    try:
+                        result = await agent_services(
+                            str(request.get("action") or ""), dict(request.get("payload") or {}),
+                        )
+                    finally:
+                        governed_action_seconds = time.monotonic() - action_started
+                else:
+                    stable_action = getattr(
+                        session.adapter.client,
+                        "action_with_transport_identity",
+                        None,
+                    )
+                    if not callable(stable_action):
+                        raise DomainError(
+                            "work_coordinate_transport_identity_unavailable",
+                            "The worker relay client cannot preserve retry identity.",
+                            status=503,
+                        )
+                    arguments = {
+                        "object_ref": str(request.get("object_ref") or ""),
+                        "action": str(request.get("action") or ""),
+                        "payload": dict(request.get("payload") or {}),
+                    }
+                    action_started = time.monotonic()
+                    try:
+                        # W574: a mutation whose earlier send ended with an unknown
+                        # outcome is settled by reading the board's durable receipt,
+                        # never by sending it again, on any board.
+                        settled = await _settle_unknown_by_receipt(stable_action, request, arguments)
+                        if settled is not None:
+                            result = settled
+                        else:
+                            result = await stable_action(
+                                **arguments,
+                                transport_request_id=str(request.get("request_id") or ""),
+                            )
+                    finally:
+                        governed_action_seconds = time.monotonic() - action_started
                 if not isinstance(result, Mapping):
                     raise DomainError(
                         "work_coordinate_response_invalid",

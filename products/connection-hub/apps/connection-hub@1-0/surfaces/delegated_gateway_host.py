@@ -52,6 +52,8 @@ from connection_hub.invocation_policy import (
     SURFACE_OUTER,
     InvocationAuthority,
 )
+from connection_hub.delegated_gateway.providers.external_a2a import ExternalRemoteA2AProvider
+from connection_hub.remote_a2a import connector_id_from_resource as a2a_connector_id_from_resource
 from connection_hub.remote_mcp import connector_id_from_resource
 
 
@@ -140,6 +142,13 @@ def gateway_resource_metadata(
             "resource_disabled",
         )
     )
+    a2a_connector_id = a2a_connector_id_from_resource(resource.resource)
+    if a2a_connector_id:
+        return GatewayResourceMetadata(
+            endpoint_relation="connection_hub_remote_a2a",
+            recovery=recovery,
+            provider_metadata={"gateway_compatible": True, "connector_id": a2a_connector_id},
+        )
     connector_id = connector_id_from_resource(resource.resource)
     if connector_id:
         return GatewayResourceMetadata(
@@ -606,6 +615,7 @@ async def build_hosted_gateway_binding(
     access_service: Any,
     remote_mcp_service: Any,
     invocation_policy_service: Any,
+    remote_a2a_service: Any = None,
     tenant: str,
     project: str,
     connections: Mapping[str, Any],
@@ -653,6 +663,7 @@ async def build_hosted_gateway_binding(
     providers = DelegatedMCPProviderRegistry(
         (
             ExternalRemoteMCPProvider(remote_mcp_service),
+            *((ExternalRemoteA2AProvider(remote_a2a_service),) if remote_a2a_service is not None else ()),
             ManagedKDCubeMCPProvider(
                 managed_host,
                 resource_kinds=("catalog", "managed_kdcube_mcp"),

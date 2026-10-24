@@ -114,6 +114,7 @@ from connection_hub.delegated_credentials.consent_denial import (
     connection_hub_grant_url,
     connection_hub_invocation_policy_url,
 )
+from connection_hub.delegated_credentials.resource_operations import resource_matches
 from connection_hub.delegated_credentials.request_approval import (
     RequestApprovalTicket,
     RequestApprovalTicketError,
@@ -184,10 +185,25 @@ from connection_hub.delegated_to_kdcube.public_base import (
     set_connection_hub_public_base_url,
 )
 from kdcube_ai_app.apps.chat.sdk.integrations.connection_hub.remote_mcp import (
+    KDCubeRemoteMCPSecretStore,
     RemoteMCPOAuthFlowError,
     build_remote_mcp_connector_service,
     build_remote_mcp_oauth_service,
     remote_mcp_endpoint_policy,
+)
+from app_foundation.a2a import A2AClient, A2AClientError
+from app_foundation.net import OutboundEndpointDenied, OutboundEndpointPolicy
+from connection_hub.remote_a2a import (
+    BundleStorageRemoteA2AConnectorStore,
+    RemoteA2AConnectorConflict,
+    RemoteA2AConnectorNotFound,
+    RemoteA2AConnectorService,
+    RemoteA2ARecordError,
+    remote_a2a_resource_rows,
+)
+from kdcube_ai_app.storage.observed_file_locks import (
+    ObservedFileLockTimeout,
+    observed_file_lock_async,
 )
 from kdcube_ai_app.apps.chat.sdk.integrations.connection_hub.invocation_policy import (
     build_invocation_policy_service,
@@ -342,6 +358,12 @@ CSRF_PROTECTED_OPERATION_ALIASES = frozenset({
     "remote_mcp_connector_set_enabled",
     "remote_mcp_connector_start_oauth",
     "remote_mcp_connector_update_credential",
+    "remote_a2a_connector_accept_descriptor",
+    "remote_a2a_connector_create",
+    "remote_a2a_connector_delete",
+    "remote_a2a_connector_refresh",
+    "remote_a2a_connector_set_enabled",
+    "remote_a2a_connector_update_credential",
 })
 CSRF_EXEMPT_POST_OPERATION_ALIASES = frozenset({
     # W319: read-only, asked by the project host under the person's session.
@@ -468,6 +490,12 @@ def _control_card_changes(payload: Mapping[str, Any]) -> Dict[str, Any]:
         "external_mcp_family": (
             str(payload.get("external_mcp_family") or "").strip()
             if "external_mcp_family" in payload
+            else None
+        ),
+        # W937: the project's A2A switch, the same rule.
+        "a2a_family": (
+            str(payload.get("a2a_family") or "").strip()
+            if "a2a_family" in payload
             else None
         ),
     }
@@ -1177,6 +1205,13 @@ def _identity_config(entrypoint: Any) -> Dict[str, Any]:
     return {}
 
 
+def _control_saver_proof(connections: Mapping[str, Any]) -> bool:
+    """W941: ``connections.delegated_credentials.control_saver_proof``; only a literal true turns it on."""
+
+    delegated = connections.get("delegated_credentials") if isinstance(connections, Mapping) else None
+    return isinstance(delegated, Mapping) and delegated.get("control_saver_proof") is True
+
+
 def _connections_config(entrypoint: Any) -> Dict[str, Any]:
     props = getattr(entrypoint, "bundle_props", None)
     if isinstance(props, Mapping):
@@ -1498,6 +1533,65 @@ def _remote_mcp_oauth_service(entrypoint: Any) -> Any:
     )
 
 
+def _remote_a2a_config(entrypoint: Any) -> Mapping[str, Any]:
+    connections = _connections_config(entrypoint)
+    value = connections.get("remote_a2a") if isinstance(connections, Mapping) else None
+    return value if isinstance(value, Mapping) else {}
+
+
+def _remote_a2a_endpoint_policy(config: Mapping[str, Any]) -> OutboundEndpointPolicy:
+    outbound = config.get("outbound") if isinstance(config.get("outbound"), Mapping) else {}
+    raw_hosts = outbound.get("allowed_hosts")
+    hosts = (
+        frozenset(str(item or "").strip().lower().rstrip(".") for item in raw_hosts if str(item or "").strip())
+        if isinstance(raw_hosts, (list, tuple, set))
+        else frozenset()
+    )
+    return OutboundEndpointPolicy(
+        allow_http=_bool(outbound.get("allow_http"), False),
+        allow_private_networks=_bool(outbound.get("allow_private_networks"), False),
+        allowed_hosts=hosts,
+    )
+
+
+@asynccontextmanager
+async def _remote_a2a_mutation_lock(**kwargs: Any):
+    try:
+        async with observed_file_lock_async(**kwargs) as metadata:
+            yield metadata
+    except ObservedFileLockTimeout as exc:
+        raise RemoteA2AConnectorConflict("connector_mutation_lock_timeout") from exc
+
+
+def _remote_a2a_service(entrypoint: Any) -> RemoteA2AConnectorService:
+    """User-owned outbound A2A connectors (W937 phase 1).
+
+    The protocol client and its outbound policy are App Foundation's; the
+    connector registry, credential custody and drift are Connection Hub's.
+    A card whose endpoint is on another origin than the card URL is refused
+    (``card_endpoint_cross_origin``) unless the deployment sets
+    ``connections.remote_a2a.allow_cross_origin_endpoint``.
+    """
+
+    config = _remote_a2a_config(entrypoint)
+    try:
+        timeout = float(config.get("read_timeout_seconds") or 30.0)
+        max_bytes = int(config.get("max_response_bytes") or 1024 * 1024)
+    except (TypeError, ValueError):
+        timeout, max_bytes = 30.0, 1024 * 1024
+    return RemoteA2AConnectorService(
+        store=BundleStorageRemoteA2AConnectorStore(_storage_root_or_error(entrypoint)),
+        secret_store=KDCubeRemoteMCPSecretStore(bundle_id=BUNDLE_ID),
+        client=A2AClient(
+            endpoint_policy=_remote_a2a_endpoint_policy(config),
+            timeout_seconds=max(1.0, timeout),
+            max_response_bytes=max(1024, max_bytes),
+        ),
+        mutation_lock=_remote_a2a_mutation_lock,
+        allow_cross_origin_endpoint=_bool(config.get("allow_cross_origin_endpoint"), False),
+    )
+
+
 def _remote_mcp_oauth_public_url(
     entrypoint: Any, request: Any, *, operation: str
 ) -> str:
@@ -1762,6 +1856,34 @@ async def _remote_mcp_resource_overlay(
     return remote_mcp_resource_rows(connectors)
 
 
+async def _remote_a2a_resource_overlay(entrypoint: Any, owner_subject: str) -> tuple[Any, ...]:
+    connectors = await _remote_a2a_service(entrypoint).list(owner_subject=owner_subject)
+    return remote_a2a_resource_rows(connectors)
+
+
+async def _owner_connector_overlay(entrypoint: Any, owner_subject: str) -> tuple[Any, ...]:
+    """The owner's remote MCP and remote A2A connectors as catalog rows."""
+
+    return (
+        *await _remote_mcp_resource_overlay(entrypoint, owner_subject),
+        *await _remote_a2a_resource_overlay(entrypoint, owner_subject),
+    )
+
+
+def _remote_a2a_failure(exc: Exception) -> Dict[str, Any]:
+    if isinstance(exc, RemoteA2AConnectorConflict):
+        return {"ok": False, "error": exc.reason, "status": 409, "current_revision": exc.current_revision}
+    if isinstance(exc, RemoteA2AConnectorNotFound):
+        return {"ok": False, "error": exc.reason, "status": 404}
+    if isinstance(exc, A2AClientError):
+        # A fixed App Foundation code; never the outside agent's text.
+        return {"ok": False, "error": exc.code, "status": 400}
+    if isinstance(exc, (OutboundEndpointDenied, RemoteA2ARecordError, RemoteMCPRecordError)):
+        return {"ok": False, "error": exc.reason, "status": 400}
+    LOGGER.exception("[connection-hub.remote_a2a] operation failed")
+    return {"ok": False, "error": "remote_a2a_connector_unavailable", "status": 503, "retryable": True}
+
+
 def _remote_mcp_failure(exc: Exception) -> Dict[str, Any]:
     if isinstance(exc, RemoteMCPConnectorConflict):
         return {
@@ -1890,7 +2012,7 @@ async def _automation_access_service_for(
         config=config,
         catalog_resolver=_delegated_catalog_resolver(entrypoint, redis),
         card_persistence=card_persistence,
-        resource_overlay_provider=lambda owner_subject: _remote_mcp_resource_overlay(
+        resource_overlay_provider=lambda owner_subject: _owner_connector_overlay(
             entrypoint, owner_subject
         ),
         invocation_policy_service=_invocation_policy_service(entrypoint),
@@ -1900,6 +2022,8 @@ async def _automation_access_service_for(
         grantor_authority_secret=await _bundle_secret_value(
             entrypoint, secret_path="connections.delegated_credentials.grantor_authority_secret",
             trace_scope="delegated_credentials.grantor_authority", warn_missing=False),
+        # W941: issue the saver's proof for a managed Control's Save too; on only when set to true.
+        control_saver_proof=_control_saver_proof(connections),
     )
     service.bind_issuer_registry(issuers, actor_subject=_platform_user_id(entrypoint))
     actor, classification, read_tenant, read_project = _protected_lifecycle_read_context(entrypoint)
@@ -3694,6 +3818,13 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
                             "remote_mcp_connector_start_oauth": {"visibility": {"user_types": []}},
                             "remote_mcp_connector_update_credential": {"visibility": {"user_types": []}},
                             "remote_mcp_connector_delete": {"visibility": {"user_types": []}},
+                            "remote_a2a_connectors_list": {"visibility": {"user_types": []}},
+                            "remote_a2a_connector_create": {"visibility": {"user_types": []}},
+                            "remote_a2a_connector_refresh": {"visibility": {"user_types": []}},
+                            "remote_a2a_connector_accept_descriptor": {"visibility": {"user_types": []}},
+                            "remote_a2a_connector_set_enabled": {"visibility": {"user_types": []}},
+                            "remote_a2a_connector_update_credential": {"visibility": {"user_types": []}},
+                            "remote_a2a_connector_delete": {"visibility": {"user_types": []}},
                             "delegated_mcp_gateway_access": {"visibility": {"user_types": []}},
                         },
                     },
@@ -5265,6 +5396,198 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
         except Exception as exc:
             return _remote_mcp_failure(exc)
 
+    @api(
+        method="GET",
+        alias="remote_a2a_connectors_list",
+        route="operations",
+        **_api_visibility("remote_a2a_connectors_list"),
+    )
+    async def remote_a2a_connectors_list(
+        self,
+        data: Optional[Dict[str, Any]] = None,
+        user_id: Optional[str] = None,
+        **kwargs: Any,
+    ) -> Dict[str, Any]:
+        owner = _platform_user_id(self, user_id=user_id)
+        if not owner:
+            return {"ok": False, "error": "remote_a2a_requires_authenticated_user"}
+        payload = _payload(data, **kwargs)
+        try:
+            del payload
+            connectors = await _remote_a2a_service(self).list(owner_subject=owner)
+            return {"ok": True, "items": [connector.to_public_dict() for connector in connectors]}
+        except Exception as exc:
+            return _remote_a2a_failure(exc)
+
+    @api(
+        method="POST",
+        alias="remote_a2a_connector_create",
+        route="operations",
+        csrf=True,
+        **_api_visibility("remote_a2a_connector_create"),
+    )
+    async def remote_a2a_connector_create(
+        self,
+        data: Optional[Dict[str, Any]] = None,
+        user_id: Optional[str] = None,
+        **kwargs: Any,
+    ) -> Dict[str, Any]:
+        owner = _platform_user_id(self, user_id=user_id)
+        if not owner:
+            return {"ok": False, "error": "remote_a2a_requires_authenticated_user"}
+        payload = _payload(data, **kwargs)
+        try:
+            connector = await _remote_a2a_service(self).create(
+                owner_subject=owner,
+                label=str(payload.get("label") or ""),
+                card_url=str(payload.get("card_url") or ""),
+                credential_mode=str(payload.get("credential_mode") or "none").strip().lower(),
+                credential_header=str(payload.get("credential_header") or ""),
+                credential_value=str(payload.get("credential_value") or ""),
+            )
+            return {"ok": True, "connector": connector.to_public_dict()}
+        except Exception as exc:
+            return _remote_a2a_failure(exc)
+
+    @api(
+        method="POST",
+        alias="remote_a2a_connector_refresh",
+        route="operations",
+        csrf=True,
+        **_api_visibility("remote_a2a_connector_refresh"),
+    )
+    async def remote_a2a_connector_refresh(
+        self,
+        data: Optional[Dict[str, Any]] = None,
+        user_id: Optional[str] = None,
+        **kwargs: Any,
+    ) -> Dict[str, Any]:
+        owner = _platform_user_id(self, user_id=user_id)
+        if not owner:
+            return {"ok": False, "error": "remote_a2a_requires_authenticated_user"}
+        payload = _payload(data, **kwargs)
+        try:
+            connector = await _remote_a2a_service(self).refresh(
+                owner_subject=owner,
+                connector_id=str(payload.get("connector_id") or ""),
+                expected_revision=_expected_remote_mcp_revision(payload),
+            )
+            return {"ok": True, "connector": connector.to_public_dict()}
+        except Exception as exc:
+            return _remote_a2a_failure(exc)
+
+    @api(
+        method="POST",
+        alias="remote_a2a_connector_accept_descriptor",
+        route="operations",
+        csrf=True,
+        **_api_visibility("remote_a2a_connector_accept_descriptor"),
+    )
+    async def remote_a2a_connector_accept_descriptor(
+        self,
+        data: Optional[Dict[str, Any]] = None,
+        user_id: Optional[str] = None,
+        **kwargs: Any,
+    ) -> Dict[str, Any]:
+        owner = _platform_user_id(self, user_id=user_id)
+        if not owner:
+            return {"ok": False, "error": "remote_a2a_requires_authenticated_user"}
+        payload = _payload(data, **kwargs)
+        try:
+            connector = await _remote_a2a_service(self).accept_descriptor(
+                owner_subject=owner,
+                connector_id=str(payload.get("connector_id") or ""),
+                expected_revision=_expected_remote_mcp_revision(payload),
+            )
+            return {"ok": True, "connector": connector.to_public_dict()}
+        except Exception as exc:
+            return _remote_a2a_failure(exc)
+
+    @api(
+        method="POST",
+        alias="remote_a2a_connector_set_enabled",
+        route="operations",
+        csrf=True,
+        **_api_visibility("remote_a2a_connector_set_enabled"),
+    )
+    async def remote_a2a_connector_set_enabled(
+        self,
+        data: Optional[Dict[str, Any]] = None,
+        user_id: Optional[str] = None,
+        **kwargs: Any,
+    ) -> Dict[str, Any]:
+        owner = _platform_user_id(self, user_id=user_id)
+        if not owner:
+            return {"ok": False, "error": "remote_a2a_requires_authenticated_user"}
+        payload = _payload(data, **kwargs)
+        try:
+            connector = await _remote_a2a_service(self).set_enabled(
+                owner_subject=owner,
+                connector_id=str(payload.get("connector_id") or ""),
+                enabled=_bool(payload.get("enabled"), True),
+                expected_revision=_expected_remote_mcp_revision(payload),
+            )
+            return {"ok": True, "connector": connector.to_public_dict()}
+        except Exception as exc:
+            return _remote_a2a_failure(exc)
+
+    @api(
+        method="POST",
+        alias="remote_a2a_connector_update_credential",
+        route="operations",
+        csrf=True,
+        **_api_visibility("remote_a2a_connector_update_credential"),
+    )
+    async def remote_a2a_connector_update_credential(
+        self,
+        data: Optional[Dict[str, Any]] = None,
+        user_id: Optional[str] = None,
+        **kwargs: Any,
+    ) -> Dict[str, Any]:
+        owner = _platform_user_id(self, user_id=user_id)
+        if not owner:
+            return {"ok": False, "error": "remote_a2a_requires_authenticated_user"}
+        payload = _payload(data, **kwargs)
+        try:
+            connector = await _remote_a2a_service(self).replace_credential(
+                owner_subject=owner,
+                connector_id=str(payload.get("connector_id") or ""),
+                expected_revision=_expected_remote_mcp_revision(payload),
+                credential_mode=str(payload.get("credential_mode") or "none").strip().lower(),
+                credential_header=str(payload.get("credential_header") or ""),
+                credential_value=str(payload.get("credential_value") or ""),
+            )
+            return {"ok": True, "connector": connector.to_public_dict()}
+        except Exception as exc:
+            return _remote_a2a_failure(exc)
+
+    @api(
+        method="POST",
+        alias="remote_a2a_connector_delete",
+        route="operations",
+        csrf=True,
+        **_api_visibility("remote_a2a_connector_delete"),
+    )
+    async def remote_a2a_connector_delete(
+        self,
+        data: Optional[Dict[str, Any]] = None,
+        user_id: Optional[str] = None,
+        **kwargs: Any,
+    ) -> Dict[str, Any]:
+        owner = _platform_user_id(self, user_id=user_id)
+        if not owner:
+            return {"ok": False, "error": "remote_a2a_requires_authenticated_user"}
+        payload = _payload(data, **kwargs)
+        try:
+            connector = await _remote_a2a_service(self).delete(
+                owner_subject=owner,
+                connector_id=str(payload.get("connector_id") or ""),
+                expected_revision=_expected_remote_mcp_revision(payload),
+            )
+            return {"ok": True, "removed": True, "connector": connector.to_public_dict()}
+        except Exception as exc:
+            return _remote_a2a_failure(exc)
+
     @mcp(
         alias="remote_mcp_proxy",
         route="public",
@@ -5317,6 +5640,7 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
             request=request,
             access_service=await _automation_access_service(self, request),
             remote_mcp_service=_remote_mcp_service(self),
+            remote_a2a_service=_remote_a2a_service(self),
             invocation_policy_service=_invocation_policy_service(self),
             tenant=tenant,
             project=project,
@@ -5354,6 +5678,7 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
             request=request,
             access_service=await _automation_access_service(self, request),
             remote_mcp_service=_remote_mcp_service(self),
+            remote_a2a_service=_remote_a2a_service(self),
             invocation_policy_service=_invocation_policy_service(self),
             tenant=tenant,
             project=project,
@@ -7234,12 +7559,6 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
                     "error": "invocation_policy_client_mismatch",
                     "status": 409,
                 }
-            if resource not in dict(card.get("resource_grants") or {}):
-                return {
-                    "ok": False,
-                    "error": "invocation_policy_resource_not_granted",
-                    "status": 409,
-                }
             requested_operation = selected_outer_operations[0]
             catalog_resource = str(
                 dict(card.get("catalog_row_by_resource") or {}).get(resource)
@@ -7253,6 +7572,27 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
                 ),
                 None,
             )
+            if resource not in dict(card.get("resource_grants") or {}):
+                # W929: a resource the Card does not hold yet (the admission's
+                # resource_not_consented consent, e.g. one concrete secret) is
+                # added by this same focused grant when a catalog row offers
+                # it, so the grant and its policy still commit together. The
+                # all-resource selector never stands in for a concrete request.
+                resource_option = resource_option or next(
+                    (
+                        item
+                        for item in listing.get("resources") or []
+                        if str(item.get("resource") or "").strip() not in {"", "*"}
+                        and resource_matches(str(item.get("resource") or ""), resource)
+                    ),
+                    None,
+                )
+                if resource_option is None:
+                    return {
+                        "ok": False,
+                        "error": "invocation_policy_resource_not_granted",
+                        "status": 409,
+                    }
             offered_operations = {
                 str(item.get("name") or "").strip()
                 for item in (resource_option or {}).get("operations") or []
@@ -7463,6 +7803,13 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
                     owner_subject=invocation_owner,
                     authority=invocation_authority,
                     change_id=invocation_change_id,
+                )
+                # W929: which policy a consent committed, so the chosen Once or Always can be checked afterwards.
+                LOGGER.info(
+                    "[delegated_agent_grant] policy committed access_id=%s resource=%s operation=%s mode=%s "
+                    "revision=%s change_id=%s",
+                    invocation_access_id, resource, requested_operation, policy.mode, policy.revision,
+                    invocation_change_id,
                 )
                 result = {
                     **result,

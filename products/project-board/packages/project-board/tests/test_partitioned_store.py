@@ -148,27 +148,33 @@ def test_expire_enforces_record_and_byte_bounds_with_oldest_hours_first(tmp_path
 def test_retention_compacts_stable_key_rewrites_and_counts_index_bytes(
     tmp_path,
 ):
+    # Stable-key replacement searches the retention window around today.
+    # Keep this fixture inside it even when the suite runs months later.
+    today = datetime.now(timezone.utc).replace(
+        hour=10, minute=0, second=0, microsecond=0
+    )
     history = KeyedHistoryStore(
         tmp_path / "history",
         store="history",
         retention_days=30,
     )
     for minute in range(20):
+        created = today + timedelta(minutes=minute)
         history.write(
             agent="codex-api",
             record_id="stable-key",
-            created=_at(10, minute),
-            row={"record_id": "stable-key", "created_at": _at(10, minute).isoformat()},
+            created=created,
+            row={"record_id": "stable-key", "created_at": created.isoformat()},
         )
 
-    ids = tmp_path / "history" / "codex-api" / "2026" / "09" / "23" / "ids"
+    ids = tmp_path / "history" / "codex-api" / today.strftime("%Y/%m/%d") / "ids"
     records = list((tmp_path / "history").rglob("*.json"))
     assert ids.read_text().splitlines() == ["stable-key 10"] * 20
     assert len(records) == 1
 
     compact_size = len("stable-key 10\n".encode("utf-8"))
     removed = history.partitioned.expire(
-        cutoff=_at(1),
+        cutoff=today.replace(hour=1),
         max_records_per_agent=1,
         max_bytes_per_agent=records[0].stat().st_size + compact_size,
     )
@@ -177,7 +183,7 @@ def test_retention_compacts_stable_key_rewrites_and_counts_index_bytes(
     assert ids.read_text().splitlines() == ["stable-key 10"]
 
     removed = history.partitioned.expire(
-        cutoff=_at(1),
+        cutoff=today.replace(hour=1),
         max_records_per_agent=1,
         max_bytes_per_agent=records[0].stat().st_size,
     )

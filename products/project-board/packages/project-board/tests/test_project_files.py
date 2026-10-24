@@ -14,6 +14,8 @@ per-project copy at the default branch's newest commit (W794).
 
 from __future__ import annotations
 
+import json
+
 import asyncio
 import dataclasses
 import hashlib
@@ -142,12 +144,12 @@ def test_a_board_that_predates_the_list_keeps_todays_behaviour(tmp_path, monkeyp
 def test_the_list_is_kept_by_revision_and_the_permission_follows_every_answer(tmp_path):
     field = SharedFieldStore(tmp_path / "field")
     field.create_project(project_id=PROJECT_ID, title="Demo", goal="Demo", owner="control-plane")
-    assert field.sync_project_files(PROJECT_ID, files=FILES, revision=2, edit_allowed=False) is True
+    assert field.sync_project_files(PROJECT_ID, files=FILES, revision=2, edit_allowed=False, worker_name="codex-a") is True
     # An older list never replaces a newer one; the permission changes at any revision.
-    assert field.sync_project_files(PROJECT_ID, files=[], revision=1, edit_allowed=False) is False
+    assert field.sync_project_files(PROJECT_ID, files=[], revision=1, edit_allowed=False, worker_name="codex-a") is False
     assert len(field.read_project_files(PROJECT_ID)["files"]) == 5
-    assert field.sync_project_files(PROJECT_ID, files=FILES, revision=2, edit_allowed=True) is True
-    assert field.read_project_files(PROJECT_ID)["edit_allowed"] is True
+    assert field.sync_project_files(PROJECT_ID, files=FILES, revision=2, edit_allowed=True, worker_name="codex-a") is True
+    assert field.read_project_files(PROJECT_ID, worker_name="codex-a")["edit_allowed"] is True
     # A path leaving its repository is dropped; a second use of a purpose loses the purpose.
     risky = [
         {"purpose": "facts", "alias": "applications", "path": "../outside.md"},
@@ -499,3 +501,41 @@ def test_the_attendance_channel_registers_only_the_direct_push_hook(tmp_path, mo
         config=dataclasses.replace(config, project_id="attendance"), field=field, client=client
     )
     assert client.hooks == {"problem-board.controls:direct": attendance._on_direct_push_event}  # noqa: SLF001
+
+
+def test_each_worker_reads_its_own_edit_permission_and_the_shared_file_holds_none(tmp_path):
+    """W943 F2-D: the permission was kept in the shared files.json, so every worker on a
+    host read whichever worker's channel beat last, and the file flipped between them."""
+
+    field = SharedFieldStore(tmp_path / "field")
+    field.create_project(project_id=PROJECT_ID, title="Demo", goal="Demo", owner="control-plane")
+    shared = field._project_dir(PROJECT_ID) / "files.json"
+    for _ in range(3):
+        field.sync_project_files(PROJECT_ID, files=FILES, revision=2, edit_allowed=True, worker_name="coordinator")
+        field.sync_project_files(PROJECT_ID, files=FILES, revision=2, edit_allowed=False, worker_name="worker")
+
+    assert field.read_project_files(PROJECT_ID, worker_name="coordinator")["edit_allowed"] is True
+    assert field.read_project_files(PROJECT_ID, worker_name="worker")["edit_allowed"] is False
+    # A worker whose channel never reported a permission, or no worker at all, may not edit.
+    assert field.read_project_files(PROJECT_ID, worker_name="someone-else")["edit_allowed"] is False
+    assert field.read_project_files(PROJECT_ID)["edit_allowed"] is False
+    assert "edit_allowed" not in json.loads(shared.read_text())
+    # An unchanged permission writes nothing: alternating workers no longer rewrite the shared file.
+    before = shared.stat().st_mtime_ns
+    assert field.sync_project_files(PROJECT_ID, files=FILES, revision=2, edit_allowed=True, worker_name="coordinator") is False
+    assert field.sync_project_files(PROJECT_ID, files=FILES, revision=2, edit_allowed=False, worker_name="worker") is False
+    assert shared.stat().st_mtime_ns == before
+
+
+def test_a_shared_permission_written_by_an_older_client_is_dropped(tmp_path):
+    field = SharedFieldStore(tmp_path / "field")
+    field.create_project(project_id=PROJECT_ID, title="Demo", goal="Demo", owner="control-plane")
+    shared = field._project_dir(PROJECT_ID) / "files.json"
+    field.sync_project_files(PROJECT_ID, files=FILES, revision=2)
+    record = json.loads(shared.read_text())
+    record["edit_allowed"] = True
+    shared.write_text(json.dumps(record))
+
+    assert field.read_project_files(PROJECT_ID, worker_name="worker")["edit_allowed"] is False
+    field.sync_project_files(PROJECT_ID, files=FILES, revision=2, edit_allowed=False, worker_name="worker")
+    assert "edit_allowed" not in json.loads(shared.read_text())

@@ -190,6 +190,14 @@ exists; receive returns it; settlement records that it was handled.
   assignment at the same ownership version, or the same mail under the same
   idempotency key from the same sender, is the same item.
 
+**A send names exactly one recipient.** `pb worker send --recipient` takes
+one value. Giving it twice with different values is refused before anything is
+sent, so mail is never addressed silently to the last name only (W974). To
+reach several readers, send one message to each, each under its own
+idempotency key. The same rule holds for every single-valued `pb` option: a
+repeat with the same value is accepted, and a repeat with a different value is
+an error.
+
 **Reachability is evidence.** Relay connection, session attachment, inbox
 check, a non-empty receive and settlement are separate timestamps, and the
 board shows them separately.

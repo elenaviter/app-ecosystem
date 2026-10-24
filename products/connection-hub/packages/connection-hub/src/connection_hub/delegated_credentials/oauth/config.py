@@ -128,6 +128,9 @@ class OAuthDelegatedResourceConfig:
     named_services: Mapping[str, Any] = field(default_factory=dict)
     admin_only: bool = False
     resource_selection: bool = False
+    # W937: a Card holding this row is admitted only at or under its own entry_resource
+    # (entry_binding). Authorization, so inside the catalog digest.
+    entry_bound: bool = False
     selector_type: str = ""
     authorization_profiles: tuple[OAuthDelegatedAuthorizationProfileConfig, ...] = ()
     # How this resource's operations are grouped for a Card editor (see
@@ -700,6 +703,10 @@ def _parse_resources(raw: Any) -> tuple[OAuthDelegatedResourceConfig, ...]:
                 admin_only=_coerce_bool(item.get("admin_only") or item.get("adminOnly"), default=False),
                 resource_selection=_coerce_bool(
                     item.get("resource_selection") or item.get("resourceSelection"),
+                    default=False,
+                ),
+                entry_bound=_coerce_bool(
+                    item.get("entry_bound") or item.get("entryBound"),
                     default=False,
                 ),
                 selector_type=_coerce_str(

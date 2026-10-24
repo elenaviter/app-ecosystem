@@ -58,6 +58,9 @@ ACCOUNTING_MAX_OVERFLOW_IDS = 64
 ACCOUNTING_STARTUP_SECONDS = 120.0
 SUMMARY_MAX_BYTES = 8 * 1024
 SUMMARY_MAX_STAGES = 24
+# W943 F3: labels kept per turn for run time, and how many the summary names.
+EXECUTOR_RUN_LABELS = 64
+EXECUTOR_RUN_TOP = 3
 SUMMARY_MAX_REQUESTS = 16
 # W448: executor waits of a turn and of a bucket name at most this many calls
 # and holders; a bucket keeps at most EXECUTOR_LABELS distinct labels of each.
@@ -92,6 +95,14 @@ _TURN: contextvars.ContextVar["_TurnState | None"] = contextvars.ContextVar(
 _REQUEST: contextvars.ContextVar[str] = contextvars.ContextVar(
     "problem_board_relay_request", default=""
 )
+
+
+def record_outbox_send(seconds: float) -> None:
+    """Count one outbox board send or upload, and its time, on the current turn (W943 F3)."""
+
+    turn = _TURN.get()
+    if turn is not None:
+        turn.record_outbox_send(seconds)
 
 
 # libproc's PROC_PIDTASKINFO and the size of struct proc_taskinfo: six
@@ -390,6 +401,14 @@ class _TurnState:
     executor_long_waits: list[tuple[str, float, list[tuple[str, float]]]] = field(
         default_factory=list
     )
+    # W943 F3: the call that ran longest, and run time per call label, so a
+    # slow turn names the store work it spent its time in (not only the wait).
+    executor_run_max_seconds: float = 0.0
+    executor_run_max_callable: str = ""
+    executor_run_by_label: dict[str, list[float]] = field(default_factory=dict)
+    # W943 F3: the outbox flush's board sends and uploads, apart from its store calls.
+    outbox_sends: int = 0
+    outbox_send_seconds: float = 0.0
     requests: list[str] = field(default_factory=list)
     omitted_requests: int = 0
     tokens: tuple[Any, ...] = field(default=(), repr=False)
@@ -410,8 +429,23 @@ class _TurnState:
             self.executor_wait_max_holders = list(holders)
         self.executor_wait_max_seconds = max(self.executor_wait_max_seconds, wait_seconds)
         self.executor_run_seconds += run_seconds
+        if run_seconds >= self.executor_run_max_seconds:
+            self.executor_run_max_seconds = run_seconds
+            self.executor_run_max_callable = label
+        entry = self.executor_run_by_label.get(label)
+        if entry is not None:
+            entry[0] += run_seconds
+            entry[1] += 1
+        elif len(self.executor_run_by_label) < EXECUTOR_RUN_LABELS:
+            self.executor_run_by_label[label] = [run_seconds, 1]
         if wait_seconds >= HOLDER_MIN_WAIT_SECONDS and len(self.executor_long_waits) < EXECUTOR_TOP:
             self.executor_long_waits.append((label, wait_seconds, list(holders)))
+
+    def record_outbox_send(self, seconds: float) -> None:
+        if self.finished:
+            return
+        self.outbox_sends += 1
+        self.outbox_send_seconds += seconds
 
     def add_request(self, request_id: str) -> None:
         if not request_id or self.finished:
@@ -924,6 +958,18 @@ class TurnAccounting:
                 "wait_max_holders": [
                     [label, round(held, 3)] for label, held in turn.executor_wait_max_holders
                 ],
+                "run_seconds_max": round(turn.executor_run_max_seconds, 3),
+                "run_max_callable": turn.executor_run_max_callable,
+                "run_top": [
+                    [label, round(entry[0], 3), int(entry[1])]
+                    for label, entry in sorted(
+                        turn.executor_run_by_label.items(), key=lambda item: -item[1][0]
+                    )[:EXECUTOR_RUN_TOP]
+                ],
+            },
+            "outbox": {
+                "sends": turn.outbox_sends,
+                "send_seconds_sum": round(turn.outbox_send_seconds, 3),
             },
             "requests": list(turn.requests),
             "omitted_requests": turn.omitted_requests,

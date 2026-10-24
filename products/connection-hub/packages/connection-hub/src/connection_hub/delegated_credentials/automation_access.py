@@ -152,7 +152,14 @@ from connection_hub.delegated_credentials.controls.effective import (
     ControlCardMismatch,
     effective_card_authority,
 )
-from connection_hub.delegated_credentials.controls.external_mcp_switch import direct_switch_write_refusal
+from connection_hub.delegated_credentials.controls.external_mcp_switch import (
+    A2A_FAMILY_PROPERTY,
+    SWITCH_PROPERTIES,
+    direct_switch_write_refusal,
+)
+from connection_hub.delegated_credentials.controls.account_scope_policy import (
+    direct_write_refusal as account_scope_policy_direct_write_refusal,
+)
 from connection_hub.delegated_credentials.controls.hierarchy import compose_control_hierarchy
 from connection_hub.delegated_credentials.conversation_target_policy import (
     conversation_targets,
@@ -190,6 +197,7 @@ from connection_hub.delegated_credentials.project_invitation_binding import (
 from connection_hub.delegated_credentials.project_person_access import (
     ProjectPersonControlLifecycle,
 )
+from connection_hub.delegated_credentials.entry_binding import entry_bound_row
 from connection_hub.delegated_credentials.cards.identity import (
     CARD_KINDS,
     CARD_KIND_AGENT,
@@ -210,6 +218,7 @@ from connection_hub.delegated_credentials.cards.read_model import (
     compatible_resource_offers,
 )
 from connection_hub.delegated_credentials.secret_resources import (
+    SECRET_SELECTOR_TYPE,
     SecretResource,
     SecretResourceError,
     validate_secret_card_resource,
@@ -271,6 +280,8 @@ AUTOMATION_ACCESS_SCHEMA = "connection_hub.automation_access.v1"
 AUTOMATION_CLIENT_PREFIX = "automation"
 AUTOMATION_ACCESS_DEFAULT_TTL_SECONDS = ACCESS_TOKEN_TTL_SECONDS
 ALL_RESOURCES_RESOURCE = "*"
+# The deployment door's catalog row: a Card entered through it reaches exact secrets (W929).
+KDCUBE_DEPLOYMENT_DOOR_RESOURCE = "urn:kdcube:management:deployment:*:*"
 DELEGATED_SESSION_MAX_TTL_SECONDS = 7 * 24 * 3600
 # W918 H1: an owner's authority proof covers one Save's transaction window, never longer.
 GRANTOR_PROOF_TTL_SECONDS = 300
@@ -859,6 +870,22 @@ def _control_card_unstarted(record: "AutomationAccessRecord") -> bool:
     return not _control_card_started_from(record) and not any(
         (record.resource_grants or {}).values()
     )
+
+# W562 F3: the issuer kind a project's Control Card is stored with (``ProjectControlCard`` reads a
+# missing kind as this one too). Its writes go through the project, never the creator's own path.
+PROJECT_CONTROL_ISSUER_KIND = "project"
+
+
+def _project_path_required() -> dict[str, Any]:
+    # The managed P's refusal code (W578): the Hub screen shows its message instead of reloading.
+    return {
+        "ok": False,
+        "error": "card_transactions_direct_write_refused",
+        "message": "This project's Control Card is changed through its project: open it from the project in Problem Board.",
+        "retryable": False,
+        "status": 409,
+    }
+
 
 def _record_is_credentialless(record: "AutomationAccessRecord") -> bool:
     """The one material difference between a linked Card and a caller Card."""
@@ -1848,6 +1875,7 @@ class AutomationAccessService:
         issuer_actor_subject: str = "",
         project_resource_families: Any | None = None,
         grantor_authority_secret: str = "",
+        control_saver_proof: bool = False,
     ) -> None:
         self._redis = redis
         self._tenant = _clean(tenant)
@@ -1857,6 +1885,9 @@ class AutomationAccessService:
         self._project_resource_families = project_resource_families
         # W918 H1: signs the owner's own authority proof; empty leaves the proof dormant (none issued).
         self._grantor_authority_secret = str(grantor_authority_secret or "")
+        # W941: also issue the saver's proof for a managed Control's Save (``control_saver_proof``). Off by
+        # default: a managing application that predates it refuses a Control Save that carries a proof.
+        self._control_saver_proof_enabled = control_saver_proof is True
         selected_backend = _clean(authority_backend).lower()
         if grant_store is None and selected_backend == AUTHORITY_BACKEND_POSTGRESQL:
             raise GrantStoreUnavailable(
@@ -2125,12 +2156,9 @@ class AutomationAccessService:
             return None
         return await self._ensure_control_snapshot(record)
 
-    async def _compose_with_control(
-        self, record: AutomationAccessRecord
-    ) -> tuple[AutomationAccessRecord | None, CardAuthority | None]:
-        """The record's Control Card and its effective authority; (None, None) when unresolvable.
+    async def _control_hierarchy(self, record: AutomationAccessRecord) -> Any | None:
+        """The record's composed Control hierarchy; None when its Control is unresolvable.
 
-        The first result is the current parent-composed immediate Control.
         Exact project-held person edges use their derived holder; all other
         edges retain ordinary owner/holder checks. No read writes My Card.
         Raises ControlCardMismatch or CardUnavailable, never falls open.
@@ -2143,12 +2171,24 @@ class AutomationAccessService:
             return card_authority_from_record(current) if current is not None else None
 
         try:
-            result = await compose_control_hierarchy(caller, load_control=load_control,
-                                                     project_families=self._project_resource_families)
+            return await compose_control_hierarchy(caller, load_control=load_control,
+                                                   project_families=self._project_resource_families)
         except ControlCardMismatch as exc:
             if exc.reason == "control_card_unresolvable":
-                return None, None
+                return None
             raise
+
+    async def _compose_with_control(
+        self, record: AutomationAccessRecord
+    ) -> tuple[AutomationAccessRecord | None, CardAuthority | None]:
+        """The record's Control Card and its effective authority; (None, None) when unresolvable.
+
+        The first result is the current parent-composed immediate Control.
+        """
+
+        result = await self._control_hierarchy(record)
+        if result is None:
+            return None, None
         return (
             record_from_card(result.effective_control_card)
             if result.effective_control_card is not None else None,
@@ -2165,7 +2205,13 @@ class AutomationAccessService:
         if binding is None:
             return {"state": "not_controlled"}
         try:
-            control, composed = await self._compose_with_control(record)
+            hierarchy = await self._control_hierarchy(record)
+            control, composed = (
+                (record_from_card(hierarchy.effective_control_card)
+                 if hierarchy.effective_control_card is not None else None,
+                 hierarchy.effective_card)
+                if hierarchy is not None else (None, None)
+            )
         except CardUnavailable as exc:
             return {
                 "state": "unavailable",
@@ -2222,6 +2268,11 @@ class AutomationAccessService:
             },
             "composition_mode": control.composition_mode,
             "properties": copy.deepcopy(dict(control.properties or {})),
+            # W918: "on" or "off" when the project's External MCP switch decides
+            # the caller's own connectors on this chain; absent otherwise. The
+            # editor follows it instead of comparing connectors with the Control.
+            **({"external_mcp_family": hierarchy.external_mcp_family}
+               if hierarchy.external_mcp_family else {}),
         }
 
     async def _load_record(
@@ -2856,15 +2907,18 @@ class AutomationAccessService:
             except ManagedCardEditError as exc:
                 return exc.to_dict()
             # W918: a switch-only P Save changes no selection field; it is still a real edit.
-            switch_changes = (kind == "project_control" and changes.get("external_mcp_family") is not None
-                              and changes.get("external_mcp_family")
-                              != dict(record.properties or {}).get("external_mcp_family"))
+            # W937: either project switch (External MCP or A2A agents).
+            switch_changes = kind == "project_control" and any(
+                changes.get(switch) is not None
+                and changes.get(switch) != dict(record.properties or {}).get(switch)
+                for switch in SWITCH_PROPERTIES)
             if unchanged and not switch_changes:
                 return {"ok": True, "unchanged": True}
-        composition_mode = label = external_mcp_family = None
+        composition_mode = label = None
+        switch_values: dict[str, str] = {}
         stored_mode = record.composition_mode
         if kind == "project_control" and (changes.get("composition_mode") is not None
-                                          or changes.get("external_mcp_family") is not None):
+                                          or any(changes.get(switch) is not None for switch in SWITCH_PROPERTIES)):
             # W742: the rule is compared with P's durable current revision, never the serving projection (live
             # 10 Oct 22:49Z: a projection behind the committed revision), so a repeated rule is a no-op.
             current = await self._load_record_any_state(record.access_id, grantor_subject=record.grantor_subject)
@@ -2899,15 +2953,18 @@ class AutomationAccessService:
         if whole_selection is not None:
             selection = whole_selection
         # W918: the project's External MCP switch, compared with P's durable revision like the access rule.
-        requested_family = changes.get("external_mcp_family")
-        if requested_family is not None:
+        # W937: the A2A switch the same way, each on its own.
+        for switch in SWITCH_PROPERTIES:
+            requested_family = changes.get(switch)
+            if requested_family is None:
+                continue
             if kind != "project_control" or requested_family not in {"on", "off"}:
                 return {"ok": False, "error": "managed_card_edit_fields_unsupported", "status": 409,
-                        "message": "Only a project's Control carries its External MCP switch. Nothing was saved."}
-            if requested_family != dict(record.properties or {}).get("external_mcp_family"):
-                external_mcp_family = requested_family
+                        "message": "Only a project's Control carries its project switches. Nothing was saved."}
+            if requested_family != dict(record.properties or {}).get(switch):
+                switch_values[switch] = requested_family
         if (kind == "project_control" and not selection and not changes.get("accepted_operations")
-                and composition_mode is None and label is None and external_mcp_family is None):
+                and composition_mode is None and label is None and not switch_values):
             if revision != record.card_revision:
                 return {"ok": False, "error": "managed_card_edit_revision_changed", "status": 409,
                         "message": "Reload the Card and save again. Nothing was saved."}
@@ -2920,11 +2977,14 @@ class AutomationAccessService:
                 accepted_operations=changes.get("accepted_operations"),
                 expected_catalog_version=changes.get("expected_catalog_version"),
                 composition_mode=composition_mode, label=label, invocation_modes=whole_modes,
-                external_mcp_family=external_mcp_family)
+                external_mcp_family=switch_values.get("external_mcp_family"),
+                a2a_family=switch_values.get(A2A_FAMILY_PROPERTY))
             # W918 H1: the proof covers exactly the edit this body carries, its catalog pin included.
-            from .grantor_authority_proof import edit_of
+            # W941: a project Control edit's proof covers its whole edit (access rule and switches too).
+            from .grantor_authority_proof import AGENT_CARD, PROJECT_CONTROL, edit_of
             proof = self._owner_authority_proof(user, record=record, kind=kind, revision=revision,
-                                                request_id=request_id, edit=edit_of(body))
+                request_id=request_id, edit=edit_of(body, target_kind=(
+                    PROJECT_CONTROL if kind == "project_control" else AGENT_CARD)))
             if proof is not None:
                 body = {**body, "grantor_proof": proof}
             outcome = await forwarder.forward(body)
@@ -2937,21 +2997,35 @@ class AutomationAccessService:
 
     def _owner_authority_proof(self, user: Mapping[str, Any], *, record: AutomationAccessRecord, kind: str,
                                revision: int, request_id: str, edit: Mapping[str, Any]) -> str | None:
-        """W918 H1: a proof of the owner's own authority for their own agent-Card edit, else None.
+        """W918 H1: a proof of the saving person's own authority for their own Save, else None.
 
-        Issued only from the owner's authenticated session (its subject is the Card's grantor) and only
-        when the deployment configured the signing secret; it lives for one bounded transaction window.
+        Issued only from that person's authenticated session and only when the deployment configured the
+        signing secret; it lives for one bounded transaction window. An agent Card's proof is its owner's
+        (the session's subject is the Card's grantor). W941: a project Control's proof is the saver's own,
+        whoever stores the Control; it attests their own roles and grants nothing (the managing
+        application still decides whether they may save it).
         """
-        from .grantor_authority_proof import GrantorProofError, issue_grantor_proof
+        from .grantor_authority_proof import AGENT_CARD, PROJECT_CONTROL, GrantorProofError, issue_grantor_proof
 
         secret = getattr(self, "_grantor_authority_secret", "")
-        if kind != "agent_card" or not secret or _subject_from_user(user) != record.grantor_subject:
+        saver = _subject_from_user(user)
+        if not secret or not saver:
+            return None
+        if kind == "agent_card":
+            if saver != record.grantor_subject:
+                return None
+            target_kind = AGENT_CARD
+        elif kind == "project_control" and getattr(self, "_control_saver_proof_enabled", False):
+            # Off until the managing application accepts a project Control proof: an older board refuses a
+            # project Control Save that carries one (W941 C1, both directions).
+            target_kind = PROJECT_CONTROL
+        else:
             return None
         try:
             return issue_grantor_proof(
-                secret=secret, user=user, grantor_subject=record.grantor_subject,
+                secret=secret, user=user, grantor_subject=saver,
                 access_id=record.access_id, original_revision=revision, request_id=request_id,
-                edit=edit, now=int(time.time()), ttl_seconds=GRANTOR_PROOF_TTL_SECONDS)
+                edit=edit, now=int(time.time()), ttl_seconds=GRANTOR_PROOF_TTL_SECONDS, target_kind=target_kind)
         except GrantorProofError:
             return None
 
@@ -2974,9 +3048,10 @@ class AutomationAccessService:
                          ("resource_grants", "resource_operations", "named_service_operations", "account_scope")
                          if changes.get(field) is not None}
             identity = [_subject_from_user(user), record.access_id, changes.get("expected_card_revision"), selection]
-            if changes.get("external_mcp_family") is not None:
-                # W918: two different switch values are two Saves; every other Save keeps its old id.
-                identity.append({"external_mcp_family": changes["external_mcp_family"]})
+            for switch in SWITCH_PROPERTIES:
+                if changes.get(switch) is not None:
+                    # W918/W937: two different switch values are two Saves; every other Save keeps its old id.
+                    identity.append({switch: changes[switch]})
             digest = hashlib.sha256(json.dumps(
                 identity, sort_keys=True, separators=(",", ":"), default=str).encode("utf-8")).hexdigest()
             request_id = "project-control-save:" + digest[:48]
@@ -4328,6 +4403,41 @@ class AutomationAccessService:
         allowed = {entry_key}
         allowed.update(self._reachable_through_door(entry, config=config))
         return allowed
+
+    def _secret_reachable_through_door(
+        self, resource: str, *, entry_resource: str, config: Any
+    ) -> bool:
+        """An exact secret of this deployment, through the deployment door (W929).
+
+        Secrets are offered one by one, never as a child row of a door, so the
+        exact reach of ``_oauth_allowed_resources`` cannot name them. A Card
+        entered through the deployment door, or through one exact secret,
+        reaches one exact secret of this tenant and project that the catalog's
+        secret row governs. Every other door, other management doors included,
+        and a selector (a ``*`` scope or key) or another deployment's secret
+        stay unreachable. Who may hold the secret (``admin_only``) is the
+        save's authority check, unchanged.
+        """
+
+        text = _clean(resource)
+        try:
+            parsed = validate_secret_card_resource(
+                text, tenant=self._tenant, project=self._project
+            )
+        except SecretResourceError:
+            return False
+        if parsed is None or parsed.broad:
+            return False
+        row = self._configured_resource(text, config=config)
+        if row is None or _clean(getattr(row, "selector_type", "")) != SECRET_SELECTOR_TYPE:
+            return False
+        door_row = self._configured_resource(_clean(entry_resource), config=config)
+        if door_row is None or not bool(getattr(door_row, "resource_selection", False)):
+            return False
+        return (
+            _clean(getattr(door_row, "resource", "")) == KDCUBE_DEPLOYMENT_DOOR_RESOURCE
+            or _clean(getattr(door_row, "selector_type", "")) == SECRET_SELECTOR_TYPE
+        )
 
     def _configured_resource(
         self, resource: str, *, config: Any = None
@@ -6292,6 +6402,8 @@ class AutomationAccessService:
         _application_write: bool = False,
         _person_control: bool = False,
         _authorize_agent_card: Callable[[str, str], Awaitable[Any]] | None = None,
+        _through_project: bool = False,
+        _initial_start: bool = False,
     ) -> dict[str, Any]:
         """Edit a card's authority IN PLACE, whatever family issued it.
 
@@ -6341,6 +6453,25 @@ class AutomationAccessService:
                          "expected_catalog_version": expected_catalog_version,
                          "invocation_modes": invocation_modes, "_screen_save": _screen_save})
             return forwarded if forwarded is not None else refused
+        # W562 F3: a project's Control Card (issuer_kind "project", stored under its creator) changes only through
+        # the project (W260, ``project_control_card_access``), where the project decides who may and bounds the
+        # edit by what that person may delegate. Its creator's own path (``control_card_update``,
+        # ``delegated_access_update``, a profile or an added operation) is refused, as a managed P's direct write
+        # is (W578). The creation's first selection and the project's own writers (a person's Control, an
+        # application write, an issuer-decided write) keep their paths. The first selection is only that while
+        # the Card is still at its creation revision: once anything wrote it (the project too, even emptying
+        # it), a restart from a profile is the creator's own write.
+        first_selection = _initial_start and int(existing.card_revision or 0) <= 1
+        if (_record_is_credentialless(existing) and _clean(existing.issuer_kind) == PROJECT_CONTROL_ISSUER_KIND
+                and not (_through_project or first_selection or _person_control or _application_write
+                         or _issuer_decision is not None)):
+            return _project_path_required()
+        # W941: a Control's account policy is set or changed only by its own transaction (a person's or an
+        # invitation's Control is written here by that transaction, ``_person_control``); a direct write may
+        # keep or remove it, never add it.
+        if not _person_control and (refused := account_scope_policy_direct_write_refusal(
+                existing.properties, properties)) is not None:
+            return refused
         own_my = await self._forward_own_my_card_edit(
             user, record=existing, request_id=request_id, expected_card_revision=expected_card_revision,
             selection={field: value for field, value in (
@@ -6508,6 +6639,9 @@ class AutomationAccessService:
                 if _clean(resource)
                 and allowed_resources is not None
                 and _clean(resource) not in allowed_resources
+                and not self._secret_reachable_through_door(
+                    resource, entry_resource=entry_resource, config=catalog_config
+                )
             )
             if outside_entry:
                 return {
@@ -6516,6 +6650,25 @@ class AutomationAccessService:
                     "resources": outside_entry,
                     "entry_resource": entry_resource,
                 }
+        # W937: an entry-bound row is held only by the connector Card its OAuth grant created
+        # (record_oauth_grant with a concrete entry). A Card editor never adds one, and no other
+        # Card kind keeps one.
+        entry_bound_added = sorted(
+            _clean(resource)
+            for resource in resource_grants
+            if _clean(resource)
+            and entry_bound_row(getattr(catalog_config, "resources", ()) or (), resource=_clean(resource))
+            and (
+                existing.card_kind != CARD_KIND_CONNECTOR
+                or _clean(resource) not in {_clean(held) for held in existing.resource_grants}
+            )
+        )
+        if entry_bound_added:
+            return {
+                "ok": False,
+                "error": "card_entry_bound_row_not_selectable",
+                "resources": entry_bound_added,
+            }
         conflict = await self._save_precondition_conflict(
             existing=existing,
             active=active,
@@ -7790,6 +7943,9 @@ class AutomationAccessService:
             )
         except ControlCardError as exc:
             return {"ok": False, "error": exc.reason, "status": 400}
+        # W941: a Control's account policy is set only by its own transaction, never by a direct create.
+        if (refused := account_scope_policy_direct_write_refusal({}, properties)) is not None:
+            return refused
         # W578: a managed project's P is created only through its lifecycle
         # plan; an existing one is neither started nor repaired here.
         if self._managed_project_control(access_id=control_id, issuer_kind=issuer_kind, issuer_ref=issuer_ref,
@@ -8053,6 +8209,7 @@ class AutomationAccessService:
             account_scope={},
             expected_card_revision=record.card_revision,
             _record_transform=_stamp,
+            _initial_start=True,
         )
         if updated.get("ok") is not True:
             return updated
@@ -8083,6 +8240,7 @@ class AutomationAccessService:
         accepted_operations: Mapping[str, Iterable[str]] | None = None,
         request_id: str | None = None,
         external_mcp_family: str | None = None,
+        a2a_family: str | None = None,
         _delegable_grants: Iterable[str] | None = None,
         _record_transform: Callable[
             [AutomationAccessRecord, AutomationAccessRecord],
@@ -8091,6 +8249,8 @@ class AutomationAccessService:
         | None = None,
         _platform_admin: bool | None = None,
         _acting_user: Mapping[str, Any] | None = None,
+        _through_project: bool = False,
+        _initial_start: bool = False,
     ) -> dict[str, Any]:
         """Edit a Control Card through the ordinary catalog-aware Card path.
 
@@ -8099,7 +8259,9 @@ class AutomationAccessService:
         the acting person's grants and stamped with who made it, while the
         Card stays stored under its creator.
         """
-
+        # W562 F3: ``_through_project`` marks that project path and ``_initial_start`` the creation's own
+        # first selection (``_start_control_card``); ``update_access`` refuses any other write to a
+        # project's Control Card.
         grantor_subject = _subject_from_user(user)
         if not grantor_subject:
             return {"ok": False, "error": "delegated_access_requires_authenticated_user"}
@@ -8129,10 +8291,13 @@ class AutomationAccessService:
                          "expected_card_revision": expected_card_revision,
                          "accepted_operations": accepted_operations,
                          "expected_catalog_version": expected_catalog_version, "_screen_save": _screen_save,
-                         "external_mcp_family": external_mcp_family})
+                         "external_mcp_family": external_mcp_family, "a2a_family": a2a_family})
             return forwarded if forwarded is not None else refused
         # W918: the switch is written only by its Control's own transaction; the switch owns that refusal.
         if (refused := direct_switch_write_refusal(external_mcp_family)) is not None:
+            return refused
+        # W937: the project's A2A switch, the same rule.
+        if (refused := direct_switch_write_refusal(a2a_family, switch_property=A2A_FAMILY_PROPERTY)) is not None:
             return refused
         updated = await self.update_access(
             user,
@@ -8171,6 +8336,8 @@ class AutomationAccessService:
             _delegable_grants=_delegable_grants,
             _record_transform=_record_transform,
             _platform_admin=_platform_admin,
+            _through_project=_through_project,
+            _initial_start=_initial_start,
         )
         if updated.get("ok") is not True:
             return updated

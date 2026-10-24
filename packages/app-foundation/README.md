@@ -7,12 +7,15 @@ Host-neutral foundations shared by applications in an ecosystem.
 `2026.10.19.2200` is released together with service-foundation, connection-hub and
 project-board at one version (W322). It contains two
 host-neutral foundations: MCP client construction and strict native
-credential-value storage.
+credential-value storage. The next release adds the outbound network policy
+(`app_foundation.net`) and the A2A client (`app_foundation.a2a`), described
+below.
 
 ```bash
 python -m pip install 'app-foundation[mcp]'
 python -m pip install 'app-foundation[native-secrets]'
 python -m pip install 'app-foundation[data-bus]'
+python -m pip install 'app-foundation[a2a]'
 ```
 
 The package API is under `app_foundation.mcp`:
@@ -144,6 +147,54 @@ in its details, without an attempt, and no disconnect or reconnect path opens
 it again. There is no reset. The owner closes the client and creates a new
 one, for example with a new credential. Without a classifier, behaviour is
 unchanged: every failure is retried until close.
+
+## Outbound network policy
+
+`app_foundation.net` is the one policy for calling a URL a person typed in.
+Connection Hub's remote MCP connectors and the A2A client both use it.
+
+- `OutboundEndpointPolicy.validate(url)` returns the canonical URL or raises
+  `OutboundEndpointDenied` with a fixed `reason`. The rules:
+  - HTTPS only, unless the deployment sets `allow_http`;
+  - no userinfo and no fragment;
+  - every resolved address must be global, unless the host is in the
+    deployment's `allowed_hosts` or private networks are allowed.
+- `guarded_async_transport(policy)` returns an `httpx2` transport that pins
+  each connection:
+  - every socket resolves through the same policy and connects to the address
+    it checked, so a second DNS answer cannot move it;
+  - TLS still verifies the certificate against the original host name;
+  - proxy variables are not used, unix sockets are refused, and it never
+    retries.
+
+## A2A client
+
+`app_foundation.a2a` (extra `[a2a]`) is a small client for the Agent2Agent
+protocol 1.0 over JSON-RPC.
+
+```bash
+python -m pip install 'app-foundation[a2a]'
+```
+
+- `A2AClient.fetch_card(url)` fetches and validates a public Agent Card. It
+  returns a `PinnedAgentCard`: the JSON-RPC endpoint for protocol 1.x, bounded
+  skills with safe ids, security scheme names and kinds, and a digest over
+  exactly those fields. No credential is sent with the card request.
+- `send_message` (non-blocking, `returnImmediately`), `get_task` and
+  `cancel_task` call the pinned endpoint with the caller's headers. They return
+  an `A2ATask`: state, a bounded status text, and artifacts with text and data
+  parts only. Raw, url and file parts are dropped and counted.
+
+The boundary:
+- Every URL, the card's endpoint included, passes the outbound policy.
+- Caller headers go only to the pinned endpoint.
+- There are no redirects, no cookies between calls, and reads stop at a byte
+  limit.
+- A failure is an `A2AClientError` with one fixed code. The remote agent's
+  error messages, error data, HTTP bodies and status texts never become part
+  of an error.
+- Task content is returned as data. The caller treats it as untrusted input,
+  and owns credentials and every authority decision.
 
 ## Boundary
 

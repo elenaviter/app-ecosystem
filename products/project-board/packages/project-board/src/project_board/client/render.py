@@ -225,6 +225,52 @@ def _is_journal_search(result: Mapping[str, Any]) -> bool:
     )
 
 
+def _clip(text: str, limit: int) -> str:
+    return text if len(text) <= limit else text[:limit] + f" ... ({len(text) - limit} more characters)"
+
+
+def _render_agent_services(result: Mapping[str, Any]) -> list[str]:
+    """W918: the services a Card allows, one line each; a call's bounded result."""
+
+    operation = str(result.get("operation") or "")
+    lines = [f"operation: {operation}"]
+    if isinstance(result.get("services"), list):
+        services = result["services"]
+        lines.append(f"services: {len(services)}")
+        for row in services:
+            if not isinstance(row, Mapping):
+                continue
+            lines.append("- {} · {} · {} · args {}".format(
+                row.get("name") or "-", row.get("title") or "-", row.get("resource_kind") or "-",
+                ",".join(row.get("arguments") or ()) or "-",
+            ))
+        return lines
+    if isinstance(result.get("service"), Mapping):
+        row = result["service"]
+        lines.extend([
+            f"name: {row.get('name') or '-'}",
+            f"title: {row.get('title') or '-'}",
+            f"resource: {row.get('resource') or '-'} ({row.get('resource_kind') or '-'})",
+            f"operation_name: {row.get('operation') or '-'}",
+            f"arguments: {','.join(row.get('arguments') or ()) or '-'}",
+            f"required: {','.join(row.get('required') or ()) or '-'}",
+            f"description: {_clip(str(row.get('description') or ''), 600)}",
+        ])
+        return lines
+    lines.append(f"name: {result.get('name') or '-'}")
+    lines.append(f"invocation_id: {result.get('invocation_id') or '-'}")
+    if result.get("replay"):
+        lines.append("replay: True")
+    if result.get("output"):
+        lines.append(f"output: {result['output']}")
+    else:
+        lines.append(f"result_bytes: {result.get('result_bytes', 0)}{' (truncated)' if result.get('truncated') else ''}")
+        body = result.get("result")
+        text = body if isinstance(body, str) else json.dumps(body, ensure_ascii=False, sort_keys=True)
+        lines.append(f"result: {_clip(text, 4000)}")
+    return lines
+
+
 def _render_result(result: Any, flags: list[str]) -> list[str]:
     if not isinstance(result, Mapping):
         return _flatten(result, prefix="") or ["(empty result)"]
@@ -237,12 +283,16 @@ def _render_result(result: Any, flags: list[str]) -> list[str]:
         return _render_lease_read(result, flags)
     if "operation" in result and "object" in result:
         return _render_coordinate(result)
+    if str(result.get("operation") or "").startswith("agent_services."):
+        return _render_agent_services(result)
     if schema == "problem-board.worker-inbox.v1":
         return _render_worker_inbox(result, flags)
     if schema == "problem-board.first-run-status.v1":
         return _render_first_run_status(result)
     if _is_procedure_verify(result) and not result.get("detail"):
         return _render_procedure_verify(result)
+    if _is_procedure_install(result):
+        return _render_procedure_install(result)
     if schema == "problem-board.note-read.v1":
         lines = [
             "note: {} · item {} · ordinal {} · by {} · at {}".format(
@@ -320,6 +370,9 @@ def _render_procedure_verify(result: Mapping[str, Any]) -> list[str]:
                 row.get("files_verified", "?"), len(errors) or "none",
             )
         )
+        if row.get("path"):
+            # W969: each Claude configuration directory is its own row; name where it is.
+            lines.append(f"  path: {row['path']}")
         for error in errors[:3]:
             lines.append(f"  error: {_preview(error, maximum_bytes=200)}")
         if row.get("changed_since_revision"):
@@ -334,6 +387,40 @@ def _render_procedure_verify(result: Mapping[str, Any]) -> list[str]:
         "a newly available module is read when its act comes up"
     )
     lines.append("detail: add --detail for the manifest and every changed file; --format json for every field")
+    return lines
+
+
+def _is_procedure_install(result: Mapping[str, Any]) -> bool:
+    # `pb procedure show` also carries `installed` and `package`; it has an `instruction` and renders as before.
+    return isinstance(result.get("installed"), list) and isinstance(result.get("package"), Mapping) and (
+        "verified" not in result and "instruction" not in result)
+
+
+def _render_procedure_install(result: Mapping[str, Any]) -> list[str]:
+    """W969: every directory the install wrote, by name, and the settings written in each Claude home."""
+
+    package = result["package"]
+    lines = [
+        "procedure: {} · revision {} · digest {}".format(
+            package.get("package_id") or "-", package.get("revision") or "-",
+            str(package.get("source_digest") or "")[:12] or "-",
+        )
+    ]
+    for row in result["installed"]:
+        if not isinstance(row, Mapping):
+            continue
+        lines.append("--- {} · {} · revision {}{} · {}".format(
+            row.get("target") or "-", row.get("state") or "-", row.get("installed_revision") or "-",
+            f" (was {row['previous_release']})" if row.get("previous_release") else "",
+            row.get("path") or "-",
+        ))
+    for row in result.get("claude_code_settings_by_dir") or []:
+        if isinstance(row, Mapping):
+            lines.append(f"settings: {row.get('path') or row.get('config_dir') or '-'}")
+    launcher = _mapping(result.get("launcher"))
+    if launcher.get("path"):
+        lines.append(f"launcher: {launcher.get('path')} · {launcher.get('state') or '-'}")
+    lines.append("detail: --format json for every field")
     return lines
 
 
@@ -411,6 +498,11 @@ def _render_first_run_status(result: Mapping[str, Any]) -> list[str]:
             if keyring else "not checked",
         )
     )
+    hashlib = next((item for item in checked if item.get("name") == "hashlib"), {})
+    if hashlib and not hashlib.get("found"):
+        lines.append(f"hashlib: {_preview(hashlib.get('detail') or hashlib.get('why'), maximum_bytes=600)}")
+        lines.append(f"hashlib without it: {_preview(hashlib.get('without_it'), maximum_bytes=300)}")
+        lines.append(f"hashlib fix: {_preview(hashlib.get('fix'), maximum_bytes=400)}")
     target = _mapping(machine.get("default_target"))
     if target:
         lines.append(f"target: {target.get('target_id') or '-'} · host {target.get('host_id') or '-'}")

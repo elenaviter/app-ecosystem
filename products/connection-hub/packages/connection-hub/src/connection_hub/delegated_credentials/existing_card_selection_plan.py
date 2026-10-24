@@ -115,6 +115,7 @@ async def build_existing_card_selection_update(
     accepted_operations: Mapping[str, Any] | None = None,
     label: str | None = None,
     allow_unchanged: bool = False,
+    account_scope_policy: str | None = None,
 ) -> dict[str, Any]:
     """Build one exact C/My update from a host-authorized selection, without a write.
 
@@ -136,6 +137,9 @@ async def build_existing_card_selection_update(
             or decision.request_id != request_id or decision.operation != PROJECT_PERSON_CONTROL_UPDATE):
         raise _refuse("card_plan_authorization_invalid")
     kind, identity = _target_identity(original, scope, target)
+    # W941: a person's Control takes its account policy only from the managing application's transaction.
+    if account_scope_policy is not None and (kind != "person_control" or account_scope_policy != "caller"):
+        raise _refuse("card_plan_selection_invalid")
     for field in ("resource_grants", "resource_operations", "account_scope", "properties"):
         if field in selection and not isinstance(selection[field], Mapping):
             raise _refuse("card_plan_selection_invalid")
@@ -205,6 +209,9 @@ async def build_existing_card_selection_update(
         **({"label": label} if label is not None else {}),
         **({"properties": settings} if settings is not None else {}),
     )
+    if account_scope_policy is not None:
+        candidate = dataclasses.replace(candidate, properties={
+            **dict(candidate.properties or {}), "account_scope_policy": account_scope_policy})
     before = original.to_dict()
     after = candidate.to_dict()
     after["card_revision"] = before["card_revision"]
@@ -235,6 +242,8 @@ async def build_existing_card_selection_update(
         shown["label"] = label  # the one display field the person renamed
     if settings is not None:
         shown["properties"] = copy.deepcopy(settings)  # only the closed, STAGE-authored settings change
+    if account_scope_policy is not None:
+        shown["properties"] = {**dict(shown.get("properties") or {}), "account_scope_policy": account_scope_policy}
     if undisplayed_change(shown, candidate.to_dict(),
                           hub_written=kind == "person_control") is not None:
         raise _refuse("card_plan_undisplayed_change")

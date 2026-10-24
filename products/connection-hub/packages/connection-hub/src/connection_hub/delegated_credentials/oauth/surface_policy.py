@@ -30,6 +30,10 @@ from connection_hub.delegated_credentials.catalog.authorization import (
 from connection_hub.delegated_credentials.controls.attribution import (
     ResolvedCardComposition,
 )
+from connection_hub.delegated_credentials.entry_binding import (
+    RESOURCE_OUTSIDE_ENTRY,
+    entry_binding_refusal,
+)
 from connection_hub.delegated_credentials.credential_view import (
     DelegatedCredentialView,
     resource_matches,
@@ -298,6 +302,12 @@ class SurfacePolicyDecision:
         )
 
 
+_ENTRY_BINDING_DESCRIPTIONS = {
+    RESOURCE_OUTSIDE_ENTRY: "delegated credential is bound to another entry",
+    "operation_not_consented": "delegated credential holds no operation for this entry",
+}
+
+
 def _resource_specificity(resource: str) -> tuple[int, int]:
     """Order matching card keys by how much they actually say: literal
     characters first, then overall length. The all-resource row ``*`` scores
@@ -339,8 +349,16 @@ def authorize_credential_boundary(
     envelope: CredentialEnvelope,
     grant_record: Mapping[str, Any] | None,
     request_resource: str,
+    catalog: ActiveCatalogCapabilities | None,
+    public_base: str,
 ) -> SurfacePolicyDecision:
-    """Check the caller and resource dimensions before catalog evaluation."""
+    """Check the caller and resource dimensions before catalog evaluation.
+
+    ``catalog`` and ``public_base`` have no default on purpose (W937): the
+    matched row's ``entry_bound`` flag is read here, from the active catalog,
+    so no door can skip the entry binding by not passing it. Without a catalog
+    the boundary refuses, because it cannot tell whether the row is bound.
+    """
 
     principal = authorize_principal_boundary(
         required_roles=required_roles,
@@ -380,6 +398,28 @@ def authorize_credential_boundary(
     operations = view.operations_for_resource(
         request_resource, matched_resource=matched_resource
     )
+    if catalog is None:
+        return SurfacePolicyDecision.deny(
+            SurfacePolicyDenial(
+                reason="catalog_unavailable",
+                description="delegated credential catalog is unavailable",
+            )
+        )
+    refusal = entry_binding_refusal(
+        bound=catalog.entry_bound(resource=matched_resource, request_resource=request_resource),
+        grant_record=grant_record,
+        request_resource=request_resource,
+        matched_resource=matched_resource,
+        granted_operations=operations,
+        public_base=public_base,
+    )
+    if refusal:
+        return SurfacePolicyDecision.deny(
+            SurfacePolicyDenial(
+                reason=refusal,
+                description=_ENTRY_BINDING_DESCRIPTIONS[refusal],
+            )
+        )
     stored_grants = view.grants_for_resource(request_resource)
     return SurfacePolicyDecision.allow(
         matched_resource=matched_resource,
@@ -397,12 +437,15 @@ def authorize_credential_identity_boundary(
     user_permissions: Iterable[str],
     envelope: CredentialEnvelope,
     grant_record: Mapping[str, Any] | None,
+    catalog: ActiveCatalogCapabilities | None,
 ) -> SurfacePolicyDecision:
     """Authenticate a delegated caller and require a resource-bearing card.
 
     Used only by governed proxies whose own URL is not the protected resource.
     The inner proxy must subsequently select one of these exact card resources
-    and enforce its grants and operations before dispatch.
+    and enforce its grants and operations before dispatch. A proxy compares no
+    URL, so a Card holding an ``entry_bound`` row is refused here (W937): its
+    binding can only be checked at the entry itself.
     """
 
     principal = authorize_principal_boundary(
@@ -428,6 +471,21 @@ def authorize_credential_identity_boundary(
                 description="delegated credential resource is missing",
             )
         )
+    if catalog is None:
+        return SurfacePolicyDecision.deny(
+            SurfacePolicyDenial(
+                reason="catalog_unavailable",
+                description="delegated credential catalog is unavailable",
+            )
+        )
+    for resource in view.resources:
+        if catalog.entry_bound(resource=resource):
+            return SurfacePolicyDecision.deny(
+                SurfacePolicyDenial(
+                    reason=RESOURCE_OUTSIDE_ENTRY,
+                    description=_ENTRY_BINDING_DESCRIPTIONS[RESOURCE_OUTSIDE_ENTRY],
+                )
+            )
     return SurfacePolicyDecision.allow(matched_resource="")
 
 

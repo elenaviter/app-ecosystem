@@ -309,6 +309,19 @@ account at call time.
   `project.control.update`) or `project_member` (read only), and names the
   Card's creator. Every change is written under the creator's storage key
   with the acting person in a `project_control_card_audit` provenance entry.
+  - **The creator changes it here too** (W562 F3). On the creator's own path
+    (`control_card_update`, `delegated_access_update`, applying a profile or
+    adding operations) a W260 project Control Card (`issuer_kind` `project`,
+    stored under its creator) is refused with 409
+    `card_transactions_direct_write_refused` ("This project's Control Card is
+    changed through its project: open it from the project in Problem Board.")
+    and nothing changes, so every change is one the project allowed and is
+    bounded by what the acting person may delegate. Only the creation's own
+    first selection (`control_card_create` with `initial_profile`, while the
+    Card is still at its creation revision) is written on the creator's path; the project's own writers (a person's Control, a
+    Reset to the Control, an issuer-decided write) are unchanged. A managed project Control (`issuer_kind`
+    `application`) is unchanged: its save goes through the project's own
+    transaction (W578, W638).
   - **A save is refused only for what it adds.** On every project-held Card
     (the project Control Card, a person's Control Card, their My Card seed),
     the save keeps the grants the stored Card already carries and is refused
@@ -439,7 +452,9 @@ What the shell owns, and what it does not:
 - A `control_card_id` link also names how the Card is reached, and the widget
   reads and saves it on that path:
   - `control_card_id` alone: the creator's own Control Card
-    (`control_card_get`, `control_card_update`).
+    (`control_card_get`, `control_card_update`). For a project's Control Card
+    that save answers `card_transactions_direct_write_refused`; it is opened and
+    saved from the project's link below (W562 F3).
   - `control_card_id` + `project_ref`: a project's Control Card, through the
     project (`project_control_card_get`, `project_control_card_update`), so
     any project admin can open and change it, not only its creator; a project

@@ -211,10 +211,19 @@ def resource_selection_rows(
     held = {selector: set(operations) for selector, operations in canonical_held.items()}
 
     requested_selector, _requested_literal = resolve_declared_resource(cfg, resource)
-    seen = {requested_selector} if requested_selector else set()
+    # The request's own row is never offered again as a child: neither its
+    # selector nor, for an exact secret that resolves to itself, its row
+    # pattern, which would cover every secret (W929).
+    seen = {
+        selector
+        for selector in (requested_selector, str(request_cfg.resource or "").strip())
+        if selector
+    }
     rows: list[dict[str, Any]] = []
     for candidate in cfg.resources:
-        if candidate.resource == "*":
+        if candidate.resource == "*" or candidate.selector_type == "kdcube_secret":
+            # Secrets are offered one by one, as the request; the secret row's
+            # pattern is never a child row (W929).
             continue
         selector, literal = resolve_declared_resource(cfg, candidate.resource)
         if not selector or selector in seen:

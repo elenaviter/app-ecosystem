@@ -2,7 +2,9 @@ import type {
   DelegatedAccessNamedServiceNamespaceOption,
   DelegatedAccessOperationOption,
   DelegatedAccessResourceOption,
+  DelegatedInvocationPolicy,
 } from '../../api/types';
+import { isSecretResource, secretResourceLabel } from './secretResourceSelection.ts';
 
 export interface PendingServiceRequest {
   resource: string;
@@ -35,6 +37,7 @@ export type PendingAccountScope = Record<string, Record<string, string[]>>;
 
 export type PendingSelectionStatus =
   | 'Already granted'
+  | 'Used once, approve again'
   | 'Pending - not granted yet'
   | 'Required for this request'
   | null;
@@ -43,6 +46,22 @@ export interface PendingConnectedAccount {
   account_id?: string;
   provider_id?: string;
   claims?: string[];
+}
+
+/** The Card holds this exact operation under a Once policy whose one use is spent. */
+export function onceUsedUp(
+  policies: DelegatedInvocationPolicy[] | undefined,
+  resource: string,
+  operation: string,
+): boolean {
+  return (policies || []).some((policy) => (
+    policy.authority.resource === resource
+    && policy.authority.surface === 'outer'
+    && policy.authority.operation === operation
+    && !policy.authority.account
+    && policy.mode === 'once'
+    && policy.state === 'consumed'
+  ));
 }
 
 export function commonOperationGrants(resource: DelegatedAccessResourceOption): string[] {
@@ -58,13 +77,15 @@ function unique(items: string[]): string[] {
 
 /** Describe one control in the focused consent projection. Persisted
  *  authority wins, every other checked value is a pending proposal, and an
- *  unmet prerequisite remains visibly required. */
+ *  unmet prerequisite remains visibly required. A held operation whose Once
+ *  is used up asks again (W929, operator 2026-10-23: "Used once, approve again"). */
 export function pendingSelectionStatus(
   alreadyGranted: boolean,
   selected: boolean,
   required: boolean,
+  onceUsed = false,
 ): PendingSelectionStatus {
-  if (alreadyGranted) return 'Already granted';
+  if (alreadyGranted) return onceUsed ? 'Used once, approve again' : 'Already granted';
   if (selected) return 'Pending - not granted yet';
   if (required) return 'Required for this request';
   return null;
@@ -102,6 +123,32 @@ export function doorGrantsForOperation(
   ]).filter((grant) => !accountClaims.has(grant));
 }
 
+function selectorMatches(selector: string, value: string): boolean {
+  const pattern = selector.split('*').map((part) => part.replace(/[.+?^${}()|[\]\\]/g, '\\$&')).join('.*');
+  return new RegExp(`^${pattern}$`).test(value);
+}
+
+/** The catalog row a pending request's resource belongs to.
+ *
+ *  A request names its exact resource. The catalog offers a concrete secret
+ *  only through its `kdcube_secret` selector row
+ *  (`urn:kdcube:management:secret:*:*:*:*:*`), so a consent for one secret
+ *  found no row by string equality and the page stayed "Loading this
+ *  capability" (W929). The selector row's operations apply to the concrete
+ *  secret, which keeps its own resource and label, as the card editor builds
+ *  it. Other resources still match exactly. */
+export function pendingCatalogResource(
+  resource: string,
+  resources: DelegatedAccessResourceOption[],
+): DelegatedAccessResourceOption | null {
+  const exact = resources.find((item) => item.resource === resource);
+  if (exact) return exact;
+  if (!isSecretResource(resource)) return null;
+  const row = resources.find((item) => item.selector_type === 'kdcube_secret'
+    && selectorMatches(item.resource, resource));
+  return row ? { ...row, resource, label: secretResourceLabel(resource) || row.label } : null;
+}
+
 /** Project one explicitly requested inner operation through the active
  *  delegated catalog. The operation selection and both claim scopes remain
  *  independent controls; no claim creates or implies an operation. */
@@ -113,7 +160,7 @@ export function resolvePendingServiceCapability(
   ) => NamedServiceOperationProjection[],
 ): PendingServiceCapability | null {
   if (!request?.namespace || !request.operation) return null;
-  const resource = resources.find((item) => item.resource === request.resource);
+  const resource = pendingCatalogResource(request.resource, resources);
   if (!resource) return null;
   const namespace = (resource.named_services || [])
     .find((item) => item.namespace === request.namespace);
@@ -142,7 +189,7 @@ export function resolvePendingOuterCapability(
   resources: DelegatedAccessResourceOption[],
 ): PendingOuterCapability | null {
   if (!request?.outerOperation) return null;
-  const resource = resources.find((item) => item.resource === request.resource);
+  const resource = pendingCatalogResource(request.resource, resources);
   if (!resource) return null;
   const operation = (resource.operations || [])
     .find((item) => item.name === request.outerOperation);

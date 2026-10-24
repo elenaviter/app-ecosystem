@@ -226,6 +226,9 @@ export interface DelegatedControlCardView {
   authority?: DelegatedControlCardAuthority;
   composition_mode?: 'and' | 'or' | string;
   properties?: Record<string, unknown>;
+  /** W918: how the project's External MCP switch decides this Card's own
+   *  MCP connectors on its project chain; absent off a project chain. */
+  external_mcp_family?: 'on' | 'off' | string;
   resolution?: {
     participant_card_revision?: number;
     participant_catalog_version?: string;

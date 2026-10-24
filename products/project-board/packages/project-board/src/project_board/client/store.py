@@ -317,6 +317,70 @@ def _delivered_view(row: Mapping[str, Any]) -> dict[str, Any]:
     return dict(row)
 
 
+# W943 F2-A: the board answers each heartbeat with the recipients its OWNER may
+# see (owner-visible retirement tombstones), so channels of different owners on
+# one host legitimately receive different lists. Each owner's view is stored and
+# reconciled on its own; a shared file would flip between them on every beat.
+MAIL_RECIPIENT_VIEW_SCHEMA = "problem-board.mail-recipient-directory.v1"
+MAIL_RECONCILIATION_MARKER_SCHEMA = "problem-board.mail-reconciliation-marker.v1"
+# How many recently reconciled signatures of one view count as current, so two
+# channels whose replies lag one another do not rerun it on every heartbeat.
+MAIL_RECONCILIATION_RECENT_SIGNATURES = 4
+
+
+def mail_recipient_owner_view(worker_record: Mapping[str, Any]) -> str:
+    """The owner view a worker's mailbox belongs to, or "" when its owner is unknown."""
+
+    record = worker_record.get("board_record") if isinstance(worker_record, Mapping) else None
+    owner = record.get("owner") if isinstance(record, Mapping) else None
+    user_id = str(owner.get("user_id") or "").strip() if isinstance(owner, Mapping) else ""
+    if not user_id:
+        return ""
+    return "owner-" + hashlib.sha256(user_id.encode("utf-8")).hexdigest()[:16]
+
+
+def mail_recipient_view(worker_record: Mapping[str, Any], worker_name: str) -> str:
+    """The view a channel's heartbeat recipients are stored under."""
+
+    view = mail_recipient_owner_view(worker_record)
+    if view:
+        return view
+    name = str(worker_name or "").strip().lower()
+    return "worker-" + hashlib.sha256(name.encode("utf-8")).hexdigest()[:16]
+
+
+def _recipient_rows(recipients: Sequence[Mapping[str, Any]]) -> dict[str, dict[str, Any]]:
+    rows: dict[str, dict[str, Any]] = {}
+    for raw in recipients:
+        if not isinstance(raw, Mapping):
+            continue
+        worker_name = str(raw.get("worker_name") or "").strip().lower()
+        if not worker_name:
+            continue
+        rows[worker_name] = {
+            "worker_name": worker_name,
+            "worker_alias": str(raw.get("worker_alias") or ""),
+            "pool_status": str(raw.get("pool_status") or "active"),
+            "retired_at": str(raw.get("retired_at") or ""),
+            "retirement_reason": str(raw.get("retirement_reason") or ""),
+        }
+    return rows
+
+
+# W943 F2-D: keys a sync stamps on every write. Comparing a synced record
+# with what is stored ignores them, so an unchanged reply writes nothing.
+SYNC_WRITE_STAMPS = frozenset({"updated_at"})
+
+
+def _same_synced_content(stored: Mapping[str, Any] | None, record: Mapping[str, Any]) -> bool:
+    """Whether a stored synced record already holds ``record``, per-write stamps aside."""
+
+    if not stored:
+        return False
+    return {k: v for k, v in stored.items() if k not in SYNC_WRITE_STAMPS} == {
+        k: v for k, v in record.items() if k not in SYNC_WRITE_STAMPS
+    }
+
 
 FIELD_SCHEMA = "problem-board.shared-field.v1"
 MAIL_SCHEMA = "problem-board.local-mail.v1"
@@ -2068,15 +2132,23 @@ class SharedFieldStore:
                     "Expected a work:assignment reference.",
                 )
             active_assignment_ids.add(parsed.object_id)
+        def stale(row: Mapping[str, Any]) -> bool:
+            return (
+                str(row.get("worker_name") or "").lower() == clean_worker
+                and str(row.get("state") or "") in {"assigned", "working", "blocked"}
+                and self._assignment_object_id(row) not in active_assignment_ids
+            )
+
+        # W943 F2-D: this worker's own pending rows only, read before the
+        # lock; the project lock is taken only to remove a stale one, because
+        # notice materialization writes assignment rows under it.
+        store = self._assignments(clean_project)
+        if not any(stale(row) for row in store.list_pending(worker_name=clean_worker)):
+            return 0
         removed = 0
         with exclusive_lock(self._project_lock(clean_project)):
-            for row in self.list_assignments(clean_project):
-                if (
-                    str(row.get("worker_name") or "").lower() != clean_worker
-                    or str(row.get("state") or "")
-                    not in {"assigned", "working", "blocked"}
-                    or self._assignment_object_id(row) in active_assignment_ids
-                ):
+            for row in store.list_pending(worker_name=clean_worker):
+                if not stale(row):
                     continue
                 parsed = parse_ref(str(row.get("assignment_ref") or ""))
                 self._assignments(clean_project).remove(
@@ -9909,66 +9981,73 @@ class SharedFieldStore:
         can write to a teammate without a control-plane round trip."""
         clean_id = component(project_id, field="project_id")
         path = self._project_dir(clean_id) / "team.json"
+        rows = []
+        for member in team:
+            if not isinstance(member, Mapping) or not str(member.get("worker_name") or "").strip():
+                continue
+            runtime_model = _team_runtime_model(member.get("runtime_model"))
+            raw_account = member.get("runtime_account")
+            if not isinstance(raw_account, Mapping):
+                raw_account = member.get("provider_account")
+            runtime_account = _team_runtime_account(raw_account)
+            if runtime_account:
+                runtime_account["source"] = str(
+                    runtime_account.get("source")
+                    or member.get("runtime_account_source")
+                    or member.get("provider_account_source")
+                    or ""
+                )[:64]
+                runtime_account["observed_at"] = str(
+                    runtime_account.get("observed_at")
+                    or member.get("runtime_account_observed_at")
+                    or member.get("provider_account_observed_at")
+                    or ""
+                )[:64]
+            rows.append(
+                {
+                    "worker_name": str(member.get("worker_name") or "").lower(),
+                    "worker_alias": str(member.get("worker_alias") or ""),
+                    "role": str(member.get("role") or "worker"),
+                    "runtime_kind": str(member.get("runtime_kind") or ""),
+                    "capabilities": [str(item) for item in (member.get("capabilities") or [])],
+                    "host_id": str(member.get("host_id") or ""),
+                    "host_label": str(member.get("host_label") or ""),
+                    "host_kind": str(member.get("host_kind") or ""),
+                    "pool_status": str(member.get("pool_status") or ""),
+                    "presence": str(member.get("presence") or ""),
+                    # W26 line 7: a teammate's usage limit as its runtime
+                    # last reported it; empty means not reported.
+                    "limit_state": _team_limit_state(member.get("limit_state")),
+                    # W393: the same relay packet carries model, reasoning
+                    # effort and token-free provider-account identity. Keep
+                    # their source and observation time for compact reads.
+                    "runtime_model": runtime_model,
+                    "runtime_account": runtime_account,
+                    # W330: the teammate's own line about itself; empty when none.
+                    "info_text": str(member.get("info_text") or ""),
+                    "info_set_at": str(member.get("info_set_at") or "")[:64],
+                    # W393: a held or recovered native wake, as the board
+                    # reports it for the teammate's live session; empty
+                    # from a board that does not report it.
+                    "wake_hold": _team_wake_record(
+                        member.get("wake_hold"), ("since", "until", "pending")
+                    ),
+                    "wake_recovery": _team_wake_record(
+                        member.get("wake_recovery"),
+                        ("wake_id", "state", "requested_at", "recorded_at"),
+                    ),
+                }
+            )
+        record = {"schema": FIELD_SCHEMA, "project_id": clean_id, "members": rows, "updated_at": utc_now()}
+        # W943 F2-D: compare before the lock; an unchanged team writes nothing.
+        stored = read_json(path, required=False)
+        if _same_synced_content(stored, record):
+            return dict(stored)
         with exclusive_lock(self._project_lock(clean_id)):
             self.read_project(clean_id)
-            rows = []
-            for member in team:
-                if not isinstance(member, Mapping) or not str(member.get("worker_name") or "").strip():
-                    continue
-                runtime_model = _team_runtime_model(member.get("runtime_model"))
-                raw_account = member.get("runtime_account")
-                if not isinstance(raw_account, Mapping):
-                    raw_account = member.get("provider_account")
-                runtime_account = _team_runtime_account(raw_account)
-                if runtime_account:
-                    runtime_account["source"] = str(
-                        runtime_account.get("source")
-                        or member.get("runtime_account_source")
-                        or member.get("provider_account_source")
-                        or ""
-                    )[:64]
-                    runtime_account["observed_at"] = str(
-                        runtime_account.get("observed_at")
-                        or member.get("runtime_account_observed_at")
-                        or member.get("provider_account_observed_at")
-                        or ""
-                    )[:64]
-                rows.append(
-                    {
-                        "worker_name": str(member.get("worker_name") or "").lower(),
-                        "worker_alias": str(member.get("worker_alias") or ""),
-                        "role": str(member.get("role") or "worker"),
-                        "runtime_kind": str(member.get("runtime_kind") or ""),
-                        "capabilities": [str(item) for item in (member.get("capabilities") or [])],
-                        "host_id": str(member.get("host_id") or ""),
-                        "host_label": str(member.get("host_label") or ""),
-                        "host_kind": str(member.get("host_kind") or ""),
-                        "pool_status": str(member.get("pool_status") or ""),
-                        "presence": str(member.get("presence") or ""),
-                        # W26 line 7: a teammate's usage limit as its runtime
-                        # last reported it; empty means not reported.
-                        "limit_state": _team_limit_state(member.get("limit_state")),
-                        # W393: the same relay packet carries model, reasoning
-                        # effort and token-free provider-account identity. Keep
-                        # their source and observation time for compact reads.
-                        "runtime_model": runtime_model,
-                        "runtime_account": runtime_account,
-                        # W330: the teammate's own line about itself; empty when none.
-                        "info_text": str(member.get("info_text") or ""),
-                        "info_set_at": str(member.get("info_set_at") or "")[:64],
-                        # W393: a held or recovered native wake, as the board
-                        # reports it for the teammate's live session; empty
-                        # from a board that does not report it.
-                        "wake_hold": _team_wake_record(
-                            member.get("wake_hold"), ("since", "until", "pending")
-                        ),
-                        "wake_recovery": _team_wake_record(
-                            member.get("wake_recovery"),
-                            ("wake_id", "state", "requested_at", "recorded_at"),
-                        ),
-                    }
-                )
-            record = {"schema": FIELD_SCHEMA, "project_id": clean_id, "members": rows, "updated_at": utc_now()}
+            stored = read_json(path, required=False)
+            if _same_synced_content(stored, record):
+                return dict(stored)
             atomic_write_json(path, record)
             return record
 
@@ -9998,15 +10077,22 @@ class SharedFieldStore:
         clean_id = component(project_id, field="project_id")
         path = self._project_dir(clean_id) / "repositories.json"
         email = str(commit_identity_email or "").strip() if commit_identity_email is not None else None
+
+        def held_already(current: Mapping[str, Any]) -> bool:
+            held = int(current.get("revision") or 0)
+            if held > int(revision) > 0:
+                return True
+            return held == int(revision) > 0 and (
+                email is None or str(current.get("commit_identity_email") or "") == email
+            )
+
+        # W943 F2-D: a revision this host holds is decided before the lock.
+        if held_already(read_json(path, required=False) or {}):
+            return False
         with exclusive_lock(self._project_lock(clean_id)):
             self.read_project(clean_id)
             current = read_json(path, required=False) or {}
-            held = int(current.get("revision") or 0)
-            if held > int(revision) > 0:
-                return False
-            if held == int(revision) > 0 and (
-                email is None or str(current.get("commit_identity_email") or "") == email
-            ):
+            if held_already(current):
                 return False
             rows: list[dict[str, Any]] = []
             for raw in repositories:
@@ -10084,6 +10170,10 @@ class SharedFieldStore:
                 rows.append({"label": label, "value": value})
             if len(rows) >= self.PROJECT_FACTS_MAX:
                 break
+        # W943 F2-D: a revision this host holds is decided before the lock.
+        stored = read_json(path, required=False) or {}
+        if stored and int(stored.get("facts_revision") or 0) >= int(revision):
+            return False
         with exclusive_lock(self._project_lock(clean_id)):
             self.read_project(clean_id)
             current = read_json(path, required=False) or {}
@@ -10111,6 +10201,7 @@ class SharedFieldStore:
         revision: int,
         goal: Any = None,
         edit_allowed: bool | None = None,
+        worker_name: str = "",
     ) -> bool:
         """Keep where the project's files are, as the board last listed them (W370).
 
@@ -10150,6 +10241,18 @@ class SharedFieldStore:
                     "description": " ".join(str(raw.get("description") or "").split())[:200],
                 }
             )
+        access_changed = False
+        if edit_allowed is not None and worker_name and self._project_path(clean_id).exists():
+            # Only this worker's channel writes its own access file.
+            access_path = self._project_files_access_path(clean_id, worker_name)
+            access = read_json(access_path, required=False) or {}
+            if access.get("edit_allowed") is not edit_allowed:
+                atomic_write_json(access_path, {"edit_allowed": edit_allowed, "updated_at": utc_now()})
+                access_changed = True
+        # W943 F2-D: a list this host holds is decided before the lock.
+        stored = read_json(path, required=False) or {}
+        if stored and int(revision) <= int(stored.get("files_revision") or 0) and "edit_allowed" not in stored:
+            return access_changed
         with exclusive_lock(self._project_lock(clean_id)):
             self.read_project(clean_id)
             current = read_json(path, required=False) or {}
@@ -10165,14 +10268,25 @@ class SharedFieldStore:
                     }
                 )
                 changed = True
-            if edit_allowed is not None and record.get("edit_allowed") is not edit_allowed:
-                record["edit_allowed"] = edit_allowed
+            # W943 F2-D: the edit permission is the beating worker's own (its
+            # Card's project.files.edit). Kept in the shared files.json, every
+            # worker on the host read whichever worker beat last, and the file
+            # flipped between them. It lives per worker; the shared key goes.
+            if "edit_allowed" in record:
+                record.pop("edit_allowed")
                 changed = True
             if not changed:
-                return False
+                return access_changed
             record["updated_at"] = utc_now()
             atomic_write_json(path, record)
             return True
+
+    def _project_files_access_path(self, clean_id: str, worker_name: str) -> Path:
+        return (
+            self._project_dir(clean_id)
+            / "files-access"
+            / f"{component(worker_name, field='worker_name').lower()}.json"
+        )
 
     def record_project_files_seen(
         self, worker_name: str, project_id: str, *, files_revision: int, files: Mapping[str, str]
@@ -10267,17 +10381,26 @@ class SharedFieldStore:
             taken.append({key: value for key, value in record.items() if key != "delivered"})
         return taken
 
-    def read_project_files(self, project_id: str) -> dict[str, Any]:
-        """The files list; ``known`` is False until a board that sends it answered (W370)."""
+    def read_project_files(self, project_id: str, *, worker_name: str = "") -> dict[str, Any]:
+        """The files list; ``known`` is False until a board that sends it answered (W370).
 
-        path = self._project_dir(component(project_id, field="project_id")) / "files.json"
-        record = read_json(path, required=False) or {}
+        ``edit_allowed`` is ``worker_name``'s own permission, False when that
+        worker's channel has not reported one or no worker is named (W943 F2-D).
+        """
+
+        clean_id = component(project_id, field="project_id")
+        record = read_json(self._project_dir(clean_id) / "files.json", required=False) or {}
+        access = (
+            read_json(self._project_files_access_path(clean_id, worker_name), required=False) or {}
+            if worker_name
+            else {}
+        )
         return {
             "known": bool(record),
             "files": [dict(row) for row in record.get("files") or [] if isinstance(row, Mapping)],
             "files_revision": int(record.get("files_revision") or 0),
             "goal": str(record.get("goal") or ""),
-            "edit_allowed": bool(record.get("edit_allowed")),
+            "edit_allowed": access.get("edit_allowed") is True,
         }
 
     def read_project_card(self, project_id: str) -> dict[str, Any]:
@@ -10327,10 +10450,19 @@ class SharedFieldStore:
             "revision": int(coordinator.get("revision") or 0),
             "updated_at": utc_now(),
         }
+        def keep_stored(current: Mapping[str, Any]) -> bool:
+            return bool(current) and (
+                int(current.get("revision") or 0) > record["revision"]
+                or _same_synced_content(current, record)
+            )
+
+        # W943 F2-D: compare before the lock; an older or unchanged view writes nothing.
+        if keep_stored(read_json(path, required=False) or {}):
+            return None
         with exclusive_lock(self._project_lock(clean_id)):
             self.read_project(clean_id)
             current = read_json(path, required=False) or {}
-            if current and int(current.get("revision") or 0) > record["revision"]:
+            if keep_stored(current):
                 return None
             atomic_write_json(path, record)
             return record
@@ -10379,15 +10511,25 @@ class SharedFieldStore:
             for name, value in roles.items()
             if isinstance(name, str) and name
         }
-        with exclusive_lock(self._project_lock(clean_id)):
-            self.read_project(clean_id)
-            current = read_json(path, required=False) or {}
+        def merged(current: Mapping[str, Any]) -> dict[str, Any]:
             kept = dict(current.get("roles") or {})
             for name, record in incoming.items():
                 previous = kept.get(name) or {}
                 if int(previous.get("revision") or 0) > record["revision"]:
                     continue
                 kept[name] = record
+            return kept
+
+        # W943 F2-D: compare before the lock; roles that would not change write nothing.
+        stored = read_json(path, required=False) or {}
+        if stored and merged(stored) == dict(stored.get("roles") or {}):
+            return dict(stored)
+        with exclusive_lock(self._project_lock(clean_id)):
+            self.read_project(clean_id)
+            current = read_json(path, required=False) or {}
+            kept = merged(current)
+            if current and kept == dict(current.get("roles") or {}):
+                return dict(current)
             written = {
                 "schema": FIELD_SCHEMA,
                 "project_id": clean_id,
@@ -10410,40 +10552,79 @@ class SharedFieldStore:
         record = read_json(path, required=False)
         return list((record or {}).get("members") or [])
 
+    def _mail_recipient_views(self, clean_id: str) -> Path:
+        return self._project_dir(clean_id) / "mail-recipients"
+
     def sync_project_mail_recipients(
-        self, project_id: str, recipients: Sequence[Mapping[str, Any]]
+        self,
+        project_id: str,
+        recipients: Sequence[Mapping[str, Any]],
+        *,
+        view: str = "",
     ) -> dict[str, Any]:
-        """Store the control plane's stable-address directory for one project."""
+        """Store the control plane's stable-address directory for one project.
+
+        With ``view`` (W943 F2-A) the list is that owner view's own file; the
+        project-wide ``mail-recipients.json`` is then only read as a fallback
+        for a host that has not written any view yet.
+        """
 
         clean_id = component(project_id, field="project_id")
-        path = self._project_dir(clean_id) / "mail-recipients.json"
+        if view:
+            path = self._mail_recipient_views(clean_id) / f"{component(view, field='view')}.json"
+        else:
+            path = self._project_dir(clean_id) / "mail-recipients.json"
         with exclusive_lock(self._project_lock(clean_id)):
             self.read_project(clean_id)
-            rows: dict[str, dict[str, Any]] = {}
-            for raw in recipients:
-                if not isinstance(raw, Mapping):
-                    continue
-                worker_name = str(raw.get("worker_name") or "").strip().lower()
-                if not worker_name:
-                    continue
-                rows[worker_name] = {
-                    "worker_name": worker_name,
-                    "worker_alias": str(raw.get("worker_alias") or ""),
-                    "pool_status": str(raw.get("pool_status") or "active"),
-                    "retired_at": str(raw.get("retired_at") or ""),
-                    "retirement_reason": str(raw.get("retirement_reason") or ""),
-                }
+            rows = _recipient_rows(recipients)
             record = {
-                "schema": "problem-board.mail-recipient-directory.v1",
+                "schema": MAIL_RECIPIENT_VIEW_SCHEMA,
                 "project_id": clean_id,
                 "recipients": [rows[name] for name in sorted(rows)],
                 "updated_at": utc_now(),
             }
+            if view:
+                record["view"] = view
             atomic_write_json(path, record)
+            if view:
+                # Once a view exists, reads merge the views and never reach the
+                # project-wide file written before W943, so it is removed.
+                (self._project_dir(clean_id) / "mail-recipients.json").unlink(missing_ok=True)
             return record
 
-    def read_project_mail_recipients(self, project_id: str) -> dict[str, Any]:
+    def read_project_mail_recipients(
+        self, project_id: str, *, view: str = ""
+    ) -> dict[str, Any]:
+        """One owner view's directory, or without ``view`` all views merged.
+
+        The merge applies the views oldest first, so a worker listed in several
+        takes the row from the freshest one. A host with no view files reads
+        the project-wide file written before W943, then the local team.
+        """
+
         clean_id = component(project_id, field="project_id")
+        views = self._mail_recipient_views(clean_id)
+        if view:
+            record = read_json(views / f"{component(view, field='view')}.json", required=False)
+            if record:
+                return record
+        records = [
+            record
+            for path in sorted(views.glob("*.json")) if views.is_dir()
+            for record in [read_json(path, required=False)]
+            if record
+        ]
+        if records:
+            records.sort(key=lambda record: str(record.get("updated_at") or ""))
+            rows: dict[str, dict[str, Any]] = {}
+            for record in records:
+                rows.update(_recipient_rows(record.get("recipients") or []))
+            return {
+                "schema": MAIL_RECIPIENT_VIEW_SCHEMA,
+                "project_id": clean_id,
+                "recipients": [rows[name] for name in sorted(rows)],
+                "updated_at": str(records[-1].get("updated_at") or ""),
+            }
         record = read_json(
             self._project_dir(clean_id) / "mail-recipients.json",
             required=False,
@@ -10451,19 +10632,163 @@ class SharedFieldStore:
         if record:
             return record
         return {
-            "schema": "problem-board.mail-recipient-directory.v1",
+            "schema": MAIL_RECIPIENT_VIEW_SCHEMA,
             "project_id": clean_id,
             "recipients": self.read_project_team(clean_id),
             "updated_at": "",
         }
+
+    def _local_attendance(self, project_ref: str) -> list[tuple[str, dict[str, Any], bool]]:
+        """Each local worker record with whether it attends ``project_ref``."""
+
+        rows: list[tuple[str, dict[str, Any], bool]] = []
+        for row in json_records(self.control / "workers"):
+            worker_name = str(row.get("worker_name") or "").strip().lower()
+            if not worker_name:
+                continue
+            attends = project_ref in {
+                str(value) for value in row.get("attended_project_refs") or []
+            }
+            attendance_observed = bool(
+                str(row.get("attendances_observed_at") or "").strip()
+            )
+            not_linked = (
+                attendance_observed
+                and not attends
+                and str(row.get("pool_status") or "active").lower() != "retired"
+            )
+            rows.append((worker_name, row, not_linked))
+        return rows
+
+    @staticmethod
+    def _with_local_records(
+        directory_record: Mapping[str, Any],
+        local: Sequence[tuple[str, dict[str, Any], bool]],
+    ) -> dict[str, dict[str, Any]]:
+        recipients = {
+            str(row.get("worker_name") or "").strip().lower(): dict(row)
+            for row in directory_record.get("recipients") or []
+            if isinstance(row, Mapping)
+            and str(row.get("worker_name") or "").strip()
+        }
+        # The local record is the authority for a session hosted here.
+        for worker_name, row, not_linked in local:
+            recipients[worker_name] = (
+                {**row, "pool_status": "not_linked"} if not_linked else row
+            )
+        return recipients
+
+    def reconcile_project_mailboxes_when_due(
+        self,
+        project_id: str,
+        recipients: Sequence[Mapping[str, Any]],
+        *,
+        reporter_worker_name: str,
+        interval_seconds: int,
+    ) -> dict[str, Any]:
+        """Reconcile the reporter's owner view once per change, else once per interval.
+
+        W943 F2-A: every channel used to rewrite the directory and reconcile
+        the whole project on every heartbeat, about twenty times a cycle on
+        dev-main, queueing on the project lock. A durable marker per owner
+        view, written under that view's observed file lock, makes one channel
+        do it and the rest skip. A channel that finds the lock held skips too:
+        the holder is doing the same work. Each channel still recovers its own
+        unpublished receipts.
+        """
+
+        clean_project = component(project_id, field="project_id")
+        reporter_record = self.read_worker(reporter_worker_name)
+        reporter = str(reporter_record.get("worker_name") or "")
+        view = mail_recipient_view(reporter_record, reporter)
+        project_ref = make_ref("project", clean_project)
+        local = self._local_attendance(project_ref)
+        signature = hashlib.sha256(
+            json.dumps(
+                {
+                    "recipients": [
+                        row for _, row in sorted(_recipient_rows(recipients).items())
+                    ],
+                    "local": sorted(
+                        (
+                            name,
+                            str(row.get("pool_status") or "active").lower(),
+                            not_linked,
+                            mail_recipient_owner_view(row),
+                        )
+                        for name, row, not_linked in local
+                    ),
+                },
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        ).hexdigest()
+        folder = self._project_dir(clean_project) / "mail-reconciliation"
+        marker_path = folder / f"{view}.json"
+        try:
+            with exclusive_lock(folder / f"{view}.lock", wait=False):
+                marker = read_json(marker_path, required=False) or {}
+                ran_at = str(marker.get("ran_at") or "")
+                try:
+                    age = (
+                        datetime.now(timezone.utc) - parse_utc(ran_at)
+                    ).total_seconds() if ran_at else None
+                except (DomainError, TypeError, ValueError):
+                    age = None
+                recent = [
+                    str(value)
+                    for value in marker.get("signatures") or []
+                    if str(value)
+                ] if age is not None and 0 <= age < interval_seconds else []
+                if signature in recent:
+                    recover_unpublished_receipts(self, clean_project, worker_name=reporter)
+                    return {
+                        "state": "current",
+                        "view": view,
+                        "ran_at": ran_at,
+                        "ran_by": str(marker.get("ran_by") or ""),
+                    }
+                self.sync_project_mail_recipients(clean_project, recipients, view=view)
+                result = self.reconcile_project_mailboxes(
+                    clean_project,
+                    reporter_worker_name=reporter,
+                    view=view,
+                )
+                atomic_write_json(
+                    marker_path,
+                    {
+                        "schema": MAIL_RECONCILIATION_MARKER_SCHEMA,
+                        "project_id": clean_project,
+                        "view": view,
+                        "signatures": [
+                            *[value for value in recent if value != signature],
+                            signature,
+                        ][-MAIL_RECONCILIATION_RECENT_SIGNATURES:],
+                        "ran_at": utc_now(),
+                        "ran_by": reporter,
+                    },
+                )
+                return result
+        except FileLockBusy:
+            recover_unpublished_receipts(self, clean_project, worker_name=reporter)
+            return {"state": "current", "view": view, "reason": "reconciling_elsewhere"}
 
     def reconcile_project_mailboxes(
         self,
         project_id: str,
         *,
         reporter_worker_name: str,
+        view: str = "",
     ) -> dict[str, Any]:
-        """Archive mailboxes with no reader and notify each original sender."""
+        """Archive mailboxes with no reader and notify each original sender.
+
+        With ``view`` (W943 F2-A) this run decides only the mailboxes whose
+        reader belongs to that owner view, against that view's directory.
+        Another owner's mailbox is left to that owner's run, so one owner's
+        tombstones never archive or keep another owner's mailbox. A mailbox
+        whose reader's owner is not known here is decided against all views
+        merged, so it stays while any view still lists its reader as live.
+        """
 
         started_at = utc_now()
         clean_project = component(project_id, field="project_id")
@@ -10474,41 +10799,31 @@ class SharedFieldStore:
             clean_project,
             worker_name=reporter,
         )
-        directory_record = self.read_project_mail_recipients(clean_project)
-        recipients = {
-            str(row.get("worker_name") or "").strip().lower(): dict(row)
-            for row in directory_record.get("recipients") or []
-            if isinstance(row, Mapping)
-            and str(row.get("worker_name") or "").strip()
-        }
         project_ref = make_ref("project", clean_project)
-        for row in json_records(self.control / "workers"):
-            worker_name = str(row.get("worker_name") or "").strip().lower()
-            if worker_name:
-                attends = project_ref in {
-                    str(value)
-                    for value in row.get("attended_project_refs") or []
-                }
-                attendance_observed = bool(
-                    str(row.get("attendances_observed_at") or "").strip()
-                )
-                if (
-                    attendance_observed
-                    and not attends
-                    and str(row.get("pool_status") or "active").lower()
-                    != "retired"
-                ):
-                    recipients[worker_name] = {
-                        **row,
-                        "pool_status": "not_linked",
-                    }
-                else:
-                    recipients[worker_name] = row
-        aliases: dict[str, list[str]] = {}
-        for worker_name, row in recipients.items():
-            alias = str(row.get("worker_alias") or "").strip().casefold()
-            if alias:
-                aliases.setdefault(alias, []).append(worker_name)
+        local = self._local_attendance(project_ref)
+        owner_views = {
+            name: mail_recipient_owner_view(row) for name, row, _ in local
+        }
+        recipients = self._with_local_records(
+            self.read_project_mail_recipients(clean_project, view=view), local
+        )
+        merged = (
+            self._with_local_records(self.read_project_mail_recipients(clean_project), local)
+            if view
+            else recipients
+        )
+
+        def alias_map(directory: Mapping[str, Mapping[str, Any]]) -> dict[str, list[str]]:
+            aliases: dict[str, list[str]] = {}
+            for worker_name, row in directory.items():
+                alias = str(row.get("worker_alias") or "").strip().casefold()
+                if alias:
+                    aliases.setdefault(alias, []).append(worker_name)
+            return aliases
+
+        own_aliases = alias_map(recipients)
+        merged_aliases = alias_map(merged) if view else own_aliases
+        left_to_other_views = 0
 
         mail_root = self._project_dir(clean_project) / "mail"
         archive_root = mail_root / "undeliverable"
@@ -10525,7 +10840,14 @@ class SharedFieldStore:
                 }:
                     continue
                 address = source_root.name.lower()
-                recipient = recipients.get(address)
+                owner_view = owner_views.get(address, "")
+                if view and owner_view and owner_view != view:
+                    left_to_other_views += 1
+                    continue
+                own = not view or owner_view == view
+                directory = recipients if own else merged
+                aliases = own_aliases if own else merged_aliases
+                recipient = directory.get(address)
                 recipient_status = str(
                     (recipient or {}).get("pool_status") or "active"
                 ).lower()
@@ -10936,6 +11258,10 @@ class SharedFieldStore:
             # admitted to a server receipt or exposed in this summary.
             "retirement_pending": {'original_count': sum(retirement_pending_reasons.values()),
                                    'reasons': retirement_pending_reasons},
+            # W943 F2-A: the owner view this run decided for, and how many
+            # mailboxes it left to other owners' runs.
+            "view": view,
+            "mailboxes_left_to_other_views": left_to_other_views,
         }
 
     def record_journal_receipt(
@@ -12912,14 +13238,15 @@ class SharedFieldStore:
             # worker's delivery is refused as forbidden, not reported missing.
             found = self._outbox.find(clean_id)
             source = found[0] if found else None
-            if source is None:
+            # A settled row retention removed after the lookup is gone too.
+            original = read_json(source, required=False) if source is not None else {}
+            if not original:
                 raise DomainError(
                     "field_outbox_not_found",
                     "The requested outbound delivery does not exist.",
                     status=404,
                     details={"outbox_id": clean_id},
                 )
-            original = read_json(source)
         if str(original.get("kind") or "") != "mail.route":
             raise DomainError(
                 "field_mail_delivery_invalid",
@@ -12997,8 +13324,8 @@ class SharedFieldStore:
         with exclusive_lock(root / ".outbox.lock"):
             found = self._outbox.find(clean_id, worker_name=clean_worker)
             source = found[0] if found else None
-            if source is not None:
-                row = read_json(source)
+            row = read_json(source, required=False) if source is not None else {}
+            if row:
                 row.update(
                     replayed_at=row.get("replayed_at") or utc_now(),
                     replayed_to=str(resolution["worker_name"]),
@@ -13113,7 +13440,10 @@ class SharedFieldStore:
         released: list[str] = []
         with exclusive_lock(self._outbox.lock, wait=wait):
             for outbox_id in outbox_ids:
-                found = self._outbox.find(component(outbox_id, field="outbox_id"))
+                # W966: the copy this relay holds, among agents sharing the id.
+                found = self._outbox.find_in_flight(
+                    component(outbox_id, field="outbox_id"), relay_id=relay_id
+                )
                 if found is None or found[1] != "leased":
                     continue
                 source = found[0]
@@ -13144,7 +13474,7 @@ class SharedFieldStore:
 
         clean_id = component(outbox_id, field="outbox_id")
         with exclusive_lock(self._outbox.lock, wait=wait):
-            source = self._leased_outbox_path(clean_id)
+            source = self._leased_outbox_path(clean_id, relay_id=relay_id)
             row = read_json(source)
             lease = row.get("lease") if isinstance(row.get("lease"), Mapping) else {}
             if str(lease.get("relay_id") or "") != str(relay_id):
@@ -13174,14 +13504,17 @@ class SharedFieldStore:
             self._outbox.move_in_flight(source, row, "pending")
             return row
 
-    def _leased_outbox_path(self, outbox_id: str) -> Path:
-        found = self._outbox.find(outbox_id)
+    def _leased_outbox_path(self, outbox_id: str, *, relay_id: str = "") -> Path:
+        # W943: in flight only; a row that is no longer leased is reported as
+        # not leased, without walking the settled history under the lock.
+        # W966: the copy this relay holds, when one id is in flight for several agents.
+        found = self._outbox.find_in_flight(outbox_id, relay_id=relay_id)
         if found is None or found[1] != "leased":
             raise DomainError(
                 "field_outbox_not_leased",
                 "This outbox record is not leased to a relay.",
                 status=409,
-                details={"outbox_id": outbox_id, "state": found[1] if found else "missing"},
+                details={"outbox_id": outbox_id, "state": found[1] if found else "not_in_flight"},
             )
         return found[0]
 
@@ -13198,7 +13531,7 @@ class SharedFieldStore:
     ) -> dict[str, Any]:
         clean_id = component(outbox_id, field="outbox_id")
         with exclusive_lock(self._outbox.lock, wait=wait):
-            source = self._leased_outbox_path(clean_id)
+            source = self._leased_outbox_path(clean_id, relay_id=relay_id)
             row = read_json(source)
             lease = row.get("lease") if isinstance(row.get("lease"), Mapping) else {}
             if str(lease.get("relay_id") or "") != str(relay_id):

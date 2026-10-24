@@ -1257,7 +1257,31 @@ split by resource:
 The signing secret is Connection Hub's own,
 `connections.delegated_credentials.grantor_authority_secret` in the Hub's
 `bundles.secrets.yaml` (32 bytes or longer); it is never shared with a project
-host. Personal MCP connectors are further reserved to their owner: see
+host.
+
+#### A project Control Card Save
+
+A project's own Control P is saved by its project the same way, with the
+split by resource made explicit by the project: its Card transaction names
+the resources its decision bounds (`governed_resources` on that P edit, its
+own service). Those are bounded by the project's authorization; every other
+resource on P is bounded by the *saver's* own authority, from a grantor proof
+the Hub signs for the person saving P from their own session, whoever stores
+P. That proof is typed (`target_kind` `project_control`, an agent Card's is
+`agent_card`) and covers the whole P edit, its access rule and switches
+included; a proof for one kind never verifies as the other. Without a proof
+an addition outside the governed resources is refused
+`card_grantor_inventory_unavailable`; keeping or removing what P carries is
+not refused. A P edit without `governed_resources` is bounded entirely by the
+project's authorization, as before.
+
+The Hub issues a project Control proof only when
+`connections.delegated_credentials.control_saver_proof` is `true` (default
+off), because a project host that predates it refuses a P Save that carries
+one. Turn it on once the project host relays the proof. The proof schema is
+`connection_hub.grantor_authority_proof.v2`; a v1 proof still in flight when
+the Hub is updated is refused `card_grantor_proof_invalid` for at most one
+proof lifetime, and the person saves again. Personal MCP connectors are further reserved to their owner: see
 [the External MCP switch](../custom-mcp-connector.md#36-in-a-project-the-external-mcp-switch).
 
 ### OAuth card
@@ -1394,6 +1418,40 @@ should not carry over, then grant again.
 A caller or credentialless Control Card may link at most one credentialless Card. Both
 are ordinary Connection Hub Cards. The link, not a separate Card type, gives
 the credentialless Card its control role:
+
+### A Control that leaves accounts to the caller
+
+Under AND a Control also intersects the caller Card's provider accounts
+(`account_scope`) with its own, so a Control that holds no accounts removes
+every account. A Control may instead declare that it governs application
+capability only:
+
+```json
+{"properties": {"account_scope_policy": "caller"}}
+```
+
+Under AND such a Control leaves the caller's accounts as they are: they stay
+the caller's own choice, still enforced by each selected operation's live
+grants. It never adds an account, and OR is unchanged. This is the rule a
+descriptor Control already follows (below), as a property any Control may
+carry.
+
+- **Per Control.** The policy is a Control's own and is never inherited
+  through composition. In a chain, each link applies its own, so a link
+  without it still intersects: the application that manages a chain sets it
+  on every Control it composes. Problem Board sets it on a project's Control
+  P, a person's project Control C and an invitation's Control.
+- **Who sets it.** Only the Control's own transaction writes it: the managing
+  application's Card transaction, on a Control it creates (in the creation's
+  selection `properties`) or on its own edit of that Control. A direct write
+  that sets or changes it is refused
+  `account_scope_policy_requires_control_transaction`; keeping or removing it
+  is allowed, because removing only narrows.
+- **Codec.** The only value is `"caller"`, and only a Control Card carries it
+  (`control_card_account_scope_policy_invalid`,
+  `account_scope_policy_requires_control_card`).
+- **Existing Controls** keep today's intersection until their application sets
+  the property through that transaction.
 
 For a descriptor-controlled resident agent, capability composition has one
 positive projection. The Control Card contributes the descriptor-owned ceiling

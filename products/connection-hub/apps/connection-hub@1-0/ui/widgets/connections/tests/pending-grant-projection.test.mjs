@@ -4,6 +4,8 @@ import test from 'node:test'
 import {
   commonOperationGrants,
   doorGrantsForOperation,
+  onceUsedUp,
+  pendingCatalogResource,
   pendingOuterApprovalReady,
   pendingServiceApprovalReady,
   pendingSelectionStatus,
@@ -106,6 +108,28 @@ test('focused consent labels persisted, proposed, and required selections', () =
   )
   assert.equal(pendingSelectionStatus(false, false, true), 'Required for this request')
   assert.equal(pendingSelectionStatus(false, false, false), null)
+})
+
+test('a held operation whose Once is used up asks again (W929)', () => {
+  // Operator, 2026-10-23: "Used once, approve again" instead of "Already granted".
+  assert.equal(pendingSelectionStatus(true, true, true, true), 'Used once, approve again')
+  assert.equal(pendingSelectionStatus(true, true, true, false), 'Already granted')
+  assert.equal(pendingSelectionStatus(false, true, true, true), 'Pending - not granted yet',
+    'only a held operation can be used up')
+  const resource = 'urn:kdcube:management:secret:t:p:bundle:hub@1-0:key'
+  const policy = (operation, mode, state, account) => ({
+    policy_id: operation, revision: 1, remaining: state === 'consumed' ? 0 : (mode === 'once' ? 1 : null), mode, state,
+    authority: { access_id: 'a', resource, surface: 'outer', operation, ...(account ? { account } : {}) },
+  })
+  const read = 'kdcube.management.secret.metadata.read'
+  assert.equal(onceUsedUp([policy(read, 'once', 'consumed')], resource, read), true)
+  assert.equal(onceUsedUp([policy(read, 'once', 'available')], resource, read), false)
+  assert.equal(onceUsedUp([policy(read, 'always', 'available')], resource, read), false)
+  assert.equal(onceUsedUp([policy('kdcube.management.secret.value.write', 'once', 'consumed')], resource, read), false,
+    'another operation of the Card keeps its own policy')
+  assert.equal(onceUsedUp([policy(read, 'once', 'consumed', { provider_id: 'x' })], resource, read), false,
+    'an account-specific policy is not the operation\'s general policy')
+  assert.equal(onceUsedUp(undefined, resource, read), false)
 })
 
 test('account claims cannot make an unlisted operation grantable', () => {
@@ -244,4 +268,39 @@ test('an account is never guessed when the denial names no account', () => {
     undefined,
     'slack:post',
   ), {})
+})
+
+const secretSelector = {
+  resource: 'urn:kdcube:management:secret:*:*:*:*:*',
+  selector_type: 'kdcube_secret',
+  label: 'KDCube secrets',
+  operations: [
+    { name: 'kdcube.management.secret.value.write', grants: ['kdcube.management.secret.write'] },
+  ],
+}
+const concreteSecret = 'urn:kdcube:management:secret:demo-tenant:demo-project:bundle:connection-hub@1-0:connections.signing_key'
+
+test('a consent for one concrete secret resolves through the catalog secret selector (W929)', () => {
+  const capability = resolvePendingOuterCapability(
+    { resource: concreteSecret, outerOperation: 'kdcube.management.secret.value.write' },
+    [resource, secretSelector],
+  )
+
+  assert.equal(capability?.operation.name, 'kdcube.management.secret.value.write')
+  assert.equal(capability?.resource.resource, concreteSecret)
+  assert.equal(capability?.resource.label, 'Application connection-hub@1-0: connections.signing_key')
+  assert.equal(pendingCatalogResource(concreteSecret, [secretSelector])?.selector_type, 'kdcube_secret')
+})
+
+test('the secret fallback applies only to secret resources and a matching kdcube_secret row', () => {
+  assert.equal(pendingCatalogResource('https://elsewhere.example/mcp', [secretSelector]), null)
+  assert.equal(pendingCatalogResource(concreteSecret, [{ ...secretSelector, selector_type: undefined }]), null)
+  assert.equal(pendingCatalogResource(
+    concreteSecret,
+    [{ ...secretSelector, resource: 'urn:kdcube:management:secret:other-tenant:*:*:*:*' }],
+  ), null)
+  assert.equal(resolvePendingOuterCapability(
+    { resource: concreteSecret, outerOperation: 'kdcube.management.secret.value.delete' },
+    [secretSelector],
+  ), null)
 })

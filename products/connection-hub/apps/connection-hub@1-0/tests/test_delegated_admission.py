@@ -35,6 +35,7 @@ from connection_hub.delegated_credentials.request_approval import (
     verify_request_approval_ticket,
 )
 from connection_hub.invocation_policy import (
+    POLICY_ALWAYS,
     POLICY_ONCE,
     SURFACE_OUTER,
     BundleStorageInvocationPolicyStore,
@@ -974,6 +975,129 @@ async def test_direct_admission_once_replays_the_recorded_allow(monkeypatch, tmp
     }
     # Live authority is intentionally re-evaluated before replay is served.
     assert evaluations == 3
+
+
+def _policy_context(module, policies, grant_links):
+    def recovery(view, admission, change_id):
+        grant_links.append((view.registry_access_id, admission.operation, change_id))
+        return "https://hub.example/grant?invocation_policy=choose"
+
+    return module.AdmissionHostContext(
+        connections=_connections(),
+        redis=_Redis(),
+        tenant="tenant-a",
+        project="project-a",
+        resolve_secret=_secret,
+        bind_delegated_request=lambda request: None,
+        invocation_policies=policies,
+        operation_grant_url_builder=recovery,
+        invocation_recovery_url_builder=lambda view, request: "https://hub.example/cards/policy",
+    )
+
+
+def _call(payload_id, customer):
+    return {
+        "resource": RESOURCE,
+        "operation": "customers.search",
+        "invocation_id": payload_id,
+        "request_digest": canonical_request_digest({"customer_id": customer}),
+    }
+
+
+@pytest.mark.asyncio
+async def test_a_used_up_once_asks_again_with_the_same_card_grant_consent(monkeypatch, tmp_path):
+    """W929 (operator, 2026-10-23): a second request after a used-up Once returned a bare 403
+    delegated_invocation_limit_exhausted, so the CLI exited. The docs: "An exhausted one-use policy
+    returns the same choices without removing the operation from the card"."""
+    module = _load_entrypoint_module()
+    surface = sys.modules[module.handle_delegated_admission.__module__]
+
+    async def _evaluate(**kwargs):
+        del kwargs
+        return _allowed_result()
+
+    monkeypatch.setattr(surface, "evaluate_delegated_rest_admission", _evaluate)
+    policies = InvocationPolicyService(store=BundleStorageInvocationPolicyStore(tmp_path), mutation_lock=_lock)
+    authority = InvocationAuthority(
+        access_id="access-1", resource=RESOURCE, surface=SURFACE_OUTER, operation="customers.search",
+    )
+    await policies.set_policy(owner_subject="user-1", authority=authority, mode=POLICY_ONCE, now=100)
+    grant_links: list[tuple[str, str, str]] = []
+    context = _policy_context(module, policies, grant_links)
+
+    first_payload = _call("invoke-1", "customer-7")
+    first = await module.handle_delegated_admission(
+        context=context, payload=first_payload, request=_request(first_payload, nonce="nonce-1234567890abd1"))
+    second_payload = _call("invoke-2", "customer-8")
+    second = await module.handle_delegated_admission(
+        context=context, payload=second_payload, request=_request(second_payload, nonce="nonce-1234567890abd2"))
+
+    assert first.status_code == 200
+    body = json.loads(second.body)
+    assert second.status_code == 403
+    assert body["error"]["code"] == "delegated_invocation_limit_exhausted"
+    consent = body["consent"]
+    assert consent == body["ret"]["details"]["recovery"]
+    # The consent a first request gets (operation_not_consented / resource_not_consented), so the KDCube
+    # management CLI and chat follow it unchanged.
+    assert consent["kind"] == "delegated_agent_grant"
+    assert consent["reason"] == "delegated_invocation_limit_exhausted"
+    assert consent["connection_hub_url"] == "https://hub.example/grant?invocation_policy=choose"
+    assert consent["access_id"] == "access-1"
+    assert consent["agent_client_id"] == "external-client"
+    assert consent["resource"] == RESOURCE
+    assert consent["outer_operation"] == "customers.search"
+    assert consent["invocation_change_id"] == "invoke-2"
+    assert consent["available_choices"] == ["allow_once", "allow_always"]
+    assert consent["grant"] == {
+        "operation": "delegated_agent_grant_create",
+        "payload": {
+            "client_id": "external-client",
+            "access_id": "access-1",
+            "resource": RESOURCE,
+            "claims": [],
+            "resource_operations": {RESOURCE: ["customers.search"]},
+            "invocation_change_id": "invoke-2",
+        },
+    }
+    assert grant_links == [("access-1", "customers.search", "invoke-2")]
+
+    # Choosing Once again commits the policy available; the identical request then goes through, once.
+    await policies.set_policy(owner_subject="user-1", authority=authority, mode=POLICY_ONCE, now=200)
+    retried = await module.handle_delegated_admission(
+        context=context, payload=second_payload, request=_request(second_payload, nonce="nonce-1234567890abd3"))
+    assert retried.status_code == 200
+    assert json.loads(retried.body)["invocation_id"] == "invoke-2"
+    third_payload = _call("invoke-3", "customer-9")
+    third = await module.handle_delegated_admission(
+        context=context, payload=third_payload, request=_request(third_payload, nonce="nonce-1234567890abd4"))
+    assert json.loads(third.body)["consent"]["kind"] == "delegated_agent_grant"
+
+
+@pytest.mark.asyncio
+async def test_always_never_asks_again(monkeypatch, tmp_path):
+    module = _load_entrypoint_module()
+    surface = sys.modules[module.handle_delegated_admission.__module__]
+
+    async def _evaluate(**kwargs):
+        del kwargs
+        return _allowed_result()
+
+    monkeypatch.setattr(surface, "evaluate_delegated_rest_admission", _evaluate)
+    policies = InvocationPolicyService(store=BundleStorageInvocationPolicyStore(tmp_path), mutation_lock=_lock)
+    authority = InvocationAuthority(
+        access_id="access-1", resource=RESOURCE, surface=SURFACE_OUTER, operation="customers.search",
+    )
+    await policies.set_policy(owner_subject="user-1", authority=authority, mode=POLICY_ALWAYS, now=100)
+    grant_links: list[tuple[str, str, str]] = []
+    context = _policy_context(module, policies, grant_links)
+    for index in range(3):
+        payload = _call(f"invoke-{index}", f"customer-{index}")
+        response = await module.handle_delegated_admission(
+            context=context, payload=payload, request=_request(payload, nonce=f"nonce-1234567890abe{index}"))
+        assert response.status_code == 200
+        assert "consent" not in json.loads(response.body)
+    assert grant_links == []
 
 
 @pytest.mark.asyncio

@@ -321,12 +321,16 @@ def apply_outbox_retention(field: Any, *, now: datetime | None = None) -> dict[s
     for project_ref in project_refs:
         if not outbox.project_root(project_ref).is_dir():
             continue
-        with exclusive_lock(outbox.lock):
-            removed = outbox.partitioned(project_ref).expire(
-                cutoff=cutoff_dt,
-                max_bytes_per_agent=OUTBOX_TERMINAL_MAX_BYTES_PER_AGENT,
-                max_records_per_agent=OUTBOX_TERMINAL_MAX_RECORDS_PER_AGENT,
-            )
+        # W943 F2-C: settled history is guarded by its own store lock, which
+        # expire holds one day at a time. The host-wide outbox lock is not
+        # taken here: holding it for the whole pass stalled every agent's
+        # claim, retry and settle on the host (8-24 s per pass on dev-main).
+        # In-flight pending/ and leased/ are never touched.
+        removed = outbox.partitioned(project_ref).expire(
+            cutoff=cutoff_dt,
+            max_bytes_per_agent=OUTBOX_TERMINAL_MAX_BYTES_PER_AGENT,
+            max_records_per_agent=OUTBOX_TERMINAL_MAX_RECORDS_PER_AGENT,
+        )
         totals["partitions"] += removed["partitions"]
         totals["records"] += removed["records"]
         for _ref, agent_root in outbox.agent_roots(project_ref=project_ref):
