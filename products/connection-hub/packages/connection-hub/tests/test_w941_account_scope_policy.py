@@ -196,3 +196,30 @@ def test_the_property_is_classified_and_its_codes_are_registered() -> None:
     for code in (DIRECT_WRITE_REFUSED, "control_card_account_scope_policy_invalid",
                  "account_scope_policy_requires_control_card"):
         assert code in CARD_SAVE_CODES
+
+
+def test_a_person_control_takes_the_policy_through_its_own_reselect_only() -> None:
+    # claude-e-app's T1: the person Control's own transaction edit (lifecycle "reselect") stores the policy
+    # and audits it; a My Card and any other value are refused before resolution.
+    from connection_hub.delegated_credentials.cards.model import CardAuthority as Authority
+    from connection_hub.delegated_credentials.controls.project_person import PROJECT_PERSON_CONTROL_AUDIT_PROVENANCE
+    from connection_hub.delegated_credentials.existing_card_selection_plan import build_existing_card_selection_update
+    from service_foundation.coordination.durable_decision_log import DecisionRefused
+    from test_w607_existing_card_selection_plan import ACTOR, PROJECT, REQUEST, TARGET, _cards, _decision, _Host
+
+    _, control, my_card = _cards()
+
+    def propose(original, value):
+        return asyncio.run(build_existing_card_selection_update(
+            _Host(), original=original, selection={"resource_grants": {"service-a": ["work:admin"]}},
+            active=SimpleNamespace(version="catalog-v2"), decision=_decision(), project_ref=PROJECT,
+            target_subject=TARGET, actor_subject=ACTOR, request_id=REQUEST, now=200, account_scope_policy=value))
+
+    candidate = Authority.from_mapping(propose(control, "caller")["member"]["candidate"])
+    assert candidate.properties[ACCOUNT_SCOPE_POLICY_PROPERTY] == "caller"
+    audit = candidate.provenance[PROJECT_PERSON_CONTROL_AUDIT_PROVENANCE]
+    assert "properties" in audit["changed_fields"], "the policy change is audited"
+
+    for original, value in ((my_card, "caller"), (control, "owner")):
+        with pytest.raises(DecisionRefused, match="card_plan_selection_invalid"):
+            propose(original, value)
