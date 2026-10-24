@@ -231,7 +231,8 @@ def test_governed_resources_travel_only_on_the_project_controls_own_edit() -> No
     from connection_hub.delegated_credentials import card_lifecycle_plan
 
     source = inspect.getsource(card_lifecycle_plan)
-    assert '"governed_resources" in raw and (raw.get("kind") != "reselect_project_control"' in source
+    # W941 rehearsal follow-up: also on a project agent Card's own edit, never elsewhere.
+    assert '"governed_resources" in raw and (raw.get("kind") not in {"reselect_project_control",' in source
     assert "governed_resources=raw.get(\"governed_resources\")" in source
 
 
