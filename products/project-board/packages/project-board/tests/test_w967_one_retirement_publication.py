@@ -88,6 +88,13 @@ def test_a_host_local_original_is_written_once_and_only_by_its_author(tmp_path):
     assert _folders(field) == ['codex-author']
 
 
+def test_the_author_is_matched_exactly_as_the_board_matches_it(tmp_path):
+    """N1: the board compares sender_worker_name with the caller's worker name exactly, so does the client."""
+    field = _field(tmp_path)
+    result = _publish(field, 'codex-author', _local_original('Codex-Author', 'work:mail:case'))
+    assert result['reason'] == 'canonical_author_publishes' and _folders(field) == []
+
+
 def test_a_batch_holds_one_required_sender(tmp_path):
     """Two authors' host-local originals and a control original: each sender's batch is its own row."""
     field = _field(tmp_path)
@@ -147,3 +154,4 @@ def test_reconcile_leaves_another_authors_host_local_original_and_the_author_wri
     _beat(field, A2, _team(GONE_RETIRED), interval=0)
     _beat(field, B1, _team(GONE_RETIRED), interval=0)
     assert rows() == [(A1, outbox_id)], "no other reporter writes a copy"
+

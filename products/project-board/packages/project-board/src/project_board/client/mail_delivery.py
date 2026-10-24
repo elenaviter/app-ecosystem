@@ -65,11 +65,12 @@ def retirement_required_sender(message: Mapping[str, Any]) -> str:
     if str(payload.get('command_ref') or ''):
         return ''
     identity = message.get('sender_identity') if isinstance(message.get('sender_identity'), Mapping) else {}
-    return str(identity.get('worker_name') or message.get('sender') or '').lower()
+    return str(identity.get('worker_name') or message.get('sender') or '')
 
 
 def _proof_sender(proof: Mapping[str, Any]) -> str:
-    return '' if proof.get('control_ref') else str(proof.get('sender_worker_name') or '').lower()
+    # Exactly as the board compares it with the caller's worker name: no case folding.
+    return '' if proof.get('control_ref') else str(proof.get('sender_worker_name') or '')
 
 
 def _find_publication(outbox: Any, outbox_id: str, *, project_ref: str, owner: str) -> dict[str, Any] | None:
@@ -104,7 +105,7 @@ def retirement_delivery_publication(
                 'reason': reason or 'canonical_original_context_pending',
                 'guidance': 'Recover the complete admitted command; the original remains retained.'}
     sender = _proof_sender(proof)
-    if sender and sender != str(reporter_worker_name or '').lower():
+    if sender and sender != str(reporter_worker_name or ''):
         # W967 (c'): only the author's own channel can admit a host-local original, and its own
         # reconcile pass finds it. Another reporter writes no row and binds nothing.
         return {'schema': RETIREMENT_DELIVERY_SCHEMA, 'delivery_status': 'pending',

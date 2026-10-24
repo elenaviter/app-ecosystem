@@ -11049,7 +11049,7 @@ class SharedFieldStore:
                         continue
                 if (failure.get("code") in {"retired_recipient", "work_worker_retired", "field_worker_retired"}
                         and not terminal_notice
-                        and retirement_required_sender(row) not in {"", reporter.lower()}):
+                        and retirement_required_sender(row) not in {"", reporter}):
                     # W967 (c'): only its author's channel can admit a host-local original to a retired
                     # worker; that channel's own pass claims it. Every other reporter leaves it untouched.
                     continue
