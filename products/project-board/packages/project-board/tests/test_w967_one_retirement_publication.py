@@ -334,3 +334,11 @@ def test_the_adoption_rule_itself_never_moves_a_host_local_batch(tmp_path):
     kept = mail_delivery._adopt_orphaned(field, field._outbox, path, row, reporter='codex-reporter-b')
     assert kept['worker_name'] == 'codex-author'
     assert _in_flight(field) == [('pending', 'codex-author', first['outbox_id'])]
+
+
+def test_a_lease_settled_between_the_listing_and_the_read_is_not_work(tmp_path, monkeypatch):
+    outbox = OutboxStore(tmp_path / 'control')
+    gone = tmp_path / 'control' / 'projects' / 'alpha' / 'outbox' / 'codex-other' / 'leased' / 'outbox_gone.json'
+    real = outbox.in_flight
+    monkeypatch.setattr(outbox, 'in_flight', lambda folder, **kw: iter([gone]) if folder == 'leased' else real(folder, **kw))
+    assert outbox.has_in_flight(worker_name='codex-me', now=NOW) is False

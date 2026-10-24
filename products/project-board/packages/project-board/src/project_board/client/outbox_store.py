@@ -154,7 +154,9 @@ class OutboxStore:
         now_dt = now or datetime.now(timezone.utc)
         for path in self.in_flight("leased"):
             try:
-                row = read_json(path)
+                row = read_json(path, required=False)
+                if not row:
+                    continue  # settled between the listing and this read: nothing left to recover
                 lease = row.get("lease") if isinstance(row.get("lease"), Mapping) else {}
                 expires_at = str(lease.get("expires_at") or "")
                 if not expires_at or parse_utc(expires_at) <= now_dt:
