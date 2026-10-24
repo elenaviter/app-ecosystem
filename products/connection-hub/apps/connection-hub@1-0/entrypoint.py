@@ -1205,6 +1205,13 @@ def _identity_config(entrypoint: Any) -> Dict[str, Any]:
     return {}
 
 
+def _control_saver_proof(connections: Mapping[str, Any]) -> bool:
+    """W941: ``connections.delegated_credentials.control_saver_proof``; only a literal true turns it on."""
+
+    delegated = connections.get("delegated_credentials") if isinstance(connections, Mapping) else None
+    return isinstance(delegated, Mapping) and delegated.get("control_saver_proof") is True
+
+
 def _connections_config(entrypoint: Any) -> Dict[str, Any]:
     props = getattr(entrypoint, "bundle_props", None)
     if isinstance(props, Mapping):
@@ -2015,6 +2022,8 @@ async def _automation_access_service_for(
         grantor_authority_secret=await _bundle_secret_value(
             entrypoint, secret_path="connections.delegated_credentials.grantor_authority_secret",
             trace_scope="delegated_credentials.grantor_authority", warn_missing=False),
+        # W941: issue the saver's proof for a managed Control's Save too; on only when set to true.
+        control_saver_proof=_control_saver_proof(connections),
     )
     service.bind_issuer_registry(issuers, actor_subject=_platform_user_id(entrypoint))
     actor, classification, read_tenant, read_project = _protected_lifecycle_read_context(entrypoint)

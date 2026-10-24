@@ -1257,7 +1257,31 @@ split by resource:
 The signing secret is Connection Hub's own,
 `connections.delegated_credentials.grantor_authority_secret` in the Hub's
 `bundles.secrets.yaml` (32 bytes or longer); it is never shared with a project
-host. Personal MCP connectors are further reserved to their owner: see
+host.
+
+#### A project Control Card Save
+
+A project's own Control P is saved by its project the same way, with the
+split by resource made explicit by the project: its Card transaction names
+the resources its decision bounds (`governed_resources` on that P edit, its
+own service). Those are bounded by the project's authorization; every other
+resource on P is bounded by the *saver's* own authority, from a grantor proof
+the Hub signs for the person saving P from their own session, whoever stores
+P. That proof is typed (`target_kind` `project_control`, an agent Card's is
+`agent_card`) and covers the whole P edit, its access rule and switches
+included; a proof for one kind never verifies as the other. Without a proof
+an addition outside the governed resources is refused
+`card_grantor_inventory_unavailable`; keeping or removing what P carries is
+not refused. A P edit without `governed_resources` is bounded entirely by the
+project's authorization, as before.
+
+The Hub issues a project Control proof only when
+`connections.delegated_credentials.control_saver_proof` is `true` (default
+off), because a project host that predates it refuses a P Save that carries
+one. Turn it on once the project host relays the proof. The proof schema is
+`connection_hub.grantor_authority_proof.v2`; a v1 proof still in flight when
+the Hub is updated is refused `card_grantor_proof_invalid` for at most one
+proof lifetime, and the person saves again. Personal MCP connectors are further reserved to their owner: see
 [the External MCP switch](../custom-mcp-connector.md#36-in-a-project-the-external-mcp-switch).
 
 ### OAuth card

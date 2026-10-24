@@ -505,10 +505,14 @@ def retired_project_control(
 
 
 def _grantor_edit(raw: Mapping[str, Any]) -> dict[str, Any]:
-    """W918 H1: the edit an owner's authority proof must cover, read from the planned update itself."""
-    from .grantor_authority_proof import edit_of
+    """W918 H1: the edit a saver's authority proof must cover, read from the planned update itself.
 
-    return edit_of(raw)
+    W941: a project Control's edit covers its whole edit, the access rule and the switches included.
+    """
+    from .grantor_authority_proof import AGENT_CARD, PROJECT_CONTROL, edit_of
+
+    return edit_of(raw, target_kind=PROJECT_CONTROL if raw.get("kind") == "reselect_project_control"
+                   else AGENT_CARD)
 
 
 async def plan_card_lifecycle(
@@ -959,7 +963,7 @@ async def plan_card_lifecycle(
                                    "add_grants", "add_operations", "remove_operations", "operation_grants",
                                    "protected_grants", "accepted_operations", "expected_catalog_version",
                                    "composition_mode", "label", "invocation_modes", "external_mcp_family",
-                                   "a2a_family", "grantor_proof", "account_scope_policy"}
+                                   "a2a_family", "grantor_proof", "account_scope_policy", "governed_resources"}
                     or ("selection" in raw) != (raw.get("kind") in {"reselect", "reselect_project_control",
                                                                     "reselect_agent_card",
                                                                     "reselect_invitation_control", "set_person_properties"})
@@ -968,8 +972,10 @@ async def plan_card_lifecycle(
                     or ("accepted_operations" in raw and "selection" not in raw)
                     or ("expected_catalog_version" in raw and "selection" not in raw)
                     or ("invocation_modes" in raw and raw.get("kind") not in {"reselect", "reselect_agent_card"})
-                    # W918 H1: the owner's own authority proof travels only with an agent Card's edit.
-                    or ("grantor_proof" in raw and raw.get("kind") != "reselect_agent_card")
+                    # W918 H1: the owner's own authority proof travels only with an agent Card's edit;
+                    # W941: and with the project Control's own edit, as the saver's proof.
+                    or ("grantor_proof" in raw and raw.get("kind") not in {"reselect_agent_card",
+                                                                           "reselect_project_control"})
                     # W742: the project access rule travels only on the project Control's own edit.
                     or ("composition_mode" in raw and (raw.get("kind") != "reselect_project_control"
                                                        or raw["composition_mode"] not in {"and", "or"}))
@@ -979,6 +985,12 @@ async def plan_card_lifecycle(
                     # W937: the project's A2A switch, the same rule.
                     or ("a2a_family" in raw and (raw.get("kind") != "reselect_project_control"
                                                  or raw["a2a_family"] not in {"on", "off"}))
+                    # W941 note 1b: the resources the board's delegable grants bound travel only on the project
+                    # Control's own edit, as a non-empty list of resource ids, set by the board alone.
+                    or ("governed_resources" in raw and (raw.get("kind") != "reselect_project_control"
+                        or not isinstance(raw["governed_resources"], list) or not raw["governed_resources"]
+                        or not all(type(item) is str and item and item == item.strip() and len(item) <= 2048
+                                   for item in raw["governed_resources"])))
                     # W941: a managed Control's account policy travels only on that Control's own edit.
                     or ("account_scope_policy" in raw and (raw.get("kind") not in {
                         "reselect", "reselect_project_control", "reselect_invitation_control"}
@@ -1096,6 +1108,7 @@ async def plan_card_lifecycle(
                     composition_mode=raw.get("composition_mode"), label=raw.get("label"),
                     external_mcp_family=raw.get("external_mcp_family"),
                     a2a_family=raw.get("a2a_family"), account_scope_policy=raw.get("account_scope_policy"),
+                    governed_resources=raw.get("governed_resources"),
                     invocation_modes=raw.get("invocation_modes"), grantor_proof=raw.get("grantor_proof"),
                     grantor_edit=_grantor_edit(raw), load_live=load_live,
                     allow_unchanged=_carries_held_mode(original, raw))

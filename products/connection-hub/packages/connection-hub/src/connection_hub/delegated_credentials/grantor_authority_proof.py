@@ -28,7 +28,12 @@ import json
 from dataclasses import dataclass
 from typing import Any, Mapping
 
-SCHEMA = "connection_hub.grantor_authority_proof.v1"
+# v2 (W941): every proof names the Card kind it attests (``target_kind``), and the verifier checks it, so a
+# proof for one kind is never read as the other. A v1 proof (issued before v2, at most one TTL old) is refused.
+SCHEMA = "connection_hub.grantor_authority_proof.v2"
+AGENT_CARD = "agent_card"
+PROJECT_CONTROL = "project_control"
+TARGET_KINDS = frozenset({AGENT_CARD, PROJECT_CONTROL})
 MIN_SECRET_BYTES = 32
 MAX_TOKEN_BYTES = 16384
 PROOF_INVALID = "card_grantor_proof_invalid"
@@ -55,11 +60,16 @@ def _unb64(text: str) -> bytes:
 
 # The fields of an agent-Card edit a proof covers: the whole edit as forwarded, the catalog pin included.
 EDIT_FIELDS = ("selection", "accepted_operations", "expected_catalog_version", "invocation_modes", "label")
+# W941: a project Control (P) edit also changes its access rule and its switches; its proof covers them all.
+PROJECT_CONTROL_EDIT_FIELDS = EDIT_FIELDS + ("composition_mode", "external_mcp_family", "a2a_family")
+_EDIT_FIELDS = {AGENT_CARD: EDIT_FIELDS, PROJECT_CONTROL: PROJECT_CONTROL_EDIT_FIELDS}
 
 
-def edit_of(carrier: Mapping[str, Any]) -> dict[str, Any]:
-    """The edit a forwarded body or a planned update carries, in one canonical shape."""
-    return {field: carrier[field] for field in EDIT_FIELDS if field in carrier}
+def edit_of(carrier: Mapping[str, Any], *, target_kind: str = AGENT_CARD) -> dict[str, Any]:
+    """The edit a forwarded body or a planned update carries, in one canonical shape for its Card kind."""
+    if target_kind not in TARGET_KINDS:
+        raise GrantorProofError()
+    return {field: carrier[field] for field in _EDIT_FIELDS[target_kind] if field in carrier}
 
 
 def edit_digest(edit: Mapping[str, Any]) -> str:
@@ -86,6 +96,7 @@ class GrantorAuthority:
     """The verified claims of one proof."""
 
     grantor_subject: str
+    target_kind: str
     access_id: str
     original_revision: int
     request_id: str
@@ -102,8 +113,14 @@ class GrantorAuthority:
 
 def issue_grantor_proof(*, secret: str, user: Mapping[str, Any], grantor_subject: str, access_id: str,
                         original_revision: int, request_id: str, edit: Mapping[str, Any],
-                        now: int, ttl_seconds: int) -> str:
-    """A proof for the owner's own Save. ``user`` is the Hub's authenticated session identity."""
+                        now: int, ttl_seconds: int, target_kind: str = AGENT_CARD) -> str:
+    """A proof of the saving person's own authority for their own Save of one Card.
+
+    ``user`` is the Hub's authenticated session identity and ``grantor_subject`` the person attested, who must
+    be that session's person: an agent Card's owner saving it (``agent_card``), or the person saving a
+    project Control (``project_control``, W941), who need not be the Control's storage owner. The proof
+    attests that person's own roles and permissions and grants nothing.
+    """
     from connection_hub.authority_inventory import platform_identity_from_user
 
     identity = platform_identity_from_user(user)  # the same reading the Hub's inventory makes
@@ -112,10 +129,10 @@ def issue_grantor_proof(*, secret: str, user: Mapping[str, Any], grantor_subject
         raise GrantorProofError("card_grantor_proof_not_owner")
     if type(original_revision) is not int or original_revision < 1 or type(now) is not int or now < 1:
         raise GrantorProofError()
-    if type(ttl_seconds) is not int or not 1 <= ttl_seconds <= 3600:
+    if type(ttl_seconds) is not int or not 1 <= ttl_seconds <= 3600 or target_kind not in TARGET_KINDS:
         raise GrantorProofError()
     claims = {
-        "schema": SCHEMA, "grantor_subject": grantor_subject, "access_id": access_id,
+        "schema": SCHEMA, "grantor_subject": grantor_subject, "target_kind": target_kind, "access_id": access_id,
         "original_revision": original_revision, "request_id": request_id,
         "edit_digest": edit_digest(edit),
         "roles": sorted(set(identity.roles)),
@@ -128,8 +145,8 @@ def issue_grantor_proof(*, secret: str, user: Mapping[str, Any], grantor_subject
 
 
 def verify_grantor_proof(token: Any, *, secret: str, now: int, grantor_subject: str, access_id: str,
-                         original_revision: int, request_id: str, edit: Mapping[str, Any]
-                         ) -> GrantorAuthority:
+                         original_revision: int, request_id: str, edit: Mapping[str, Any],
+                         target_kind: str = AGENT_CARD) -> GrantorAuthority:
     """The proof's claims, or ``card_grantor_proof_invalid``. Checked the same way at every phase."""
     key = _key(secret)
     if not isinstance(token, str) or not 0 < len(token) <= MAX_TOKEN_BYTES or token.count(".") != 1:
@@ -146,7 +163,8 @@ def verify_grantor_proof(token: Any, *, secret: str, now: int, grantor_subject: 
         raise GrantorProofError()
     try:
         authority = GrantorAuthority(
-            grantor_subject=str(claims["grantor_subject"]), access_id=str(claims["access_id"]),
+            grantor_subject=str(claims["grantor_subject"]), target_kind=str(claims["target_kind"]),
+            access_id=str(claims["access_id"]),
             original_revision=claims["original_revision"], request_id=str(claims["request_id"]),
             edit_digest=str(claims["edit_digest"]), roles=_strings(claims["roles"]) if claims["roles"] else (),
             permissions=_strings(claims["permissions"]) if claims["permissions"] else (),
@@ -159,7 +177,8 @@ def verify_grantor_proof(token: Any, *, secret: str, now: int, grantor_subject: 
         raise GrantorProofError()
     if not authority.issued_at <= now < authority.expires_at:
         raise GrantorProofError()
-    if (authority.grantor_subject != grantor_subject or authority.access_id != access_id
+    if (authority.grantor_subject != grantor_subject or authority.target_kind != target_kind
+            or target_kind not in TARGET_KINDS or authority.access_id != access_id
             or authority.original_revision != original_revision or authority.request_id != request_id
             or authority.edit_digest != edit_digest(edit)):
         raise GrantorProofError()
@@ -167,6 +186,7 @@ def verify_grantor_proof(token: Any, *, secret: str, now: int, grantor_subject: 
 
 
 __all__ = [
-    "EDIT_FIELDS", "GrantorAuthority", "GrantorProofError", "INVENTORY_UNAVAILABLE", "PROOF_INVALID",
+    "AGENT_CARD", "EDIT_FIELDS", "GrantorAuthority", "GrantorProofError", "INVENTORY_UNAVAILABLE",
+    "PROJECT_CONTROL", "PROJECT_CONTROL_EDIT_FIELDS", "PROOF_INVALID", "TARGET_KINDS",
     "edit_digest", "edit_of", "issue_grantor_proof", "verify_grantor_proof",
 ]

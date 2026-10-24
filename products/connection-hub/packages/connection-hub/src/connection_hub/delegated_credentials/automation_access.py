@@ -1875,6 +1875,7 @@ class AutomationAccessService:
         issuer_actor_subject: str = "",
         project_resource_families: Any | None = None,
         grantor_authority_secret: str = "",
+        control_saver_proof: bool = False,
     ) -> None:
         self._redis = redis
         self._tenant = _clean(tenant)
@@ -1884,6 +1885,9 @@ class AutomationAccessService:
         self._project_resource_families = project_resource_families
         # W918 H1: signs the owner's own authority proof; empty leaves the proof dormant (none issued).
         self._grantor_authority_secret = str(grantor_authority_secret or "")
+        # W941: also issue the saver's proof for a managed Control's Save (``control_saver_proof``). Off by
+        # default: a managing application that predates it refuses a Control Save that carries a proof.
+        self._control_saver_proof_enabled = control_saver_proof is True
         selected_backend = _clean(authority_backend).lower()
         if grant_store is None and selected_backend == AUTHORITY_BACKEND_POSTGRESQL:
             raise GrantStoreUnavailable(
@@ -2976,9 +2980,11 @@ class AutomationAccessService:
                 external_mcp_family=switch_values.get("external_mcp_family"),
                 a2a_family=switch_values.get(A2A_FAMILY_PROPERTY))
             # W918 H1: the proof covers exactly the edit this body carries, its catalog pin included.
-            from .grantor_authority_proof import edit_of
+            # W941: a project Control edit's proof covers its whole edit (access rule and switches too).
+            from .grantor_authority_proof import AGENT_CARD, PROJECT_CONTROL, edit_of
             proof = self._owner_authority_proof(user, record=record, kind=kind, revision=revision,
-                                                request_id=request_id, edit=edit_of(body))
+                request_id=request_id, edit=edit_of(body, target_kind=(
+                    PROJECT_CONTROL if kind == "project_control" else AGENT_CARD)))
             if proof is not None:
                 body = {**body, "grantor_proof": proof}
             outcome = await forwarder.forward(body)
@@ -2991,21 +2997,35 @@ class AutomationAccessService:
 
     def _owner_authority_proof(self, user: Mapping[str, Any], *, record: AutomationAccessRecord, kind: str,
                                revision: int, request_id: str, edit: Mapping[str, Any]) -> str | None:
-        """W918 H1: a proof of the owner's own authority for their own agent-Card edit, else None.
+        """W918 H1: a proof of the saving person's own authority for their own Save, else None.
 
-        Issued only from the owner's authenticated session (its subject is the Card's grantor) and only
-        when the deployment configured the signing secret; it lives for one bounded transaction window.
+        Issued only from that person's authenticated session and only when the deployment configured the
+        signing secret; it lives for one bounded transaction window. An agent Card's proof is its owner's
+        (the session's subject is the Card's grantor). W941: a project Control's proof is the saver's own,
+        whoever stores the Control; it attests their own roles and grants nothing (the managing
+        application still decides whether they may save it).
         """
-        from .grantor_authority_proof import GrantorProofError, issue_grantor_proof
+        from .grantor_authority_proof import AGENT_CARD, PROJECT_CONTROL, GrantorProofError, issue_grantor_proof
 
         secret = getattr(self, "_grantor_authority_secret", "")
-        if kind != "agent_card" or not secret or _subject_from_user(user) != record.grantor_subject:
+        saver = _subject_from_user(user)
+        if not secret or not saver:
+            return None
+        if kind == "agent_card":
+            if saver != record.grantor_subject:
+                return None
+            target_kind = AGENT_CARD
+        elif kind == "project_control" and getattr(self, "_control_saver_proof_enabled", False):
+            # Off until the managing application accepts a project Control proof: an older board refuses a
+            # project Control Save that carries one (W941 C1, both directions).
+            target_kind = PROJECT_CONTROL
+        else:
             return None
         try:
             return issue_grantor_proof(
-                secret=secret, user=user, grantor_subject=record.grantor_subject,
+                secret=secret, user=user, grantor_subject=saver,
                 access_id=record.access_id, original_revision=revision, request_id=request_id,
-                edit=edit, now=int(time.time()), ttl_seconds=GRANTOR_PROOF_TTL_SECONDS)
+                edit=edit, now=int(time.time()), ttl_seconds=GRANTOR_PROOF_TTL_SECONDS, target_kind=target_kind)
         except GrantorProofError:
             return None
 
