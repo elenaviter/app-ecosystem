@@ -342,3 +342,28 @@ def test_a_lease_settled_between_the_listing_and_the_read_is_not_work(tmp_path, 
     real = outbox.in_flight
     monkeypatch.setattr(outbox, 'in_flight', lambda folder, **kw: iter([gone]) if folder == 'leased' else real(folder, **kw))
     assert outbox.has_in_flight(worker_name='codex-me', now=NOW) is False
+
+
+def test_a_stale_binding_after_an_adoption_resends_the_identical_publication(tmp_path):
+    """The documented limit: an original still bound to the publisher A, whose row was adopted and
+    settled under B, misses A's history and is written once more. It is the same id, payload and
+    content hash, so the board replays the same claim (Applications test_worker_archive_postgres
+    ``test_retirement_receipts_real_postgres_identity_replay_rollback_and_jsonb``: reporters cannot
+    split it) and the same coverage settles the original.
+    """
+    field = _field(tmp_path)
+    message, first, before = _overdue_row(field, 'codex-reporter-a', mail_delivery.ADOPT_AFTER_SECONDS + 1)
+    _bind(message, first)
+    # A's row left flight under another folder: adopted and settled under B, out of A's history.
+    for path in list(field._outbox.in_flight('pending')):
+        path.unlink()
+    again = _publish(field, 'codex-reporter-c', message)
+    assert again['outbox_id'] == first['outbox_id'] and again['delivery_status'] == 'pending'
+    row = field._outbox.read(first['outbox_id'], worker_name='codex-reporter-c', project_ref=PROJECT)
+    assert row['payload'] == before['payload'] and row['content_hash'] == before['content_hash']
+    coverage = {'source_message_ref': 'work:mail:orphan', 'notice_state': 'queued',
+                'receipt_ref': 'work:mail_reconciliation:canonical'}
+    row.update(state='sent', remote_result={'schema': 'problem-board.retirement-delivery.v1', 'coverage': [coverage]})
+    field._outbox.write_pending(row)
+    settled = _publish(field, 'codex-reporter-c', message)
+    assert settled['delivery_status'] == 'queued' and settled['receipt_ref'] == coverage['receipt_ref']
