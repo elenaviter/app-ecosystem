@@ -4,7 +4,7 @@ Host-neutral foundations shared by applications in an ecosystem.
 
 ## Current Status
 
-`2026.10.19.2200` is released together with service-foundation, connection-hub and
+`2026.10.24.1000` is released together with service-foundation, connection-hub and
 project-board at one version (W322). It contains two
 host-neutral foundations: MCP client construction and strict native
 credential-value storage. The next release adds the outbound network policy

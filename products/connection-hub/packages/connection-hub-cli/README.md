@@ -192,9 +192,18 @@ under `connections.delegated_credentials.admission.services` lists
 Hub descriptor template. Your platform account must be allowed to approve
 management grants; a deployment administrator is.
 
-1. **Run the CLI.** Install it with `uv tool install connection-hub-cli`. If
-   that package is not published for your platform, run it from source at the
-   revision your Connection Hub runs:
+1. **Run the CLI.** Install it from PyPI:
+
+   ```bash
+   uv tool install connection-hub-cli
+   connection-hub --version
+   ```
+
+   The consent step below needs `connection-hub-cli` 2026.10.24.1100 or later, which
+   installs `kdcube-cli` 2026.10.24.1030 or later and the App Ecosystem packages
+   from 2026.10.24.1000 or later. Check the reported CLI version before continuing.
+   To run a revision that is not on PyPI,
+   run it from source at the revision your Connection Hub runs:
 
    ```bash
    CH() { uvx --from "git+https://github.com/elenaviter/app-ecosystem@<commit>#subdirectory=products/connection-hub/packages/connection-hub-cli" connection-hub "$@"; }
