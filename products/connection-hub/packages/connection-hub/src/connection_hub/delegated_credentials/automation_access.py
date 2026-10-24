@@ -157,6 +157,9 @@ from connection_hub.delegated_credentials.controls.external_mcp_switch import (
     SWITCH_PROPERTIES,
     direct_switch_write_refusal,
 )
+from connection_hub.delegated_credentials.controls.account_scope_policy import (
+    direct_write_refusal as account_scope_policy_direct_write_refusal,
+)
 from connection_hub.delegated_credentials.controls.hierarchy import compose_control_hierarchy
 from connection_hub.delegated_credentials.conversation_target_policy import (
     conversation_targets,
@@ -6443,6 +6446,12 @@ class AutomationAccessService:
                 and not (_through_project or first_selection or _person_control or _application_write
                          or _issuer_decision is not None)):
             return _project_path_required()
+        # W941: a Control's account policy is set or changed only by its own transaction (a person's or an
+        # invitation's Control is written here by that transaction, ``_person_control``); a direct write may
+        # keep or remove it, never add it.
+        if not _person_control and (refused := account_scope_policy_direct_write_refusal(
+                existing.properties, properties)) is not None:
+            return refused
         own_my = await self._forward_own_my_card_edit(
             user, record=existing, request_id=request_id, expected_card_revision=expected_card_revision,
             selection={field: value for field, value in (
@@ -7914,6 +7923,9 @@ class AutomationAccessService:
             )
         except ControlCardError as exc:
             return {"ok": False, "error": exc.reason, "status": 400}
+        # W941: a Control's account policy is set only by its own transaction, never by a direct create.
+        if (refused := account_scope_policy_direct_write_refusal({}, properties)) is not None:
+            return refused
         # W578: a managed project's P is created only through its lifecycle
         # plan; an existing one is neither started nor repaired here.
         if self._managed_project_control(access_id=control_id, issuer_kind=issuer_kind, issuer_ref=issuer_ref,

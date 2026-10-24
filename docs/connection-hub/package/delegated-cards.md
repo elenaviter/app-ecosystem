@@ -1395,6 +1395,40 @@ A caller or credentialless Control Card may link at most one credentialless Card
 are ordinary Connection Hub Cards. The link, not a separate Card type, gives
 the credentialless Card its control role:
 
+### A Control that leaves accounts to the caller
+
+Under AND a Control also intersects the caller Card's provider accounts
+(`account_scope`) with its own, so a Control that holds no accounts removes
+every account. A Control may instead declare that it governs application
+capability only:
+
+```json
+{"properties": {"account_scope_policy": "caller"}}
+```
+
+Under AND such a Control leaves the caller's accounts as they are: they stay
+the caller's own choice, still enforced by each selected operation's live
+grants. It never adds an account, and OR is unchanged. This is the rule a
+descriptor Control already follows (below), as a property any Control may
+carry.
+
+- **Per Control.** The policy is a Control's own and is never inherited
+  through composition. In a chain, each link applies its own, so a link
+  without it still intersects: the application that manages a chain sets it
+  on every Control it composes. Problem Board sets it on a project's Control
+  P, a person's project Control C and an invitation's Control.
+- **Who sets it.** Only the Control's own transaction writes it: the managing
+  application's Card transaction, on a Control it creates (in the creation's
+  selection `properties`) or on its own edit of that Control. A direct write
+  that sets or changes it is refused
+  `account_scope_policy_requires_control_transaction`; keeping or removing it
+  is allowed, because removing only narrows.
+- **Codec.** The only value is `"caller"`, and only a Control Card carries it
+  (`control_card_account_scope_policy_invalid`,
+  `account_scope_policy_requires_control_card`).
+- **Existing Controls** keep today's intersection until their application sets
+  the property through that transaction.
+
 For a descriptor-controlled resident agent, capability composition has one
 positive projection. The Control Card contributes the descriptor-owned ceiling
 and the resident Agent Card contributes the user's selection. Connection Hub
