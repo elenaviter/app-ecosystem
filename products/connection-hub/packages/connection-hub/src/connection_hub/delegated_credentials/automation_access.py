@@ -3011,7 +3011,7 @@ class AutomationAccessService:
             if saver != record.grantor_subject:
                 return None
             target_kind = AGENT_CARD
-        elif kind == "project_control" and getattr(self, "_project_control_saver_proof", False):
+        elif kind == "project_control" and getattr(self, "_control_saver_proof_enabled", False):
             # Off until the managing application accepts a project Control proof: an older board refuses a
             # project Control Save that carries one (W941 C1, both directions).
             target_kind = PROJECT_CONTROL

@@ -166,7 +166,7 @@ def test_the_hub_issues_a_project_control_proof_only_when_enabled() -> None:
     issue = lambda: service._owner_authority_proof(SAVER, record=record, kind="project_control", revision=4,
                                                    request_id="save-1", edit={})
     assert issue() is None, "off until the managing application accepts one"
-    service._project_control_saver_proof = True
+    service._control_saver_proof_enabled = True
     token = issue()
     import time
 
@@ -211,3 +211,33 @@ def test_the_editor_catalog_offers_a_non_admin_no_admin_only_service() -> None:
 
     assert "docs" in member_rows and "secrets" not in member_rows
     assert {"docs", "secrets"} <= admin_rows
+
+
+def test_governed_resources_travel_only_on_the_project_controls_own_edit() -> None:
+    # Note 1b (D4): the lifecycle plan admits the field only on reselect_project_control, as a non-empty list
+    # of resource ids, and hands it to the planner; an older Hub refuses the unknown key (C1).
+    import inspect
+
+    from connection_hub.delegated_credentials import card_lifecycle_plan
+
+    source = inspect.getsource(card_lifecycle_plan)
+    assert '"governed_resources" in raw and (raw.get("kind") != "reselect_project_control"' in source
+    assert "governed_resources=raw.get(\"governed_resources\")" in source
+
+
+def test_governed_resources_are_part_of_both_digests() -> None:
+    # Note 1b (D3): PLAN and STAGE read the same update, and the STAGE digest keeps the field while it strips
+    # only the proof (an attestation of the edit, not part of it).
+    from connection_hub.delegated_credentials.cards.participant_card_version import REQUEST_FIELDS, stage_digest
+
+    def request(update):
+        base = {name: None for name in REQUEST_FIELDS}
+        base.update({"request_id": "r", "at": "2026-10-24T00:00:00Z", "catalog": {}, "actor_subject": "a",
+                     "actor_kind": "caller", "delegable_grants": [], "project_control": None, "creations": [],
+                     "updates": [update]})
+        return base
+
+    p_edit = {"kind": "reselect_project_control", "selection": {}}
+    governed = {**p_edit, "governed_resources": ["problem_board"]}
+    assert stage_digest(request(governed)) != stage_digest(request(p_edit))
+    assert stage_digest(request({**governed, "grantor_proof": "a.b"})) == stage_digest(request(governed))
