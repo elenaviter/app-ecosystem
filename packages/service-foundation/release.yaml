@@ -7,7 +7,8 @@ package:
     New changes since the PB set published on 19 October at 22:00 Berlin time:
 
     - Project Board workers can discover and call the services allowed by their Cards. The client validates service arguments before sending them and preserves the project's permissions for each worker.
-    - Repeating an identical setup reuses the existing host record. Procedure installation and verification cover every registered Claude configuration directory by default and name each directory; an explicitly selected directory remains scoped to that directory.
+    - Repeating an identical setup reuses the existing host record. Procedure installation and verification name every covered directory.
+    - Procedure installation and verification cover `~/.claude` and the current session's own configuration directory by default. Other directories are covered only when explicitly named; multiple named directories are supported, and hooks and settings stay within that selection.
     - Repeating a single-value command option with conflicting values now fails before any operation, with a clear error; one send has one recipient.
     - The relay recovers from lost outbox leases without stopping unrelated mail, settles an in-flight outbox row in its own copy, and avoids repeating mailbox reconciliation for an unchanged owner view. Project syncs compare before locking and write only when data changes. Retention holds the writer lock one day at a time. Slow-turn diagnostics name the longest store call and outbox send time.
     - Retirement reconciliation keeps one routed publication per host, groups host-local originals by their required sender, and adopts overdue routed batches. Outbox claiming checks only due rows and expired leases.
