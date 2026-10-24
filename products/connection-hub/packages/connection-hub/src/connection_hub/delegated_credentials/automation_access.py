@@ -868,6 +868,22 @@ def _control_card_unstarted(record: "AutomationAccessRecord") -> bool:
         (record.resource_grants or {}).values()
     )
 
+# W562 F3: the issuer kind a project's Control Card is stored with (``ProjectControlCard`` reads a
+# missing kind as this one too). Its writes go through the project, never the creator's own path.
+PROJECT_CONTROL_ISSUER_KIND = "project"
+
+
+def _project_path_required() -> dict[str, Any]:
+    # The managed P's refusal code (W578): the Hub screen shows its message instead of reloading.
+    return {
+        "ok": False,
+        "error": "card_transactions_direct_write_refused",
+        "message": "This project's Control Card is changed through its project: open it from the project in Problem Board.",
+        "retryable": False,
+        "status": 409,
+    }
+
+
 def _record_is_credentialless(record: "AutomationAccessRecord") -> bool:
     """The one material difference between a linked Card and a caller Card."""
     return (
@@ -6363,6 +6379,8 @@ class AutomationAccessService:
         _application_write: bool = False,
         _person_control: bool = False,
         _authorize_agent_card: Callable[[str, str], Awaitable[Any]] | None = None,
+        _through_project: bool = False,
+        _initial_start: bool = False,
     ) -> dict[str, Any]:
         """Edit a card's authority IN PLACE, whatever family issued it.
 
@@ -6412,6 +6430,19 @@ class AutomationAccessService:
                          "expected_catalog_version": expected_catalog_version,
                          "invocation_modes": invocation_modes, "_screen_save": _screen_save})
             return forwarded if forwarded is not None else refused
+        # W562 F3: a project's Control Card (issuer_kind "project", stored under its creator) changes only through
+        # the project (W260, ``project_control_card_access``), where the project decides who may and bounds the
+        # edit by what that person may delegate. Its creator's own path (``control_card_update``,
+        # ``delegated_access_update``, a profile or an added operation) is refused, as a managed P's direct write
+        # is (W578). The creation's first selection and the project's own writers (a person's Control, an
+        # application write, an issuer-decided write) keep their paths. The first selection is only that while
+        # the Card is still at its creation revision: once anything wrote it (the project too, even emptying
+        # it), a restart from a profile is the creator's own write.
+        first_selection = _initial_start and int(existing.card_revision or 0) <= 1
+        if (_record_is_credentialless(existing) and _clean(existing.issuer_kind) == PROJECT_CONTROL_ISSUER_KIND
+                and not (_through_project or first_selection or _person_control or _application_write
+                         or _issuer_decision is not None)):
+            return _project_path_required()
         own_my = await self._forward_own_my_card_edit(
             user, record=existing, request_id=request_id, expected_card_revision=expected_card_revision,
             selection={field: value for field, value in (
@@ -8146,6 +8177,7 @@ class AutomationAccessService:
             account_scope={},
             expected_card_revision=record.card_revision,
             _record_transform=_stamp,
+            _initial_start=True,
         )
         if updated.get("ok") is not True:
             return updated
@@ -8185,6 +8217,8 @@ class AutomationAccessService:
         | None = None,
         _platform_admin: bool | None = None,
         _acting_user: Mapping[str, Any] | None = None,
+        _through_project: bool = False,
+        _initial_start: bool = False,
     ) -> dict[str, Any]:
         """Edit a Control Card through the ordinary catalog-aware Card path.
 
@@ -8193,7 +8227,9 @@ class AutomationAccessService:
         the acting person's grants and stamped with who made it, while the
         Card stays stored under its creator.
         """
-
+        # W562 F3: ``_through_project`` marks that project path and ``_initial_start`` the creation's own
+        # first selection (``_start_control_card``); ``update_access`` refuses any other write to a
+        # project's Control Card.
         grantor_subject = _subject_from_user(user)
         if not grantor_subject:
             return {"ok": False, "error": "delegated_access_requires_authenticated_user"}
@@ -8268,6 +8304,8 @@ class AutomationAccessService:
             _delegable_grants=_delegable_grants,
             _record_transform=_record_transform,
             _platform_admin=_platform_admin,
+            _through_project=_through_project,
+            _initial_start=_initial_start,
         )
         if updated.get("ok") is not True:
             return updated
