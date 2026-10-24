@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import logging
 import os
 import json
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
@@ -9,7 +11,16 @@ from ..contract.delivery_failures import (
     is_terminal_system_notice, RETIREMENT_DELIVERY_SCHEMA, RETIREMENT_DELIVERY_PURPOSE,
 )
 from ..contract.errors import DomainError
-from .io import atomic_write_json, content_hash, exclusive_lock, read_json, utc_now
+from .io import atomic_write_json, content_hash, exclusive_lock, parse_utc, read_json, utc_now
+
+logger = logging.getLogger(__name__)
+
+# W967: a routed (control) retirement batch has one row per host, sent only by the channel of the
+# worker whose folder holds it. When that row has been due for this long and is still pending, its
+# publisher is not sending it (stopped, or retired), and the reporter that finds it adopts it. It
+# counts from ``next_attempt_at``, so a row in a long backoff is never taken while it is not due;
+# fifteen minutes is far above one relay cycle and below the hour.
+ADOPT_AFTER_SECONDS = 900
 
 
 def _retirement_original_proof(message: Mapping[str, Any], retired_worker_name: str) -> tuple[str, dict[str, Any] | None, str]:
@@ -54,6 +65,81 @@ def _retirement_original_proof(message: Mapping[str, Any], retired_worker_name: 
     return source_ref, proof, ''
 
 
+def retirement_required_sender(message: Mapping[str, Any]) -> str:
+    """Who may publish this original's retirement member: ``''`` for anyone, else its author (W967 D7).
+
+    The board verifies a routed original (``command_ref``) against its own control row, from any
+    attending worker. A host-local original is admitted only from its authenticated author's channel
+    (``proof.sender_worker_name == caller.worker_name``), so only that author's reporter batches it.
+    """
+    payload = message.get('payload') if isinstance(message.get('payload'), Mapping) else {}
+    if str(payload.get('command_ref') or ''):
+        return ''
+    identity = message.get('sender_identity') if isinstance(message.get('sender_identity'), Mapping) else {}
+    return str(identity.get('worker_name') or message.get('sender') or '')
+
+
+def _proof_sender(proof: Mapping[str, Any]) -> str:
+    # Exactly as the board compares it with the caller's worker name: no case folding.
+    return '' if proof.get('control_ref') else str(proof.get('sender_worker_name') or '')
+
+
+def _sends_as(field: Any, worker_name: str) -> bool:
+    """Whether this host's record of the worker lets it publish: present and not retired."""
+    read_worker = getattr(field, 'read_worker', None)
+    if read_worker is None:
+        return True
+    try:
+        record = read_worker(worker_name)
+    except DomainError:
+        return False
+    return record.get('pool_status') != 'retired' and not record.get('retired_at')
+
+
+def _adopt_orphaned(field: Any, outbox: Any, path: Path, row: dict[str, Any], *, reporter: str) -> dict[str, Any]:
+    """Move a routed batch nobody is sending into this reporter's folder; the caller holds ``outbox.lock``.
+
+    D1: the move happens under the host outbox lock that every claim, lease recovery, release,
+    retry and settle of the row also takes, so it is either leased by its publisher's channel or
+    pending under exactly one folder, never both. D3: the row keeps its retry and backoff state.
+    D7: only a routed batch moves, because the board admits its members from any attending worker.
+    """
+    publisher = str(row.get('worker_name') or '')
+    if not publisher or publisher == reporter or any(
+            not member.get('control_ref') for member in (row.get('payload') or {}).get('members') or ()):
+        return row
+    due = str(row.get('next_attempt_at') or row.get('created_at') or '')
+    try:
+        overdue = (datetime.now(timezone.utc) - parse_utc(due)).total_seconds()
+    except DomainError:
+        return row
+    if overdue <= ADOPT_AFTER_SECONDS or not _sends_as(field, reporter):
+        return row
+    adopted = {**row, 'worker_name': reporter, 'adopted_from': publisher, 'adopted_at': utc_now(), 'updated_at': utc_now()}
+    outbox.move_in_flight(path, adopted, 'pending')
+    logger.info('Problem Board retirement publication adopted project=%s outbox_id=%s from=%s to=%s',
+                row.get('project_ref') or '', row.get('outbox_id') or '', publisher, reporter)
+    return adopted
+
+
+def _find_publication(outbox: Any, outbox_id: str, *, project_ref: str, owner: str,
+                      field: Any = None, reporter: str = '') -> dict[str, Any] | None:
+    """One publication row of this project on this host, wherever it is in flight (W967).
+
+    In flight: every agent folder of the project, one stat each. Settled history: only the
+    folder of the worker that publishes it (the binding's ``publication_worker_name``) and the
+    project-level folder, never every agent's dated history under the outbox lock (D6, W943).
+    """
+    found = outbox.find_in_flight(outbox_id, project_ref=project_ref)
+    if found is not None:
+        row = read_json(found[0], required=False)
+        if row:
+            if found[1] == 'pending' and reporter:
+                return _adopt_orphaned(field, outbox, found[0], dict(row), reporter=reporter)
+            return dict(row)
+    return outbox.read(outbox_id, worker_name=owner, project_ref=project_ref)
+
+
 def retirement_delivery_publication(
     field: Any, *, project_ref: str, reporter_worker_name: str,
     retired_worker_name: str, message: Mapping[str, Any],
@@ -70,12 +156,20 @@ def retirement_delivery_publication(
         return {'schema': RETIREMENT_DELIVERY_SCHEMA, 'delivery_status': 'pending',
                 'reason': reason or 'canonical_original_context_pending',
                 'guidance': 'Recover the complete admitted command; the original remains retained.'}
+    sender = _proof_sender(proof)
+    if sender and sender != str(reporter_worker_name or ''):
+        # W967 (c'): only the author's own channel can admit a host-local original, and its own
+        # reconcile pass finds it. Another reporter writes no row and binds nothing.
+        return {'schema': RETIREMENT_DELIVERY_SCHEMA, 'delivery_status': 'pending',
+                'reason': 'canonical_author_publishes',
+                'guidance': "Only the original's author publishes a host-local original; it remains retained."}
     proofs = [proof]
     # Stable input order and an encoded byte cap make each batch bounded.
     # Invalid extra originals remain unbound and get their own diagnostic.
+    # W967 (a): one batch per required sender, so whoever sends it can admit every member.
     for other in additional_messages:
         _, extra, _ = _retirement_original_proof(other, retired_worker_name)
-        if extra is None or extra in proofs:
+        if extra is None or extra in proofs or _proof_sender(extra) != sender:
             continue
         if len(proofs) >= 100 or len(json.dumps([*proofs, extra], ensure_ascii=True).encode()) > 900_000:
             break
@@ -92,7 +186,11 @@ def retirement_delivery_publication(
         bound_id = str(binding.get('outbox_id') or '')
         if bound_id and binding.get('proof_hash') != content_hash(proof):
             raise DomainError('field_retirement_publication_conflict', 'The retained original proof changed.', status=409)
-        row = outbox.read(bound_id or outbox_id, worker_name=reporter_worker_name, project_ref=project_ref)
+        # W967: one row per publication on this host, whichever reporter reached it first. A binding
+        # from before W967 names no publisher and searches this reporter's history, as before.
+        owner = str(binding.get('publication_worker_name') or reporter_worker_name)
+        row = _find_publication(outbox, bound_id or outbox_id, project_ref=project_ref, owner=owner,
+                                field=field, reporter=str(reporter_worker_name or ''))
         if row is None:
             row = {'schema': 'problem-board.service-outbox.v1', 'outbox_id': outbox_id,
                    'kind': 'mail.reconciliation.publish', 'worker_name': reporter_worker_name,
@@ -103,13 +201,16 @@ def retirement_delivery_publication(
             raise DomainError('field_retirement_publication_conflict', 'Immutable retirement evidence changed.', status=409)
         else:
             outbox_id = str(row['outbox_id'])
-    bindings = [{'source_message_ref': item['source_message_ref'], 'proof_hash': content_hash(item)} for item in proofs]
+    publisher = str(row.get('worker_name') or reporter_worker_name)
+    bindings = [{'source_message_ref': item['source_message_ref'], 'proof_hash': content_hash(item),
+                 'publication_worker_name': publisher} for item in proofs]
     result = dict(row.get('remote_result') or {})
     if row.get('state') == 'refused':
         error = result.get('error') if isinstance(result.get('error'), Mapping) else {}
         return {'schema': RETIREMENT_DELIVERY_SCHEMA, 'delivery_status': 'pending', 'outbox_id': outbox_id,
                 'reason': 'canonical_publication_refused', 'error_code': str(error.get('code') or ''),
                 'proof_hash': content_hash(proof), 'publication_bindings': bindings,
+                'publication_worker_name': publisher,
                 'guidance': 'Inspect the private publication refusal; no original has been marked covered.'}
     canonical_result = row.get('state') == 'sent' and result.get('schema') == RETIREMENT_DELIVERY_SCHEMA
     exact_pending = next((entry for entry in result.get('pending') or []
@@ -120,7 +221,8 @@ def retirement_delivery_publication(
         return {'schema': RETIREMENT_DELIVERY_SCHEMA, 'delivery_status': 'pending', 'outbox_id': outbox_id,
                 'reason': (reason if reason == 'canonical_server_member_exists_unverifiable_author_copy'
                            else 'canonical_notice_coverage_pending'),
-                'publication_bindings': bindings, 'proof_hash': content_hash(proof)}
+                'publication_bindings': bindings, 'proof_hash': content_hash(proof),
+                'publication_worker_name': publisher}
     for coverage in (result.get('coverage') or []) if canonical_result else []:
         if (isinstance(coverage, Mapping) and result.get('schema') == RETIREMENT_DELIVERY_SCHEMA
             and coverage.get('source_message_ref') == source_ref
@@ -133,7 +235,7 @@ def retirement_delivery_publication(
     return {'schema': RETIREMENT_DELIVERY_SCHEMA, 'delivery_status': 'pending', 'outbox_id': outbox_id,
             'reason': (pending_reason if pending_reason ==
                 'canonical_server_member_exists_unverifiable_author_copy' else 'canonical_notice_coverage_pending'),
-            'publication_bindings': bindings,
+            'publication_bindings': bindings, 'publication_worker_name': publisher,
             'proof_hash': content_hash(proof)}
 
 
