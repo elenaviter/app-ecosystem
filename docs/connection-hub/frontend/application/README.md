@@ -311,13 +311,14 @@ account at call time.
   with the acting person in a `project_control_card_audit` provenance entry.
   - **The creator changes it here too** (W562 F3). On the creator's own path
     (`control_card_update`, `delegated_access_update`, applying a profile or
-    adding operations) a Card with `issuer_kind` `project` is refused with 409
+    adding operations) a W260 project Control Card (`issuer_kind` `project`,
+    stored under its creator) is refused with 409
     `card_transactions_direct_write_refused` ("This project's Control Card is
     changed through its project: open it from the project in Problem Board.")
     and nothing changes, so every change is one the project allowed and is
     bounded by what the acting person may delegate. Only the creation's own
-    first selection (`control_card_create` with `initial_profile`) is written
-    on the creator's path; the project's own writers (a person's Control, a
+    first selection (`control_card_create` with `initial_profile`, while the
+    Card is still at its creation revision) is written on the creator's path; the project's own writers (a person's Control, a
     Reset to the Control, an issuer-decided write) are unchanged. A managed project Control (`issuer_kind`
     `application`) is unchanged: its save goes through the project's own
     transaction (W578, W638).

@@ -53,6 +53,7 @@ CARD_SAVE_CODES = frozenset({
     "card_plan_invitation_seed_invalid",
     "card_plan_kind_invalid",
     "card_plan_invitation_identity_invalid",
+    "card_transactions_direct_write_refused",  # W578: a managed project Card; W562 F3: a W260 project Control Card on its creator's path
     "project_invitation_control_selection_empty",
     "card_plan_my_parent_invalid",
     "card_plan_person_settings_invalid",

@@ -6435,9 +6435,12 @@ class AutomationAccessService:
         # edit by what that person may delegate. Its creator's own path (``control_card_update``,
         # ``delegated_access_update``, a profile or an added operation) is refused, as a managed P's direct write
         # is (W578). The creation's first selection and the project's own writers (a person's Control, an
-        # application write, an issuer-decided write) keep their paths.
+        # application write, an issuer-decided write) keep their paths. The first selection is only that while
+        # the Card is still at its creation revision: once anything wrote it (the project too, even emptying
+        # it), a restart from a profile is the creator's own write.
+        first_selection = _initial_start and int(existing.card_revision or 0) <= 1
         if (_record_is_credentialless(existing) and _clean(existing.issuer_kind) == PROJECT_CONTROL_ISSUER_KIND
-                and not (_through_project or _initial_start or _person_control or _application_write
+                and not (_through_project or first_selection or _person_control or _application_write
                          or _issuer_decision is not None)):
             return _project_path_required()
         own_my = await self._forward_own_my_card_edit(
