@@ -198,3 +198,12 @@ async def test_the_stored_card_view_is_still_the_raw_card():
     raw = await service(card, p).card_for_access_id(grantor_subject=OWNER, access_id="agent-card")
     assert MCP in raw.resource_grants and DOCS in raw.resource_grants
     assert dataclasses.replace(raw, card_revision=card.card_revision).resource_grants == card.resource_grants
+
+
+async def test_the_composed_view_keeps_the_stored_cards_identity():
+    # The gateway still matches access id, client id and caller kind against the caller (review, push 1).
+    p = control(mcp="off", a2a="off")
+    card = agent(p)
+    seen = await view(card, p)
+    assert (seen.access_id, seen.client_id, seen.card_kind, seen.grantor_subject) == (
+        card.access_id, card.client_id, card.card_kind, card.grantor_subject)

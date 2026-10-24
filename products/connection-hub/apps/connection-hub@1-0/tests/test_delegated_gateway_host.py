@@ -283,6 +283,27 @@ async def test_hosted_binding_rejects_credential_for_another_card_client():
         )
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("reason", ["control_card_unresolvable", "control_card_foreign_holder_requires_and"])
+async def test_hosted_binding_maps_a_control_failure_to_one_fixed_code(reason):
+    # W981 F1: an unresolvable Control at binding time is a fixed refusal; its reason never passes through.
+    from connection_hub.delegated_credentials.controls.effective import ControlCardMismatch
+
+    class _Failing(_AccessService):
+        async def effective_card_for_access_id(self, *, grantor_subject, access_id):
+            self.reads.append((grantor_subject, access_id))
+            raise ControlCardMismatch(reason)
+
+    module = _module()
+    access = _Failing(_read_card())
+    with pytest.raises(module.DelegatedGatewayError) as caught:
+        await _binding(module, request=_request(), access=access)
+    assert caught.value.reason == "card_authority_unavailable"
+    assert caught.value.retryable is True
+    assert reason not in str(caught.value)
+    assert access.reads == [("owner-1", "access-1")]
+
+
 def _gateway_context():
     resource = DelegatedResourceEntry(
         resource_id="https://host/api/integrations/bundles/*/*/knowledge@1-0/public/mcp/knowledge*",

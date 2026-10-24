@@ -629,10 +629,19 @@ async def build_hosted_gateway_binding(
         or not view.client_id
     ):
         raise DelegatedGatewayError("gateway_caller_credential_missing")
-    card = await access_service.effective_card_for_access_id(
-        grantor_subject=view.grantor_user_id,
-        access_id=view.registry_access_id,
-    )
+    try:
+        card = await access_service.effective_card_for_access_id(
+            grantor_subject=view.grantor_user_id,
+            access_id=view.registry_access_id,
+        )
+    except DelegatedGatewayError:
+        raise
+    except Exception:  # noqa: BLE001 - an unresolvable Control or Card store: one fixed code (W981)
+        raise DelegatedGatewayError(
+            "card_authority_unavailable",
+            access_id=view.registry_access_id,
+            retryable=True,
+        ) from None
     if card is None:
         raise DelegatedGatewayError(
             "card_not_found", access_id=view.registry_access_id
