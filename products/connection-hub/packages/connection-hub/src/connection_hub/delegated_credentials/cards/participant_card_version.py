@@ -98,6 +98,11 @@ REFUSALS = {"txn_closed": 409, "txn_unknown": 404, "card_changed": 409, "stage_c
 _NAMED_PLANNER_REFUSALS = frozenset({"card_edit_admin_grant_role_only", "card_custom_mcp_owner_only",
                                      "card_grantor_inventory_unavailable", "card_grantor_proof_invalid",
                                      "delegated_access_grants_not_delegable"})
+# W941: the one refusal that also names what it refused: the permission names (never values or request
+# content), sorted, at most this many, each a plain grant name. Anything else is left out, never sent.
+GRANTS_NAMED_REFUSAL = "delegated_access_grants_not_delegable"
+MAX_REFUSED_GRANTS = 32
+_GRANT_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:*/-]{0,127}\Z")
 # Store codes PB sees under the contract's name: a txn staged under another scope or caller is out of scope.
 _ALIASES = {"txn_scope_mismatch": "request_scope_invalid"}
 _CARD_CHANGED = frozenset({"card_plan_original_revision_changed", "card_plan_update_target_absent",
@@ -113,10 +118,19 @@ Planner = Callable[..., Awaitable[Mapping[str, Any]]]
 class CardVersionRefused(Exception):
     """A named contract refusal, raised by this handler or by piece 1's store."""
 
-    def __init__(self, code: str) -> None:
+    def __init__(self, code: str, *, grants: Any = None) -> None:
         super().__init__(code)
         code = _ALIASES.get(code, code)
         self.code = code if code in REFUSALS else "storage_unavailable"
+        self.grants = refused_grant_names(grants) if self.code == GRANTS_NAMED_REFUSAL else ()
+
+
+def refused_grant_names(grants: Any) -> tuple[str, ...]:
+    """The permission names a not-delegable refusal carries: plain names only, sorted, bounded (W941)."""
+    if not isinstance(grants, (list, tuple, set, frozenset)):
+        return ()
+    names = sorted({grant for grant in grants if isinstance(grant, str) and _GRANT_NAME.match(grant)})
+    return tuple(names[:MAX_REFUSED_GRANTS])
 
 
 class _AlreadyApplied(Exception):
@@ -275,9 +289,12 @@ def _unsigned_refusal(code: str, status: int) -> dict[str, Any]:
     return {"ok": False, "status": status, "error": {"code": code}}
 
 
-def _refusal(code: str) -> dict[str, Any]:
+def _refusal(code: str, grants: Sequence[str] = ()) -> dict[str, Any]:
     code = code if code in REFUSALS else "storage_unavailable"
-    return {"kind": "refused", "code": code, "status": REFUSALS[code]}
+    result = {"kind": "refused", "code": code, "status": REFUSALS[code]}
+    if code == GRANTS_NAMED_REFUSAL and grants:
+        result["grants"] = list(grants)  # W941: the person sees which permissions were beyond the saver's
+    return result
 
 
 def _links(answer: Mapping[str, Any]) -> list[dict[str, Any]]:
@@ -478,7 +495,7 @@ class CardVersionOperation:
         try:
             result = await self._dispatch(caller, data, digest)
         except CardVersionRefused as exc:
-            result = _refusal(exc.code)
+            result = _refusal(exc.code, exc.grants)
         except Exception:  # noqa: BLE001 - authenticated, so signed; never internal text
             result = _refusal("storage_unavailable")
         return self._signed(caller, data, digest, result)
@@ -536,7 +553,7 @@ class CardVersionOperation:
             if code in _CARD_CHANGED:
                 raise CardVersionRefused("card_changed")
             if code in _NAMED_PLANNER_REFUSALS:
-                raise CardVersionRefused(code)
+                raise CardVersionRefused(code, grants=planned.get("grants"))
             if code == "card_plan_already_applied":
                 raise _AlreadyApplied
             if code == "card_plan_catalog_moved":  # W723: the reviewed catalog is no longer the active one
@@ -779,5 +796,5 @@ class CardVersionOperation:
 
 
 __all__ = ["ANSWER_SCHEMA", "CardVersionOperation", "CardVersionRefused", "CardVersionStore", "ECHO_FIELDS",
-           "OPERATION", "REFUSALS", "REQUEST_FIELDS", "REQUEST_SCHEMA", "card_version_request_digest",
-           "stage_authorization", "stage_digest"]
+           "GRANTS_NAMED_REFUSAL", "MAX_REFUSED_GRANTS", "OPERATION", "REFUSALS", "REQUEST_FIELDS", "REQUEST_SCHEMA", "card_version_request_digest",
+           "refused_grant_names", "stage_authorization", "stage_digest"]

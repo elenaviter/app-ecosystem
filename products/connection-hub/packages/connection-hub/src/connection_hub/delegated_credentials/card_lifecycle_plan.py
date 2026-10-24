@@ -1348,7 +1348,10 @@ async def plan_card_lifecycle(
     except ProjectAuthorizationError:
         return {"ok": False, "error": "card_plan_authorization_invalid", "status": 403}
     except DecisionRefused as exc:
-        return {"ok": False, "error": getattr(exc, "reason", str(exc)), "status": 409}
+        refused = {"ok": False, "error": getattr(exc, "reason", str(exc)), "status": 409}
+        if getattr(exc, "grants", None):  # W941: the refused permission names, for STAGE's named refusal
+            refused["grants"] = list(exc.grants)
+        return refused
     except CatalogUnavailable as exc:
         return {"ok": False, "error": "delegated_catalog_unavailable",
                 "reason": exc.reason, "retryable": True, "status": 503}

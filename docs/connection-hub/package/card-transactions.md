@@ -288,6 +288,13 @@ nonce, as other authenticated refusals do; no Card, marker or effect is written.
     `card_edit_admin_grant_role_only`, a fixed signed refusal code (409) with no
     free text.
   - Only `role_selection` changes those grants.
+- **An addition beyond what the saver may add (W941).** STAGE refuses it
+  `delegated_access_grants_not_delegable` (409). This is the one signed refusal
+  that may carry a fourth field, `grants`: the refused permission names, plain
+  names only (no values, no request content), sorted, at most 32. PB names them
+  to the person. Without names the refusal keeps its fixed `{kind, code,
+  status}` shape. Release order: PB must accept the optional field before the
+  Hub sends it.
 - **An invitation's pending Card (`project_invitation_control`).** One
   `creations` entry: `ref`, `kind`, `identity: {invitation_ref, target_email,
   label?, manage_url?}`, `selection` (PB's role preselection, resolved under
