@@ -199,8 +199,10 @@ management grants; a deployment administrator is.
    connection-hub --version
    ```
 
-   The consent step below needs `connection-hub-cli` 2026.10.23.1100 or later, which
-   installs `kdcube-cli` 2026.10.23.1100 or later. To run a revision that is not on PyPI,
+   The consent step below needs `connection-hub-cli` 2026.10.24.1100 or later, which
+   installs `kdcube-cli` 2026.10.24.1030 or later and the App Ecosystem packages
+   from 2026.10.24.1000 or later. Check the reported CLI version before continuing.
+   To run a revision that is not on PyPI,
    run it from source at the revision your Connection Hub runs:
 
    ```bash

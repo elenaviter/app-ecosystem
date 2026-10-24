@@ -1,8 +1,30 @@
 product:
   id: connection-hub
-  ref: "2026.10.23.1100"
+  ref: "2026.10.24.1100"
   description: |
-    - connection-hub-cli 2026.10.23.1100, released on its own; the connection-hub package stays at 2026.10.19.2200. A secret set on a KDCube deployment works end to end from the CLI. When the calling Card lacks the secret resource, the Hub's admission answers `resource_not_consented` with a Card-grant consent (#875); the CLI opens it, waits for approval on the controlling terminal even when the value is piped in, and retries the same request (#876). It requires kdcube-cli>=2026.10.23.1100, whose management service and `ConsentRecovery` carry that consent (kdcube/kdcube#412). A token error's safe `error_description` is shown (#873). The README walks through setting a secret on a fresh machine, installing from PyPI.
+    - connection-hub-cli 2026.10.24.1100 is a separate CLI release; the connection-hub library stays at 2026.10.24.1000. The CLI requires kdcube-cli 2026.10.24.1030 or later and the 2026.10.24.1000 App Ecosystem packages. Secret-management admission can request the calling Card's consent, open the approval page, wait on the controlling terminal when input is piped, and retry the same operation. Safe token error descriptions are shown. The README includes a version check before the fresh-machine setup steps.
+    Requested coverage since 2026.10.18.1804.
+
+    New changes since the PB set published on 19 October at 22:00 Berlin time:
+
+    - Project Board workers can discover and call the services allowed by their Cards. The client validates service arguments before sending them and preserves the project's permissions for each worker.
+    - Repeating an identical setup reuses the existing host record. Procedure installation and verification name every covered directory.
+    - Procedure installation and verification cover `~/.claude` and the current session's own configuration directory by default. Other directories are covered only when explicitly named; multiple named directories are supported, and hooks and settings stay within that selection.
+    - Repeating a single-value command option with conflicting values now fails before any operation, with a clear error; one send has one recipient.
+    - The relay recovers from lost outbox leases without stopping unrelated mail, settles an in-flight outbox row in its own copy, and avoids repeating mailbox reconciliation for an unchanged owner view. Project syncs compare before locking and write only when data changes. Retention holds the writer lock one day at a time. Slow-turn diagnostics name the longest store call and outbox send time.
+    - Retirement reconciliation keeps one routed publication per host, groups host-local originals by their required sender, and adopts overdue routed batches. Outbox claiming checks only due rows and expired leases.
+    - Connection Hub's secret flow asks for consent in the CLI, keeps the exact door and resource binding, carries that resource through token refreshes, and explains refused token exchanges. A Card entered through a secret door can add only reachable, exact secrets. A used one-time permission asks again, and its consent label reflects the committed result.
+    - Delegated catalog rows and Card editors stay bound to the entry that granted access. Editing a project's Control Card goes through that project, where its permissions are checked. Project Control account policies govern linked services and resources, and a save is bounded by the saver's typed permission proof.
+    - App Foundation adds A2A 1.0 client and server building blocks. Connection Hub can store an explicitly enabled A2A connection. Platform installation and activation of inbound A2A routes remain separate release work.
+    - Test collection identifiers are stable across workers, and dated recovery fixtures no longer depend on expired test dates. The client diagnoses broken hashlib BLAKE2 support and refuses to select an affected release.
+
+    Previously shipped within the requested coverage, by the 19 October evening release:
+
+    - Project exports can be imported through the supported client flow, with browser import documentation. Resume and authorization commands identify the selected profile.
+    - The Redis lock policy check can read INFO memory when CONFIG is restricted; an unknown policy is still refused.
+    - The client, procedures and documentation use the Project Board name.
+
+    Connection Hub CLI carries the PB snapshot version at preparation, and its separate release is qualified after its required kdcube-cli version is available. If its dependency metadata changes after the PB tag, that CLI release receives a distinct later version and tag.
   documentation: docs/connection-hub
 
 components:
@@ -14,16 +36,16 @@ components:
     distribution: connection-hub
     import_name: connection_hub
     path: products/connection-hub/packages/connection-hub
-    version: "2026.10.19.2200"
+    version: "2026.10.24.1000"
     version_source: products/connection-hub/packages/connection-hub/pyproject.toml
     workflow: .github/workflows/publish-python-package.yml
   cli_package:
     distribution: connection-hub-cli
     import_name: connection_hub_cli
     path: products/connection-hub/packages/connection-hub-cli
-    version: "2026.10.23.1100"
+    version: "2026.10.24.1100"
     version_source: products/connection-hub/packages/connection-hub-cli/pyproject.toml
     workflow: .github/workflows/publish-python-package.yml
 
 config:
-  version: "2026.10.23.1100"
+  version: "2026.10.24.1100"
