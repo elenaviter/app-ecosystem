@@ -243,8 +243,41 @@ def _project_board_version() -> str:
         return "source"
 
 
+_GIVEN = "_pb_options_given"
+
+
+class _StoreOnce(argparse._StoreAction):
+    """W974: a single-valued option given twice with different values is refused, never silently the last one."""
+
+    def __call__(self, parser, namespace, values, option_string=None):  # type: ignore[no-untyped-def]
+        given = namespace.__dict__.setdefault(_GIVEN, {})
+        if self.dest in given and given[self.dest] != values:
+            hint = " To address several recipients, send one message to each." if self.dest == "recipient" else ""
+            raise argparse.ArgumentError(
+                self,
+                f"given more than once with different values ({given[self.dest]!r}, then {values!r}); "
+                f"it takes one value, and none is dropped silently.{hint}",
+            )
+        given[self.dest] = values
+        super().__call__(parser, namespace, values, option_string)
+
+
+class _Parser(argparse.ArgumentParser):
+    """Every parser and subparser stores single-valued options with `_StoreOnce` (W974)."""
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        self.register("action", None, _StoreOnce)
+        self.register("action", "store", _StoreOnce)
+
+    def parse_known_args(self, args=None, namespace=None):  # type: ignore[no-untyped-def,override]
+        parsed, extras = super().parse_known_args(args, namespace)
+        parsed.__dict__.pop(_GIVEN, None)
+        return parsed, extras
+
+
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="problem-board", description="Operate a Project Board shared field.")
+    parser = _Parser(prog="problem-board", description="Operate a Project Board shared field.")
     parser.add_argument(
         "--version",
         action="version",
