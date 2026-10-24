@@ -106,7 +106,8 @@ async def test_history_inventory_refuses_its_directory_entry_cap(tmp_path, monke
     directory = store.revision_path(subject_hash=SUBJECT_HASH, access_id=before.access_id,
                                     revision_name=pointer.revision_name).parent
     # Even non-version entries count: do not sort or scan an unbounded directory.
-    for index in range(257):
+    from connection_hub.delegated_credentials.cards.policy_marker_settlement import CARD_VERSION_HISTORY_NAMES
+    for index in range(CARD_VERSION_HISTORY_NAMES + 1):
         (directory / f"unrelated-{index}").touch()
     marker = await policies.get_policy_change(owner_subject=before.grantor_subject, authority=authority)
     with pytest.raises(InvocationPolicyConflict, match="invocation_policy_earlier_change_undecided"):
@@ -212,3 +213,51 @@ async def test_unproved_card_version_marker_stays_refused(tmp_path, monkeypatch,
     with pytest.raises(InvocationPolicyConflict, match="invocation_policy_earlier_change_undecided"):
         await policies.set_policy(owner_subject=owner, authority=authority, mode=POLICY_ALWAYS)
     assert await policies.get_policy_change(owner_subject=owner, authority=authority) == marker
+
+
+@pytest.mark.asyncio
+async def test_a_long_lived_card_past_256_entries_still_settles_across_a_recordless_renewal(tmp_path, monkeypatch):
+    """24 Oct live case: an agent Card with 301 revisions whose chain a record-less renewal broke. The old
+    256-entry scan refused (policy_recovery_history_limit), so every re-add of a permission it had saved stayed
+    invocation_policy_earlier_change_undecided. The scan now admits a long-lived Card; the 64-revision window,
+    the ambiguity refusal and every publication check are unchanged."""
+    store, _service, before, after, policies, authority = await _saved(tmp_path, monkeypatch)
+    pointer = await store.write_revision(  # the renewal the old coordinated writer stored without a record
+        subject_hash=SUBJECT_HASH, authority=replace(after, card_revision=after.card_revision + 1, last_issued_at=123),
+        updated_at=WHEN + timedelta(seconds=1))
+    await store.advance_current(subject_hash=SUBJECT_HASH, pointer=pointer)
+    directory = store.revision_path(subject_hash=SUBJECT_HASH, access_id=before.access_id,
+                                    revision_name=pointer.revision_name).parent
+    for index in range(300):  # older history of a Card renewed every hour
+        (directory / f"older-{index}").touch()
+    assert (await policies.set_policy(owner_subject=before.grantor_subject, authority=authority,
+                                      mode=POLICY_ALWAYS, expected_revision=1)).revision == 2
+    assert await policies.get_policy_change(owner_subject=before.grantor_subject, authority=authority) is None
+
+
+@pytest.mark.asyncio
+async def test_a_coordinated_card_transaction_records_its_predecessor(tmp_path):
+    """The writer that stored the 24 Oct renewal without a record now links its revision to the one it
+    replaced, so the history stays walkable by name and no inventory is needed."""
+    from test_card_service import SUBJECT_HASH as TX_SUBJECT
+    from test_card_transaction_store import _setup, _stage
+
+    store, _service, before_card, after_card = await _setup(tmp_path)
+    replaced = await store.read_current(subject_hash=TX_SUBJECT, access_id=before_card.access_id)
+    receipt = await _stage(store, before_card, after_card)
+    record = await store.read_version_record(subject_hash=TX_SUBJECT, access_id=before_card.access_id,
+                                             revision_name=receipt["after"]["revision_name"])
+    assert record["base"] == replaced.revision_name == receipt["before"]["revision_name"]
+    assert record["txn"] == "" and record["actor"] == {"kind": "card-transaction"} and record["at"]
+
+
+def test_a_predecessor_record_names_only_the_replaced_revision():
+    from datetime import datetime, timezone
+    from types import SimpleNamespace
+    from connection_hub.delegated_credentials.cards.store import predecessor_record
+
+    at = datetime(2026, 10, 24, 22, 48, 35, tzinfo=timezone.utc)
+    assert predecessor_record({"revision_name": "r-1"}, at=at, actor_kind="issuer-update") == {
+        "txn": "", "base": "r-1", "at": at.isoformat(), "actor": {"kind": "issuer-update"}}
+    assert predecessor_record(SimpleNamespace(revision_name="r-2"), at=at, actor_kind="x")["base"] == "r-2"
+    assert predecessor_record(None, at=at, actor_kind="x")["base"] is None

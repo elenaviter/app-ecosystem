@@ -40,7 +40,7 @@ from typing import Any, Mapping, Protocol
 from ..durable_io import cancellation_safe_await, read_json_or_none, write_json_atomic, unlink_guarded, unlink_guarded_async
 from ..issuer_gate import change_digest
 from .model import CardAuthority, CardCurrentPointer, card_authority_payload_hash, card_revision_name
-from .store import VERSION_RECORD_KEY, CardStorageError
+from .store import VERSION_RECORD_KEY, CardStorageError, predecessor_record
 
 TRANSACTION_POINTER_SCHEMA = "connection_hub.card-current-transaction.v1"
 TRANSACTION_RECEIPT_SCHEMA = "connection_hub.card-transaction-receipt.v1"
@@ -920,7 +920,11 @@ async def _write_staged(store: Any, receipt: Mapping[str, Any], candidate: CardA
                                                  access_id=receipt["access_id"],
                                                  revision_name=receipt["after"]["revision_name"]),
                             {"transaction_id": receipt["transaction_id"]})
-    pointer = await store.write_revision(subject_hash=receipt["subject_hash"], authority=candidate, updated_at=now)
+    # The record links this revision to the one it replaced (an OAuth renewal included), so the
+    # history stays walkable; it is beside the Card value and never hashed.
+    pointer = await store.write_revision(subject_hash=receipt["subject_hash"], authority=candidate, updated_at=now,
+                                         record=predecessor_record(receipt["before"], at=now,
+                                                                   actor_kind="card-transaction"))
     if pointer.to_dict() != receipt["after"]:
         raise CardStorageError("card_transaction_staged_revision_mismatch")
     await store.write_pointer_document(subject_hash=receipt["subject_hash"], access_id=receipt["access_id"],

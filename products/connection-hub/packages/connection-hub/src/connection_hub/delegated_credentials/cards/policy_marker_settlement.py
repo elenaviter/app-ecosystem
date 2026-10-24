@@ -34,6 +34,9 @@ from .transaction_store import (
 )
 
 CARD_VERSION_PROOF_LIMIT = 64
+# A long-lived Card (an agent's, renewed every hour) keeps far more than 256 revision files. The proof
+# still reads only the newest 64 by number; this bounds the names-only directory scan that finds them.
+CARD_VERSION_HISTORY_NAMES = 4096
 
 
 class CardPolicyMarkerSettler:
@@ -113,7 +116,7 @@ class CardPolicyMarkerSettler:
         insufficient alone: derive OUTCOME's exact link, time and binding from
         that Card's immutable version, never a request or a name alone.
         Follow at most 64 immutable base links. A broken historical chain may
-        use a bounded, one-Card names inventory (256 directory entries).
+        use a bounded, one-Card names inventory (CARD_VERSION_HISTORY_NAMES directory entries).
         PREPARED, an in-progress txn or missing/over-bound evidence stays undecided.
         The policy service rechecks the marker and policy under its own lock.
         A change id can be request-supplied: retiring an already-applied
@@ -144,7 +147,7 @@ class CardPolicyMarkerSettler:
                 candidates = await store.policy_recovery_candidates(
                     subject_hash=subject_hash, access_id=access_id,
                     current_revision=current.card_revision,
-                    max_predecessors=CARD_VERSION_PROOF_LIMIT, max_entries=256,
+                    max_predecessors=CARD_VERSION_PROOF_LIMIT, max_entries=CARD_VERSION_HISTORY_NAMES,
                 )
                 for candidate in candidates:
                     record = await store.read_version_record(
