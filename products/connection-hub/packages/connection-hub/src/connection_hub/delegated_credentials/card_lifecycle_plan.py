@@ -986,8 +986,10 @@ async def plan_card_lifecycle(
                     or ("a2a_family" in raw and (raw.get("kind") != "reselect_project_control"
                                                  or raw["a2a_family"] not in {"on", "off"}))
                     # W941 note 1b: the resources the board's delegable grants bound travel only on the project
-                    # Control's own edit, as a non-empty list of resource ids, set by the board alone.
-                    or ("governed_resources" in raw and (raw.get("kind") != "reselect_project_control"
+                    # Control's or a project agent Card's own edit, as a non-empty list of resource ids, set by
+                    # the board alone.
+                    or ("governed_resources" in raw and (raw.get("kind") not in {"reselect_project_control",
+                                                                                 "reselect_agent_card"}
                         or not isinstance(raw["governed_resources"], list) or not raw["governed_resources"]
                         or not all(type(item) is str and item and item == item.strip() and len(item) <= 2048
                                    for item in raw["governed_resources"])))
