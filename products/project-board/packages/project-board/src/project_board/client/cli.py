@@ -796,7 +796,7 @@ def build_parser() -> argparse.ArgumentParser:
         action="append",
         help=(
             "A Claude profile folder to cover; repeat for several. Without it: ~/.claude and this "
-            "session's CLAUDE_CONFIG_DIR. Any other folder is covered only when named (W975)."
+            "session's CLAUDE_CONFIG_DIR. Any other folder is covered only when named."
         ),
     )
     command = procedure_commands.add_parser(
@@ -814,7 +814,7 @@ def build_parser() -> argparse.ArgumentParser:
         action="append",
         help=(
             "A Claude profile folder to cover; repeat for several. Without it: ~/.claude and this "
-            "session's CLAUDE_CONFIG_DIR. Any other folder is covered only when named (W975)."
+            "session's CLAUDE_CONFIG_DIR. Any other folder is covered only when named."
         ),
     )
     command.add_argument(
@@ -836,7 +836,7 @@ def build_parser() -> argparse.ArgumentParser:
         action="append",
         help=(
             "A Claude profile folder to cover; repeat for several. Without it: ~/.claude and this "
-            "session's CLAUDE_CONFIG_DIR. Any other folder is covered only when named (W975)."
+            "session's CLAUDE_CONFIG_DIR. Any other folder is covered only when named."
         ),
     )
     command.add_argument("--force", action="store_true")
