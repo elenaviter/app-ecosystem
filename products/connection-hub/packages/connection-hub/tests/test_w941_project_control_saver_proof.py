@@ -241,3 +241,51 @@ def test_governed_resources_are_part_of_both_digests() -> None:
     governed = {**p_edit, "governed_resources": ["problem_board"]}
     assert stage_digest(request(governed)) != stage_digest(request(p_edit))
     assert stage_digest(request({**governed, "grantor_proof": "a.b"})) == stage_digest(request(governed))
+
+
+@pytest.mark.parametrize("case", ["governed_widening", "non_governed_with_proof", "non_governed_without_proof"])
+def test_plan_and_stage_give_the_same_split(case) -> None:
+    # claude-e-app's C2: STAGE rebuilds each step's decision from its own request (stage_authorization) and
+    # hands the planner the very same update, so the split it computes is PLAN's. Cases (a)-(c) of C6.
+    from connection_hub.delegated_credentials.cards.participant_card_version import stage_authorization
+    from connection_hub.delegated_credentials.managed_card_selection_plan import OPERATIONS
+    from connection_hub.delegated_credentials.project_authorization import (
+        ProjectAuthorizationDecision, ProjectAuthorizationRequest,
+    )
+    from test_w638_managed_card_selection_plan import PROJECT, project_control
+
+    original = project_control()
+    governed = ["problem_board"]
+    edit = {"selection": {}}
+    proof = None if case == "non_governed_without_proof" else _proof(
+        access_id=original.access_id, revision=original.card_revision, request_id="save-1", edit=edit)
+    update = {"kind": "reselect_project_control", "target_subject": original.access_id,
+              "access_id": original.access_id, "subject_hash": "h" * 64, "original_revision": original.card_revision,
+              "selection": {}, "governed_resources": governed, **({"grantor_proof": proof} if proof else {})}
+
+    def split(decision):
+        host = _Host()
+        with pytest.raises(_Captured):
+            asyncio.run(build_managed_card_selection_update(
+                host, original=original, kind="project_control", selection=update["selection"],
+                active=SimpleNamespace(version=original.catalog_version), decision=decision, project_ref=PROJECT,
+                actor_subject="user:admin", request_id="save-1", now=NOW + 1, grantor_proof=update.get("grantor_proof"),
+                grantor_edit=edit, governed_resources=update["governed_resources"]))
+        return host.bound
+
+    plan_request = ProjectAuthorizationRequest.build(actor_subject="user:admin", project_ref=PROJECT,
+        target_subject=original.access_id, operation=OPERATIONS["project_control"], request_id="save-1")
+    plan_bound = split(ProjectAuthorizationDecision.allow(plan_request, delegable_grants=("work:admin",)))
+
+    data = {"actor_subject": "user:admin", "scope": PROJECT, "request_id": "save-1", "at": "2026-10-24T00:00:00Z",
+            "delegable_grants": ["work:admin"], "project_control": None, "creations": [], "updates": [update]}
+    staged = stage_authorization(data, "d" * 64)
+    (_, stage_decision), = staged.decisions
+    stage_bound = split(stage_decision)
+
+    assert stage_bound == plan_bound
+    assert plan_bound["governed"] == ("problem_board",)
+    if case == "non_governed_without_proof":
+        assert plan_bound["authority"] is None, "a non-governed addition is refused card_grantor_inventory_unavailable"
+    else:
+        assert plan_bound["authority"]["user_id"] == "user:admin"
