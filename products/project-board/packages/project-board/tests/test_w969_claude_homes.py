@@ -103,3 +103,28 @@ def test_the_brief_verify_names_each_path(home: Path) -> None:
     text = render_envelope({"ok": True, "result": {"package": source_package(), "verified": verified,
                                                    "targets": ["claude-code"]}})
     assert str(home / ".claude" / "skills") in text and str(ana / "skills") in text
+
+
+def test_listen_reads_the_sessions_own_home_on_a_host_with_several(home: Path, monkeypatch) -> None:
+    # Review F1 (#912): listen's procedure check unpacks one row; with several Claude homes it must verify
+    # only this session's own, never report the procedure unreadable on a multi-profile host.
+    from project_board.client.cli import _runtime_procedure_state
+
+    ana = _profile(home, "ana@example.com", "11111111-1111-4111-8111-111111111111")
+    install_agent_procedure(["claude-code"])
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(ana))
+
+    state = _runtime_procedure_state("claude-code")
+
+    assert state["state"] == "current", state
+    assert len(verify_agent_procedure(["claude-code"])) == 2, "two homes on this host"
+
+
+def test_procedure_show_still_renders_as_before(home: Path) -> None:
+    # Review: `pb procedure show` carries installed and package too; it keeps its own rendering.
+    from project_board.client.procedures import source_package
+
+    show = {"procedure": "/x/SKILL.md", "package": source_package(), "installed": [],
+            "instruction": "Install the complete package for future sessions."}
+    text = render_envelope({"ok": True, "result": show})
+    assert "Install the complete package" in text and "--- claude-code" not in text

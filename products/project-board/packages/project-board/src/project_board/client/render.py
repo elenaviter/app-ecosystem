@@ -391,8 +391,9 @@ def _render_procedure_verify(result: Mapping[str, Any]) -> list[str]:
 
 
 def _is_procedure_install(result: Mapping[str, Any]) -> bool:
+    # `pb procedure show` also carries `installed` and `package`; it has an `instruction` and renders as before.
     return isinstance(result.get("installed"), list) and isinstance(result.get("package"), Mapping) and (
-        "verified" not in result)
+        "verified" not in result and "instruction" not in result)
 
 
 def _render_procedure_install(result: Mapping[str, Any]) -> list[str]:

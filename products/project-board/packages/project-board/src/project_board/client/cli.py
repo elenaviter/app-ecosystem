@@ -7278,10 +7278,11 @@ def _runtime_procedure_state(runtime_kind: str) -> dict[str, Any]:
 
     if runtime_kind not in PROCEDURE_TARGETS:
         return {}
-    from .procedures import verify_agent_procedure
+    from .procedures import claude_config_root, verify_agent_procedure
 
     try:
-        [installed] = verify_agent_procedure([runtime_kind])
+        # W969: this session reads only its own Claude home; verify every home only in `pb procedure verify`.
+        [installed] = verify_agent_procedure([runtime_kind], claude_config_dir=claude_config_root(None, None))
     except (DomainError, OSError, ValueError) as exc:
         installed = {"state": "unreadable", "errors": [str(exc)]}
     state = str(installed.get("state") or "")
