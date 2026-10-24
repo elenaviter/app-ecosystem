@@ -64,6 +64,10 @@ starts a model for you, logs in for you, or copies a login between machines.
    `settings.json`: the status line command, which Claude runs while the session
    is open to hand pb the live usage, and the Stop hook that keeps the inbox
    watch running. A Claude session reads these from its own folder only.
+   Once the profile is registered (its first session binds it), a plain
+   `pb procedure install --target claude-code` covers it too, together with
+   `~/.claude` and every other registered profile, and names each folder it
+   wrote (W969).
 3. Start the agent in that folder, as the board's **Connect a machine** panel
    shows:
 

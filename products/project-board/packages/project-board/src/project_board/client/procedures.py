@@ -243,17 +243,24 @@ def _target_path(target: str, root: Path, claude_root: Path | None = None) -> Pa
 
 
 def _target_destinations(
-    targets: Sequence[str], root: Path, claude_root: Path | None = None
+    targets: Sequence[str], root: Path, claude_root: Path | Sequence[Path] | None = None
 ) -> list[tuple[str, Path]]:
+    """One destination per target, and for claude-code one per Claude configuration directory (W969)."""
+
+    claude_roots: list[Path | None] = (
+        list(claude_root) if isinstance(claude_root, (list, tuple)) else [claude_root]
+    )
     destinations: list[tuple[str, Path]] = []
-    seen: set[str] = set()
+    seen: set[tuple[str, str]] = set()
     for raw in targets:
         target = str(raw or "").strip().lower()
-        destination = _target_path(target, root, claude_root)
-        if target in seen:
-            continue
-        seen.add(target)
-        destinations.append((target, destination))
+        for one_root in (claude_roots if target == "claude-code" else [None]):
+            destination = _target_path(target, root, one_root)
+            key = (target, str(destination))
+            if key in seen:
+                continue
+            seen.add(key)
+            destinations.append((target, destination))
     return destinations
 
 
@@ -950,6 +957,38 @@ def claude_config_root(
     return _home_path(home) / ".claude"
 
 
+def claude_config_roots(
+    home: str | Path | None = None,
+    claude_config_dir: str | Path | None = None,
+    *,
+    environ: Mapping[str, str] | None = None,
+) -> list[Path]:
+    """Every Claude configuration directory an install or check covers (W969).
+
+    An explicit directory alone. Otherwise every Claude home this host knows,
+    so no profile is left on an older revision by an install run from another:
+    ``<home>/.claude``, each account profile in the registry
+    (``~/.claude-accounts/registry.json``) whose folder exists, and the
+    session's own ``CLAUDE_CONFIG_DIR``. Each appears once, in that order.
+    """
+
+    if claude_config_dir:
+        return [claude_config_root(home, claude_config_dir, environ=environ)]
+    roots = [_home_path(home) / ".claude"]
+    from .claude_profile import read_registry
+
+    for row in read_registry(home).values():
+        folder = str(row.get("config_dir") or "").strip()
+        if folder and Path(folder).expanduser().is_absolute() and Path(folder).expanduser().is_dir():
+            roots.append(Path(os.path.abspath(Path(folder).expanduser())))
+    roots.append(claude_config_root(home, None, environ=environ))
+    unique: list[Path] = []
+    for root in roots:
+        if root not in unique:
+            unique.append(root)
+    return unique
+
+
 def verify_agent_procedure(
     targets: Sequence[str], *, home: str | Path | None = None, claude_config_dir: str | Path | None = None
 ) -> list[dict[str, Any]]:
@@ -957,7 +996,7 @@ def verify_agent_procedure(
     package = _read_source_package()
     return [
         _verify_destination(target, destination, package)
-        for target, destination in _target_destinations(targets, root, claude_config_root(home, claude_config_dir))
+        for target, destination in _target_destinations(targets, root, claude_config_roots(home, claude_config_dir))
     ]
 
 
@@ -1014,7 +1053,7 @@ def install_agent_procedure(
 ) -> list[dict[str, Any]]:
     root = _home_path(home)
     package = _read_source_package()
-    destinations = _target_destinations(targets, root, claude_config_root(home, claude_config_dir))
+    destinations = _target_destinations(targets, root, claude_config_roots(home, claude_config_dir))
 
     def reject_unsafe_paths() -> None:
         for _, destination in destinations:
@@ -1105,6 +1144,7 @@ __all__ = [
     "LEGACY_PROCEDURE_MARKER",
     "PROCEDURE_ID",
     "PROCEDURE_MARKER",
+    "claude_config_roots",
     "install_agent_procedure",
     "source_package",
     "source_package_path",

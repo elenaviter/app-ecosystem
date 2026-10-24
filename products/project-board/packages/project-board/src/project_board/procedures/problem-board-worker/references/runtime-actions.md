@@ -51,7 +51,7 @@ the wrong one reports a fix as live that has never executed.
 | A released Project Board host client | `pb source use-release --expect-version <version>` builds a new release environment, resolves that version's complete dependency graph, smokes its `pb --version` and imports, atomically activates it, and verifies the restarted relay | upgrading a permanent bootstrap environment, which leaves the launcher and relay on a different dependency set |
 | A committed Project Board client under development | `pb source use-code` with the App Ecosystem repository path, ref, and full approved commit exports all four first-party packages, resolves them together inside the release environment, smokes it, atomically activates it, and accepts only the restarted relay's matching startup record | independent installs, an editable install, a live-checkout launcher, or selecting only one repository or the relay |
 | The already selected Project Board relay source | `pb relay-service restart`. A relay restart is host-local and reloads the recorded source without advancing it | a runtime action such as a reload; a restart cannot select a newer checkout or package version |
-| The worker procedure package inside `project-board` | `pb procedure install`, run on each host by the installer the item's route names (otherwise the coordinator on that host, or its elected integrator; [collaboration Rule 2](collaboration/rule-2-work-on-a-branch-exchange-through-a-change-request.md)) after the selected release or code commit carries the new revision | editing package source, which installed sessions never read |
+| The worker procedure package inside `project-board` | `pb procedure install` (into every Claude directory on the host, each named in its output: Client Source Selection below), run on each host by the installer the item's route names (otherwise the coordinator on that host, or its elected integrator; [collaboration Rule 2](collaboration/rule-2-work-on-a-branch-exchange-through-a-change-request.md)) after the selected release or code commit carries the new revision | editing package source, which installed sessions never read |
 
 Copying a file into a container and restarting a container are not actions
 this team has: a container-local patch is invisible to everyone, vanishes
@@ -226,7 +226,27 @@ Before fast-forwarding a checkout or deleting
 3. the target receipt and relay startup record name the same released version
    or code source, including the App Ecosystem commit and all four package trees
    for a code release;
-4. `pb procedure verify` succeeds from the new launcher.
+4. `pb procedure verify` succeeds from the new launcher, for every Claude
+   directory on the host: its brief output has one `--- claude-code` row per
+   directory with a `path:` line, and each is checked by name: `~/.claude`,
+   each registered account profile (`~/.claude-accounts/<email>`) and the
+   session's own `CLAUDE_CONFIG_DIR` (W969).
+
+A client switch reinstalls the worker procedure with
+`pb procedure install --target claude-code` (and `--target codex`). Without
+`--claude-config-dir` it installs into every Claude directory the host has,
+whichever session runs it: `~/.claude`, each account profile in the registry
+(`~/.claude-accounts/registry.json`) whose folder exists, and the session's
+own `CLAUDE_CONFIG_DIR`, and it merges the worker's hooks and status line into
+each of their `settings.json`. Its brief output names every directory written,
+one `--- claude-code · <state> · revision … · <path>` row each and one
+`settings:` line per directory; read them, and name them in the switch report.
+`--claude-config-dir <dir>` installs into that one directory only. A Claude
+directory that is not in the registry is not covered: install it by name with
+`--claude-config-dir`, or register its profile first. Why: on 23-24 Oct an
+install run from an account-profile session went into that profile only,
+printed no directory, and left `~/.claude` on an older revision until another
+agent's `pb procedure verify` found it (W969).
 
 At that point the former venv has no launcher or service consumer and may be
 deleted. The source checkout remains a build input for future reviewed

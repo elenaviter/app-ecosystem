@@ -7463,13 +7463,21 @@ def _procedure_command(args: Any) -> dict[str, Any]:
         if claude_code:
             # The status line and hooks a Claude Code worker needs (W304 finding 45).
             from .claude_settings import merge_claude_code_settings
-            from .procedures import _home_path, claude_config_root
+            from .procedures import _home_path, claude_config_root, claude_config_roots
 
-            result["claude_code_settings"] = merge_claude_code_settings(
-                _home_path(args.home),
-                pb=hook_pb,
-                config_dir=claude_config_root(args.home, getattr(args, "claude_config_dir", None)),
-            )
+            # W969: every Claude home the skill went to gets the hooks too; claude_code_settings stays the
+            # session's own, and claude_code_settings_by_dir names each directory written.
+            own = claude_config_root(args.home, getattr(args, "claude_config_dir", None))
+            by_dir = []
+            for config_dir in claude_config_roots(args.home, getattr(args, "claude_config_dir", None)):
+                merged = merge_claude_code_settings(_home_path(args.home), pb=hook_pb, config_dir=config_dir)
+                by_dir.append({"config_dir": str(config_dir), **merged})
+                if config_dir == own:
+                    result["claude_code_settings"] = merged
+            if "claude_code_settings" not in result:
+                result["claude_code_settings"] = merge_claude_code_settings(
+                    _home_path(args.home), pb=hook_pb, config_dir=own)
+            result["claude_code_settings_by_dir"] = by_dir
         return result
     raise ValueError(f"unsupported procedure command: {args.procedure_command}")
 

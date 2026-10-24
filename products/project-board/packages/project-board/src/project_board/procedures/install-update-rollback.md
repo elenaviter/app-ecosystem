@@ -62,6 +62,12 @@ machine's own:
 pb relay-service install
 ```
 
+`procedure install --target claude-code` installs the worker skill into every
+Claude directory on the machine: `~/.claude`, each registered account profile
+under `~/.claude-accounts`, and the session's own `CLAUDE_CONFIG_DIR`. Its
+output names each directory written; `--claude-config-dir <dir>` limits it to
+one (W969).
+
 `use-release` builds and checks a complete environment for that version,
 installs `~/.local/bin/pb`, and selects the version for the relay. You should
 see the release installed and selected; `pb source status` then names that
