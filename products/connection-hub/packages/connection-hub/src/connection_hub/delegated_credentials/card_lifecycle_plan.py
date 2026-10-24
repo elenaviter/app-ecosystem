@@ -959,7 +959,7 @@ async def plan_card_lifecycle(
                                    "add_grants", "add_operations", "remove_operations", "operation_grants",
                                    "protected_grants", "accepted_operations", "expected_catalog_version",
                                    "composition_mode", "label", "invocation_modes", "external_mcp_family",
-                                   "a2a_family", "grantor_proof"}
+                                   "a2a_family", "grantor_proof", "account_scope_policy"}
                     or ("selection" in raw) != (raw.get("kind") in {"reselect", "reselect_project_control",
                                                                     "reselect_agent_card",
                                                                     "reselect_invitation_control", "set_person_properties"})
@@ -979,6 +979,10 @@ async def plan_card_lifecycle(
                     # W937: the project's A2A switch, the same rule.
                     or ("a2a_family" in raw and (raw.get("kind") != "reselect_project_control"
                                                  or raw["a2a_family"] not in {"on", "off"}))
+                    # W941: a managed Control's account policy travels only on that Control's own edit.
+                    or ("account_scope_policy" in raw and (raw.get("kind") not in {
+                        "reselect", "reselect_project_control", "reselect_invitation_control"}
+                        or raw["account_scope_policy"] != "caller"))
                     # W735: a Card's display name travels only on a selection edit of that Card.
                     or ("label" in raw and (raw.get("kind") not in {"reselect", "reselect_project_control",
                                                                     "reselect_agent_card",
@@ -1065,7 +1069,8 @@ async def plan_card_lifecycle(
                     host, original=original, selection=raw["selection"], active=active, decision=decision,
                     project_ref=scope, target_subject=target, actor_subject=actor, request_id=request_id, now=now,
                     accepted_operations=raw.get("accepted_operations"), label=raw.get("label"),
-                    allow_unchanged=_carries_held_mode(original, raw))
+                    allow_unchanged=_carries_held_mode(original, raw),
+                    account_scope_policy=raw.get("account_scope_policy"))
                 _require_protected_grants_kept(raw.get("protected_grants"), original, built["member"]["candidate"])
                 members.append(built["member"])
                 originals[(subject_hash, access_id)] = original.to_dict()
@@ -1090,7 +1095,7 @@ async def plan_card_lifecycle(
                     accepted_operations=raw.get("accepted_operations"),
                     composition_mode=raw.get("composition_mode"), label=raw.get("label"),
                     external_mcp_family=raw.get("external_mcp_family"),
-                    a2a_family=raw.get("a2a_family"),
+                    a2a_family=raw.get("a2a_family"), account_scope_policy=raw.get("account_scope_policy"),
                     invocation_modes=raw.get("invocation_modes"), grantor_proof=raw.get("grantor_proof"),
                     grantor_edit=_grantor_edit(raw), load_live=load_live,
                     allow_unchanged=_carries_held_mode(original, raw))

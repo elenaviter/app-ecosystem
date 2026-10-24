@@ -10,6 +10,8 @@ from __future__ import annotations
 
 CARD_SAVE_CODES = frozenset({
     "a2a_family_requires_project_transaction",  # W937: only the project's own Control edit sets A2A agents
+    "account_scope_policy_requires_control_card",  # W941: only a Control Card carries an account policy
+    "account_scope_policy_requires_control_transaction",  # W941: only the Control's own transaction sets its account policy
     "agent_card",
     "agent_plan_already_bound",
     "agent_plan_authorization_invalid",
@@ -54,6 +56,7 @@ CARD_SAVE_CODES = frozenset({
     "card_plan_kind_invalid",
     "card_plan_invitation_identity_invalid",
     "card_transactions_direct_write_refused",  # W578: a managed project Card; W562 F3: a W260 project Control Card on its creator's path
+    "control_card_account_scope_policy_invalid",  # W941: a Control's account policy is "caller"
     "project_invitation_control_selection_empty",
     "card_plan_my_parent_invalid",
     "card_plan_person_settings_invalid",

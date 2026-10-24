@@ -48,6 +48,7 @@ from connection_hub.delegated_credentials.named_service_policy import (
     narrow_named_service_config,
     operation_grants,
 )
+from connection_hub.delegated_credentials.controls.account_scope_policy import keeps_caller_accounts
 from connection_hub.delegated_credentials.controls.model import (
     ProjectControlCardAuthority,
     control_card_from_legacy,
@@ -434,9 +435,11 @@ def intersect_card_authority_selection(
             ceiling,
             resource_grants,
         )
-        account_scope = _intersect_accounts(
-            card.account_scope,
-            ceiling.account_scope,
+        # W941: a ceiling Control with the caller account policy leaves the caller's accounts as they are.
+        account_scope = (
+            normalize_account_scope(card.account_scope)
+            if keeps_caller_accounts(ceiling.properties)
+            else _intersect_accounts(card.account_scope, ceiling.account_scope)
         )
     except ControlCardMismatch:
         raise
@@ -577,7 +580,8 @@ def compose_card_authority_selection(
     # never inherited by composition (a C keeps only its own value; a caller
     # never carries one); the hierarchy reads it from the raw validated chain.
     # W937: the project's A2A switch (a2a_family) is the same kind of policy.
-    for switch_property in ("external_mcp_family", "a2a_family"):
+    # W941: so is a Control's account policy; each link of a chain applies its own.
+    for switch_property in ("external_mcp_family", "a2a_family", "account_scope_policy"):
         properties.pop(switch_property, None)
         if authority_is_credentialless(card) and switch_property in card.properties:
             properties[switch_property] = card.properties[switch_property]
@@ -689,9 +693,10 @@ def compose_card_authority_selection(
             # Descriptor control owns application capability, not the user's
             # provider-account choice. That choice remains on the caller Card
             # and is still enforced by the selected operation's live grants.
+            # W941: any Control that declares the caller account policy says the same.
             account_scope = (
                 normalize_account_scope(card.account_scope)
-                if agent_descriptor is not None
+                if agent_descriptor is not None or keeps_caller_accounts(control.properties)
                 else _intersect_accounts(card.account_scope, control.account_scope)
             )
     except ControlCardMismatch:

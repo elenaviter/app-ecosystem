@@ -141,6 +141,7 @@ async def build_managed_card_selection_update(
     a2a_family: str | None = None,
     invocation_modes: Mapping[str, Any] | None = None, grantor_proof: str | None = None,
     grantor_edit: Mapping[str, Any] | None = None, load_live: Any = None,
+    account_scope_policy: str | None = None,
 ) -> dict[str, Any]:
     """One exact P or agent-Card update from a host-authorized selection, without a write (W723: and its acceptance).
 
@@ -158,8 +159,15 @@ async def build_managed_card_selection_update(
     # W937: the project's A2A switch, another field of P, the same way.
     if a2a_family is not None and (kind != "project_control" or a2a_family not in {"on", "off"}):
         raise _refuse("card_plan_selection_invalid")
+    # W941: a Control's account policy, set by the managing application's own transaction on the Controls it
+    # manages (the project's P and an invitation's Control), never on an agent Card.
+    if account_scope_policy is not None and (kind not in {"project_control", "invitation_control"}
+                                             or account_scope_policy != "caller"):
+        raise _refuse("card_plan_selection_invalid")
     switch_values = {name: value for name, value in (("external_mcp_family", external_mcp_family),
-                                                      ("a2a_family", a2a_family)) if value is not None}
+                                                      ("a2a_family", a2a_family),
+                                                      ("account_scope_policy", account_scope_policy))
+                     if value is not None}
     if type(now) is not int or now < 1:
         raise _refuse("card_plan_audit_time_invalid")
     managed_target_kind(original, project_ref=project_ref, kind=kind)
