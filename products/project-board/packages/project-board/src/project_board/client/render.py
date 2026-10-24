@@ -291,6 +291,8 @@ def _render_result(result: Any, flags: list[str]) -> list[str]:
         return _render_first_run_status(result)
     if _is_procedure_verify(result) and not result.get("detail"):
         return _render_procedure_verify(result)
+    if _is_procedure_install(result):
+        return _render_procedure_install(result)
     if schema == "problem-board.note-read.v1":
         lines = [
             "note: {} · item {} · ordinal {} · by {} · at {}".format(
@@ -368,6 +370,9 @@ def _render_procedure_verify(result: Mapping[str, Any]) -> list[str]:
                 row.get("files_verified", "?"), len(errors) or "none",
             )
         )
+        if row.get("path"):
+            # W969: each Claude configuration directory is its own row; name where it is.
+            lines.append(f"  path: {row['path']}")
         for error in errors[:3]:
             lines.append(f"  error: {_preview(error, maximum_bytes=200)}")
         if row.get("changed_since_revision"):
@@ -382,6 +387,40 @@ def _render_procedure_verify(result: Mapping[str, Any]) -> list[str]:
         "a newly available module is read when its act comes up"
     )
     lines.append("detail: add --detail for the manifest and every changed file; --format json for every field")
+    return lines
+
+
+def _is_procedure_install(result: Mapping[str, Any]) -> bool:
+    # `pb procedure show` also carries `installed` and `package`; it has an `instruction` and renders as before.
+    return isinstance(result.get("installed"), list) and isinstance(result.get("package"), Mapping) and (
+        "verified" not in result and "instruction" not in result)
+
+
+def _render_procedure_install(result: Mapping[str, Any]) -> list[str]:
+    """W969: every directory the install wrote, by name, and the settings written in each Claude home."""
+
+    package = result["package"]
+    lines = [
+        "procedure: {} · revision {} · digest {}".format(
+            package.get("package_id") or "-", package.get("revision") or "-",
+            str(package.get("source_digest") or "")[:12] or "-",
+        )
+    ]
+    for row in result["installed"]:
+        if not isinstance(row, Mapping):
+            continue
+        lines.append("--- {} · {} · revision {}{} · {}".format(
+            row.get("target") or "-", row.get("state") or "-", row.get("installed_revision") or "-",
+            f" (was {row['previous_release']})" if row.get("previous_release") else "",
+            row.get("path") or "-",
+        ))
+    for row in result.get("claude_code_settings_by_dir") or []:
+        if isinstance(row, Mapping):
+            lines.append(f"settings: {row.get('path') or row.get('config_dir') or '-'}")
+    launcher = _mapping(result.get("launcher"))
+    if launcher.get("path"):
+        lines.append(f"launcher: {launcher.get('path')} · {launcher.get('state') or '-'}")
+    lines.append("detail: --format json for every field")
     return lines
 
 
