@@ -155,3 +155,48 @@ def test_reconcile_leaves_another_authors_host_local_original_and_the_author_wri
     _beat(field, B1, _team(GONE_RETIRED), interval=0)
     assert rows() == [(A1, outbox_id)], "no other reporter writes a copy"
 
+
+# -- the claim runs only when there is something to claim (change 3, D2) -------------------------
+
+from datetime import datetime, timedelta, timezone  # noqa: E402
+
+NOW = datetime(2026, 10, 24, 6, 0, tzinfo=timezone.utc)
+
+
+def _iso(when):
+    return when.strftime('%Y-%m-%dT%H:%M:%SZ')
+
+
+def _row(outbox, worker, folder, outbox_id, **fields):
+    row = {'schema': 'problem-board.service-outbox.v1', 'outbox_id': outbox_id, 'kind': 'mail.send',
+           'worker_name': worker, 'project_ref': PROJECT, 'state': folder, 'created_at': _iso(NOW),
+           'retry_count': 0, 'next_attempt_at': '', **fields}
+    path = outbox.in_flight_path(row, folder)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    from project_board.client.io import atomic_write_json
+    atomic_write_json(path, row)
+
+
+def test_has_in_flight_counts_only_what_the_claim_would_act_on(tmp_path):
+    outbox = OutboxStore(tmp_path / 'control')
+    me, other = 'codex-me', 'codex-other'
+    assert outbox.has_in_flight(worker_name=me, now=NOW) is False
+    _row(outbox, me, 'pending', 'outbox_later', next_attempt_at=_iso(NOW + timedelta(seconds=30)))
+    assert outbox.has_in_flight(worker_name=me, now=NOW) is False, "a pending row not yet due"
+    assert outbox.has_in_flight(worker_name=me, now=NOW + timedelta(seconds=31)) is True, "the same row once due"
+    _row(outbox, other, 'leased', 'outbox_live', lease={'relay_id': 'relay-other', 'expires_at': _iso(NOW + timedelta(minutes=5))})
+    assert outbox.has_in_flight(worker_name=me, now=NOW) is False, "another relay's live lease"
+    # D2: this worker's own live lease is false too. The flush that claimed it sends and settles it
+    # (a cancelled turn's settle runs as its own task); pull_outbox never re-sends a live lease.
+    _row(outbox, me, 'leased', 'outbox_mine', lease={'relay_id': 'relay-me', 'expires_at': _iso(NOW + timedelta(minutes=5))})
+    assert outbox.has_in_flight(worker_name=me, now=NOW) is False, "this worker's own live lease"
+    assert outbox.has_in_flight(worker_name=me, now=NOW + timedelta(minutes=6)) is True, "an expired lease is recovered"
+
+
+def test_has_in_flight_counts_a_due_project_level_row_and_a_lease_without_expiry(tmp_path):
+    outbox = OutboxStore(tmp_path / 'control')
+    _row(outbox, '', 'pending', 'outbox_project')
+    assert outbox.has_in_flight(worker_name='codex-me', now=NOW) is True, "a due project-level row"
+    other = OutboxStore(tmp_path / 'other')
+    _row(other, 'codex-other', 'leased', 'outbox_nolease', lease={'relay_id': 'relay-other'})
+    assert other.has_in_flight(worker_name='codex-me', now=NOW) is True, "a lease without expires_at is expired"

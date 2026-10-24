@@ -136,20 +136,32 @@ class OutboxStore:
         if legacy.is_dir():
             yield from sorted(legacy.glob("*.json"))
 
-    def has_in_flight(self, *, worker_name: str) -> bool:
+    def has_in_flight(self, *, worker_name: str, now: datetime | None = None) -> bool:
         """Whether a claim for ``worker_name`` has anything to do (W456 criterion 4).
 
         ``pull_outbox`` recovers expired leases of every agent and claims this
-        worker's pending rows. With neither a leased row nor a pending row of
-        this worker on disk it changes nothing, so the relay asks this first,
-        from a thread, and skips the claim on its event loop.
+        worker's due pending rows. With neither on disk it changes nothing, so
+        the relay asks this first, from a thread, and skips the claim on its
+        event loop.
+
+        W967: only what the claim would act on counts, by the claim's own tests.
+        A pending row whose ``next_attempt_at`` is still ahead, or a lease that
+        has not expired (another relay's, or this worker's own: the flush that
+        claimed it sends and settles it), is no reason to take the host outbox
+        lock every turn. An unreadable row still counts, so the claim reports it.
         """
 
-        for _path in self.in_flight("leased"):
-            return True
-        for _path in self.in_flight("pending", worker_name=worker_name):
-            return True
-        return False
+        now_dt = now or datetime.now(timezone.utc)
+        for path in self.in_flight("leased"):
+            try:
+                row = read_json(path)
+                lease = row.get("lease") if isinstance(row.get("lease"), Mapping) else {}
+                expires_at = str(lease.get("expires_at") or "")
+                if not expires_at or parse_utc(expires_at) <= now_dt:
+                    return True
+            except DomainError:
+                return True
+        return next(self.ready_rows(worker_names=[worker_name], now=now_dt), None) is not None
 
     def ready_rows(
         self,
