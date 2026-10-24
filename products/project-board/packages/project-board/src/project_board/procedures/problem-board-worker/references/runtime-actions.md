@@ -229,24 +229,29 @@ Before fast-forwarding a checkout or deleting
 4. `pb procedure verify` succeeds from the new launcher, for every Claude
    directory on the host: its brief output has one `--- claude-code` row per
    directory with a `path:` line, and each is checked by name: `~/.claude`,
-   each registered account profile (`~/.claude-accounts/<email>`) and the
-   session's own `CLAUDE_CONFIG_DIR` (W969).
+   each account profile a worker channel on this host is bound to
+   (`~/.claude-accounts/<email>`) and the session's own `CLAUDE_CONFIG_DIR`
+   (W969, W975).
 
 A client switch reinstalls the worker procedure with
 `pb procedure install --target claude-code` (and `--target codex`). Without
-`--claude-config-dir` it installs into every Claude directory the host has,
-whichever session runs it: `~/.claude`, each account profile in the registry
-(`~/.claude-accounts/registry.json`) whose folder exists, and the session's
-own `CLAUDE_CONFIG_DIR`, and it merges the worker's hooks and status line into
-each of their `settings.json`. Its brief output names every directory written,
+`--claude-config-dir` it installs into every Claude directory Project Board
+runs in on this host, whichever session runs it: `~/.claude`, each account
+profile folder that a worker channel in this host's relay configs is bound to
+(not disabled) and that exists, and the session's own `CLAUDE_CONFIG_DIR`. It
+merges the worker's hooks and status line into each of their `settings.json`. Its brief output names every directory written,
 one `--- claude-code · <state> · revision … · <path>` row each and one
 `settings:` line per directory; read them, and name them in the switch report.
-`--claude-config-dir <dir>` installs into that one directory only. A Claude
-directory that is not in the registry is not covered: install it by name with
-`--claude-config-dir`, or register its profile first. Why: on 23-24 Oct an
-install run from an account-profile session went into that profile only,
-printed no directory, and left `~/.claude` on an older revision until another
-agent's `pb procedure verify` found it (W969).
+`--claude-config-dir <dir>` installs into that one directory only. Any other
+Claude profile is never written by a plain install or verify, even when it is
+in the account registry (`~/.claude-accounts/registry.json`): the registry
+records Claude accounts, not which of them run Project Board, and a host may
+keep a profile Project Board must never touch. Install such a folder only by
+naming it with `--claude-config-dir`. Why: on 23-24 Oct an install run from an
+account-profile session went into that profile only, printed no directory, and
+left `~/.claude` on an older revision until another agent's
+`pb procedure verify` found it (W969); the fix then reached every registered
+profile, including one that is not a Project Board home (W975).
 
 At that point the former venv has no launcher or service consumer and may be
 deleted. The source checkout remains a build input for future reviewed

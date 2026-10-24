@@ -963,24 +963,23 @@ def claude_config_roots(
     *,
     environ: Mapping[str, str] | None = None,
 ) -> list[Path]:
-    """Every Claude configuration directory an install or check covers (W969).
+    """Every Claude configuration directory an install or check covers (W969, W975).
 
-    An explicit directory alone. Otherwise every Claude home this host knows,
-    so no profile is left on an older revision by an install run from another:
-    ``<home>/.claude``, each account profile in the registry
-    (``~/.claude-accounts/registry.json``) whose folder exists, and the
-    session's own ``CLAUDE_CONFIG_DIR``. Each appears once, in that order.
+    An explicit directory alone. Otherwise the Claude homes Project Board runs
+    in on this host, so no worker's profile is left on an older revision by an
+    install run from another: ``<home>/.claude``, each profile folder a worker
+    channel on this host is bound to (``bound_claude_profile_dirs``) that
+    exists, and the session's own ``CLAUDE_CONFIG_DIR``. Each appears once, in
+    that order. Any other Claude profile, registered or not, is written only
+    when named with ``--claude-config-dir``.
     """
 
     if claude_config_dir:
         return [claude_config_root(home, claude_config_dir, environ=environ)]
     roots = [_home_path(home) / ".claude"]
-    from .claude_profile import read_registry
+    from .host_config import bound_claude_profile_dirs
 
-    for row in read_registry(home).values():
-        folder = str(row.get("config_dir") or "").strip()
-        if folder and Path(folder).expanduser().is_absolute() and Path(folder).expanduser().is_dir():
-            roots.append(Path(os.path.abspath(Path(folder).expanduser())))
+    roots.extend(folder for folder in bound_claude_profile_dirs() if folder.is_dir())
     roots.append(claude_config_root(home, None, environ=environ))
     unique: list[Path] = []
     for root in roots:
