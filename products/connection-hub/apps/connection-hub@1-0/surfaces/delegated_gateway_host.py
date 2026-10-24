@@ -210,7 +210,7 @@ class HostedCardReader:
     async def read_current(self, caller: GatewayCaller) -> DelegatedCardView | None:
         if caller.access_id != self._access_id:
             return None
-        card = await self._access_service.card_for_access_id(
+        card = await self._access_service.effective_card_for_access_id(
             grantor_subject=self._grantor_subject,
             access_id=self._access_id,
         )
@@ -629,7 +629,7 @@ async def build_hosted_gateway_binding(
         or not view.client_id
     ):
         raise DelegatedGatewayError("gateway_caller_credential_missing")
-    card = await access_service.card_for_access_id(
+    card = await access_service.effective_card_for_access_id(
         grantor_subject=view.grantor_user_id,
         access_id=view.registry_access_id,
     )

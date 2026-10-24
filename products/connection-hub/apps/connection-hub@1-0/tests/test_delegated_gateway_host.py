@@ -97,9 +97,13 @@ class _AccessService:
         self.reads = []
         self.resource_option_users = []
 
-    async def card_for_access_id(self, *, grantor_subject, access_id):
+    async def effective_card_for_access_id(self, *, grantor_subject, access_id):
+        # W981: the gateway reads the Card as the guard composes it with its Control.
         self.reads.append((grantor_subject, access_id))
         return self.card
+
+    async def card_for_access_id(self, *, grantor_subject, access_id):
+        raise AssertionError("the gateway never judges by the stored Card alone (W981)")
 
     async def resource_options(self, user):
         assert user["user_id"] == "owner-1"
