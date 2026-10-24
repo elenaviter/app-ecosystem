@@ -1,11 +1,30 @@
 package:
   id: project-board
-  ref: "2026.10.19.2200"
+  ref: "2026.10.24.1000"
   description: |
-    - Connection Hub Card lock: the Redis eviction-policy check reads `maxmemory_policy` from `INFO memory` when `CONFIG GET` is refused or answers without the policy, as on Redis services that restrict `CONFIG` (AWS ElastiCache). A policy that `CONFIG` reports is never overridden; when neither source reports one the lock still refuses as unverified, and any policy other than `noeviction` is still refused (#861).
+    Requested coverage since 2026.10.18.1804.
+
+    New changes since the PB set published on 19 October at 22:00 Berlin time:
+
+    - Project Board workers can discover and call the services allowed by their Cards. The client validates service arguments before sending them and preserves the project's permissions for each worker.
+    - Repeating an identical setup reuses the existing host record. Procedure installation and verification cover every registered Claude configuration directory by default and name each directory; an explicitly selected directory remains scoped to that directory.
+    - Repeating a single-value command option with conflicting values now fails before any operation, with a clear error; one send has one recipient.
+    - The relay recovers from lost outbox leases without stopping unrelated mail, settles an in-flight outbox row in its own copy, and avoids repeating mailbox reconciliation for an unchanged owner view. Project syncs compare before locking and write only when data changes. Retention holds the writer lock one day at a time. Slow-turn diagnostics name the longest store call and outbox send time.
+    - Connection Hub's secret flow asks for consent in the CLI, keeps the exact door and resource binding, carries that resource through token refreshes, and explains refused token exchanges. A Card entered through a secret door can add only reachable, exact secrets. A used one-time permission asks again, and its consent label reflects the committed result.
+    - Delegated catalog rows and Card editors stay bound to the entry that granted access. Editing a project's Control Card goes through that project, where its permissions are checked. Project Control account policies govern linked services and resources, and a save is bounded by the saver's typed permission proof.
+    - App Foundation adds A2A 1.0 client and server building blocks. Connection Hub can store an explicitly enabled A2A connection. Platform installation and activation of inbound A2A routes remain separate release work.
+    - Test collection identifiers are stable across workers, and dated recovery fixtures no longer depend on expired test dates. The client diagnoses broken hashlib BLAKE2 support and refuses to select an affected release.
+
+    Previously shipped within the requested coverage, by the 19 October evening release:
+
+    - Project exports can be imported through the supported client flow, with browser import documentation. Resume and authorization commands identify the selected profile.
+    - The Redis lock policy check can read INFO memory when CONFIG is restricted; an unknown policy is still refused.
+    - The client, procedures and documentation use the Project Board name.
+
+    Connection Hub CLI carries the PB snapshot version at preparation, and its separate release is qualified after its required kdcube-cli version is available. If its dependency metadata changes after the PB tag, that CLI release receives a distinct later version and tag.
 
 components:
   python_package:
     id: project-board
     path: products/project-board/packages/project-board
-    version: "2026.10.19.2200"
+    version: "2026.10.24.1000"

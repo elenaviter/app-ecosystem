@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "app-foundation"
-version = "2026.10.19.2200"
+version = "2026.10.24.1000"
 description = "Host-neutral MCP and A2A clients, outbound network policy, and native credential-value primitives for applications."
 readme = "README.md"
 license = "MIT"
