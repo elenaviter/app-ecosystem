@@ -793,7 +793,11 @@ def build_parser() -> argparse.ArgumentParser:
     command.add_argument("--home", help="Testing or alternate user home.")
     command.add_argument(
         "--claude-config-dir",
-        help="The Claude profile folder to use; default: this session's CLAUDE_CONFIG_DIR, else ~/.claude.",
+        action="append",
+        help=(
+            "A Claude profile folder to cover; repeat for several. Without it: ~/.claude and this "
+            "session's CLAUDE_CONFIG_DIR. Any other folder is covered only when named (W975)."
+        ),
     )
     command = procedure_commands.add_parser(
         "verify", help="Verify every file in an installed procedure package."
@@ -807,7 +811,11 @@ def build_parser() -> argparse.ArgumentParser:
     command.add_argument("--home", help="Testing or alternate user home.")
     command.add_argument(
         "--claude-config-dir",
-        help="The Claude profile folder to use; default: this session's CLAUDE_CONFIG_DIR, else ~/.claude.",
+        action="append",
+        help=(
+            "A Claude profile folder to cover; repeat for several. Without it: ~/.claude and this "
+            "session's CLAUDE_CONFIG_DIR. Any other folder is covered only when named (W975)."
+        ),
     )
     command.add_argument(
         "--detail", action="store_true",
@@ -825,7 +833,11 @@ def build_parser() -> argparse.ArgumentParser:
     command.add_argument("--home", help="Testing or alternate user home.")
     command.add_argument(
         "--claude-config-dir",
-        help="The Claude profile folder to use; default: this session's CLAUDE_CONFIG_DIR, else ~/.claude.",
+        action="append",
+        help=(
+            "A Claude profile folder to cover; repeat for several. Without it: ~/.claude and this "
+            "session's CLAUDE_CONFIG_DIR. Any other folder is covered only when named (W975)."
+        ),
     )
     command.add_argument("--force", action="store_true")
     command.add_argument(
@@ -7499,18 +7511,16 @@ def _procedure_command(args: Any) -> dict[str, Any]:
             from .claude_settings import merge_claude_code_settings
             from .procedures import _home_path, claude_config_root, claude_config_roots
 
-            # W969: every Claude home the skill went to gets the hooks too; claude_code_settings stays the
-            # session's own, and claude_code_settings_by_dir names each directory written.
-            own = claude_config_root(args.home, getattr(args, "claude_config_dir", None))
+            # W969: every Claude home the skill went to gets the hooks too, and only those (W975);
+            # claude_code_settings is the session's own when covered, else the first folder written,
+            # and claude_code_settings_by_dir names each directory written.
+            own = claude_config_root(args.home, None)
             by_dir = []
             for config_dir in claude_config_roots(args.home, getattr(args, "claude_config_dir", None)):
                 merged = merge_claude_code_settings(_home_path(args.home), pb=hook_pb, config_dir=config_dir)
                 by_dir.append({"config_dir": str(config_dir), **merged})
-                if config_dir == own:
+                if config_dir == own or "claude_code_settings" not in result:
                     result["claude_code_settings"] = merged
-            if "claude_code_settings" not in result:
-                result["claude_code_settings"] = merge_claude_code_settings(
-                    _home_path(args.home), pb=hook_pb, config_dir=own)
             result["claude_code_settings_by_dir"] = by_dir
         return result
     raise ValueError(f"unsupported procedure command: {args.procedure_command}")

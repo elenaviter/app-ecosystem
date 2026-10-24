@@ -959,28 +959,27 @@ def claude_config_root(
 
 def claude_config_roots(
     home: str | Path | None = None,
-    claude_config_dir: str | Path | None = None,
+    claude_config_dir: str | Path | Sequence[str | Path] | None = None,
     *,
     environ: Mapping[str, str] | None = None,
 ) -> list[Path]:
-    """Every Claude configuration directory an install or check covers (W969, W975).
+    """The Claude configuration directories an install or check covers (W969, W975).
 
-    An explicit directory alone. Otherwise the Claude homes Project Board runs
-    in on this host, so no worker's profile is left on an older revision by an
-    install run from another: ``<home>/.claude``, each profile folder a worker
-    channel on this host is bound to (``bound_claude_profile_dirs``) that
-    exists, and the session's own ``CLAUDE_CONFIG_DIR``. Each appears once, in
-    that order. Any other Claude profile, registered or not, is written only
-    when named with ``--claude-config-dir``.
+    The named directories alone (``--claude-config-dir``, repeatable).
+    Otherwise ``<home>/.claude`` and the session's own ``CLAUDE_CONFIG_DIR``, so
+    an install run from an account-profile session never leaves ``~/.claude``
+    on an older revision. No other folder is covered unless named: neither the
+    account registry nor a worker binding on this host says that this project
+    may write a profile (W975: a profile Project Board must never touch is
+    bound to another project's worker on dev-main). Each appears once, in that
+    order.
     """
 
-    if claude_config_dir:
-        return [claude_config_root(home, claude_config_dir, environ=environ)]
-    roots = [_home_path(home) / ".claude"]
-    from .host_config import bound_claude_profile_dirs
-
-    roots.extend(folder for folder in bound_claude_profile_dirs() if folder.is_dir())
-    roots.append(claude_config_root(home, None, environ=environ))
+    named = [claude_config_dir] if isinstance(claude_config_dir, (str, Path)) else list(claude_config_dir or ())
+    if named:
+        roots = [claude_config_root(home, folder, environ=environ) for folder in named if str(folder).strip()]
+    else:
+        roots = [_home_path(home) / ".claude", claude_config_root(home, None, environ=environ)]
     unique: list[Path] = []
     for root in roots:
         if root not in unique:
@@ -989,7 +988,8 @@ def claude_config_roots(
 
 
 def verify_agent_procedure(
-    targets: Sequence[str], *, home: str | Path | None = None, claude_config_dir: str | Path | None = None
+    targets: Sequence[str], *, home: str | Path | None = None,
+    claude_config_dir: str | Path | Sequence[str | Path] | None = None,
 ) -> list[dict[str, Any]]:
     root = _home_path(home)
     package = _read_source_package()

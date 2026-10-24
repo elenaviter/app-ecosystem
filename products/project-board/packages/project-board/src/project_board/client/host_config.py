@@ -1089,39 +1089,6 @@ def selection_arguments(config_path: str | Path, *, target_id: str) -> list[str]
     return ["--profile", name] if name else ["--config", str(path)]
 
 
-def bound_claude_profile_dirs(*, state_root: Path | None = None) -> list[Path]:
-    """The Claude profile folders a Project Board worker on this host is bound to (W975).
-
-    Read from every relay config this host points at (the machine default and
-    each KDCube profile's): a worker channel that is not disabled and carries a
-    ``claude_profile`` binding names its folder. The account registry is not a
-    source: it records Claude account profiles, not which of them run Project
-    Board. A config that cannot be read adds nothing.
-    """
-
-    base = (state_root or client_runtime_root()) / "problem-board"
-    pointers = [base / "default.json", *sorted((base / "targets").glob("*/*/default.json"))]
-    configs: list[Path] = []
-    for pointer in pointers:
-        config = str(read_json(pointer, required=False).get("config") or "").strip()
-        if config and Path(config).expanduser().resolve() not in configs:
-            configs.append(Path(config).expanduser().resolve())
-    found: list[Path] = []
-    for config in configs:
-        try:
-            workers = HostRelayConfig.load(config).workers
-        except (DomainError, OSError, ValueError):
-            continue
-        for worker in workers:
-            folder = str((worker.claude_profile or {}).get("config_dir") or "").strip()
-            if worker.state == "disabled" or not folder or not Path(folder).expanduser().is_absolute():
-                continue
-            path = Path(os.path.abspath(Path(folder).expanduser()))
-            if path not in found:
-                found.append(path)
-    return found
-
-
 def _default_host_config_path() -> Path:
     pointer = read_json(default_pointer_path(), required=False)
     path = str(pointer.get("config") or "").strip()
@@ -1411,7 +1378,6 @@ def set_worker_claude_profile(
 
 
 __all__ = [
-    "bound_claude_profile_dirs",
     "DEFAULT_CONTROL_KINDS",
     "HOST_CONFIG_POINTER_SCHEMA",
     "HOST_CONFIG_SCHEMA",
