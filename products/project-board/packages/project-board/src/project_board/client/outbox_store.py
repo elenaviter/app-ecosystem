@@ -270,7 +270,7 @@ class OutboxStore:
 
     # -- lookups -------------------------------------------------------------
 
-    def find_in_flight(self, outbox_id: str, *, relay_id: str = "") -> tuple[Path, str] | None:
+    def find_in_flight(self, outbox_id: str, *, relay_id: str = "", project_ref: str = "") -> tuple[Path, str] | None:
         """``(path, folder)`` of one row in ``pending``/``leased`` of any agent, else None.
 
         Never the settled history: a leased row can only be in flight, and
@@ -281,12 +281,13 @@ class OutboxStore:
         publication every reporter enqueues under the same id). With
         ``relay_id``, the leased copy that relay holds is returned; otherwise
         the first copy, as before. Looking up by id alone settled or retried
-        another agent's copy, so no copy ever left flight.
+        another agent's copy, so no copy ever left flight. With ``project_ref``,
+        only that project's agent folders (W967: one publication row per host).
         """
 
         first: tuple[Path, str] | None = None
         for folder in OUTBOX_IN_FLIGHT_FOLDERS:
-            roots = [root for _ref, root in self.agent_roots()]
+            roots = [root for _ref, root in self.agent_roots(project_ref=project_ref)]
             for path in [root / folder / f"{outbox_id}.json" for root in roots] + [
                 self.legacy_root / folder / f"{outbox_id}.json"
             ]:

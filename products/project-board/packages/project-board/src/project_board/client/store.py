@@ -95,6 +95,7 @@ from .io import (
 )
 from .mail_delivery import (
     retirement_delivery_publication,
+    retirement_required_sender,
     ACTIVE_MAILBOX_STATES,
     UNLEASED_MAILBOX_STATES,
     ALL_MAILBOX_STATES,
@@ -11046,6 +11047,12 @@ class SharedFieldStore:
                         report_age = 301
                     if report_age <= 300:
                         continue
+                if (failure.get("code") in {"retired_recipient", "work_worker_retired", "field_worker_retired"}
+                        and not terminal_notice
+                        and retirement_required_sender(row) not in {"", reporter.lower()}):
+                    # W967 (c'): only its author's channel can admit a host-local original to a retired
+                    # worker; that channel's own pass claims it. Every other reporter leaves it untouched.
+                    continue
                 row["failure_notice_state"] = "reporting"
                 row["failure_notice_reporter"] = reporter
                 row["updated_at"] = utc_now()
@@ -11086,7 +11093,8 @@ class SharedFieldStore:
                         if path != first_path:
                             remaining.append((path, message))
                         continue
-                    message['retirement_publication'] = {'outbox_id': batch['outbox_id'], 'proof_hash': binding['proof_hash']}
+                    message['retirement_publication'] = {'outbox_id': batch['outbox_id'], 'proof_hash': binding['proof_hash'],
+                                                         'publication_worker_name': binding['publication_worker_name']}
                     with exclusive_lock(self._project_lock(clean_project)):
                         current = read_json(path, required=False)
                         if current:
