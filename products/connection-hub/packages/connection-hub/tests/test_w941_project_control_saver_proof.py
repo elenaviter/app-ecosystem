@@ -157,19 +157,29 @@ def test_the_lifecycle_plan_admits_a_proof_on_the_project_controls_own_edit() ->
     assert "PROJECT_CONTROL if raw.get(\"kind\") == \"reselect_project_control\"" in source
 
 
-def test_the_hub_issues_a_project_control_proof_only_when_enabled() -> None:
-    from connection_hub.delegated_credentials.automation_access import AutomationAccessService
-
-    record = SimpleNamespace(access_id="p-1", grantor_subject="user:creator")
-    service = AutomationAccessService.__new__(AutomationAccessService)
-    service._grantor_authority_secret = SECRET
-    issue = lambda: service._owner_authority_proof(SAVER, record=record, kind="project_control", revision=4,
-                                                   request_id="save-1", edit={})
-    assert issue() is None, "off until the managing application accepts one"
-    service._control_saver_proof_enabled = True
-    token = issue()
+def test_the_hub_issues_a_project_control_proof_only_when_its_setting_is_on() -> None:
+    # Review F2: the named setting connections.delegated_credentials.control_saver_proof, default off.
     import time
 
+    from connection_hub.delegated_credentials.automation_access import AutomationAccessService
+    from connection_hub.delegated_credentials.oauth.config import oauth_delegated_config_from_connections
+
+    connections = {"delegated_credentials": {"oauth": {"enabled": True, "capabilities": [], "resources": []}}}
+    record = SimpleNamespace(access_id="p-1", grantor_subject="user:creator")
+
+    def service(**kwargs):
+        return AutomationAccessService(redis=object(), tenant="t", project="p",
+                                       config=oauth_delegated_config_from_connections(connections),
+                                       grantor_authority_secret=SECRET, **kwargs)
+
+    def issue(svc):
+        return svc._owner_authority_proof(SAVER, record=record, kind="project_control", revision=4,
+                                          request_id="save-1", edit={})
+
+    assert issue(service()) is None, "off by default: an older board refuses a P Save carrying a proof"
+    for value in ("true", 1, "yes", None):
+        assert issue(service(control_saver_proof=value)) is None, value
+    token = issue(service(control_saver_proof=True))
     verified = verify_grantor_proof(token, secret=SECRET, now=int(time.time()), grantor_subject="user:admin",
                                     access_id="p-1", original_revision=4, request_id="save-1", edit={},
                                     target_kind=PROJECT_CONTROL)
@@ -289,3 +299,36 @@ def test_plan_and_stage_give_the_same_split(case) -> None:
         assert plan_bound["authority"] is None, "a non-governed addition is refused card_grantor_inventory_unavailable"
     else:
         assert plan_bound["authority"]["user_id"] == "user:admin"
+
+
+
+def test_a_changed_governed_resources_after_authorization_is_refused() -> None:
+    # Note 1b, D2: the board authorizes the PLAN request, whose digest covers every update, governed_resources
+    # included; a decision for one value never validates for a request carrying another.
+    from connection_hub.delegated_credentials.cards.lifecycle_plan_operation import (
+        REQUEST_SCHEMA, plan_request_digest, plan_steps,
+    )
+    from connection_hub.delegated_credentials.project_authorization import (
+        LifecyclePlanAuthorizationRequest, ProjectAuthorizationDecision, ProjectAuthorizationError,
+    )
+    from test_w638_managed_card_selection_plan import PROJECT, project_control
+
+    original = project_control()
+
+    def request(governed):
+        updates = [{"kind": "reselect_project_control", "target_subject": original.access_id,
+                    "access_id": original.access_id, "subject_hash": "h" * 64,
+                    "original_revision": original.card_revision, "selection": {}, "governed_resources": governed}]
+        data = {"schema": REQUEST_SCHEMA, "request_echo": "e" * 32, "scope": PROJECT, "actor_subject": "user:admin",
+                "actor_kind": "caller", "request_id": "save-1", "creations": [], "updates": updates}
+        return LifecyclePlanAuthorizationRequest(actor_subject="user:admin", project_ref=PROJECT, request_id="save-1",
+                                                 request_digest=plan_request_digest(data), steps=plan_steps([], updates))
+
+    authorized, changed = request(["problem_board"]), request(["problem_board", "docs"])
+    assert authorized.request_digest != changed.request_digest
+    (step,) = authorized.steps
+    decision = ProjectAuthorizationDecision.allow(authorized.step_request(step), delegable_grants=("work:admin",))
+    decision.validate_for(authorized.step_request(step))
+    (changed_step,) = changed.steps
+    with pytest.raises(ProjectAuthorizationError, match="request_digest_mismatch"):
+        decision.validate_for(changed.step_request(changed_step))

@@ -1875,6 +1875,7 @@ class AutomationAccessService:
         issuer_actor_subject: str = "",
         project_resource_families: Any | None = None,
         grantor_authority_secret: str = "",
+        control_saver_proof: bool = False,
     ) -> None:
         self._redis = redis
         self._tenant = _clean(tenant)
@@ -1884,6 +1885,9 @@ class AutomationAccessService:
         self._project_resource_families = project_resource_families
         # W918 H1: signs the owner's own authority proof; empty leaves the proof dormant (none issued).
         self._grantor_authority_secret = str(grantor_authority_secret or "")
+        # W941: also issue the saver's proof for a managed Control's Save (``control_saver_proof``). Off by
+        # default: a managing application that predates it refuses a Control Save that carries a proof.
+        self._control_saver_proof_enabled = control_saver_proof is True
         selected_backend = _clean(authority_backend).lower()
         if grant_store is None and selected_backend == AUTHORITY_BACKEND_POSTGRESQL:
             raise GrantStoreUnavailable(
