@@ -16,7 +16,7 @@ from ..durable_io import cancellation_safe_await, read_json_or_none, require_pub
 from ..issuer_gate import change_digest
 from ..issuer_update import IssuerUpdateQuery, IssuerUpdateRefused
 from .model import CardCurrentPointer, card_revision_name
-from .store import CardStorageError
+from .store import CardStorageError, predecessor_record
 
 UPDATE_POINTER_SCHEMA = "connection_hub.card-current-issuer-update.v1"
 UPDATE_RECEIPT_SCHEMA = "connection_hub.card-issuer-update-receipt.v1"
@@ -162,7 +162,8 @@ async def atomic_update(store, *, query, actor_subject, original, candidate, now
         path = store.revision_path(subject_hash=query.target.subject_hash, access_id=query.target.access_id,
                                    revision_name=after.revision_name)
         await write_json_atomic(path.with_suffix(".issuer-update.json"), {"transaction_id": transaction_id})
-        pointer = await store.write_revision(subject_hash=query.target.subject_hash, authority=candidate, updated_at=now)
+        pointer = await store.write_revision(subject_hash=query.target.subject_hash, authority=candidate, updated_at=now,
+                                             record=predecessor_record(before, at=now, actor_kind="issuer-update"))
         if pointer != after:
             raise CardStorageError("issuer_update_staged_revision_mismatch")
         # Publish no authority yet: modern readers resolve this through the

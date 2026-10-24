@@ -65,6 +65,18 @@ _REVISION_NUMBER_PATTERN = re.compile(r"_([0-9]{8})_([0-9a-f]{12})(?:_[0-9a-f]{1
 
 VERSION_RECORD_KEY = "version_record"
 
+
+def predecessor_record(before: Any, *, at: datetime, actor_kind: str) -> dict:
+    """The version record of a revision written outside a card-version txn: no txn, only its base.
+
+    Every writer links its revision to the one it replaced, so a later proof can walk the
+    history by name (``policy_marker_settlement``). ``before`` is the replaced current
+    pointer (an object or its dict), or None for a Card created on an absent id.
+    """
+    name = before.get("revision_name") if isinstance(before, dict) else getattr(before, "revision_name", None)
+    return {"txn": "", "base": name if isinstance(name, str) and name else None,
+            "at": at.isoformat(), "actor": {"kind": actor_kind}}
+
 class CardStorageError(DurableStorageError):
     """Durable card storage could not be read or written."""
 

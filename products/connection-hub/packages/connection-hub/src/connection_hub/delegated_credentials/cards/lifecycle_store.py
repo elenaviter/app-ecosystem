@@ -22,7 +22,7 @@ from typing import Any, Awaitable, Callable, Mapping
 from ..durable_io import DurableStorageError, cancellation_safe_await, read_json_or_none, require_publish_before, write_json_atomic, unlink_guarded
 from .lifecycle import LifecycleRefused, LifecycleRequest
 from .model import CARD_STATE_REVOKED, CardCurrentPointer, card_revision_name
-from .store import CardStorageError
+from .store import CardStorageError, predecessor_record
 
 LIFECYCLE_POINTER_SCHEMA = "connection_hub.card-current-lifecycle.v1"
 LIFECYCLE_RECEIPT_SCHEMA = "connection_hub.card-lifecycle-receipt.v1"
@@ -279,7 +279,9 @@ async def atomic_revoke(store: Any, *, request: LifecycleRequest, actor_subject:
             await write_json_atomic(store.revision_path(subject_hash=entry["subject_hash"],
                 access_id=entry["access_id"], revision_name=entry["after"]["revision_name"]).with_suffix(".lifecycle.json"),
                 {"transaction_id": transaction_id})
-            pointer = await store.write_revision(subject_hash=entry["subject_hash"], authority=authority, updated_at=now)
+            pointer = await store.write_revision(subject_hash=entry["subject_hash"], authority=authority, updated_at=now,
+                                                 record=predecessor_record(entry["before"], at=now,
+                                                                           actor_kind="issuer-lifecycle"))
             if pointer.to_dict() != entry["after"]:
                 raise CardStorageError("lifecycle_staged_revision_mismatch")
         for entry in entries:
