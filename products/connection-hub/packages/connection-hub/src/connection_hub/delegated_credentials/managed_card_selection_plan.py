@@ -30,7 +30,6 @@ from .cards.card_group import group_member
 from .cards.identity import CARD_KIND_AGENT, CARD_KIND_AUTOMATION
 from .cards.model import CARD_STATE_ACTIVE, CardAuthority, authority_is_credentialless
 
-_LOGGER = logging.getLogger(__name__)
 from .catalog.descriptors import next_resource_acceptance
 from .controls.model import control_card_id_for_issuer
 from .existing_card_selection_plan import _accepted, undisplayed_change  # W723: one acceptance validation
@@ -43,6 +42,16 @@ from .project_authorization import (
 OPERATIONS = {"project_control": PROJECT_CONTROL_UPDATE, "agent_card": PROJECT_AGENT_CARD_UPDATE,
               "invitation_control": PROJECT_INVITATION_CONTROL_UPDATE}
 _SELECTION_FIELDS = frozenset({"resource_grants", "resource_operations", "named_service_operations", "account_scope", "properties"})
+_LOGGER = logging.getLogger(__name__)
+
+
+class GrantsNotDelegable(DecisionRefused):
+    """W941: an addition beyond what the saver may add, with the refused permission names (names only)."""
+
+    def __init__(self, grants: Any) -> None:
+        super().__init__("delegated_access_grants_not_delegable")
+        self.reason = "delegated_access_grants_not_delegable"
+        self.grants = tuple(sorted({str(grant) for grant in (grants or ())}))
 
 
 def _refuse(reason: str) -> DecisionRefused:
@@ -259,6 +268,7 @@ async def build_managed_card_selection_update(
             # W941 rehearsal: name what was refused where an operator can read it. Permission names only.
             _LOGGER.warning("card plan refused grants not delegable: access=%s kind=%s grants=%s",
                             original.access_id, kind, ",".join(sorted(map(str, resolved.error.get("grants") or ()))))
+            raise GrantsNotDelegable(resolved.error.get("grants"))  # W941: STAGE names them to the person
         raise _refuse(code)
     if resolved.revoke:
         raise _refuse("card_plan_selection_empty")
