@@ -91,10 +91,13 @@ REFUSALS = {"txn_closed": 409, "txn_unknown": 404, "card_changed": 409, "stage_c
             # reason): a personal MCP server only its owner changes, an addition only its owner can prove,
             # and an owner's authority proof that does not verify for this edit.
             "card_custom_mcp_owner_only": 403, "card_grantor_inventory_unavailable": 409,
-            "card_grantor_proof_invalid": 409}
+            "card_grantor_proof_invalid": 409,
+            # W941 rehearsal: an addition beyond what this saver may add is named, not collapsed to edit_invalid.
+            "delegated_access_grants_not_delegable": 409}
 # Planner refusals STAGE names as they are (fixed codes, no request content), instead of edit_invalid.
 _NAMED_PLANNER_REFUSALS = frozenset({"card_edit_admin_grant_role_only", "card_custom_mcp_owner_only",
-                                     "card_grantor_inventory_unavailable", "card_grantor_proof_invalid"})
+                                     "card_grantor_inventory_unavailable", "card_grantor_proof_invalid",
+                                     "delegated_access_grants_not_delegable"})
 # Store codes PB sees under the contract's name: a txn staged under another scope or caller is out of scope.
 _ALIASES = {"txn_scope_mismatch": "request_scope_invalid"}
 _CARD_CHANGED = frozenset({"card_plan_original_revision_changed", "card_plan_update_target_absent",

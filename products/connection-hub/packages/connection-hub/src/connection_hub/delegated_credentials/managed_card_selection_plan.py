@@ -18,6 +18,7 @@ output is never an authorization or a publication decision.
 from __future__ import annotations
 
 import dataclasses
+import logging
 from typing import Any, Mapping
 
 from service_foundation.coordination.durable_decision_log import DecisionRefused
@@ -28,6 +29,8 @@ from .card_lifecycle_plan import _with_selection
 from .cards.card_group import group_member
 from .cards.identity import CARD_KIND_AGENT, CARD_KIND_AUTOMATION
 from .cards.model import CARD_STATE_ACTIVE, CardAuthority, authority_is_credentialless
+
+_LOGGER = logging.getLogger(__name__)
 from .catalog.descriptors import next_resource_acceptance
 from .controls.model import control_card_id_for_issuer
 from .existing_card_selection_plan import _accepted, undisplayed_change  # W723: one acceptance validation
@@ -251,7 +254,12 @@ async def build_managed_card_selection_update(
         _grantor_bound=grantor_bound,
     )
     if resolved.error is not None:
-        raise _refuse(str(resolved.error.get("error") or "card_plan_selection_invalid"))
+        code = str(resolved.error.get("error") or "card_plan_selection_invalid")
+        if code == "delegated_access_grants_not_delegable":
+            # W941 rehearsal: name what was refused where an operator can read it. Permission names only.
+            _LOGGER.warning("card plan refused grants not delegable: access=%s kind=%s grants=%s",
+                            original.access_id, kind, ",".join(sorted(map(str, resolved.error.get("grants") or ()))))
+        raise _refuse(code)
     if resolved.revoke:
         raise _refuse("card_plan_selection_empty")
     catalog_version = host._version_of(active)

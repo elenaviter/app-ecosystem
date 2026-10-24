@@ -128,3 +128,17 @@ def test_the_lifecycle_plan_admits_governed_resources_on_an_agent_cards_own_edit
     source = inspect.getsource(card_lifecycle_plan)
     assert '"governed_resources" in raw and (raw.get("kind") not in {"reselect_project_control",' in source
     assert '"reselect_agent_card"}' in source
+
+
+def test_a_grant_beyond_what_the_saver_may_add_is_named_not_collapsed():
+    # The rehearsal showed only "refused by the Hub": STAGE now names this planner refusal as itself, the board
+    # receives the fixed code, and the Hub's log names the refused permissions (names only).
+    from connection_hub.card_save_codes import CARD_SAVE_CODES
+    from connection_hub.delegated_credentials.cards import participant_card_version as pcv
+    from connection_hub.delegated_credentials import managed_card_selection_plan as plan
+
+    assert "delegated_access_grants_not_delegable" in pcv._NAMED_PLANNER_REFUSALS
+    assert pcv.REFUSALS["delegated_access_grants_not_delegable"] == 409
+    assert "delegated_access_grants_not_delegable" in CARD_SAVE_CODES
+    source = inspect.getsource(plan)
+    assert "card plan refused grants not delegable" in source and 'resolved.error.get("grants")' in source

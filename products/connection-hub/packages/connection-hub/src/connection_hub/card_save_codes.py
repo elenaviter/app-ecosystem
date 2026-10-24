@@ -27,6 +27,7 @@ CARD_SAVE_CODES = frozenset({
     "card_entry_bound_row_not_selectable",  # W937: a Card editor never adds an entry-bound row
     "card_grantor_inventory_unavailable",  # W918 H2: an addition only the Card's owner can prove
     "card_grantor_proof_invalid",  # W918 H1: the owner's authority proof does not verify for this edit
+    "delegated_access_grants_not_delegable",  # W941: an addition beyond what this saver may add, named
     "card_group_control_read_missing",
     "card_group_member_duplicate",
     "card_group_too_large",
