@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import logging
 import os
 import json
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
@@ -9,7 +11,16 @@ from ..contract.delivery_failures import (
     is_terminal_system_notice, RETIREMENT_DELIVERY_SCHEMA, RETIREMENT_DELIVERY_PURPOSE,
 )
 from ..contract.errors import DomainError
-from .io import atomic_write_json, content_hash, exclusive_lock, read_json, utc_now
+from .io import atomic_write_json, content_hash, exclusive_lock, parse_utc, read_json, utc_now
+
+logger = logging.getLogger(__name__)
+
+# W967: a routed (control) retirement batch has one row per host, sent only by the channel of the
+# worker whose folder holds it. When that row has been due for this long and is still pending, its
+# publisher is not sending it (stopped, or retired), and the reporter that finds it adopts it. It
+# counts from ``next_attempt_at``, so a row in a long backoff is never taken while it is not due;
+# fifteen minutes is far above one relay cycle and below the hour.
+ADOPT_AFTER_SECONDS = 900
 
 
 def _retirement_original_proof(message: Mapping[str, Any], retired_worker_name: str) -> tuple[str, dict[str, Any] | None, str]:
@@ -73,7 +84,46 @@ def _proof_sender(proof: Mapping[str, Any]) -> str:
     return '' if proof.get('control_ref') else str(proof.get('sender_worker_name') or '')
 
 
-def _find_publication(outbox: Any, outbox_id: str, *, project_ref: str, owner: str) -> dict[str, Any] | None:
+def _sends_as(field: Any, worker_name: str) -> bool:
+    """Whether this host's record of the worker lets it publish: present and not retired."""
+    read_worker = getattr(field, 'read_worker', None)
+    if read_worker is None:
+        return True
+    try:
+        record = read_worker(worker_name)
+    except DomainError:
+        return False
+    return record.get('pool_status') != 'retired' and not record.get('retired_at')
+
+
+def _adopt_orphaned(field: Any, outbox: Any, path: Path, row: dict[str, Any], *, reporter: str) -> dict[str, Any]:
+    """Move a routed batch nobody is sending into this reporter's folder; the caller holds ``outbox.lock``.
+
+    D1: the move happens under the host outbox lock that every claim, lease recovery, release,
+    retry and settle of the row also takes, so it is either leased by its publisher's channel or
+    pending under exactly one folder, never both. D3: the row keeps its retry and backoff state.
+    D7: only a routed batch moves, because the board admits its members from any attending worker.
+    """
+    publisher = str(row.get('worker_name') or '')
+    if not publisher or publisher == reporter or any(
+            not member.get('control_ref') for member in (row.get('payload') or {}).get('members') or ()):
+        return row
+    due = str(row.get('next_attempt_at') or row.get('created_at') or '')
+    try:
+        overdue = (datetime.now(timezone.utc) - parse_utc(due)).total_seconds()
+    except DomainError:
+        return row
+    if overdue <= ADOPT_AFTER_SECONDS or not _sends_as(field, reporter):
+        return row
+    adopted = {**row, 'worker_name': reporter, 'adopted_from': publisher, 'adopted_at': utc_now(), 'updated_at': utc_now()}
+    outbox.move_in_flight(path, adopted, 'pending')
+    logger.info('Problem Board retirement publication adopted project=%s outbox_id=%s from=%s to=%s',
+                row.get('project_ref') or '', row.get('outbox_id') or '', publisher, reporter)
+    return adopted
+
+
+def _find_publication(outbox: Any, outbox_id: str, *, project_ref: str, owner: str,
+                      field: Any = None, reporter: str = '') -> dict[str, Any] | None:
     """One publication row of this project on this host, wherever it is in flight (W967).
 
     In flight: every agent folder of the project, one stat each. Settled history: only the
@@ -84,6 +134,8 @@ def _find_publication(outbox: Any, outbox_id: str, *, project_ref: str, owner: s
     if found is not None:
         row = read_json(found[0], required=False)
         if row:
+            if found[1] == 'pending' and reporter:
+                return _adopt_orphaned(field, outbox, found[0], dict(row), reporter=reporter)
             return dict(row)
     return outbox.read(outbox_id, worker_name=owner, project_ref=project_ref)
 
@@ -137,7 +189,8 @@ def retirement_delivery_publication(
         # W967: one row per publication on this host, whichever reporter reached it first. A binding
         # from before W967 names no publisher and searches this reporter's history, as before.
         owner = str(binding.get('publication_worker_name') or reporter_worker_name)
-        row = _find_publication(outbox, bound_id or outbox_id, project_ref=project_ref, owner=owner)
+        row = _find_publication(outbox, bound_id or outbox_id, project_ref=project_ref, owner=owner,
+                                field=field, reporter=str(reporter_worker_name or ''))
         if row is None:
             row = {'schema': 'problem-board.service-outbox.v1', 'outbox_id': outbox_id,
                    'kind': 'mail.reconciliation.publish', 'worker_name': reporter_worker_name,

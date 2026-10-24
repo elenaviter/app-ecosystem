@@ -11,6 +11,8 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+import pytest
+
 from project_board.client import local_store
 from project_board.client.mail_delivery import retirement_delivery_publication
 from project_board.client.outbox_store import OutboxStore
@@ -200,3 +202,135 @@ def test_has_in_flight_counts_a_due_project_level_row_and_a_lease_without_expiry
     other = OutboxStore(tmp_path / 'other')
     _row(other, 'codex-other', 'leased', 'outbox_nolease', lease={'relay_id': 'relay-other'})
     assert other.has_in_flight(worker_name='codex-me', now=NOW) is True, "a lease without expires_at is expired"
+
+
+# -- an orphaned routed batch is adopted, never copied (change 2, D1, D3, D7) ----------------------
+
+from project_board.client import mail_delivery  # noqa: E402
+from project_board.client.io import read_json  # noqa: E402
+
+
+def _overdue_row(field, publisher, seconds, *, local=False):
+    message = _local_original(publisher, 'work:mail:orphan') if local else _control_original('work:mail:orphan')
+    result = _publish(field, publisher, message)
+    path = next(path for path in field._outbox.in_flight('pending') if path.stem == result['outbox_id'])
+    row = read_json(path)
+    row.update(retry_count=4, last_error_code='transport_unavailable',
+               next_attempt_at=_iso(datetime.now(timezone.utc) - timedelta(seconds=seconds)))
+    field._outbox.write_pending(row)
+    return message, result, row
+
+
+def _in_flight(field):
+    return sorted((path.parent.name, path.parent.parent.name, path.stem) for folder in ('pending', 'leased')
+                  for path in field._outbox.in_flight(folder) if path.stem.startswith('outbox_retirement_'))
+
+
+def test_an_overdue_routed_batch_moves_to_the_reporter_with_its_history(tmp_path, caplog):
+    field = _field(tmp_path)
+    message, first, before = _overdue_row(field, 'codex-reporter-a', mail_delivery.ADOPT_AFTER_SECONDS + 1)
+    _bind(message, first)
+    with caplog.at_level('INFO', logger='project_board.client.mail_delivery'):
+        result = _publish(field, 'codex-reporter-b', message)
+    assert result['publication_worker_name'] == 'codex-reporter-b'
+    assert _in_flight(field) == [('pending', 'codex-reporter-b', first['outbox_id'])], "moved, never copied"
+    row = field._outbox.read(first['outbox_id'], worker_name='codex-reporter-b', project_ref=PROJECT)
+    assert (row['adopted_from'], row['retry_count'], row['last_error_code'], row['next_attempt_at']) == (
+        'codex-reporter-a', 4, 'transport_unavailable', before['next_attempt_at'])
+    assert row['adopted_at'] and row['payload'] == before['payload'] and row['content_hash'] == before['content_hash']
+    [record] = [record.getMessage() for record in caplog.records if 'adopted' in record.getMessage()]
+    assert 'from=codex-reporter-a to=codex-reporter-b' in record and 'Private' not in record
+
+
+def test_a_batch_due_for_less_than_the_threshold_stays_with_its_publisher(tmp_path):
+    field = _field(tmp_path)
+    message, first, _ = _overdue_row(field, 'codex-reporter-a', mail_delivery.ADOPT_AFTER_SECONDS - 60)
+    _bind(message, first)
+    _publish(field, 'codex-reporter-b', message)
+    assert _in_flight(field) == [('pending', 'codex-reporter-a', first['outbox_id'])]
+
+
+def test_a_host_local_batch_is_never_adopted(tmp_path):
+    field = _field(tmp_path)
+    message, first, _ = _overdue_row(field, 'codex-author', 10 * mail_delivery.ADOPT_AFTER_SECONDS, local=True)
+    _bind(message, first)
+    assert _publish(field, 'codex-reporter-b', message)['reason'] == 'canonical_author_publishes'
+    assert _in_flight(field) == [('pending', 'codex-author', first['outbox_id'])]
+
+
+def test_adoption_into_a_retired_reporter_is_refused_and_a_retired_publisher_is_a_valid_source(tmp_path):
+    field = _field(tmp_path)
+    workers = {'codex-reporter-a': {'pool_status': 'retired', 'retired_at': '2026-10-20T10:00:00Z'},
+               'codex-reporter-b': {'pool_status': 'retired', 'retired_at': '2026-10-20T10:00:00Z'},
+               'codex-reporter-c': {'pool_status': 'active'}}
+    field.read_worker = lambda name: workers[name]
+    message, first, _ = _overdue_row(field, 'codex-reporter-a', mail_delivery.ADOPT_AFTER_SECONDS + 1)
+    _bind(message, first)
+    _publish(field, 'codex-reporter-b', message)
+    assert _in_flight(field) == [('pending', 'codex-reporter-a', first['outbox_id'])], "a retired target"
+    _publish(field, 'codex-reporter-c', message)
+    assert _in_flight(field) == [('pending', 'codex-reporter-c', first['outbox_id'])], "a retired source"
+
+
+def test_adoption_moves_the_row_under_the_host_outbox_lock(tmp_path, monkeypatch):
+    """D1: the same lock every claim, lease recovery, release, retry and settle takes."""
+    field = _field(tmp_path)
+    message, first, _ = _overdue_row(field, 'codex-reporter-a', mail_delivery.ADOPT_AFTER_SECONDS + 1)
+    _bind(message, first)
+    held = []
+    real_lock, real_move = mail_delivery.exclusive_lock, field._outbox.move_in_flight
+
+    def lock(path, *args, **kwargs):
+        context = real_lock(path, *args, **kwargs)
+
+        class Held:
+            def __enter__(self):
+                context.__enter__()
+                held.append(path)
+
+            def __exit__(self, *exc):
+                held.remove(path)
+                return context.__exit__(*exc)
+        return Held()
+
+    def move(*args, **kwargs):
+        assert held == [field._outbox.lock], held
+        return real_move(*args, **kwargs)
+
+    monkeypatch.setattr(mail_delivery, 'exclusive_lock', lock)
+    monkeypatch.setattr(field._outbox, 'move_in_flight', move)
+    _publish(field, 'codex-reporter-b', message)
+    assert _in_flight(field) == [('pending', 'codex-reporter-b', first['outbox_id'])]
+
+
+@pytest.mark.parametrize('order', ['claim_first', 'adopt_first'])
+def test_an_adoption_racing_a_claim_leaves_exactly_one_row(tmp_path, order):
+    """D1 on the real store: leased by its publisher, or pending under the adopter; never both, never neither."""
+    from test_w943_mailbox_reconcile_per_owner import A1, B1
+    from test_w943_mailbox_reconcile_per_owner import field as field_fixture
+
+    field = field_fixture.__wrapped__(tmp_path)
+    message, first, before = _overdue_row(field, A1, mail_delivery.ADOPT_AFTER_SECONDS + 1)
+    _bind(message, first)
+    if order == 'claim_first':
+        claimed = field.pull_outbox(relay_id='relay-a1', worker_name=A1, project_ref=PROJECT)
+        _publish(field, B1, message)
+        assert [row['outbox_id'] for row in claimed] == [first['outbox_id']]
+        assert _in_flight(field) == [('leased', A1, first['outbox_id'])]
+    else:
+        _publish(field, B1, message)
+        assert field.pull_outbox(relay_id='relay-a1', worker_name=A1, project_ref=PROJECT) == []
+        [sent] = field.pull_outbox(relay_id='relay-b1', worker_name=B1, project_ref=PROJECT)
+        assert _in_flight(field) == [('leased', B1, first['outbox_id'])]
+        # D4/D7: the publication B's channel sends is byte for byte the one A would have sent.
+        assert sent['payload'] == before['payload'] and sent['content_hash'] == before['content_hash']
+
+
+def test_the_adoption_rule_itself_never_moves_a_host_local_batch(tmp_path):
+    """D7 at the rule: a batch with any host-local member stays in its author's folder, however overdue."""
+    field = _field(tmp_path)
+    _message, first, row = _overdue_row(field, 'codex-author', 10 * mail_delivery.ADOPT_AFTER_SECONDS, local=True)
+    path = next(path for path in field._outbox.in_flight('pending') if path.stem == first['outbox_id'])
+    kept = mail_delivery._adopt_orphaned(field, field._outbox, path, row, reporter='codex-reporter-b')
+    assert kept['worker_name'] == 'codex-author'
+    assert _in_flight(field) == [('pending', 'codex-author', first['outbox_id'])]
