@@ -58,8 +58,11 @@ time it was observed:
   directly to run `pb worker workspace --sweep`. It then either records each
   finished tree with `pb worker workspace --end --path <tree>` (or registers a
   live one), or moves evidence it keeps into a scratch run.
-- **A host below its free-disk threshold** (`disk_alert_free_percent`): ask
-  every agent on that host to sweep, starting with the largest workspace.
+- **A host below its free-disk threshold** (`disk_alert_free_percent`): you
+  hear of it only when every owner of the agents there shared its low-disk
+  alert with the project (W991); otherwise only those owners are told. When
+  you get it, ask every agent on that host to sweep, starting with the largest
+  workspace.
 - **"sweep not reported", or a sweep time older than a day:** ask that agent
   for a fresh `--sweep`. A missing count is unknown, never zero.
 

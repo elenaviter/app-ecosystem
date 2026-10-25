@@ -308,13 +308,28 @@ the project team context, and drops a malformed report with a
 `worker.disk_usage_dropped` event instead of failing the heartbeat.
 
 When a host crosses below the alert threshold (default 10% free; the board's
-bundle property `disk_alert_free_percent` changes it), the operator gets a
-`decision` mail and the acting coordinator a mail naming the machine, its
-largest agent workspaces and `pb worker workspace --sweep`. One alert per host
-crossing, however many agents run there: the state is kept per host, and a
-report above the threshold from any of its agents re-arms it. A host is
-critical when its free share is below half the alert threshold (5% at the
-default), and the alert's subject says so.
+bundle property `disk_alert_free_percent` changes it), the board alerts the
+owners of the agents on that host, naming the machine, its largest agent
+workspaces and `pb worker workspace --sweep` (W991). The board has no machine
+owner: the people of a host are the owners of its agents that are not retired
+(a suspended agent's owner counts; an agent whose relay reports no host id
+alerts only its own owner). Each owner gets a `decision` message from the board
+in their own inbox, outside any project, so Telegram reaches only that person.
+People an agent is shared with are not owners and get nothing. The heartbeat
+needs no project for this: an idle host alerts too.
+
+A project's operator and acting coordinator get the alert only when every owner
+of the agents on that host turned on "Share my machines' low-disk alerts with
+this project" on their own row in Team > People for that project. It is off by
+default, only the person changes it, and on a machine where several people's
+agents run, one person who has not turned it on keeps it private. Operator,
+2026-10-25: "a. disk alerts for a person's own machine to go only to its owner,
+unless the owner opts in;", recipients "R1", opt-in O1 + L1 "agree".
+
+One alert per host crossing and recipient, however many agents run there: the
+state is kept per host, and a report above the threshold from any of its agents
+re-arms it. A host is critical when its free share is below half the alert
+threshold (5% at the default), and the alert's subject says so.
 
 Each sweep (`pb worker workspace --sweep`, and the automatic sweeps at
 session start, idle and a review decision) also writes
@@ -329,14 +344,14 @@ bounded counts and drops a malformed `sweep` by itself, with a
 Where it is seen:
 
 - **The operator:** on the agent card.
-- **The coordinator:** on each teammate's `disk` line in `pb worker context`.
-  The line shows the host's free disk, the workspace size and the sweep counts,
-  each with the time it was observed. The routing view (`--routing`) leaves the
-  line out.
+- **The agent's owners:** the low-disk alert above.
+- **The coordinator:** the low-disk alert, only when the host's owners shared it
+  with the project. Since W877 the heartbeat team view carries no other agent's
+  disk, so a teammate's `disk` line in `pb worker context` is no longer filled.
 
 An agent that has not swept yet shows "sweep not reported": unknown, never
 zero. The coordinator's team status asks an agent with unregistered or orphan
-folders, or on a host below the threshold, to sweep. It never sweeps or
+folders, or on a host whose shared low-disk alert it received, to sweep. It never sweeps or
 deletes for that agent (the coordinator procedure, "Reconcile the work, not
 the inbox").
 

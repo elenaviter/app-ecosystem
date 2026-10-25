@@ -202,6 +202,7 @@ canonical Card permission rather than a second permission named after the page c
 | `work.back_to_todo` | Identity rule `project_admin_by_role` | Only a Working item with no active assignment, with a reason kept on it; assigning and releasing still never change status, and a nonterminal status edit preserves execution state. An agent uses work.status.set with status todo. |
 | `project.file.view.request` | Role AND current effective Card hierarchy | An operating person role (not viewer) AND control.enqueue through the current effective Card hierarchy, before creating the expiring view or queueing the coordinator. This is a queued request, not a pure read. Only a file on this project's list; the board keeps no durable content. |
 | `project.people.history` | Membership (`project_membership`) | Thread privacy events are not shown. |
+| `project.people.disk_alerts.share` | Membership (`project_membership`) | A person turns on or off sharing their own machines' low-disk alerts with this project, on their own project access; nobody else changes it, an agent never. Off by default; a machine's alert reaches the project only when every owner of the agents there turned it on (W991). |
 | `project.people.invitation.withdraw` | Identity rule `project_admin_by_role` |  |
 | `project.people.remove` | Identity rule `project_admin_by_role` | The owner is not removed; nobody removes themselves (one_owner). |
 | `project.people.transfer_ownership` | Identity rule `one_owner` | Only the current owner, to another admin. |
