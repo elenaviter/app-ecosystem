@@ -191,9 +191,20 @@ under `connections.delegated_credentials.admission.services` lists
 Hub descriptor template. Your platform account must be allowed to approve
 management grants; a deployment administrator is.
 
-1. **Run the CLI.** Install it with `uv tool install connection-hub-cli`. If
-   that package is not published for your platform, run it from source at the
-   revision your Connection Hub runs:
+1. **Run the CLI.** Once the release is published, install it from PyPI:
+
+   ```bash
+   uv tool install connection-hub-cli
+   connection-hub --version
+   ```
+
+   This flow uses `connection-hub-cli` 2026.10.25.0200 or later, which installs
+   `kdcube-cli` 2026.10.25.0130 or later and the App Ecosystem packages at
+   2026.10.25.0100 or later. The deployment must also run the Connection Hub
+   app source from that App Ecosystem release: the hosted app supplies the
+   authorization-code exchange fix. Check the CLI version before continuing.
+   To use an unpublished revision, run both CLIs from source at the revisions
+   your deployment runs:
 
    ```bash
    CH() { uvx \
@@ -204,9 +215,10 @@ management grants; a deployment administrator is.
    ```
 
    Take both packages from source, at the App Ecosystem and KDCube revisions
-   your deployment runs: the secret consent is handled in `kdcube-cli`, and the
-   `kdcube-cli` on PyPI before 2026.10.23.1100 does not have it (it answers
-   `management_recovery_invalid` at the consent). Every command below works the
+   your deployment runs: the secret consent is handled in `kdcube-cli`, whose
+   source version must satisfy the Connection Hub CLI's dependency floor.
+   From `connection-hub-cli` 2026.10.25.0200 on, that means a KDCube revision
+   carrying `kdcube-cli` 2026.10.25.0130 or later. Every command below works the
    same with `connection-hub` or `CH`.
 
 2. **Select the deployment by its public address.** Use the address the
