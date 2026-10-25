@@ -1,7 +1,8 @@
 product:
   id: connection-hub
-  ref: "2026.10.25.0100"
+  ref: "2026.10.25.0200"
   description: |
+    - connection-hub-cli 2026.10.25.0200 is a separate CLI release; the connection-hub library stays at 2026.10.25.0100. The CLI requires kdcube-cli 2026.10.25.0130 or later and the 2026.10.25.0100 App Ecosystem packages. Secret-management admission can request consent for an exact secret, open its approval page, wait on the controlling terminal when input is piped, and retry the same operation. The README describes the coordinated release requirements and distinguishes the hosted Hub authorization-code fix from CLI installation.
     Requested coverage since 2026.10.18.1804.
 
     New changes since the PB set published on 19 October at 22:00 Berlin time:
@@ -46,9 +47,9 @@ components:
     distribution: connection-hub-cli
     import_name: connection_hub_cli
     path: products/connection-hub/packages/connection-hub-cli
-    version: "2026.10.25.0100"
+    version: "2026.10.25.0200"
     version_source: products/connection-hub/packages/connection-hub-cli/pyproject.toml
     workflow: .github/workflows/publish-python-package.yml
 
 config:
-  version: "2026.10.25.0100"
+  version: "2026.10.25.0200"
