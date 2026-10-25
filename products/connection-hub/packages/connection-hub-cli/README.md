@@ -172,10 +172,9 @@ connection-hub secrets host delete platform.services.brave.api_key --scope platf
 `set` uses a hidden prompt by default. `get` writes a `0600` local file on
 POSIX, uses the selected parent directory's ACL on Windows, and reports
 disclosure metadata without printing the value. Connection Hub checks the
-exact target and operation on every call. Its Card editor can grant one exact
-key (`Once` or `Always`), a namespace such as
-`platform.services.brave.*` (`Always`), or an entire platform, bundle, or user
-scope (`Always`). Before requesting disclosure, `get` rejects a
+exact target and operation on every call. The CLI's Card gains each exact
+key through its consent, or in advance in the Card editor (**Once** or **Every
+time**; see the step-by-step below). Before requesting disclosure, `get` rejects a
 missing parent, an existing destination without `--replace`, or a non-file
 replacement target. The atomic writer repeats these checks when publishing so
 a filesystem race cannot silently clobber another path.
@@ -192,16 +191,35 @@ under `connections.delegated_credentials.admission.services` lists
 Hub descriptor template. Your platform account must be allowed to approve
 management grants; a deployment administrator is.
 
-1. **Run the CLI.** Install it with `uv tool install connection-hub-cli`. If
-   that package is not published for your platform, run it from source at the
-   revision your Connection Hub runs:
+1. **Run the CLI.** Once the release is published, install it from PyPI:
 
    ```bash
-   CH() { uvx --from "git+https://github.com/elenaviter/app-ecosystem@<commit>#subdirectory=products/connection-hub/packages/connection-hub-cli" connection-hub "$@"; }
+   uv tool install connection-hub-cli
+   connection-hub --version
+   ```
+
+   This flow uses `connection-hub-cli` 2026.10.25.0200 or later, which installs
+   `kdcube-cli` 2026.10.25.0130 or later and the App Ecosystem packages at
+   2026.10.25.0100 or later. The deployment must also run the Connection Hub
+   app source from that App Ecosystem release: the hosted app supplies the
+   authorization-code exchange fix. Check the CLI version before continuing.
+   To use an unpublished revision, run both CLIs from source at the revisions
+   your deployment runs:
+
+   ```bash
+   CH() { uvx \
+     --from "git+https://github.com/elenaviter/app-ecosystem@<app-ecosystem commit>#subdirectory=products/connection-hub/packages/connection-hub-cli" \
+     --with "git+https://github.com/kdcube/kdcube@<kdcube commit>#subdirectory=app/ai-app/src/kdcube-ai-app/kdcube_cli" \
+     connection-hub "$@"; }
    CH --version
    ```
 
-   Every command below works the same with `connection-hub` or `CH`.
+   Take both packages from source, at the App Ecosystem and KDCube revisions
+   your deployment runs: the secret consent is handled in `kdcube-cli`, whose
+   source version must satisfy the Connection Hub CLI's dependency floor.
+   From `connection-hub-cli` 2026.10.25.0200 on, that means a KDCube revision
+   carrying `kdcube-cli` 2026.10.25.0130 or later. Every command below works the
+   same with `connection-hub` or `CH`.
 
 2. **Select the deployment by its public address.** Use the address the
    deployment's OAuth issuer is configured for. A local workdir or `localhost`
@@ -219,9 +237,8 @@ management grants; a deployment administrator is.
    connection-hub host authorize
    ```
 
-   This gives the CLI a Card for the deployment resource only. Secrets are
-   added to that Card one key, namespace or scope at a time, when you first use
-   them.
+   This gives the CLI a Card for the deployment resource only. Exact secrets
+   are added to that Card one at a time, when you first use them.
 
 4. **Set the secret.** Pass the value on standard input so it never appears on
    the command line or in your history:
@@ -234,8 +251,11 @@ management grants; a deployment administrator is.
    The first request for a key the Card does not hold yet answers with a
    consent. The CLI opens Connection Hub's grant page for that exact secret and
    operation, and asks you, on your terminal, to press Enter once you have
-   approved it. Choose `Once` for this request only, or `Always` for later
-   requests too. The CLI then retries the identical request and prints a
+   approved it. On the page choose **Once** (this request only) or **Every
+   time** (this operation on this secret from now on), then press the button
+   that reads **Allow `<operation>` once** (or **Allow `<operation>` always**
+   after choosing **Every time**). Nothing else on the page needs to change.
+   The CLI then retries the identical request and prints a
    receipt with no value. With `--no-open --no-wait`, it prints the consent
    instead (`recovery.authorization_url`); open it, approve, and rerun the same
    command with the same `--invocation-id`.
@@ -255,11 +275,18 @@ management grants; a deployment administrator is.
    It reports that the secret exists and which provider holds it, never the
    value.
 
-Secret operations use the Card's `Once`/`Always` policy on exact or broad
-secret resources; an administrator can also grant a key, namespace or scope in
-advance from the Card editor (Connection Hub, Delegated by KDCube, the
-Connection Hub CLI Card). The Card is the live authority, so any grant applies
-to the next request without authorizing again.
+Secret operations use the Card's **Once** / **Every time** policy. A platform
+administrator can also add an exact secret to the CLI's Card in advance, in the
+Card editor (Connection Hub, Delegated by KDCube, the Connection Hub CLI Card):
+add the secret with its operations and **Once** or **Every time**, then save.
+This works for a Card entered through the deployment door, which is what
+`host authorize` creates, and for a Card entered through one exact secret. The
+editor adds exact secrets only on such a Card. A secret selector (a `*` scope or
+key) is refused with `oauth_client_resource_unreachable`, and so is a secret on a
+Card entered through any other door. The Card is the live authority, so a grant
+applies to the next request without authorizing again. The full admin path,
+with troubleshooting, is KDCube's
+[KDCube Admin: Manage A Secret With The Connection Hub CLI](https://github.com/kdcube/kdcube/blob/main/app/ai-app/docs/service/secrets/manage-a-secret-with-connection-hub-cli-README.md).
 
 Descriptor export is an administrator-performed path with independent authority:
 
@@ -321,8 +348,9 @@ connection-hub secrets host import \
 Import is an upsert of every present platform, bundle, and user value. Omitted
 keys remain unchanged; deletion is always an explicit `secrets host delete`.
 The CLI stops on the first denied target and reports how many prior idempotent
-upserts completed. Grant an exact key as `Once` or `Always`, or grant a
-namespace/scope as `Always`, in the same live CLI Card before retrying. Secret
+upserts completed. Grant the denied exact key (**Once** or **Every time**) on
+the same live CLI Card, through its consent or the Card editor, before
+retrying. Secret
 values remain absent from command arguments, output, state metadata, and logs.
 
 The built-in `session_confirmation` assurance proves a current KDCube admin
