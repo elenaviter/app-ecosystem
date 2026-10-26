@@ -16,6 +16,8 @@ their pages, browse folders and explore a graph of related notes. A project
 offers only the corpora its administrator has enabled. Project Board and
 KDCube knowledge are separate choices: switching the corpus starts a fresh
 view, and results and graphs belong to the selected corpus.
+The Knowledge button appears only when the Board reports an enabled binding
+for this project and your current membership.
 
 Search returns up to 20 matches with a title, summary and snippet. Open a
 match to read its page and follow its Related links. Related shows outgoing
