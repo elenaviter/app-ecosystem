@@ -322,6 +322,21 @@ def replace_description(text: str, notes: str) -> str:
     raise ReleaseError("release record has no `  description: |` block")
 
 
+def set_record_ref(text: str, new: str) -> str:
+    """Name `new` as the record's release: its top `ref`, and `config.version` where present.
+
+    A separate Connection Hub CLI release moves the product record's ref and
+    config to the CLI's version, which is not the set's current one, so the
+    text replacement alone would leave them behind (W994). The CLI's own
+    `cli_package` version stays: the CLI is released on its own.
+    """
+
+    text, refs = re.subn(r'^(  ref: )"[^"]*"$', rf'\1"{new}"', text, count=1, flags=re.M)
+    if refs != 1:
+        raise ReleaseError("release record has no top-level `  ref:`")
+    return re.sub(r'^(config:\n  version: )"[^"]*"$', rf'\1"{new}"', text, count=1, flags=re.M)
+
+
 def apply_version(root: Path, current: str, new: str, notes: str) -> list[Path]:
     """Set `new` everywhere the set names `current`, and the notes in each record."""
 
@@ -332,7 +347,8 @@ def apply_version(root: Path, current: str, new: str, notes: str) -> list[Path]:
         path.write_text(path.read_text(encoding="utf-8").replace(current, new), encoding="utf-8")
     for record in RELEASE_RECORDS:
         path = root / record
-        path.write_text(replace_description(path.read_text(encoding="utf-8"), notes), encoding="utf-8")
+        text = set_record_ref(replace_description(path.read_text(encoding="utf-8"), notes), new)
+        path.write_text(text, encoding="utf-8")
         if path not in changed:
             changed.append(path)
     left = version_files(root, current)

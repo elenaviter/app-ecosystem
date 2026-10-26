@@ -3,7 +3,11 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 from project_board.client.mail_history import MailHistoryStore
+
+pytestmark = pytest.mark.usefixtures("history_now")
 
 
 def test_terminal_mail_is_partitioned_by_project_agent_and_hour(tmp_path: Path):

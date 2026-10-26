@@ -3,12 +3,16 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 from project_board.client.history_migration import migrate_flat_history
 from project_board.client.journal_receipt_store import JournalReceiptStore
 from project_board.client.keyed_history import KeyedHistoryStore
 from project_board.client.mail_history import MailHistoryStore
 from project_board.client.operation_ledger import LocalOperationLedger
 from project_board.client.scope_lease_store import ScopeLeaseStore
+
+pytestmark = pytest.mark.usefixtures("history_now")
 
 
 def test_flat_history_migration_is_bounded_resumable_and_keeps_bad_input(tmp_path: Path):

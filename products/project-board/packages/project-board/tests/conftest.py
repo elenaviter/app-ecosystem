@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+from datetime import datetime, timezone
 
 import pytest
 
@@ -66,3 +67,28 @@ def _no_session_claude_profile(monkeypatch):
     """
 
     monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
+
+
+HISTORY_NOW = datetime(2026, 9, 25, 6, 0, tzinfo=timezone.utc)
+
+
+@pytest.fixture
+def history_now(monkeypatch):
+    """Pin the history stores' clock to the tests' fixed record dates.
+
+    Hour-partitioned reads only look back the retention window from now, so a
+    test that writes 2026-09-25 records and reads them with the wall clock
+    starts failing once that date is older than the window (W994).
+    """
+
+    class _Pinned(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return HISTORY_NOW if tz is None else HISTORY_NOW.astimezone(tz)
+
+    import project_board.client.keyed_history as keyed_history
+    import project_board.client.local_store as local_store
+
+    monkeypatch.setattr(local_store, "datetime", _Pinned)
+    monkeypatch.setattr(keyed_history, "datetime", _Pinned)
+    return HISTORY_NOW
