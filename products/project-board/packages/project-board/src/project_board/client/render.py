@@ -307,6 +307,10 @@ def _render_result(result: Any, flags: list[str]) -> list[str]:
         return _render_item_read(result)
     if _is_workspace_sweep(result):
         return _render_workspace_sweep(result)
+    if _is_workspace_declarations(result):
+        return _render_workspace_declarations(result)
+    if _is_scratch_list(result):
+        return _render_scratch_list(result)
     if _is_worker_context(result):
         return _render_worker_context(result)
     if _is_journal_search(result):
@@ -776,6 +780,175 @@ def _render_workspace_sweep_detail(result: Mapping[str, Any]) -> list[str]:
     rest = {key: value for key, value in result.items() if key not in handled}
     if rest:
         lines.extend(_flatten(rest, prefix=""))
+    lines.append(_FULL_DETAIL_LINE)
+    return lines
+
+
+# Declarations and scratch runs shown in brief; --detail shows up to the
+# larger bound, one line each, and the JSON keeps every record.
+_DECLARATION_ROWS = 20
+_ENDED_DECLARATION_ROWS = 5
+_DETAIL_ROWS = 200
+
+_WORKSPACE_DECLARATION_KEYS = frozenset({"worker", "workspaces", "declared", "ended", "cleared", "detail", "filter"})
+_SCRATCH_LIST_KEYS = frozenset({"workspace", "runs", "loose", "detail", "filter"})
+
+
+def _is_workspace_declarations(result: Mapping[str, Any]) -> bool:
+    return (
+        isinstance(result.get("workspaces"), list)
+        and "worker" in result
+        and set(result) <= _WORKSPACE_DECLARATION_KEYS
+    )
+
+
+def _declaration_moment(row: Mapping[str, Any]) -> str:
+    return max(str(row.get("declared_at") or ""), str(row.get("ended_at") or ""))
+
+
+def _declaration_line(row: Mapping[str, Any]) -> str:
+    facts = [
+        "ended" if row.get("ended_at") else "active",
+        str(row.get("kind") or "-"),
+        f"item {row.get('item') or '-'}",
+        f"repository {row.get('repository_ref') or '-'}",
+    ]
+    if row.get("ended_at"):
+        facts.append(f"ended {row['ended_at']}: {_preview(row.get('end_reason'), maximum_bytes=80) or '-'}")
+    else:
+        facts.append(f"declared {row.get('declared_at') or '-'}")
+    return f"--- {' · '.join(facts)} · {row.get('path') or '-'}"
+
+
+def _render_workspace_declarations(result: Mapping[str, Any]) -> list[str]:
+    """Counts, the changed record, and the newest declarations, never the whole history (W992).
+
+    Observed 2026-10-25: `workspace --list` printed 388 historical declarations,
+    55,030 tokens, and `--end` printed them all again after ending one. A
+    mutation now shows what it changed; the list shows the active trees and
+    the newest ended ones. `--item` or `--path` narrows the read, `--detail`
+    gives one line per declaration, and the JSON keeps every record.
+    """
+
+    rows = [row for row in result.get("workspaces") or [] if isinstance(row, Mapping)]
+    ordered = sorted(rows, key=_declaration_moment, reverse=True)
+    active = [row for row in ordered if not row.get("ended_at")]
+    ended = [row for row in ordered if row.get("ended_at")]
+    filters = result.get("filter") if isinstance(result.get("filter"), Mapping) else {}
+    narrowed = " · ".join(f"{key} {value}" for key, value in filters.items() if _present(value))
+    lines = [
+        "workspaces: {} declared · active {} · ended {}{}".format(
+            len(rows), len(active), len(ended), f" · filter {narrowed}" if narrowed else ""
+        )
+    ]
+    mutation = False
+    if isinstance(result.get("declared"), Mapping):
+        mutation = True
+        lines.append("declared:")
+        lines.extend(_flatten(result["declared"], prefix="  "))
+    if "cleared" in result:
+        mutation = True
+        lines.append(f"cleared: {result['cleared']} declaration(s) forgotten")
+    if "ended" in result:
+        mutation = True
+        count = int(result.get("ended") or 0)
+        lines.append(f"ended: {count} declaration(s)")
+        # The rows this call ended carry the newest end times.
+        just_ended = sorted(ended, key=lambda row: str(row.get("ended_at") or ""), reverse=True)[:count]
+        shown, total = _bounded(just_ended, maximum=_DECLARATION_ROWS)
+        lines.extend(_declaration_line(row) for row in shown)
+        _note_omitted(lines, "ended now", shown=len(shown), total=total)
+    if mutation:
+        lines.append("list: pb worker workspace --list (bounded); --list --item <Wn> or --path <tree> for one")
+        lines.append(_FULL_DETAIL_LINE)
+        return lines
+    if result.get("detail"):
+        shown, total = _bounded(ordered, maximum=_DETAIL_ROWS)
+        lines.extend(_declaration_line(row) for row in shown)
+        _note_omitted(lines, "declarations", shown=len(shown), total=total)
+        lines.append(_FULL_DETAIL_LINE)
+        return lines
+    shown, total = _bounded(active, maximum=_DECLARATION_ROWS)
+    lines.extend(_declaration_line(row) for row in shown)
+    _note_omitted(lines, "active declarations", shown=len(shown), total=total)
+    shown_ended, ended_total = _bounded(ended, maximum=_ENDED_DECLARATION_ROWS)
+    if shown_ended:
+        lines.append(f"newest ended: {len(shown_ended)} of {ended_total}")
+        lines.extend(_declaration_line(row) for row in shown_ended)
+    lines.append("detail: --item <Wn> or --path <tree> narrows the list; --detail for a line per declaration")
+    lines.append(_FULL_DETAIL_LINE)
+    return lines
+
+
+def _is_scratch_list(result: Mapping[str, Any]) -> bool:
+    return (
+        isinstance(result.get("runs"), list)
+        and isinstance(result.get("loose"), list)
+        and "workspace" in result
+        and set(result) <= _SCRATCH_LIST_KEYS
+    )
+
+
+def _scratch_run_line(run: Mapping[str, Any]) -> str:
+    keep = [str(reason) for reason in run.get("keep") or []]
+    more = f" (+{len(keep) - 1} more)" if len(keep) > 1 else ""
+    return "--- run {} · item {} · {} · created {} · {}{}".format(
+        run.get("action") or "-",
+        run.get("item") or "-",
+        _preview(run.get("purpose"), maximum_bytes=80) or "-",
+        run.get("created_at") or "-",
+        run.get("path") or "-",
+        f" · keep: {_preview(keep[0], maximum_bytes=120)}{more}" if keep else "",
+    )
+
+
+def _render_scratch_list(result: Mapping[str, Any]) -> list[str]:
+    """Counts and the newest runs and loose entries, not every run's manifest (W992).
+
+    Observed 2026-10-25: `scratch --list` printed 545 runs and 196 loose entries,
+    85,048 tokens. The brief form names the newest; `--item` or `--run`
+    narrows the read (one `--run` is printed whole), `--detail` gives one
+    line per run and loose entry, and the JSON keeps every record.
+    """
+
+    runs = sorted(
+        (run for run in result.get("runs") or [] if isinstance(run, Mapping)),
+        key=lambda run: str(run.get("created_at") or ""),
+        reverse=True,
+    )
+    loose = sorted(
+        (entry for entry in result.get("loose") or [] if isinstance(entry, Mapping)),
+        key=lambda entry: float(entry.get("age_hours") or 0) if isinstance(entry.get("age_hours"), (int, float)) else 0.0,
+    )
+    removable = [run for run in runs if run.get("action") == "remove"]
+    filters = result.get("filter") if isinstance(result.get("filter"), Mapping) else {}
+    narrowed = " · ".join(f"{key} {value}" for key, value in filters.items() if _present(value))
+    lines = [
+        "scratch: {} · runs {} · keep {} · remove {} · loose {}{}".format(
+            result.get("workspace") or "-", len(runs), len(runs) - len(removable), len(removable), len(loose),
+            f" · filter {narrowed}" if narrowed else "",
+        )
+    ]
+    if filters.get("run") and runs:
+        for run in runs:
+            lines.append(f"run: {run.get('path') or '-'}")
+            lines.extend(_flatten({key: value for key, value in run.items() if key != "path"}, prefix="  "))
+        lines.append(_FULL_DETAIL_LINE)
+        return lines
+    maximum = _DETAIL_ROWS if result.get("detail") else _DECLARATION_ROWS
+    shown, total = _bounded(runs, maximum=maximum)
+    lines.extend(_scratch_run_line(run) for run in shown)
+    _note_omitted(lines, "scratch runs", shown=len(shown), total=total)
+    if loose:
+        shown_loose, loose_total = _bounded(loose, maximum=maximum)
+        lines.extend(
+            f"loose: {entry.get('kind') or '-'} · age {entry.get('age_hours', '-')} h · {entry.get('path') or '-'}"
+            for entry in shown_loose
+        )
+        _note_omitted(lines, "loose entries", shown=len(shown_loose), total=loose_total)
+        lines.append("loose entries: move each into a run with pb worker scratch --new")
+    if not result.get("detail"):
+        lines.append("detail: --item <Wn> or --run <run> narrows the list; --detail for a line per run and loose entry")
     lines.append(_FULL_DETAIL_LINE)
     return lines
 
