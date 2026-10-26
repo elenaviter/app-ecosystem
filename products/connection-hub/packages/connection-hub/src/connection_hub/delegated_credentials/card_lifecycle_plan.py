@@ -1351,6 +1351,8 @@ async def plan_card_lifecycle(
         refused = {"ok": False, "error": getattr(exc, "reason", str(exc)), "status": 409}
         if getattr(exc, "grants", None):  # W941: the refused permission names, for STAGE's named refusal
             refused["grants"] = list(exc.grants)
+        if getattr(exc, "operations", None):  # W997: each action and the grants it lacks, for STAGE
+            refused["operations"] = list(exc.operations)
         return refused
     except CatalogUnavailable as exc:
         return {"ok": False, "error": "delegated_catalog_unavailable",
