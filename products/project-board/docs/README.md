@@ -19,6 +19,7 @@ see_also:
   - ./coordinator.md
   - ./telegram.md
   - ./github.md
+  - ./knowledge.md
   - ./topology-and-flows.md
   - ./architecture.md
   - ./flows.md
@@ -61,6 +62,8 @@ only this repository can open every page.
 - [Cards](cards.md): the project Control Card, a person's Control Card and My
   Card, agent Cards, who edits which and where, and how the project Control
   Card combines with an agent's Card (access rule AND or OR, fail closed).
+- [Knowledge on the Board](knowledge.md): search maintained notes, open
+  pages, browse folders and explore related notes within an enabled corpus.
 - [Architecture](architecture.md): the pieces (the board served by a KDCube
   deployment, the `pb` client and the host relay, Connection Hub Cards,
   Telegram) and how every worker operation reaches the board through the

@@ -182,6 +182,10 @@ canonical Card permission rather than a second permission named after the page c
 | `worker.shares` | Identity rule `worker_pool_is_its_grantors` | The agent's owner reads its shares in Connection Hub. |
 | `worker.share.candidates` | Identity rule `worker_pool_is_its_grantors` | Reads people on the caller's operating projects. |
 | `board.get` | Membership (`project_membership`) |  |
+| `knowledge.search` | Membership (`project_membership`) | Read-only ranked search in an explicitly enabled project corpus; Board app authority, separate from optional Docs Card selections. |
+| `knowledge.read` | Membership (`project_membership`) | Read one authorized maintained note in the selected project corpus; hidden and absent refs share one result. |
+| `knowledge.list` | Membership (`project_membership`) | Page authorized immediate knowledge-folder children; the initial root call resolves the configured enabled default corpus. |
+| `knowledge.neighbors` | Membership (`project_membership`) | Explore a bounded note neighborhood only when the configured knowledge principal also has graph-tool permission. |
 | `timeline.list` | Membership (`project_membership`) | Inbox rows only for the people who read the inbox; a private thread only for its person. |
 | `workers.list` | Membership (`project_membership`) |  |
 | `workers.archive` | Membership (`project_membership`) | Your own retired agents, read-only; a platform admin may ask for everyone's. |
