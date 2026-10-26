@@ -104,6 +104,12 @@ def _run_dir(workspace: Path | str, run: Path | str) -> Path:
     return path
 
 
+def run_folder(workspace: Path | str, run: Path | str) -> Path:
+    """The run folder ``run`` names, resolved; refuses anything that is not scratch/<item>/<run>."""
+
+    return _run_dir(workspace, run).resolve()
+
+
 def _read_manifest(run: Path) -> dict[str, Any]:
     manifest = read_json(run / MANIFEST_NAME, required=True)
     if manifest.get("schema") != SCHEMA:

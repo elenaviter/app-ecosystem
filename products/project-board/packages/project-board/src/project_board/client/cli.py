@@ -1391,18 +1391,18 @@ def build_parser() -> argparse.ArgumentParser:
     _agent_identity(command)
     command.add_argument("--assignment-ref", default="", help="The assignment (work:assignment:...) the worktree serves.")
     command.add_argument("--repository", default="", help="The repository ref the assignment binds, for example repo:app-ecosystem/products.")
-    command.add_argument("--path", default="", help="The worktree directory on this host.")
+    command.add_argument("--path", default="", help="The worktree directory on this host. With --list: only that tree's declarations.")
     command.add_argument("--clear", action="store_true", help="Forget the declaration(s) for --assignment-ref (and --repository when given).")
-    command.add_argument("--list", action="store_true", help="Show this session's declared worktrees.")
+    command.add_argument("--list", action="store_true", help="Show this session's declared worktrees: counts and the newest in brief, every record in JSON.")
     # W423: every tree is registered against its job and swept when the job ends.
     command.add_argument("--kind", default="implementation", choices=["implementation", "review"], help="What the tree serves; a review tree names the reviewed item's work ref as --assignment-ref.")
-    command.add_argument("--item", default="", help="The item key the tree serves, for the sweep report.")
+    command.add_argument("--item", default="", help="The item key the tree serves, for the sweep report. With --list: only that item's declarations.")
     command.add_argument("--end", action="store_true", help="Record that the job of --path (or of --assignment-ref) ended, so the sweep may remove it.")
     command.add_argument("--reason", default="", help="With --end: why the job ended (change request closed, released, ...).")
     command.add_argument("--sweep", action="store_true", help="List every tree in this agent's workspace with its state and what --apply would remove.")
     command.add_argument("--apply", action="store_true", help="With --sweep: remove what the last dry run listed as removable and still is; never with force.")
     command.add_argument("--measure", action="store_true", help="With --sweep: also measure each scratch run's size, which reads every file of every run.")
-    command.add_argument("--detail", action="store_true", help="With --sweep: one brief line per tree, run and loose entry, not only the verdict and what would be removed.")
+    command.add_argument("--detail", action="store_true", help="With --sweep: one brief line per tree, run and loose entry, not only the verdict and what would be removed. With --list: one brief line per declaration.")
     command.add_argument("--pin", default="", metavar="CONSUMER", help="With --path: a review or release that still needs this tree; the sweep keeps it.")
     command.add_argument("--unpin", default="", metavar="CONSUMER", help="With --path: that consumer no longer needs this tree.")
     command.add_argument("--generated", default="", metavar="RELATIVE_PATH", help="With --path and --generated-by: an ignored path in this tree that a command makes again; the sweep may let it go.")
@@ -1423,9 +1423,9 @@ def build_parser() -> argparse.ArgumentParser:
     scratch_modes.add_argument("--record", action="store_true", help="Record --file (with --published or --generated-by), --consumer or --consumer-done in --run.")
     scratch_modes.add_argument("--close", action="store_true", help="The job of --run is over: --reason, and --findings where its findings are published.")
     scratch_modes.add_argument("--list", action="store_true", help="Every run and loose root entry, with what the sweep would do.")
-    command.add_argument("--item", default="", help="With --new: the item key the run serves.")
+    command.add_argument("--item", default="", help="With --new: the item key the run serves. With --list: only that item's runs.")
     command.add_argument("--purpose", default="", help="With --new: why the run exists.")
-    command.add_argument("--run", default="", help="The run folder (path, or <item>/<run> under scratch/).")
+    command.add_argument("--run", default="", help="The run folder (path, or <item>/<run> under scratch/). With --list: that run, printed whole.")
     command.add_argument("--file", default="", help="With --record: a file in the run, relative to it.")
     command.add_argument("--published", default="", metavar="REF", help="With --record --file: where its content now lives, repo:<alias>/<path>@<commit>.")
     command.add_argument("--generated-by", default="", metavar="COMMAND", help="With --record --file: the command that makes it again.")
@@ -1433,6 +1433,7 @@ def build_parser() -> argparse.ArgumentParser:
     command.add_argument("--consumer-done", default="", help="With --record: that consumer no longer needs it.")
     command.add_argument("--reason", default="", help="With --close: why the job is over.")
     command.add_argument("--findings", default="", metavar="REF", help="With --close: where the run's findings are published, repo:<alias>/<path>@<commit>.")
+    command.add_argument("--detail", action="store_true", help="With --list: one brief line per run and loose entry, not only the newest.")
 
     command = worker_commands.add_parser(
         "backup",
@@ -6394,7 +6395,21 @@ def _worker_command(args: Any) -> dict[str, Any]:
             )
             return {"worker": identity.worker_name, "ended": ended, "workspaces": field.workspaces(identity.worker_name)}
         if args.list:
-            return {"worker": identity.worker_name, "workspaces": field.workspaces(identity.worker_name)}
+            listed: dict[str, Any] = {"worker": identity.worker_name, "workspaces": field.workspaces(identity.worker_name)}
+            # W992: --item and --path narrow the read; without them the JSON is unchanged.
+            item = str(getattr(args, "item", "") or "").strip()
+            tree = str(getattr(args, "path", "") or "").strip()
+            if item or tree:
+                tree = str(Path(tree).expanduser().resolve()) if tree else ""
+                listed["workspaces"] = [
+                    row for row in listed["workspaces"]
+                    if (not item or str(row.get("item") or "").strip().lower() == item.lower())
+                    and (not tree or str(row.get("path") or "") == tree)
+                ]
+                listed["filter"] = {key: value for key, value in (("item", item), ("path", tree)) if value}
+            if getattr(args, "detail", False):
+                listed["detail"] = True
+            return listed
         if args.clear:
             if not str(args.assignment_ref or "").strip():
                 raise ValueError("--clear needs --assignment-ref")
@@ -8686,11 +8701,26 @@ def _worker_scratch(identity: Any, args: argparse.Namespace) -> dict[str, Any]:
                              reason=args.reason, findings=args.findings)
     protected = [Path(item) for item in getattr(config, "workspace_sweep_protected", ()) or ()]
     runs = scratch.inspect_runs(workspace, worker_name=identity.worker_name, protected=protected)
-    return {
+    listed: dict[str, Any] = {
         "workspace": str(workspace),
         "runs": [run.to_mapping() for run in runs],
         "loose": scratch.loose_entries(workspace),
     }
+    # W992: --item and --run narrow the read; without them the JSON is unchanged.
+    item = str(getattr(args, "item", "") or "").strip()
+    run_arg = str(getattr(args, "run", "") or "").strip()
+    if item or run_arg:
+        run_path = str(scratch.run_folder(workspace, run_arg)) if run_arg else ""
+        listed["runs"] = [
+            row for row in listed["runs"]
+            if (not item or str(row.get("item") or "").strip().lower() == item.lower())
+            and (not run_path or str(Path(str(row.get("path") or "")).resolve()) == run_path)
+        ]
+        listed["loose"] = []
+        listed["filter"] = {key: value for key, value in (("item", item), ("run", run_path)) if value}
+    if getattr(args, "detail", False):
+        listed["detail"] = True
+    return listed
 
 
 def _worker_backup(field: Any, identity: Any, args: argparse.Namespace) -> dict[str, Any]:
