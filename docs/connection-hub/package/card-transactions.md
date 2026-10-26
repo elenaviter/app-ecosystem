@@ -295,6 +295,16 @@ nonce, as other authenticated refusals do; no Card, marker or effect is written.
   to the person. Without names the refusal keeps its fixed `{kind, code,
   status}` shape. Release order: PB must accept the optional field before the
   Hub sends it.
+- **Actions selected without the grants they declare (W997).** STAGE refuses
+  it `invalid_named_service_operation_selection` (409) instead of
+  `edit_invalid`. When the selection lacks grants (for example a Docs action
+  that lists or uploads Drive files, which declares `drive:read` or
+  `drive:write`), the refusal carries one more field, `operations`: one row per
+  such action, `{namespace, operation, grants}`, where `grants` are the names it
+  lacks. Plain names only, rows distinct and sorted, at most 32. PB names each
+  action and what it lacks. An unknown namespace or operation keeps the fixed
+  `{kind, code, status}` shape. Release order: PB must accept the optional
+  field before the Hub sends it.
 - **An invitation's pending Card (`project_invitation_control`).** One
   `creations` entry: `ref`, `kind`, `identity: {invitation_ref, target_email,
   label?, manage_url?}`, `selection` (PB's role preselection, resolved under

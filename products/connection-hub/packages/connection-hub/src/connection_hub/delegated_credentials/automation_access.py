@@ -87,6 +87,7 @@ from connection_hub.delegated_credentials.oauth.store import (
     GrantStoreUnavailable,
 )
 from connection_hub.delegated_credentials.named_service_policy import (
+    NamedServiceOperationsLackGrants,
     as_string_list,
     boundary_permits_operation,
     clean_text,
@@ -5998,11 +5999,18 @@ class AutomationAccessService:
                     ),
                 )
             except ValueError as exc:
-                return ResolvedCardAuthority(error={
+                error = {
                     "ok": False,
                     "error": "invalid_named_service_operation_selection",
                     "message": str(exc),
-                })
+                }
+                if isinstance(exc, NamedServiceOperationsLackGrants):
+                    # W997: each action with the grants it lacks, so the save names them.
+                    error["operations"] = [
+                        {"namespace": namespace, "operation": operation, "grants": list(grants)}
+                        for namespace, operation, grants in exc.operations
+                    ]
+                return ResolvedCardAuthority(error=error)
             named_services = self._merge_named_service_configs(named_services, selected_policy)
         return ResolvedCardAuthority(
             resource_grants=selected_resource_grants,

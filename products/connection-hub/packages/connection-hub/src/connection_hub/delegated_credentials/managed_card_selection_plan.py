@@ -54,6 +54,15 @@ class GrantsNotDelegable(DecisionRefused):
         self.grants = tuple(sorted({str(grant) for grant in (grants or ())}))
 
 
+class NamedServiceOperationsRefused(DecisionRefused):
+    """W997: selected named-service actions whose grants the Card lacks, each with its missing grant names."""
+
+    def __init__(self, operations: Any) -> None:
+        super().__init__("invalid_named_service_operation_selection")
+        self.reason = "invalid_named_service_operation_selection"
+        self.operations = list(operations or ())
+
+
 def _refuse(reason: str) -> DecisionRefused:
     return DecisionRefused(reason)
 
@@ -269,6 +278,9 @@ async def build_managed_card_selection_update(
             _LOGGER.warning("card plan refused grants not delegable: access=%s kind=%s grants=%s",
                             original.access_id, kind, ",".join(sorted(map(str, resolved.error.get("grants") or ()))))
             raise GrantsNotDelegable(resolved.error.get("grants"))  # W941: STAGE names them to the person
+        if code == "invalid_named_service_operation_selection" and resolved.error.get("operations"):
+            # W997: actions selected without their grants; STAGE names each with what it lacks.
+            raise NamedServiceOperationsRefused(resolved.error["operations"])
         raise _refuse(code)
     if resolved.revoke:
         raise _refuse("card_plan_selection_empty")

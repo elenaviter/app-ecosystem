@@ -36,6 +36,19 @@ def as_string_list(value: Any) -> list[str]:
     return out
 
 
+class NamedServiceOperationsLackGrants(ValueError):
+    """Selected named-service operations whose declared grants the selection does not carry.
+
+    ``operations`` holds one ``(namespace, operation, missing_grants)`` row per
+    such operation, sorted, so a refusal can name each action and what it
+    lacks instead of only that the selection was invalid.
+    """
+
+    def __init__(self, message: str, operations: Iterable[tuple[str, str, tuple[str, ...]]]) -> None:
+        super().__init__(message)
+        self.operations = tuple(sorted(operations))
+
+
 def operation_grants(policy: Mapping[str, Any], fallback: Mapping[str, Any]) -> set[str]:
     return set(
         as_string_list(
@@ -179,7 +192,17 @@ def narrow_named_service_config(
         raw_tools = dict(raw_tools or {}) if isinstance(raw_tools, Mapping) else {}
         configured_operations: set[str] = set()
         authorized_operations: set[str] = set()
+        # The grants a requested operation lacks, the smallest set over its tools.
+        missing_grants: dict[str, set[str]] = {}
         narrowed_tools: dict[str, Any] = {}
+
+        def note_missing(operation_value: str, required: set[str]) -> None:
+            if operation_value not in requested:
+                return
+            lacking = required - available_grants
+            known = missing_grants.get(operation_value)
+            if known is None or len(lacking) < len(known):
+                missing_grants[operation_value] = lacking
 
         for tool_name, raw_tool_policy in raw_tools.items():
             if not isinstance(raw_tool_policy, Mapping):
@@ -199,6 +222,7 @@ def narrow_named_service_config(
                         else {}
                     )
                     required = operation_grants(operation_policy, tool_policy)
+                    note_missing(operation_value, required)
                     if operation_value in requested and required.issubset(available_grants):
                         narrowed_operations[operation] = copy.deepcopy(raw_operation_policy)
                         authorized_operations.add(operation_value)
@@ -213,6 +237,7 @@ def narrow_named_service_config(
                 continue
             configured_operations.add(operation_value)
             required = operation_grants(tool_policy, {})
+            note_missing(operation_value, required)
             if operation_value in requested and required.issubset(available_grants):
                 narrowed_tools[tool_name] = copy.deepcopy(raw_tool_policy)
                 authorized_operations.add(operation_value)
@@ -225,9 +250,13 @@ def narrow_named_service_config(
             )
         unauthorized_operations = sorted(requested - authorized_operations)
         if unauthorized_operations:
-            raise ValueError(
+            raise NamedServiceOperationsLackGrants(
                 f"named-service operation(s) lack selected grants for "
-                f"{resource!r}/{namespace}: " + ", ".join(unauthorized_operations)
+                f"{resource!r}/{namespace}: " + ", ".join(unauthorized_operations),
+                [
+                    (namespace, operation, tuple(sorted(missing_grants.get(operation, ()))))
+                    for operation in unauthorized_operations
+                ],
             )
         if narrowed_tools:
             narrowed_policy = copy.deepcopy(dict(raw_policy))
@@ -285,6 +314,7 @@ def named_service_policy_for_resource(
 
 
 __all__ = [
+    "NamedServiceOperationsLackGrants",
     "as_string_list",
     "boundary_permits_operation",
     "clean_text",
