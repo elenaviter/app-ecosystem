@@ -14,7 +14,10 @@ CONNECTION_HUB_PRODUCT = REPOSITORY_ROOT / "products/connection-hub"
 CONNECTION_HUB_ROOT = CONNECTION_HUB_PRODUCT / "packages/connection-hub"
 CONNECTION_HUB_CLI_ROOT = CONNECTION_HUB_PRODUCT / "packages/connection-hub-cli"
 RELEASE_VERSION = "2026.10.25.0100"
-KDCUBE_CLI_VERSION = "2026.09.13.0145"
+# connection-hub-cli is released on its own (W972 C, 25 Oct): a CLI release
+# sets CLI_RELEASE_VERSION; `release-pb prepare` moves only RELEASE_VERSION.
+CLI_RELEASE_VERSION = "2026.10.25.0200"
+KDCUBE_CLI_VERSION = "2026.10.25.0130"
 
 
 def _metadata(root: Path) -> dict:
@@ -52,11 +55,13 @@ def test_published_route_has_one_resolvable_version_chain() -> None:
 
     assert project_board["version"] == RELEASE_VERSION
     assert connection_hub["version"] == RELEASE_VERSION
-    assert connection_hub_cli["version"] == RELEASE_VERSION
-    assert product_release["product"]["ref"] == RELEASE_VERSION
-    assert product_release["config"]["version"] == RELEASE_VERSION
+    assert connection_hub_cli["version"] == CLI_RELEASE_VERSION
+    # The Hub product record names its newest release, the set's or the CLI's.
+    newest = max(RELEASE_VERSION, CLI_RELEASE_VERSION, key=lambda v: tuple(map(int, v.split("."))))
+    assert product_release["product"]["ref"] == newest
+    assert product_release["config"]["version"] == newest
     assert product_release["components"]["python_package"]["version"] == RELEASE_VERSION
-    assert product_release["components"]["cli_package"]["version"] == RELEASE_VERSION
+    assert product_release["components"]["cli_package"]["version"] == CLI_RELEASE_VERSION
     assert project_board_release["package"]["ref"] == RELEASE_VERSION
     assert project_board_release["components"]["python_package"]["version"] == RELEASE_VERSION
 
@@ -110,4 +115,4 @@ def test_published_route_has_one_resolvable_version_chain() -> None:
     ) == RELEASE_VERSION
     assert _module_version(
         CONNECTION_HUB_CLI_ROOT / "src/connection_hub_cli/__init__.py"
-    ) == RELEASE_VERSION
+    ) == CLI_RELEASE_VERSION
