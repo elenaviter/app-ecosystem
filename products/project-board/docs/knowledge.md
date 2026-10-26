@@ -34,8 +34,8 @@ with you reveal no private names or counts.
 Graph exploration starts from one note. Its counter is the number of
 distinct visible neighbors, excluding the selected note itself. The view
 holds up to 35 notes and 200 links, including notes added by expansions.
-When more notes or links exist, the view says it was limited. Relation and
-direction filters select which links to explore. A graph-permission refusal
+When more notes or links exist, the view says it was limited. Relation
+filters select which links to explore. A graph-permission refusal
 leaves search, pages and allowed Related links available.
 
 Long pages can be shortened to fit the reply; a truncation notice makes that
