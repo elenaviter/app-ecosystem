@@ -3,7 +3,11 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from pathlib import Path
 
+import pytest
+
 from project_board.client.keyed_history import KeyedHistoryStore, record_time
+
+pytestmark = pytest.mark.usefixtures("history_now")
 
 
 NOW = datetime(2026, 9, 25, 1, 2, 3, tzinfo=timezone.utc)
