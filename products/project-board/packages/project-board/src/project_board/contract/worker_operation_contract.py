@@ -255,7 +255,9 @@ PROBLEM_BOARD_OPERATION_POLICIES: dict[str, dict[str, Any]] = {
     "project.role.get": {
         "description": (
             "Read an optional project role, such as the knowledge keeper: its "
-            "state, its holder and whether the holder is available."
+            "state, its holder and whether the holder is available, and its "
+            "pending hand-overs 20 at a time (handovers_after pages on, "
+            "handover_work_ref reads one item's)."
         ),
         "grants": ("work:observe",),
     },

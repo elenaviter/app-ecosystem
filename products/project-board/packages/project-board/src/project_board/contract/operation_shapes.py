@@ -444,9 +444,9 @@ PROBLEM_BOARD_OPERATION_SHAPES: dict[str, dict[str, Any]] = {   'project.registe
                                       'payload': {   'principal_key': "the person's principal key "
                                                                       'from the people list',
                                                      'operations': 'operation names'}},
-    'project.role.get': {   'description': "Read an optional project role (knowledge-keeper): its state, holder and the holder's availability.",
+    'project.role.get': {   'description': "Read an optional project role (knowledge-keeper): its state, holder and the holder's availability, and its pending hand-overs 20 at a time, oldest first. pending_handovers.count covers every pending one; pass next_after as handovers_after for the next page, or handover_work_ref for one item's.",
                    'object_ref': 'work:project:<project_id>',
-                   'payload': {'role': 'knowledge-keeper'}},
+                   'payload': {'role': 'knowledge-keeper', 'handovers_after': 'optional: pending_handovers.next_after from the previous page', 'handover_work_ref': "optional: a plan item's ref, to read only its hand-overs"}},
     'project.role.manage': {   'description': "Declare or undeclare an optional project role, or name or clear its holder, under the role's revision; a person only.",
                    'object_ref': 'work:project:<project_id>',
                    'payload': {'role': 'knowledge-keeper', 'expected_revision': 'the role revision you read', 'declared': 'true or false: declare or undeclare (use this or worker_name)', 'worker_name': 'the stable name of an attending agent, or empty to clear (use this or declared)'}},
