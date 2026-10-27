@@ -21,8 +21,8 @@ names are not listed: they open no door (operator, 2026-09-23).
 
 One door is never written anywhere, not even in the private list: the host of
 this machine's selected Problem Board endpoint (a tunnel hostname). The check
-reads it at test time from the `pb` host configuration and refuses it in every
-public page; a failure prints only `file:line`.
+reads it from the `pb` host configuration before per-test host isolation and
+refuses it in every tracked text file; a failure prints only `file:line`.
 """
 
 from __future__ import annotations
@@ -257,8 +257,20 @@ def test_without_the_private_list_the_check_skips_and_a_required_run_fails(monke
     assert _private_names() == frozenset({"zq-probe", "zq-other"})
 
 
-def test_no_tracked_file_names_this_hosts_endpoint() -> None:
-    found = _lines_naming_this_hosts_endpoint()
+@pytest.fixture(scope="session")
+def _host_endpoint_locations() -> list[str] | None:
+    """Read-only hygiene input, captured before function-scoped host isolation.
+
+    Keep only locations, so neither the endpoint nor the host configuration
+    reaches a test's locals, even when pytest prints them with --showlocals.
+    The normal autouse guard still isolates every test's configuration.
+    """
+
+    return _lines_naming_this_hosts_endpoint()
+
+
+def test_no_tracked_file_names_this_hosts_endpoint(_host_endpoint_locations) -> None:
+    found = _host_endpoint_locations
     if found is None:
         if _required():
             pytest.fail("no Problem Board host configuration to read the endpoint from")
