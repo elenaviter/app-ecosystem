@@ -12,6 +12,7 @@ from .google_sheets import (
     bind_service,
     fetch_google_sheets_snapshot,
 )
+from .google_slides import GoogleSlidesService, bind_slides_service, fetch_google_slides_file
 
 __all__ = [
     "GoogleSheetsService",
@@ -22,4 +23,7 @@ __all__ = [
     "fetch_google_docs_export",
     "fetch_google_docs_image",
     "fetch_google_docs_snapshot",
+    "GoogleSlidesService",
+    "bind_slides_service",
+    "fetch_google_slides_file",
 ]

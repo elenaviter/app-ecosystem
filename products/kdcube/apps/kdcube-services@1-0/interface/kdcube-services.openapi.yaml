@@ -63,7 +63,7 @@ x-kdcube-surfaces:
       idempotency: required
   named_service_providers:
     note: Provider availability is deployment and request-context dependent.
-    wired_by_this_app: [conv, mail, slack, sheets, docs]
+    wired_by_this_app: [conv, mail, slack, sheets, docs, slides]
 servers:
   - url: /api/integrations
 tags:
@@ -460,7 +460,7 @@ paths:
   /bundles/{tenant}/{project}/{bundle_id}/public/integration_file_download:
     get:
       tags: [Signed Files]
-      summary: Stream one mail message/attachment, Slack file, Sheets/Docs snapshot, or portable Docs export by signed object ref.
+      summary: Stream a connected-account snapshot, document/presentation export, or slide thumbnail by signed object ref.
       operationId: integration_file_download
       security:
         - SignedDownloadToken: []
@@ -553,7 +553,7 @@ components:
       name: object_ref
       in: query
       required: true
-      description: Exact `staged:`, `mail:`, `slack:`, `sheets:`, `docs:`, or `conv:fi:` object ref bound into the signed token.
+      description: Exact `staged:`, `mail:`, `slack:`, `sheets:`, `docs:`, `slides:`, or `conv:fi:` object ref bound into the signed token.
       schema: { type: string }
   requestBodies:
     OperationEnvelope:
@@ -594,6 +594,14 @@ components:
         "application/vnd.kdcube.sheets.snapshot+json;version=1":
           schema: { type: string, format: binary }
         "application/vnd.kdcube.docs.snapshot+json;version=1":
+          schema: { type: string, format: binary }
+        "application/vnd.kdcube.slides.snapshot+json":
+          schema: { type: string, format: binary }
+        "application/pdf":
+          schema: { type: string, format: binary }
+        "application/vnd.openxmlformats-officedocument.presentationml.presentation":
+          schema: { type: string, format: binary }
+        "image/png":
           schema: { type: string, format: binary }
         "application/vnd.kdcube.mail.message.snapshot+json;version=1":
           schema: { type: string, format: binary }

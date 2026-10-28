@@ -45,6 +45,7 @@ Redis
 | Conversation index/search rows | conversation subsystem | tenant/project Postgres schema | read | no |
 | Conversation turn artifacts and `conv:fi:` bytes | conversation subsystem | `ConversationStore` under configured `STORAGE_PATH` | read | may contain user content |
 | Google Sheets data and metadata | Google account | Sheets and Drive APIs | read/write on demand | may contain user content |
+| Google Slides decks, exports and thumbnails | Google account | Slides and Drive APIs | request-scoped read/write and artifact materialization | provider capabilities and OAuth tokens stay server-side |
 | Mail and Slack attachment bytes | external provider/account | provider API | read on demand | may contain user content |
 | Inbound integration upload | KDCube Services staging adapter | local `kdcube-integration-staging` directory | temporary write/delete | may contain user content |
 | Widget build output | platform app loader | app-scoped bundle storage | generated write | no domain authority |

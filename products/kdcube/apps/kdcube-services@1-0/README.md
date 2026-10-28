@@ -351,7 +351,7 @@ three session-less, signed routes:
 | Alias | Method | Purpose |
 | --- | --- | --- |
 | `integration_file_upload` | POST | Upload one short-lived `staged:` file for a later mail/Slack action. |
-| `integration_file_download` | GET | Stream a complete Mail message/attachment, Slack file, Sheets/Docs snapshot, or portable Docs export under the signed delegated-user scope. |
+| `integration_file_download` | GET | Stream a connected-account snapshot, document/presentation export, or slide thumbnail under the signed delegated-user scope. |
 | `conv_file_download` | GET | Stream a `conv:fi:` conversation artifact under the signed user/conversation scope. |
 
 These routes are public only in transport terms. A managed MCP call mints the
@@ -475,3 +475,10 @@ Hub delegated credential resource metadata:
 `connections.delegated_credentials.oauth.resources[].named_services.namespaces`.
 This keeps the MCP service name aligned with the named-service system while
 avoiding a separate MCP server per namespace.
+
+## Connected presentations
+
+The `slides` named-service namespace reads and fills Google Slides decks,
+exports PDF/PowerPoint files and provides rendered slide thumbnails.
+See [the Slides interface](interface/README.md#named-service-namespace-slides)
+for its claims, artifact delivery and SDK recipe.

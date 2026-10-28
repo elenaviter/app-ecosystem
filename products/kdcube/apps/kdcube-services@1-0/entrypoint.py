@@ -40,6 +40,8 @@ from kdcube_ai_app.apps.chat.sdk.integrations.docs.named_service import (
     parse_docs_image_ref,
     parse_docs_ref,
 )
+from kdcube_ai_app.apps.chat.sdk.integrations.slides.named_service import make_slides_named_service_provider
+from kdcube_ai_app.apps.chat.sdk.integrations.slides.selectors import parse_slides_ref
 from kdcube_ai_app.apps.chat.sdk.integrations.mail import make_mail_named_service_provider
 from kdcube_ai_app.apps.chat.sdk.integrations.mail.named_service import parse_mail_ref
 from kdcube_ai_app.apps.chat.sdk.integrations.sheets import (
@@ -73,6 +75,7 @@ from .services.named_services.request_scope import get_public_base_url
 from .services.provider_fetch import serve_provider_fetch
 from .services.productivity import (
     GoogleDocsService,
+    GoogleSlidesService,
     GoogleSheetsService,
     bind_docs_service,
     bind_service as bind_productivity_service,
@@ -80,6 +83,8 @@ from .services.productivity import (
     fetch_google_docs_image,
     fetch_google_docs_snapshot,
     fetch_google_sheets_snapshot,
+    bind_slides_service,
+    fetch_google_slides_file,
 )
 from .surfaces.mcp import conversations as conversations_mcp_module
 from .surfaces.mcp import named_services as named_services_mcp_module
@@ -459,6 +464,19 @@ class KDCubeServicesEntrypoint(BaseEntrypoint):
         providers.append(
             make_docs_named_service_provider(
                 execute_operation=docs_service.execute,
+                bundle_id=self._named_services_bundle_id(),
+                file_url_factory=self._integration_file_url,
+                staging_root_factory=lambda: staging_root(
+                    str(getattr(self.settings, "STORAGE_PATH", "") or "")
+                ),
+                provider_fetch_url_factory=self._provider_fetch_url,
+            )
+        )
+        bind_slides_service(self)
+        slides_service = GoogleSlidesService()
+        providers.append(
+            make_slides_named_service_provider(
+                execute_operation=slides_service.execute,
                 bundle_id=self._named_services_bundle_id(),
                 file_url_factory=self._integration_file_url,
                 staging_root_factory=lambda: staging_root(
@@ -878,6 +896,10 @@ class KDCubeServicesEntrypoint(BaseEntrypoint):
             docs_image_parsed = parse_docs_image_ref(ref)
         except ValueError:
             docs_image_parsed = {}
+        try:
+            slides_parsed = parse_slides_ref(ref)
+        except ValueError:
+            slides_parsed = {}
         if mail_parsed.get("kind") == "attachment":
             result = await fetch_mail_attachment(
                 self,
@@ -909,6 +931,15 @@ class KDCubeServicesEntrypoint(BaseEntrypoint):
             )
         elif sheets_parsed.get("kind") in {"spreadsheet", "tab"}:
             result = await fetch_google_sheets_snapshot(
+                self,
+                user_id=user_id,
+                tenant=tenant,
+                project=project,
+                object_ref=ref,
+                bundle_id=self._named_services_bundle_id(),
+            )
+        elif slides_parsed.get("presentation_id"):
+            result = await fetch_google_slides_file(
                 self,
                 user_id=user_id,
                 tenant=tenant,

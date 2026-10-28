@@ -362,6 +362,25 @@ The table lists caller grants under **Delegated by KDCube**. On the separate
 connected-account boundary, reads require `sheets:read` and mutations require
 both `sheets:read` and `sheets:write` from the approving user's Google account.
 
+### Named-service namespace: `slides`
+
+The app registers the SDK presentation provider over `GoogleSlidesService`.
+The generic named-services door supports discovery, title search/recent lists,
+paged snapshots, create/rename, PDF/PPTX export, PNG thumbnails, copying,
+template filling, literal text replacement and tagged-shape image replacement.
+Reads require `slides:read`; mutations require read and write approval.
+The namespace and exact actions are declared in the Connection Hub catalog.
+
+Refs bind the Google account and presentation. Export and thumbnail refs
+materialize through streaming `object.get` or the signed-file route, which
+re-resolves the token-bound user's current read claim. Google's thumbnail
+capability URL remains inside the adapter. MEDIUM/LARGE thumbnail variants
+use streaming get with `filters.size`; the canonical signed ref defaults to
+SMALL. Images held by the deployment use the existing `provider_fetch` route.
+
+The [Google Services recipe](https://github.com/kdcube/kdcube/blob/main/app/ai-app/docs/recipes/connections/integrations/google-service-README.md#slides-read-and-fill-a-connected-presentation)
+owns selectors, revision guards, template inputs, scopes and bounds.
+
 ### Named-service namespace: `docs`
 
 The `docs` namespace exposes connected documents through the same generic tools.
