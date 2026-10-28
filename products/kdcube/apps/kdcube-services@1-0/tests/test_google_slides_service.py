@@ -9,6 +9,13 @@ from kdcube_ai_app.apps.chat.sdk.runtime.dynamic_module_loader import load_dynam
 BUNDLE_ROOT=Path(__file__).resolve().parents[1]
 
 
+def descriptor_paths():
+    import kdcube_ai_app
+    platform = Path(kdcube_ai_app.__file__).resolve().parents[3] / "deployment/bundles.yaml"
+    ecosystem = BUNDLE_ROOT.parents[3] / "products/connection-hub/apps/connection-hub@1-0/config/bundles.template.yaml"
+    return platform, ecosystem
+
+
 def module():
     return load_dynamic_module_for_path(BUNDLE_ROOT/"services/productivity/google_slides.py")[1]
 
@@ -51,9 +58,7 @@ async def test_auth_failure_after_partial_or_uncertain_write_is_not_refreshed(mo
 
 def test_both_descriptor_sources_declare_the_same_slides_authority_contract():
     import yaml
-    import kdcube_ai_app
-    platform=Path(kdcube_ai_app.__file__).resolve().parents[3]/"deployment/bundles.yaml"
-    ecosystem=BUNDLE_ROOT.parents[3]/"products/connection-hub/apps/connection-hub@1-0/config/bundles.template.yaml"
+    platform, ecosystem = descriptor_paths()
     def contract(path):
         config=yaml.safe_load(path.read_text())["bundles"]["items"][0]["config"]["connections"]
         google=config["delegated_to_kdcube"]["providers"]["google"]
@@ -70,3 +75,20 @@ def test_both_descriptor_sources_declare_the_same_slides_authority_contract():
     assert "https://www.googleapis.com/auth/drive.file" in left[0]["slides:write"]["provider_scopes"]
     actions=left[2]["tools"]["action"]["operations"]
     assert set(actions) == {f"object.action.{name}" for name in ("copy","export","thumbnail","fill_template","replace_text","replace_shapes_with_image","add_slide","set_text","style_text","set_notes","move_slide","delete_slide","skip_slide")}
+
+
+def test_slides_delegable_roles_parse_as_four_roles_in_both_descriptors():
+    import yaml
+    expected = {"kdcube:role:registered", "kdcube:role:paid", "kdcube:role:privileged", "kdcube:role:super-admin"}
+    parsed = []
+    for path in descriptor_paths():
+        connections = yaml.safe_load(path.read_text())["bundles"]["items"][0]["config"]["connections"]
+        capabilities = connections["delegated_credentials"]["oauth"]["capabilities"]
+        grants = [row for row in capabilities if row.get("grant") in ("slides:read", "slides:write")]
+        assert len(grants) == 2
+        values = {row["grant"]: row["delegable_roles"] for row in grants}
+        for roles in values.values():
+            assert isinstance(roles, list) and len(roles) == 4
+            assert set(roles) == expected
+        parsed.append(values)
+    assert parsed[0] == parsed[1]
