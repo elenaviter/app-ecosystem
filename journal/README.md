@@ -135,6 +135,8 @@ that concern this repository so the history is discoverable from here.
 
 | 2026-10-15 | Whole-content heartbeat identities do not make changing observations stable | Lossless complete-reply section and observation-group negotiation preserves fresh authority and exact values; synthetic wire savings do not establish live CPU savings. |
 
+| 2026-10-27 | Slides templates cross both a document identity and an artifact boundary | — |
+
 Entries are listed newest last. The store itself is not public; the
 addresses here are titles, and the decisions that matter to users of this
 repository are always reflected in [`docs/`](../docs/README.md).
