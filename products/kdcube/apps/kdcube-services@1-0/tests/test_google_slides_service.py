@@ -14,7 +14,8 @@ def module():
 
 
 @pytest.mark.asyncio
-async def test_credentials_remain_inside_adapter_and_claims_bind_one_account(monkeypatch):
+@pytest.mark.parametrize("operation", ["copy", "add_slide", "set_text", "style_text", "set_notes", "move_slide", "delete_slide", "skip_slide"])
+async def test_credentials_remain_inside_adapter_and_claims_bind_one_account(monkeypatch, operation):
     m=module()
     seen=[]
     async def resolve(*args,**kwargs):
@@ -26,7 +27,7 @@ async def test_credentials_remain_inside_adapter_and_claims_bind_one_account(mon
     monkeypatch.setattr(m,"resolve_connected_account_claim",resolve)
     monkeypatch.setattr(m,"resolve_connector_app_id",lambda provider:"gmail")
     monkeypatch.setattr(m,"execute_google_slides_operation",execute)
-    result=await m.GoogleSlidesService()._execute_once(operation="copy",claim=["slides:read","slides:write"],tool_name="named_services.slides.object.action.copy",payload={"title":"Copy"},account_id="")
+    result=await m.GoogleSlidesService()._execute_once(operation=operation,claim=["slides:read","slides:write"],tool_name=f"named_services.slides.object.action.{operation}",payload={"title":"Fixture"},account_id="")
     assert [r["claim"] for r in seen] == ["slides:read","slides:write"]
     assert seen[1]["account_id"] == "account"
     assert result["ret"]["account_id"] == "account"
@@ -68,4 +69,4 @@ def test_both_descriptor_sources_declare_the_same_slides_authority_contract():
     assert "https://www.googleapis.com/auth/presentations.readonly" in left[0]["slides:read"]["provider_scopes"]
     assert "https://www.googleapis.com/auth/drive.file" in left[0]["slides:write"]["provider_scopes"]
     actions=left[2]["tools"]["action"]["operations"]
-    assert set(actions) == {f"object.action.{name}" for name in ("copy","export","thumbnail","fill_template","replace_text","replace_shapes_with_image")}
+    assert set(actions) == {f"object.action.{name}" for name in ("copy","export","thumbnail","fill_template","replace_text","replace_shapes_with_image","add_slide","set_text","style_text","set_notes","move_slide","delete_slide","skip_slide")}

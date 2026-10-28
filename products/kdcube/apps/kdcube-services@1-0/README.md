@@ -478,7 +478,8 @@ avoiding a separate MCP server per namespace.
 
 ## Connected presentations
 
-The `slides` named-service namespace reads and fills Google Slides decks,
-exports PDF/PowerPoint files and provides rendered slide thumbnails.
+The `slides` named-service namespace builds and edits Google Slides decks
+using theme layouts, text, speaker notes and slide-order actions. It also
+fills templates, exports PDF/PowerPoint files and provides slide thumbnails.
 See [the Slides interface](interface/README.md#named-service-namespace-slides)
 for its claims, artifact delivery and SDK recipe.

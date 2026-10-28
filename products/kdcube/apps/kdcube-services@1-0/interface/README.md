@@ -368,6 +368,9 @@ The app registers the SDK presentation provider over `GoogleSlidesService`.
 The generic named-services door supports discovery, title search/recent lists,
 paged snapshots, create/rename, PDF/PPTX export, PNG thumbnails, copying,
 template filling, literal text replacement and tagged-shape image replacement.
+Layout-based slide creation, text and bullet editing, quoted-span styling,
+speaker notes, slide order, delete and skip actions share revision guards,
+fit warnings and read-only previews.
 Reads require `slides:read`; mutations require read and write approval.
 The namespace and exact actions are declared in the Connection Hub catalog.
 
