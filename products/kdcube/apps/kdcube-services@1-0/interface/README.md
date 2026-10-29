@@ -371,7 +371,12 @@ template filling, literal text replacement and tagged-shape image replacement.
 Layout-based slide creation, text and bullet editing, quoted-span styling,
 speaker notes, slide order, delete and skip actions share revision guards,
 fit warnings and read-only previews.
-Reads require `slides:read`; mutations require read and write approval.
+Composition grids, regions, shapes, images, accessibility text, reference-slide
+copies and PPTX/ODP import use the same vocabulary. Reads require
+`slides:read`; content mutations require read and write approval. Trash and
+restore require `slides:delete` and a private Drive creation marker; older
+unmarked decks are refused. Snapshot image/callout refs represent complete
+frame groups while inner content receives accessibility/text edits.
 The namespace and exact actions are declared in the Connection Hub catalog.
 
 Refs bind the Google account and presentation. Export and thumbnail refs

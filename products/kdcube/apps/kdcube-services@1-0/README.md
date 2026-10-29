@@ -481,5 +481,8 @@ avoiding a separate MCP server per namespace.
 The `slides` named-service namespace builds and edits Google Slides decks
 using theme layouts, text, speaker notes and slide-order actions. It also
 fills templates, exports PDF/PowerPoint files and provides slide thumbnails.
+Weighted grids, theme shapes, aspect-fit images and reference-slide copies
+extend the same vocabulary. PPTX/ODP import creates native decks; a separate
+delete claim permits trash/restore of marked service-created decks.
 See [the Slides interface](interface/README.md#named-service-namespace-slides)
 for its claims, artifact delivery and SDK recipe.
