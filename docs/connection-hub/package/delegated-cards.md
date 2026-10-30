@@ -1209,13 +1209,18 @@ catalog version and persists the surviving exact set before advancing
 `catalog_version`. An explicitly submitted `"*"` selects all operations shown
 from the current catalog and binds that wildcard to the new version.
 
-### Agent card
+### Consent demands on agent and external-client Cards
 
 An agent card has a second entrance: the consent demand. It MERGES exactly the
 capability that was refused — the namespace and operation the demand names, with
 the claims and account binding they need — into the card's existing selection.
 The card's own side is frozen into what it already meant before the merge, so a
 one-click approval never re-pins a `"*"` to a newer catalog.
+
+The same accumulation applies to an existing external OAuth client Card.
+Its focused demand supplies only the new operation; the server unions it with
+the stored selection per resource and namespace before resolving the complete
+authority. Held operations on other namespaces and resources remain selected.
 
 `delegated_agent_grant_create` merges by default, so separate approved demands
 accumulate. With `replace: true` the submitted resource claims replace that

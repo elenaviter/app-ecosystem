@@ -194,6 +194,20 @@ async def test_external_extension_freezes_a_held_wildcard_before_catalog_drift(t
 
 
 @pytest.mark.asyncio
+async def test_an_explicit_new_wildcard_can_select_the_current_catalog(tmp_path):
+    harness = _Harness(tmp_path, connections=_named_connections())
+    record = await _named_card(harness)
+    harness.catalog.publish(_named_connections(newer_catalog=True))
+
+    result = await _approve_upload(harness, record, named_service_operations="*")
+
+    assert result["ok"] is True, result
+    card = await harness.card(record.access_id)
+    assert card.named_service_operations.is_all
+    assert "object.action.delete" in card.named_services["namespaces"]["slides"]["tools"]["objects"]["operations"]
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("selection", [None, {}], ids=["omitted", "empty-delta"])
 async def test_external_merge_without_an_added_selection_preserves_held_operations(tmp_path, selection):
     harness = _Harness(tmp_path, connections=_named_connections())

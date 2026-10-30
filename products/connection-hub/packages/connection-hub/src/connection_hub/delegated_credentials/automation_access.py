@@ -12048,8 +12048,12 @@ class AutomationAccessService:
         ``resource_operations`` applies the same merge/replace rule to the
         outer MCP/REST operations selected for this resource. ``account_scope``
         ({provider_id: [account_ids or "*"]}) edits the client's per-provider
-        account binding the same way (merge or replace). The card is the
-        authority the guard resolves live, so either takes effect on the
+        account binding the same way (merge or replace).
+        ``named_service_operations`` merges per resource and namespace on an
+        extension, freezing a held wildcard to its stored boundary first.
+        A replacement preserves an omitted selection; an explicit empty map
+        clears it. An explicit new ``"*"`` selects the current catalog.
+        The card is the authority the guard resolves live, so either takes effect on the
         client's very next call, on the bearer it already holds; a
         pointer-carrying refresh re-derives from the card, so a narrowing
         sticks across token rotations."""
@@ -12217,6 +12221,18 @@ class AutomationAccessService:
                 "retryable": True,
                 "status": 503,
             }
+        if not replace and named_service_operations is not None:
+            try:
+                selected = self._named_service_operation_selection(named_service_operations)
+            except ValueError as exc:
+                return {"ok": False, "error": "invalid_named_service_operation_selection",
+                        "message": str(exc)}
+            # A focused demand is a delta, while the shared resolver takes
+            # complete desired authority. Freeze the held side before union,
+            # so it cannot re-pin an old wildcard to a newer catalog.
+            named_service_operations = selected.union(
+                _inherited_selection(record, resource_grants)
+            ).to_stored()
         resolved = await self._resolve_card_authority(
             user=user,
             existing=record,
