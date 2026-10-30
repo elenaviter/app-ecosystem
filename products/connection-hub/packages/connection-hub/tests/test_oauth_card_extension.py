@@ -32,7 +32,10 @@ def _named_connections(*, newer_catalog=False):
         for grant in GRANTS
     )
     operations = SLIDES + (["object.action.delete"] if newer_catalog else [])
-    for resource in (NAMED, OTHER_NAMED):
+    for resource, namespaces in (
+        (NAMED, (("slides", "slides:use", operations), ("mail", "mail:send", [UPLOAD]))),
+        (OTHER_NAMED, (("notes", "slides:use", ["object.get"]),)),
+    ):
         oauth["resources"].append({
             "resource": resource,
             "label": "Named services",
@@ -43,17 +46,14 @@ def _named_connections(*, newer_catalog=False):
                     "grants": ["named_services:use", grant],
                     "operations": {name: {} for name in names},
                 }}}
-                for namespace, grant, names in (
-                    ("slides", "slides:use", operations),
-                    ("mail", "mail:send", [UPLOAD]),
-                )
+                for namespace, grant, names in namespaces
             }},
         })
     return connections
 
 
 def _held_selection():
-    return {NAMED: {"slides": SLIDES}, OTHER_NAMED: {"slides": ["object.get"]}}
+    return {NAMED: {"slides": SLIDES}, OTHER_NAMED: {"notes": ["object.get"]}}
 
 
 async def _named_card(harness, *, selection=None):
@@ -68,13 +68,15 @@ async def _named_card(harness, *, selection=None):
         refresh_token="rt-named",
     )
     assert record is not None
+    # Prove this fixture actually holds every operation before the demand.
+    assert set(record.named_services["namespaces"]["slides"]["tools"]["objects"]["operations"]) == set(SLIDES)
     return record
 
 
-async def _approve_upload(harness, record, **kwargs):
+async def _approve_upload(harness, record, *, claims=None, **kwargs):
     return await harness.service.extend_client_access(
         USER, client_id=CLIENT, access_id=record.access_id, resource=NAMED,
-        claims=["named_services:use", "mail:send"],
+        claims=["named_services:use", "mail:send"] if claims is None else claims,
         resource_operations={NAMED: ["named_services_call"]},
         **kwargs,
     )
@@ -83,10 +85,10 @@ async def _approve_upload(harness, record, **kwargs):
 def _assert_extended(card):
     assert card.named_service_operations.to_stored() == {
         NAMED: {"slides": SLIDES, "mail": [UPLOAD]},
-        OTHER_NAMED: {"slides": ["object.get"]},
+        OTHER_NAMED: {"notes": ["object.get"]},
     }
     namespaces = card.named_services["namespaces"]
-    assert set(namespaces) == {"slides", "mail"}
+    assert set(namespaces) == {"slides", "mail", "notes"}
     assert set(namespaces["slides"]["tools"]["objects"]["operations"]) == set(SLIDES)
 
 
@@ -187,9 +189,10 @@ async def test_external_extension_freezes_a_held_wildcard_before_catalog_drift(t
     assert result["ok"] is True, result
     card = await harness.card(record.access_id)
     assert card.named_service_operations.is_exact
-    for namespaces in card.named_service_operations.to_stored().values():
-        assert set(namespaces["slides"]) == set(SLIDES)
-        assert namespaces["mail"] == [UPLOAD]
+    selected = card.named_service_operations.to_stored()
+    assert set(selected[NAMED]["slides"]) == set(SLIDES)
+    assert selected[NAMED]["mail"] == [UPLOAD]
+    assert selected[OTHER_NAMED] == {"notes": ["object.get"]}
     assert "object.action.delete" not in card.named_services["namespaces"]["slides"]["tools"]["objects"]["operations"]
 
 
@@ -225,7 +228,9 @@ async def test_external_replace_preserves_omission_and_replaces_explicit_selecti
     harness = _Harness(tmp_path, connections=_named_connections())
     record = await _named_card(harness)
 
-    result = await _approve_upload(harness, record, named_service_operations=selection, replace=True)
+    # This test changes only the named-service dimension; replacement claims
+    # must continue to permit the operations whose selection was omitted.
+    result = await _approve_upload(harness, record, claims=GRANTS, named_service_operations=selection, replace=True)
 
     assert result["ok"] is True, result
     expected = _held_selection() if selection is None else selection
@@ -250,13 +255,13 @@ async def test_hosted_agent_consent_still_unions_the_held_named_selection(tmp_pa
     harness = _Harness(tmp_path, connections=_named_connections())
     client = "kdcube-agent:workspace@1-0:named"
     created = await harness.service.create_access(
-        USER, client_id=client, resource_grants={NAMED: GRANTS},
+        USER, label="Named agent", client_id=client, resource_grants={NAMED: GRANTS},
         named_service_operations={NAMED: {"slides": SLIDES}},
     )
     assert created["ok"] is True, created
 
     result = await harness.service.create_access(
-        USER, client_id=client, resource_grants={NAMED: ["named_services:use", "mail:send"]},
+        USER, label="Named agent", client_id=client, resource_grants={NAMED: ["named_services:use", "mail:send"]},
         named_service_operations={NAMED: {"mail": [UPLOAD]}}, merge_existing=True,
     )
 
