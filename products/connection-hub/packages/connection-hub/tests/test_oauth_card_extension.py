@@ -266,5 +266,5 @@ async def test_hosted_agent_consent_still_unions_the_held_named_selection(tmp_pa
     )
 
     assert result["ok"] is True, result
-    assert result["access_id"] == created["access_id"]
+    assert result["access"]["access_id"] == created["access"]["access_id"]
     assert result["access"]["named_service_operations"] == {NAMED: {"mail": [UPLOAD], "slides": SLIDES}}
