@@ -135,6 +135,7 @@ that concern this repository so the history is discoverable from here.
 
 | 2026-10-15 | Whole-content heartbeat identities do not make changing observations stable | Lossless complete-reply section and observation-group negotiation preserves fresh authority and exact values; synthetic wire savings do not establish live CPU savings. |
 
+| 2026-10-29 | Staged files keep the owner behind the capability | — |
 | 2026-10-27 | Slides templates cross both a document identity and an artifact boundary | — |
 | 2026-10-28 | Slide creation has a second revision boundary | — |
 | 2026-10-29 | A grid needs recoverable geometry after the write | — |
