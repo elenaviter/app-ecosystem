@@ -140,6 +140,11 @@ signed token, resolves the current connected provider credential through
 Connection Hub, fetches the exact message, attachment, file, or Sheets
 snapshot, and streams it with `Cache-Control: private, no-store`.
 
+Slide thumbnail refs include their SMALL, MEDIUM or LARGE size before signing.
+The download adapter reconstructs that size from the verified reference and
+rechecks the token-bound account read claim; no extra MCP filters or stored
+Google capability URL are required.
+
 The app does not persist downloaded provider bytes in its domain state.
 Connection Hub owns delegated account credentials; this app must never copy
 OAuth tokens or app passwords into descriptors, Redis, MCP results, or file

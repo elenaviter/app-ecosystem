@@ -115,3 +115,31 @@ async def test_delete_claim_is_resolved_for_the_bound_account(monkeypatch, opera
     assert result["ok"]
     assert [row["claim"] for row in seen] == ["slides:delete"]
     assert seen[0]["account_id"] == "account"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("size", ["SMALL", "MEDIUM", "LARGE"])
+async def test_signed_thumbnail_ref_restores_size_and_bound_account_on_download(monkeypatch, size):
+    import base64
+    from kdcube_ai_app.apps.chat.sdk.solutions.conversation.download_links import mint_file_download_token, verify_file_download_token
+    m = module()
+    ref = f"slides:google:account:thumbnail:{size}:slide_a:deck"
+    token, _ = mint_file_download_token("fixture-signing-secret", fi_ref=ref, user_id="user", tenant="tenant", project="project")
+    claims = verify_file_download_token("fixture-signing-secret", token, fi_ref=ref)
+    seen = []
+    async def resolve(entrypoint, **kwargs):
+        seen.append(kwargs)
+        assert (kwargs["user_id"], kwargs["tenant"], kwargs["project"]) == ("user", "tenant", "project")
+        assert kwargs["account_id"] == "account" and kwargs["claim"] == "slides:read"
+        return "fixture-provider-credential", None
+    async def execute(**kwargs):
+        assert kwargs["operation"] == "thumbnail"
+        assert kwargs["payload"] == {"presentation_ref": "deck", "slide": {"ref": "slide_a"}, "size": size}
+        return {"ok": True, "ret": {"content_base64": base64.b64encode(size.encode()).decode()}}
+    monkeypatch.setattr(m, "resolve_connected_account_access_token", resolve)
+    monkeypatch.setattr(m, "resolve_connector_app_id", lambda provider: "google")
+    monkeypatch.setattr(m, "execute_google_slides_operation", execute)
+    response = await m.fetch_google_slides_file(object(), user_id=claims["user_id"], tenant=claims["tenant"], project=claims["project"], object_ref=ref, bundle_id="services")
+    assert response["ok"] and response["mime_type"] == "image/png"
+    assert b"".join([chunk async for chunk in response["chunks"]]) == size.encode()
+    assert len(seen) == 1

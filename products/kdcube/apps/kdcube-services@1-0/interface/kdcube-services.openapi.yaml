@@ -462,6 +462,7 @@ paths:
       tags: [Signed Files]
       summary: Stream a connected-account snapshot, document/presentation export, or slide thumbnail by signed object ref.
       operationId: integration_file_download
+      description: Thumbnail refs bind SMALL, MEDIUM or LARGE into the signed object reference, so every size can be fetched without extra filters. Legacy thumbnail refs default to SMALL.
       security:
         - SignedDownloadToken: []
       parameters:

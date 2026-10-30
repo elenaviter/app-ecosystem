@@ -382,9 +382,11 @@ The namespace and exact actions are declared in the Connection Hub catalog.
 Refs bind the Google account and presentation. Export and thumbnail refs
 materialize through streaming `object.get` or the signed-file route, which
 re-resolves the token-bound user's current read claim. Google's thumbnail
-capability URL remains inside the adapter. MEDIUM/LARGE thumbnail variants
-use streaming get with `filters.size`; the canonical signed ref defaults to
-SMALL. Images held by the deployment use the existing `provider_fetch` route.
+capability URL remains inside the adapter. New thumbnail refs bind SMALL,
+MEDIUM or LARGE into the signed object ref; every size supports a download URL
+or streaming get without extra filters. Legacy refs default to SMALL.
+The composition action views expose structured `payload_schema` contracts for
+selectors, nested grids, shapes, text and images. Images held by the deployment use the existing `provider_fetch` route.
 
 The [Google Services recipe](https://github.com/kdcube/kdcube/blob/main/app/ai-app/docs/recipes/connections/integrations/google-service-README.md#slides-read-and-fill-a-connected-presentation)
 owns selectors, revision guards, template inputs, scopes and bounds.
