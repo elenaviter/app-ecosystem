@@ -762,7 +762,11 @@ the live provider's `metadata.connected_accounts` requirements, including
 operation-specific provider claims such as `claims_by_operation`, so the UI
 can explain which connected account is needed for a selected operation.
 
-Those requirements are not impossible to express in configuration. They are
+Declare each named-service namespace on exactly one protected resource. The
+catalog does not merge a namespace across resources: when the same namespace
+is declared more than once, the composed boundary keeps the later declaration.
+
+Those provider-account requirements are not impossible to express in configuration. They are
 currently provider-owned runtime metadata because they describe what the
 registered provider implementation needs, and sourcing them there avoids
 copying the same provider contract into every delegated-resource descriptor.
