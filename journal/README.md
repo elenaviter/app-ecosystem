@@ -7,6 +7,7 @@ that concern this repository so the history is discoverable from here.
 
 | Date | Entry | What it holds for this repository |
 | --- | --- | --- |
+| 2026-10-30 | A consent delta must become complete authority before resolution | External OAuth consent accumulates held named-service operations per resource and namespace, freezes the stored wildcard boundary before union, and leaves explicit replacement semantics intact. |
 | 2026-10-12 | A known render pin is not Save authority | — |
 | 2026-10-11 | A fallback service registration is a lock-composition boundary | Refusing a different Card service on the same store preserves the original fallback lock; fixtures must reuse their composed service or model another worker with a separate store object over the same durable root. |
 | 2026-10-11 | The OAuth issuance plan holds Card version links, and its candidate file is adopted, never copied (applications: kdcube-docs/journal/26/10/connection-hub/oauth-issuance-links) | W698 / W661 scope B: `version_link.py`, the `stg-` staging tag, adoption by the lane-3 intent record, lock-free first-writer planning where a stored plan always wins, the one-off v1 intent purge, and the documented cleanup-disabled residual (bounded cleanup is W704). |

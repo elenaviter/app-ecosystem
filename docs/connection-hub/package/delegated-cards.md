@@ -762,7 +762,11 @@ the live provider's `metadata.connected_accounts` requirements, including
 operation-specific provider claims such as `claims_by_operation`, so the UI
 can explain which connected account is needed for a selected operation.
 
-Those requirements are not impossible to express in configuration. They are
+Declare each named-service namespace on exactly one protected resource. The
+catalog does not merge a namespace across resources: when the same namespace
+is declared more than once, the composed boundary keeps the later declaration.
+
+Those provider-account requirements are not impossible to express in configuration. They are
 currently provider-owned runtime metadata because they describe what the
 registered provider implementation needs, and sourcing them there avoids
 copying the same provider contract into every delegated-resource descriptor.
@@ -1209,13 +1213,18 @@ catalog version and persists the surviving exact set before advancing
 `catalog_version`. An explicitly submitted `"*"` selects all operations shown
 from the current catalog and binds that wildcard to the new version.
 
-### Agent card
+### Consent demands on agent and external-client Cards
 
 An agent card has a second entrance: the consent demand. It MERGES exactly the
 capability that was refused — the namespace and operation the demand names, with
 the claims and account binding they need — into the card's existing selection.
 The card's own side is frozen into what it already meant before the merge, so a
 one-click approval never re-pins a `"*"` to a newer catalog.
+
+The same accumulation applies to an existing external OAuth client Card.
+Its focused demand supplies only the new operation; the server unions it with
+the stored selection per resource and namespace before resolving the complete
+authority. Held operations on other namespaces and resources remain selected.
 
 `delegated_agent_grant_create` merges by default, so separate approved demands
 accumulate. With `replace: true` the submitted resource claims replace that
