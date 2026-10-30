@@ -376,7 +376,12 @@ copies and PPTX/ODP import use the same vocabulary. Reads require
 `slides:read`; content mutations require read and write approval. Trash and
 restore require `slides:delete` and a private Drive creation marker; older
 unmarked decks are refused. Snapshot image/callout refs represent complete
-frame groups while inner content receives accessibility/text edits.
+frame groups while inner content receives accessibility/text edits. The
+reserved typed title lives on the inner frame shape. Removing that title or
+changing the expected child types restores ordinary group read-back; select a
+shape or image child for alt-text edits on an ordinary group. See the
+[Slides composition contract](https://github.com/kdcube/kdcube/blob/main/app/ai-app/docs/recipes/connections/integrations/google-service-README.md)
+for frame recognition and editing.
 The namespace and exact actions are declared in the Connection Hub catalog.
 
 Refs bind the Google account and presentation. Export and thumbnail refs
