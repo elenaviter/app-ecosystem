@@ -138,6 +138,7 @@ that concern this repository so the history is discoverable from here.
 | 2026-10-27 | Slides templates cross both a document identity and an artifact boundary | — |
 | 2026-10-28 | Slide creation has a second revision boundary | — |
 | 2026-10-29 | A grid needs recoverable geometry after the write | — |
+| 2026-10-30 | Slides fixtures need provider refusals and complete artifact identity | — |
 
 Entries are listed newest last. The store itself is not public; the
 addresses here are titles, and the decisions that matter to users of this
