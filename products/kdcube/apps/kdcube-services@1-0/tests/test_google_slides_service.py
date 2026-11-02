@@ -75,6 +75,9 @@ def test_both_descriptor_sources_declare_the_same_slides_authority_contract():
     assert "https://www.googleapis.com/auth/drive.file" in left[0]["slides:write"]["provider_scopes"]
     actions=left[2]["tools"]["action"]["operations"]
     assert set(actions) == {f"object.action.{name}" for name in ("copy","export","thumbnail","fill_template","replace_text","replace_shapes_with_image","add_slide","set_text","style_text","set_notes","move_slide","delete_slide","skip_slide","compose","add_shape","add_image","set_alt_text","duplicate_slide_like","import","trash","restore")}
+    call = left[2]["tools"]["call"]["operations"]
+    assert set(call) == {"object.action.import"}
+    assert call["object.action.import"]["grants"] == ["named_services:use", "slides:read", "slides:write"]
     assert left[0]["slides:delete"]["provider_scopes"][-1] == "https://www.googleapis.com/auth/drive.file"
     for name in ("trash", "restore"):
         assert actions[f"object.action.{name}"]["grants"] == ["named_services:use", "slides:delete"]

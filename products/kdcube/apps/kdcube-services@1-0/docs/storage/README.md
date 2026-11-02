@@ -52,6 +52,9 @@ Redis
 | Widget build output | platform app loader | app-scoped bundle storage | generated write | no domain authority |
 | Named-service discovery and relay state | platform runtime | Redis | ephemeral read/write | no provider credential values |
 
+Slides import routing and response diagnostics are described in the SDK's
+[Connected Presentations](https://github.com/kdcube/kdcube/blob/main/app/ai-app/docs/sdk/integrations/google/slides-README.md).
+
 ## Descriptor And Secret Boundary
 
 Non-secret policy belongs in the `kdcube-services@1-0` app entry in
