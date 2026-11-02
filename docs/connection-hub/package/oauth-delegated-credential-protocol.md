@@ -690,9 +690,10 @@ Rules:
 - Pre-registered and DCR native-client redirect matching follows RFC 8252:
   loopback redirects (`localhost`,
   `127.0.0.1`, `::1`) match on **any port**, because a native client binds a
-  dynamic local port for its callback — but scheme, host, and path must match
-  an allowlisted entry exactly. All non-loopback redirects must match exactly,
-  including the port. Implementation: `redirect_uri_allowed()` in
+  dynamic local port for its callback. The port is the only permitted
+  difference: scheme, host, path, and query match an allowlisted entry byte for
+  byte, and a callback carrying userinfo, a fragment, or a malformed port is
+  refused. All non-loopback redirects must match exactly, including the port. Implementation: `redirect_uri_allowed()` in
   `products/connection-hub/packages/connection-hub/src/connection_hub/delegated_credentials/oauth/clients.py`.
 - CIMD callback matching honours what the document states. A published entry
   that **names a port** must be matched exactly, including that port — the
