@@ -144,6 +144,7 @@ that concern this repository so the history is discoverable from here.
 | 2026-11-02 | Slides imports use a targetless call; mutation diagnostics stay focused | — |
 | 2026-11-04 | A comment anchor has two provider views | — |
 | 2026-11-04 | Native comment reads reveal the saved cell | — |
+| 2026-11-04 | A native thread does not prove an anchor | — |
 
 Entries are listed newest last. The store itself is not public; the
 addresses here are titles, and the decisions that matter to users of this
