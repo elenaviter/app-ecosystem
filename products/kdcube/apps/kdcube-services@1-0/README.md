@@ -488,5 +488,7 @@ expose structured payload schemas through discovery.
 Weighted grids, theme shapes, aspect-fit images and reference-slide copies
 extend the same vocabulary. PPTX/ODP import creates native decks; a separate
 delete claim permits trash/restore of marked service-created decks.
+Tables use row/column selectors; videos use YouTube/Drive sources. Anchored
+and file comments use a separate comment claim with author and save checks.
 See [the Slides interface](interface/README.md#named-service-namespace-slides)
 for its claims, artifact delivery and SDK recipe.

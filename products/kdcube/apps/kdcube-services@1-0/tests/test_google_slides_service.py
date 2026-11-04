@@ -70,17 +70,22 @@ def test_both_descriptor_sources_declare_the_same_slides_authority_contract():
         return claims,allowed,namespace
     left,right=contract(platform),contract(ecosystem)
     assert left == right
-    assert set(left[0]) == {"slides:read","slides:write","slides:delete"}
+    assert set(left[0]) == {"slides:read","slides:write","slides:delete","slides:comment"}
     assert "https://www.googleapis.com/auth/presentations.readonly" in left[0]["slides:read"]["provider_scopes"]
     assert "https://www.googleapis.com/auth/drive.file" in left[0]["slides:write"]["provider_scopes"]
     actions=left[2]["tools"]["action"]["operations"]
-    assert set(actions) == {f"object.action.{name}" for name in ("copy","export","thumbnail","fill_template","replace_text","replace_shapes_with_image","add_slide","set_text","style_text","set_notes","move_slide","delete_slide","skip_slide","compose","add_shape","add_image","set_alt_text","duplicate_slide_like","import","trash","restore")}
+    assert set(actions) == {f"object.action.{name}" for name in ("copy","export","thumbnail","fill_template","replace_text","replace_shapes_with_image","add_slide","set_text","style_text","set_notes","move_slide","delete_slide","skip_slide","compose","add_shape","add_image","set_alt_text","duplicate_slide_like","import","trash","restore","add_table","set_cells","add_row","add_video","list_comments","get_comment","create_comment","reply_comment","update_comment","resolve_comment","delete_comment")}
     call = left[2]["tools"]["call"]["operations"]
     assert set(call) == {"object.action.import"}
     assert call["object.action.import"]["grants"] == ["named_services:use", "slides:read", "slides:write"]
     assert left[0]["slides:delete"]["provider_scopes"][-1] == "https://www.googleapis.com/auth/drive.file"
     for name in ("trash", "restore"):
         assert actions[f"object.action.{name}"]["grants"] == ["named_services:use", "slides:delete"]
+    assert left[0]["slides:comment"]["provider_scopes"] == ["openid", "email", "profile", "https://www.googleapis.com/auth/drive"]
+    for name in ("list_comments", "get_comment"):
+        assert actions[f"object.action.{name}"]["grants"] == ["named_services:use", "slides:read"]
+    for name in ("create_comment", "reply_comment", "update_comment", "resolve_comment", "delete_comment"):
+        assert actions[f"object.action.{name}"]["grants"] == ["named_services:use", "slides:read", "slides:comment"]
 
 
 def test_slides_delegable_roles_parse_as_four_roles_in_both_descriptors():
@@ -90,8 +95,8 @@ def test_slides_delegable_roles_parse_as_four_roles_in_both_descriptors():
     for path in descriptor_paths():
         connections = yaml.safe_load(path.read_text())["bundles"]["items"][0]["config"]["connections"]
         capabilities = connections["delegated_credentials"]["oauth"]["capabilities"]
-        grants = [row for row in capabilities if row.get("grant") in ("slides:read", "slides:write", "slides:delete")]
-        assert len(grants) == 3
+        grants = [row for row in capabilities if row.get("grant") in ("slides:read", "slides:write", "slides:delete", "slides:comment")]
+        assert len(grants) == 4
         values = {row["grant"]: row["delegable_roles"] for row in grants}
         for roles in values.values():
             assert isinstance(roles, list) and len(roles) == 4
@@ -101,8 +106,8 @@ def test_slides_delegable_roles_parse_as_four_roles_in_both_descriptors():
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("operation", ["trash", "restore"])
-async def test_delete_claim_is_resolved_for_the_bound_account(monkeypatch, operation):
+@pytest.mark.parametrize("operation,claims", [("trash", ["slides:delete"]), ("restore", ["slides:delete"]), ("list_comments", ["slides:read"]), ("create_comment", ["slides:read", "slides:comment"]), ("reply_comment", ["slides:read", "slides:comment"]), ("update_comment", ["slides:read", "slides:comment"]), ("resolve_comment", ["slides:read", "slides:comment"]), ("delete_comment", ["slides:read", "slides:comment"])])
+async def test_exact_action_claims_are_resolved_for_the_bound_account(monkeypatch, operation, claims):
     from kdcube_ai_app.apps.chat.sdk.integrations.slides.schema import action_claims
     m = module()
     seen = []
@@ -116,8 +121,8 @@ async def test_delete_claim_is_resolved_for_the_bound_account(monkeypatch, opera
     monkeypatch.setattr(m, "execute_google_slides_operation", execute)
     result = await m.GoogleSlidesService()._execute_once(operation=operation, claim=action_claims(operation), tool_name=f"named_services.slides.object.action.{operation}", payload={}, account_id="account")
     assert result["ok"]
-    assert [row["claim"] for row in seen] == ["slides:delete"]
-    assert seen[0]["account_id"] == "account"
+    assert [row["claim"] for row in seen] == claims
+    assert all(row["account_id"] == "account" for row in seen)
 
 
 @pytest.mark.asyncio

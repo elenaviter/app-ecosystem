@@ -383,6 +383,13 @@ shape or image child for alt-text edits on an ordinary group. See the
 [Slides composition contract](https://github.com/kdcube/kdcube/blob/main/app/ai-app/docs/recipes/connections/integrations/google-service-README.md)
 for frame recognition and editing.
 The namespace and exact actions are declared in the Connection Hub catalog.
+Tables use the shared Docs row/column selector vocabulary, and tables and
+YouTube/Drive videos can be created in computed regions or grid cells.
+Comment reads use `slides:read`; create/reply/update/resolve/delete additionally
+require `slides:comment` (`drive` scope). Anchored comments use Slides while
+file comments and thread resolution use Drive. Comment edits and deletion
+require the head post's author. The SDK checks provider save status and keeps
+partial/unknown outcomes explicit; previews write nothing.
 
 Refs bind the Google account and presentation. Export and thumbnail refs
 materialize through streaming `object.get` or the signed-file route, which
@@ -391,7 +398,9 @@ capability URL remains inside the adapter. New thumbnail refs bind SMALL,
 MEDIUM or LARGE into the signed object ref; every size supports a download URL
 or streaming get without extra filters. Legacy refs default to SMALL.
 The composition action views expose structured `payload_schema` contracts for
-selectors, nested grids, shapes, text and images. Images held by the deployment use the existing `provider_fetch` route.
+selectors, nested grids, shapes, text, images, tables and videos. Table and
+comment actions also expose their structured selector payloads. Images held
+by the deployment use the existing `provider_fetch` route.
 
 The [Google Services recipe](https://github.com/kdcube/kdcube/blob/main/app/ai-app/docs/recipes/connections/integrations/google-service-README.md#slides-read-and-fill-a-connected-presentation)
 owns selectors, revision guards, template inputs, scopes and bounds.
