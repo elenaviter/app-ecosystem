@@ -23,6 +23,13 @@ def bind_slides_service(service):
 
 
 class GoogleSlidesService:
+    def __init__(self, *, host=None):
+        self.host = host
+
+    async def execute_typed(self, **kwargs):
+        from .slides_typed import execute_typed
+        return await execute_typed(self, **kwargs)
+
     async def execute(self, *, operation, claim, tool_name, payload=None, account_id=""):
         return await run_with_connected_account_retry(globals(), where=f"google_slides.{operation}", run=lambda: self._execute_once(operation=operation, claim=claim, tool_name=tool_name, payload=dict(payload or {}), account_id=account_id))
 

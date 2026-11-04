@@ -404,7 +404,9 @@ paths:
         Stateless streamable-HTTP MCP endpoint serving plain tools over the
         approving user's connected accounts (Slack search, mail search/read,
         Google Sheets discovery/read plus bounded write operations, and Google
-        Docs find/read/export plus bounded edit and comment operations).
+        Docs find/read/export plus bounded edit and comment operations, and
+        Google Slides action tools, masked native structure and revision-guarded
+        allowlisted batches).
         Each tool declares its connected-account requirements and enforces
         them at execution time; consent envelopes carry the Connection Hub
         next step.

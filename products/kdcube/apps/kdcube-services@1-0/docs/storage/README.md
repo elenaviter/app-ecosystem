@@ -54,6 +54,8 @@ Redis
 
 Slides import routing and response diagnostics are described in the SDK's
 [Connected Presentations](https://github.com/kdcube/kdcube/blob/main/app/ai-app/docs/sdk/integrations/google/slides-README.md).
+Typed Slides structure and batch results are request-owned provider reads;
+ordinary typed actions use the same scoped staging and signed transfer path.
 
 ## Descriptor And Secret Boundary
 

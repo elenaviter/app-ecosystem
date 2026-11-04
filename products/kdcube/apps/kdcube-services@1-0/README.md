@@ -16,7 +16,7 @@ primary_surfaces:
   - "Privileged platform administration widgets — economics, conversations, gateway, Redis, and apps"
   - "MCP endpoint `conversations` — delegated access to conversations_export"
   - "MCP endpoint `named_services` — delegated access to configured namespaces, including provider-neutral spreadsheets and documents"
-  - "MCP endpoint `productivity` — governed Slack, mail, Google Sheets, and Google Docs tools over connected accounts"
+  - "MCP endpoint `productivity` — governed Slack, mail, Google Sheets, Google Docs and Google Slides tools over connected accounts"
   - "Signed public transfer — conversation, mail, Slack, Sheets/Docs snapshots, and staged uploads"
 links:
   config: config/bundles.template.yaml

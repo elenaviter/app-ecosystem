@@ -56,6 +56,8 @@ from kdcube_ai_app.apps.chat.sdk.integrations.connection_hub.mcp_tool_enforcemen
 
 from ...services.named_services.request_scope import set_public_base_url_from_request
 from ...services.productivity.google_docs import GoogleDocsService
+from ...services.productivity.google_slides import GoogleSlidesService
+from .productivity_slides import SLIDES_PRODUCTIVITY_TOOLS, register_google_slides_tools
 from .productivity_docs import (
     DOCS_PRODUCTIVITY_TOOLS,
     register_google_docs_tools,
@@ -77,7 +79,7 @@ ConfigFactory = Callable[[], Mapping[str, Any]]
 
 PRODUCTIVITY_MCP_INSTRUCTIONS = """\
 This MCP server exposes productivity tools that run on the approving user's
-connected accounts (Slack, mail, Google Sheets, Google Docs, LinkedIn). Mail is
+connected accounts (Slack, mail, Google Sheets, Google Docs, Google Slides, LinkedIn). Mail is
 a realm across the mail providers this deployment configures (Gmail, IMAP/SMTP
 mailboxes such as iCloud Mail): when the user may have several
 mailboxes, list accounts first and pass the chosen account_id; a mail call
@@ -87,6 +89,10 @@ For Sheets, use search when the spreadsheet id is unknown, describe before
 structural changes, and pass the returned stable ids to read or write tools. For
 Docs, use search when the document id is unknown, get before editing, and pass
 the returned document id and text indices to the edit and comment tools. For
+Slides, search then get before actions; ordinary tools take a schema-described
+payload and presentation_ref. Advanced clients read get_structure for native
+object IDs/EMU, then batch_update with mandatory requiredRevisionId. Use the
+dedicated comment and delete_slide tools for those actions. For
 LinkedIn, list accounts first when several may be connected, then publish; pass
 the returned post_urn to the comment tool. LinkedIn exposes no feed, message or
 post-content reads here. Web search and web fetch run on no connected account:
@@ -161,6 +167,7 @@ PRODUCTIVITY_TOOLS: dict[str, dict[str, Any]] = {
     },
     **SHEETS_PRODUCTIVITY_TOOLS,
     **DOCS_PRODUCTIVITY_TOOLS,
+    **SLIDES_PRODUCTIVITY_TOOLS,
     **LINKEDIN_PRODUCTIVITY_TOOLS,
     **WEB_PRODUCTIVITY_TOOLS,
 }
@@ -183,6 +190,7 @@ def build_productivity_mcp_app(
     tenant_factory: Callable[[], str],
     project_factory: Callable[[], str],
     request: Any = None,
+    slides_host: Any = None,
 ):
     """Build the managed productivity MCP surface (plain tools, stateless)."""
 
@@ -733,6 +741,8 @@ def build_productivity_mcp_app(
         service=GoogleDocsService(),
         enforce_tool=_enforce,
     )
+
+    register_google_slides_tools(mcp, service=GoogleSlidesService(host=slides_host), enforce_tool=_enforce)
 
     register_linkedin_tools(
         mcp=mcp,

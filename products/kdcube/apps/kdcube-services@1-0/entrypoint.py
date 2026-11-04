@@ -376,6 +376,7 @@ class KDCubeServicesEntrypoint(BaseEntrypoint):
         mail_realm_module.bind_service(self)
         bind_productivity_service(self)
         bind_docs_service(self)
+        bind_slides_service(self)
         actor = getattr(self.comm_context, "actor", None)
         return productivity_mcp_module.build_productivity_mcp_app(
             name="KDCube productivity",
@@ -385,6 +386,7 @@ class KDCubeServicesEntrypoint(BaseEntrypoint):
             tenant_factory=lambda: str(getattr(actor, "tenant_id", None) or ""),
             project_factory=lambda: str(getattr(actor, "project_id", None) or ""),
             request=request,
+            slides_host=self,
         )
 
     @data_bus_handler(

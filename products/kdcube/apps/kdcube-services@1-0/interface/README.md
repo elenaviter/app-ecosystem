@@ -457,6 +457,23 @@ Auth: managed delegated credential at
 The outer guard authorizes the caller and selected tool. Each tool then checks
 its connected-account provider claim before resolving a live credential.
 
+The `productivity_slides_*` group contains 38 presentation tools: search,
+get, create, rename, the Slides action equivalents (including tables, videos
+and comments), `get_structure` and `batch_update`. Action tools publish a
+structured `payload` schema and take `presentation_ref` plus optional
+`account_id`; search/create/import omit the target. A bound ref fixes the
+account. Read tools require `slides:read`; content writes require read/write,
+comment writes read/comment, and trash/restore the distinct `slides:delete`.
+A parent folder additionally requires `drive:write`.
+
+`get_structure` returns masked native JSON with EMU geometry and object IDs.
+`batch_update` requires an exact `requiredRevisionId`, admits at most 50
+allowlisted requests and refuses slide deletion or comment writes through the
+raw route. The SDK's public
+[Google recipe](https://github.com/kdcube/kdcube/blob/main/app/ai-app/docs/recipes/connections/integrations/google-service-README.md#advanced-typed-presentation-tools)
+owns payloads, bounds and result envelopes. Typed actions share the existing
+staged-media, signed-artifact and comment pipeline.
+
 | Group | Tools | Connected-account claims |
 | --- | --- | --- |
 | Find and inspect | `productivity_sheets_search`, `productivity_sheets_describe` | `sheets:read` |
