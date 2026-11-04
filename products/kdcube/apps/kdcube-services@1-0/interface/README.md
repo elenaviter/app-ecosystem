@@ -386,8 +386,8 @@ The namespace and exact actions are declared in the Connection Hub catalog.
 Tables use the shared Docs row/column selector vocabulary, and tables and
 YouTube/Drive videos can be created in computed regions or grid cells.
 Comment reads use `slides:read`; create/reply/update/resolve/delete additionally
-require `slides:comment` (`drive` scope). Anchored comments use Slides while
-file comments and thread resolution use Drive. Comment edits and deletion
+require `slides:comment` (`drive` scope). Anchored comments and their resolution
+use Slides; file comments and their resolution use Drive. Comment edits and deletion
 require the head post's author. The SDK checks provider save status and keeps
 partial/unknown outcomes explicit; previews write nothing.
 
