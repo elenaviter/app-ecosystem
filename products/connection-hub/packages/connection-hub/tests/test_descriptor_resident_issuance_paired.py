@@ -15,7 +15,7 @@ from connection_hub.delegated_credentials.application_resources import applicati
 from connection_hub.delegated_credentials.cards import transaction_store as tx
 from connection_hub.delegated_credentials.cards.card_participant import PARTICIPANT
 from connection_hub.delegated_credentials.cards.effect_targets import compose_card_effects
-from connection_hub.delegated_credentials.cards.store import subject_hash_for
+from connection_hub.delegated_credentials.cards.store import CardStorageError, subject_hash_for
 from connection_hub.delegated_credentials.catalog.reservations import CatalogReservations
 from connection_hub.delegated_credentials.catalog.store import BundleStorageDelegatedCatalogStore
 from connection_hub.delegated_credentials.descriptor_resident_issuance import (
@@ -85,6 +85,7 @@ async def _paired(tmp_path):
         w.service._config, w.service._catalog_resolver = seed._config, seed._catalog_resolver
         w.service._minter = AsyncMock(side_effect=AssertionError("transactions ON must not call the active minter"))
         catalog_store = BundleStorageDelegatedCatalogStore(tmp_path / "catalog")
+        w.catalog_store = catalog_store
         w.catalog = await w.service._active_catalog()
         await catalog_store.write_version(w.catalog)
         await catalog_store.publish_active(w.catalog)
@@ -177,6 +178,10 @@ async def test_rotation_custody_cut_recovers_one_original_before_retiring_old_se
             await issue_descriptor_resident(w.service, USER, **request)
         assert (await w.decisions.read(plan.transaction_id)).state == "committed"
         assert await _usable(w, old.access_token) is not None
+        # SDK session validity alone is not Card admission. The real Card
+        # publication fence stays closed while custody/ordered effects lag.
+        with pytest.raises(CardStorageError, match="card_.*effects_pending"):
+            await w.store.assert_current_version_readable(subject_hash=w.subject_hash, access_id=old.access_id)
         assert await begin_descriptor_resident_issuance(w.service, USER, **request) == plan
         w.recompose()  # fresh SDK provider, custody manager and handle store
         await w.service._card_coordinator[0].finish(plan.transaction_id)
@@ -185,6 +190,62 @@ async def test_rotation_custody_cut_recovers_one_original_before_retiring_old_se
         assert await _usable(w, saved.access_token) is not None
         assert await _usable(w, old.access_token) is None
         assert await w.provider.read(plan=plan) == original
+
+
+@pytest.mark.asyncio
+async def test_expired_resident_and_changed_control_rotate_under_one_committed_group(tmp_path, monkeypatch):
+    async with _paired(tmp_path) as w:
+        old = await issue_descriptor_resident(w.service, USER, **_request(w, lease_seconds=2))
+        async with w.pool.acquire() as connection:
+            await connection.execute("SELECT pg_sleep(2.1)")
+        prepare, plans = w.provider.prepare, []
+
+        async def inspect(*, plan):
+            assert not (await w.decisions.read(plan.transaction_id)).terminal
+            plans.append(plan)
+            return await prepare(plan=plan)
+
+        monkeypatch.setattr(w.provider, "prepare", inspect)
+        arguments = _sync_arguments(allow_post=False)
+        arguments["capability_authority"] = {**arguments["capability_authority"],
+                                             "resource": w.arguments["capability_authority"]["resource"]}
+        arguments.update(descriptor_revision="descriptor-narrower", descriptor_payload={"revision": "descriptor-narrower"})
+        answer = await w.service.sync_agent_capability_control(USER, **arguments)
+        assert answer["ok"] and len(plans) == 1, answer
+        row = await w.decisions.read(plans[0].transaction_id)
+        assert row.state == "committed" and PARTICIPANT in row.finished
+        assert len(row.intent.payload["participant_inputs"][PARTICIPANT]["participant_candidates"][PARTICIPANT]["cards"]) == 2
+        control = (await w.service._load_record_any_state(w.control.access_id, grantor_subject=OWNER))[0]
+        resident = (await w.service._load_record_any_state(old.access_id, grantor_subject=OWNER))[0]
+        assert (control.card_revision, resident.card_revision, resident.control_card.control_revision) == (2, 2, 2)
+        assert resident.session_id != old.session_id and await _usable(w, resident.access_token) is not None
+        assert await _usable(w, old.access_token) is None and w.service._minter.await_count == 0
+
+
+@pytest.mark.asyncio
+async def test_catalog_move_after_inactive_preparation_aborts_without_publishing_a_card(tmp_path, monkeypatch):
+    from connection_hub.delegated_credentials.catalog.models import CatalogDocument
+    from kdcube_ai_app.auth.tests.test_bound_session_issuance_store import counts
+
+    async with _paired(tmp_path) as w:
+        prepare, plans = w.provider.prepare, []
+
+        async def move(*, plan):
+            prepared = await prepare(plan=plan)
+            plans.append(plan)
+            changed = CatalogDocument.build({"delegated_credentials": {"oauth": {"enabled": True,
+                "resources": [{"resource": "https://example.test/changed", "grants": ["changed:read"]}]}}})
+            await w.catalog_store.write_version(changed)
+            await w.catalog_store.publish_active(changed)
+            return prepared
+
+        monkeypatch.setattr(w.provider, "prepare", move)
+        answer = await w.service.sync_agent_capability_control(USER, **w.arguments)
+        assert answer["ok"] is False and len(plans) == 1
+        row = await w.decisions.read(plans[0].transaction_id)
+        assert row.state == "aborted"
+        assert await w.store.read_current_authority(subject_hash=w.subject_hash, access_id=w.resident.access_id) is None
+        assert await counts(w.sessions) == (1, 1, 0)  # prepared original, never a usable session
 
 
 @pytest.mark.asyncio
