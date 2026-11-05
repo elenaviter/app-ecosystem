@@ -182,12 +182,19 @@ the decision, and includes any invocation-policy effects in the same commit.
 New selections outside the current Control refuse by name. Stored Control
 administrator edits and configured issuer/caller policies keep their gates.
 Project-managed Cards retain their configured project route; an unknown issuer
-or a binding without a configured project route is refused. Recognizing a
-descriptor binding does not exempt other writers from the direct-write guard.
+is refused. A known application binding without a project route keeps its
+ordinary writer rules. Recognizing a descriptor binding does not exempt other
+writers from the direct-write guard.
 
 This existing-Card edit requires unchanged credential handles. Descriptor sync,
 first creation and credential rotation need their own enlisted lifecycle; the
 owner-edit path does not make an early minted credential transactional.
+
+Focused consent on a live descriptor resident uses the same local edit path
+and keeps its existing bearer. The merged standard grants and the aligned
+capability selection are persisted in one Card revision, so a subsequent sync
+reads the consented selection. An explicit replacement can remove a selection;
+sync does not union removed choices back into it.
 
 Implementation checkpoint: managed preflight, wire, candidate composition and
 real filesystem policy/coordinator failure-cut checks exist. Productive

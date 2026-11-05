@@ -179,3 +179,22 @@ async def test_descriptor_control_owner_edit_still_requires_platform_admin():
         resource_operations=control.resource_operations, expected_card_revision=control.card_revision,
         label="Owner must not change administrator Control")
     assert answer["ok"] is False and answer["error"] == "platform_admin_required"
+
+
+@pytest.mark.asyncio
+async def test_known_non_project_application_binding_keeps_ordinary_writer_rules():
+    service, resident, _ = await _descriptor_pair()
+    service._card_coordinator = (None, None, None, 60)
+    resource = "urn:kdcube:app:tenant-a:project-a:ordinary-app:agent"
+    binding = ControlCardBinding(
+        control_id=control_card_id_for_issuer("application", resource, grantor_subject=OWNER),
+        issuer_kind="application", issuer_ref=resource, control_revision=1)
+    resident = replace(resident, control_card=binding)
+
+    async def project_authorize(*args):
+        raise AssertionError("an ordinary application binding is not a project target")
+
+    answer = await service._forward_owner_agent_card_save(
+        {"user_id": OWNER}, record=record_from_card(resident), request_id="ordinary-app-save",
+        authorize_agent_card=project_authorize, changes={})
+    assert answer is None

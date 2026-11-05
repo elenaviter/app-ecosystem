@@ -13,8 +13,10 @@ from connection_hub.delegated_credentials.cards import transaction_store as tx
 from connection_hub.delegated_credentials.cards.card_participant import PARTICIPANT
 from connection_hub.delegated_credentials.cards.service import CardConflict, CardServingUnavailable
 from connection_hub.delegated_credentials.cards.store import CardStorageError, subject_hash_for
-from connection_hub.delegated_credentials.caller_writer_gate import CallerWriteRefused
+from connection_hub.delegated_credentials.caller_writer_gate import CallerWriteRefused, CallerWriterRegistry
 from connection_hub.delegated_credentials.automation_access import record_from_card
+from connection_hub.delegated_credentials.agent_capability_control import AGENT_DESCRIPTOR_ISSUER_KIND
+from connection_hub.delegated_credentials.issuer_gate import IssuerWriteRefused, change_digest
 from connection_hub.delegated_credentials.catalog.models import CatalogDocument
 from connection_hub.delegated_credentials.catalog.reservations import CatalogReservations
 from connection_hub.delegated_credentials.catalog.store import BundleStorageDelegatedCatalogStore
@@ -44,8 +46,8 @@ class StoredPersistence:
         return await self.persist(*args, **kwargs)
 
 
-async def _world(tmp_path):
-    service, resident, control = await _descriptor_pair()
+async def _world(tmp_path, *, pair=None):
+    service, resident, control = pair if pair is not None else await _descriptor_pair()
     handles = {key: value[1] for key, value in service._persistence.records.items()}
     host, store, decisions, _, _ = await _host(tmp_path / "cards")
     coordinator, intents, _, ttl = host._card_coordinator
@@ -180,3 +182,48 @@ async def test_interrupted_finish_recovers_the_one_committed_owner_save(tmp_path
     assert (await _current(store, resident)).label == "Owner's saved label"
     assert await _current(store, control) == control
     assert decisions.decisions == ["committed"] and service._persistence.direct == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mutate_during_gate", [False, True])
+async def test_enlisted_descriptor_caller_gate_binds_the_candidate_and_witness(tmp_path, monkeypatch, mutate_during_gate):
+    from test_delegated_access_renewal import _Policy
+    service, store, decisions, resident, control, _, _ = await _world(tmp_path)
+    policy = _Policy(True)
+    registry = CallerWriterRegistry()
+    registry.register(AGENT_DESCRIPTOR_ISSUER_KIND, policy)
+    service.bind_caller_writers(registry)
+    candidate = replace(resident, card_revision=resident.card_revision + 1, label="Enlisted edit")
+    seen = []
+    write = service._coordinated_write
+    revalidate = policy.revalidate
+
+    async def capture(record, authority, **kwargs):
+        seen.append(authority)
+        return await write(record, authority, **kwargs)
+
+    async def recheck(request, initial):
+        if mutate_during_gate:
+            seen[0].properties["injected_during_gate"] = True
+        return await revalidate(request, initial)
+
+    monkeypatch.setattr(service, "_coordinated_write", capture)
+    monkeypatch.setattr(policy, "revalidate", recheck)
+    active = await service._active_catalog()
+
+    async def save():
+        await service._persist_descriptor_agent_edit(
+            record_from_card(resident), record_from_card(candidate), control=record_from_card(control),
+            active_catalog=active, actor_subject=OWNER)
+
+    if mutate_during_gate:
+        with pytest.raises(IssuerWriteRefused, match="issuer_candidate_changed"):
+            await save()
+        assert decisions.decisions == ["aborted"] and await _current(store, resident) == resident
+        assert ("finalize", "refused") in policy.calls
+    else:
+        await save()
+        row = next(iter(decisions.rows.values()))
+        assert row.witness_digest == change_digest(candidate.to_dict())
+        assert ("decide", "update") in policy.calls and ("revalidate", "update") in policy.calls
+        assert ("finalize", "committed") in policy.calls

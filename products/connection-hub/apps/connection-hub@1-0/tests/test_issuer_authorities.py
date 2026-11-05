@@ -6,11 +6,20 @@ from dataclasses import asdict, replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import AsyncMock
+from types import SimpleNamespace
 
 import pytest
 
 from connection_hub.delegated_credentials.issuer_gate import IssuerRequest, IssuerWriteRefused, change_digest
 from connection_hub.delegated_credentials.remote_issuer import verify_issuer_request, verify_issuer_envelope
+from connection_hub.delegated_credentials.agent_capability_control import (
+    AGENT_DESCRIPTOR_ISSUER_KIND, descriptor_control_properties,
+)
+from connection_hub.delegated_credentials.agent_capability_policy import AgentCapabilityPolicy
+from connection_hub.delegated_credentials.automation_access import AutomationAccessService, record_from_card
+from connection_hub.delegated_credentials.cards.model import CardAuthority
+from connection_hub.delegated_credentials.controls.model import control_card_id_for_issuer
+from connection_hub.delegated_credentials.controls.snapshot import reviewed_control_snapshot_properties
 
 
 def module():
@@ -33,6 +42,81 @@ def config(kind="opaque", **changes):
 def request(kind="opaque"):
     return IssuerRequest("authenticated-actor", "request", "update", "card", 3,
                          kind, "opaque-record", change_digest({"label": "new"}), "")
+
+
+def descriptor_control_record():
+    resource = "urn:kdcube:app:tenant-a:project-a:synthetic-app:agent"
+    return CardAuthority(
+        access_id=control_card_id_for_issuer(AGENT_DESCRIPTOR_ISSUER_KIND, resource, grantor_subject="owner"),
+        client_id=f"control-card:{AGENT_DESCRIPTOR_ISSUER_KIND}", grantor_subject="owner", delegate_subject="",
+        source="control", card_kind="control", label="Descriptor Control", card_revision=1,
+        catalog_version="catalog-1", created_at=1, expires_at=0, issuer_kind=AGENT_DESCRIPTOR_ISSUER_KIND,
+        issuer_ref=resource, composition_mode="and", properties=reviewed_control_snapshot_properties(
+            descriptor_control_properties(authority=AgentCapabilityPolicy.empty(resource)),
+            basis_catalog_version="catalog-1"))
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("allowed", [False, True])
+async def test_configured_descriptor_authority_still_decides_and_revalidates_control_owner_write(allowed):
+    calls = []
+
+    async def caller(**kwargs):
+        calls.append(kwargs["operation"])
+        body = kwargs["data"]
+        if kwargs["operation"] == "opaque_prepare":
+            return {"ok": True, "request": body["request"], "change_digest": change_digest(body["candidate"]),
+                    "context_ref": "descriptor-control-context"}
+        if kwargs["operation"] == "opaque_finalize":
+            return {"ok": True, "request": body["request"], "outcome": body["outcome"], "finalized": True}
+        return {"ok": True, "request": body["request"], "decision": {
+            "allowed": allowed, "reason": "" if allowed else "descriptor_policy_refused", "policy_version": "v1",
+            "valid_until": (datetime.now(timezone.utc) + timedelta(seconds=30)).isoformat()}}
+
+    registry = module().issuer_registry_from_connections(
+        connections=config(AGENT_DESCRIPTOR_ISSUER_KIND), resolve_secret=AsyncMock(return_value="x" * 32), caller=caller)
+    assert registry.is_managed(AGENT_DESCRIPTOR_ISSUER_KIND)
+    service = AutomationAccessService.__new__(AutomationAccessService)
+    service._persistence = SimpleNamespace(persist_guarded=AsyncMock())
+    service.bind_issuer_registry(registry, actor_subject="owner")
+    original = descriptor_control_record()
+
+    async def prepare():
+        return await service._issuer_before_commit(
+            record_from_card(original), {"user_id": "owner", "roles": ["kdcube:role:super-admin"]}, action="update",
+            candidate=replace(original, card_revision=2, label="Administrator edit").to_dict(),
+            request_id="descriptor-control-save", context_ref="", decision=None)
+
+    if allowed:
+        gate, prepared = await prepare()
+        assert prepared is not None and gate is not None
+        await gate()
+        await service._issuer_outcome(prepared, state="committed", card_revision=2)
+        assert calls == ["opaque_prepare", "opaque_decide", "opaque_decide", "opaque_finalize"]
+    else:
+        with pytest.raises(IssuerWriteRefused, match="descriptor_policy_refused"):
+            await prepare()
+        assert calls == ["opaque_prepare", "opaque_decide", "opaque_finalize"]
+    service._persistence.persist_guarded.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_malformed_descriptor_authority_cannot_restore_owner_managed_control_bypass():
+    caller = AsyncMock()
+    registry = module().issuer_registry_from_connections(
+        connections=config(AGENT_DESCRIPTOR_ISSUER_KIND, operation=False), resolve_secret=AsyncMock(), caller=caller)
+    service = AutomationAccessService.__new__(AutomationAccessService)
+    service._persistence = SimpleNamespace(persist_guarded=AsyncMock())
+    service.bind_issuer_registry(registry, actor_subject="owner")
+    original = descriptor_control_record()
+    assert registry.is_managed(AGENT_DESCRIPTOR_ISSUER_KIND)
+    with pytest.raises(IssuerWriteRefused, match="issuer_authority_config_invalid"):
+        await service._issuer_before_commit(
+            record_from_card(original), {"user_id": "owner", "roles": ["kdcube:role:super-admin"]}, action="update",
+            candidate=replace(original, card_revision=2, label="Must refuse").to_dict(),
+            request_id="descriptor-control-save", context_ref="", decision=None)
+    caller.assert_not_called()
+    service._persistence.persist_guarded.assert_not_called()
 
 
 @pytest.mark.asyncio

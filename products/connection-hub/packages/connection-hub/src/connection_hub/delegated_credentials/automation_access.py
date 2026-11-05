@@ -3100,8 +3100,7 @@ class AutomationAccessService:
         if not project_ref or authorize_agent_card is None:
             return None
         if self._managed_card_edit_forwarder(project_ref) is None:
-            return {"ok": False, "error": "agent_card_control_issuer_unknown", "status": 409,
-                    "retryable": False}
+            return None  # a known application binding without a project route keeps its writer rules
         decision = await authorize_agent_card(record.access_id, project_ref)
         if isinstance(decision, dict):
             return decision  # the project host's own refusal
@@ -3255,6 +3254,19 @@ class AutomationAccessService:
         agent = managed_my_card_owner(card_authority_from_record(record)) is None
         if agent and record.control_card is None:
             return None
+        if agent and record.control_card.issuer_kind == AGENT_DESCRIPTOR_ISSUER_KIND:
+            from .descriptor_agent_card import DescriptorAgentCardRefused
+            try:
+                await self._descriptor_control_for_resident(record, grantor_subject=_subject_from_user(user))
+            except DescriptorAgentCardRefused as exc:
+                return exc.to_dict()
+            except CardUnavailable:
+                return {"ok": False, "error": "agent_capability_control_unavailable", "retryable": True,
+                        "status": 503}
+            return None
+        if agent and record.control_card.issuer_kind not in {"application", "project"}:
+            return {"ok": False, "error": "agent_card_control_issuer_unknown", "status": 409,
+                    "retryable": False}
         selection: dict[str, Any] = {
             "resource_grants": {res: list(vals) for res, vals in candidate.resource_grants.items()},
             "resource_operations": {res: list(vals) for res, vals in candidate.resource_operations.items()},
@@ -3276,6 +3288,8 @@ class AutomationAccessService:
             project_ref = _clean(record.control_card.issuer_ref)
             if authorize_agent_card is None:
                 return None  # no project policy to ask: W578 refuses the direct write
+            if self._managed_card_edit_forwarder(project_ref) is None:
+                return None  # known non-project applications keep their existing writer rules
             decision = await authorize_agent_card(record.access_id, project_ref)
             if isinstance(decision, dict):
                 return decision  # the project host's own refusal
@@ -3551,6 +3565,8 @@ class AutomationAccessService:
         if before_commit is None:
             before_commit, enlisted_request = await self._enlisted_gate(
                 candidate, expected_revision=original.card_revision, caller_write=caller)
+            if enlisted_request is not None:
+                expected_issuer_digest = enlisted_request.change_digest
 
         async def gate() -> None:
             if expected_issuer_digest and change_digest(candidate.to_dict()) != expected_issuer_digest:
@@ -5478,6 +5494,26 @@ class AutomationAccessService:
             )
         except ApplicationOperationPolicyError as exc:
             return _application_policy_refusal(exc)
+        if (existing is not None and getattr(self, "_card_coordinator", None) is not None
+                and existing.control_card is not None
+                and existing.control_card.issuer_kind == AGENT_DESCRIPTOR_ISSUER_KIND):
+            # A focused consent on a live resident edits the same Card. Its
+            # standard authority and durable capability selection are aligned
+            # by update_access and committed together, with the same bearer.
+            # First issuance/rotation belongs to the enlisted lifecycle.
+            saved = await self.update_access(
+                user, access_id=existing.access_id, resource_grants=selected_resource_grants,
+                resource_operations=selected_resource_operations,
+                named_service_operations=selected_named_service_operations.to_stored(),
+                account_scope=selected_account_scope, properties=selected_properties,
+                expected_card_revision=(existing.card_revision if expected_card_revision is None
+                                        else expected_card_revision),
+                expected_catalog_version=catalog_version, request_id=request_id,
+                _application_write=_application_write)
+            if saved.get("ok") is not True:
+                return saved
+            return {**saved, "access_token": existing.access_token,
+                    "authorization_header": f"Bearer {existing.access_token}" if existing.access_token else ""}
         if existing is not None and self._managed_direct_write_refused() is not None:
             # W727: a grant onto a managed Card (the caller's own My Card, or a bound agent Card the
             # project authorizes) is that project's transaction; no credential is minted for it. A grant
