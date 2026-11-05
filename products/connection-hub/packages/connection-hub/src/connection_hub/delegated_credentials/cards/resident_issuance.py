@@ -60,6 +60,9 @@ class ResidentCredentialEffects:
                 and raw["candidate_revision"] == after["card_revision"] == payload["card_revision"]
                 and raw["card_content_hash"] == after["content_hash"]
                 and raw["expires_at"] == after["expires_at"] == payload["expires_at"]
+                and raw["delivery_deadline"] == raw["expires_at"]
+                and all(type(raw[name]) is int for name in ("base_revision", "candidate_revision",
+                    "expires_at", "delivery_deadline", "reserved_until"))
                 and raw["tenant"] == self._store.tenant and raw["project"] == self._store.project)
             if not valid:
                 raise ValueError("binding")
@@ -79,7 +82,7 @@ class ResidentCredentialEffects:
             raise ParticipantEffectRefused("card_effect_binding_mismatch") from None
 
     async def finish(self, binding: EffectBinding, plan: OAuthIssuancePlan, *,
-                     outcome: str, live: Any = None) -> None:
+                     outcome: str, live: Any = None) -> str:
         """Install only an applied original, or retire an authenticated terminal one."""
         reservations = await self._store.issuance_reservations(plan.transaction_id)
         held = reservations.get("access", {})
@@ -98,8 +101,17 @@ class ResidentCredentialEffects:
                                              held.get("token_sha256", ""))})
         if outcome != "applied":
             await self._provider.retire(plan=plan, result=result)
-            return
+            return outcome
         if live is None:
+            if await self._store.issuance_clock() >= plan.expires_at:
+                # The SQL slot may have activated before a custody cut. It
+                # cannot be released or rewritten after that point. Its fixed
+                # Card cap, the SDK original's fixed claim expiry and delivery
+                # deadline have all ended. Complete the effect as superseded
+                # without activating, signing, installing or trying to retire
+                # a possibly activated SDK session. A merely moved live Card
+                # does not qualify for this terminal lease case.
+                return "superseded"
             raise ParticipantEffectRefused("card_effect_binding_mismatch")
         handles = await self._provider.activate(plan=plan, result=result)
         if (type(handles) is not CardCredentialHandles or handles.access_id != plan.access_id
@@ -107,6 +119,7 @@ class ResidentCredentialEffects:
                 or hashlib.sha256(handles.access_token.encode("utf-8")).hexdigest() != held.get("token_sha256")):
             raise ParticipantEffectRefused("card_effect_binding_mismatch")
         await self._handles.write(live, handles)
+        return "applied"
 
 
 __all__ = ["RESIDENT_ISSUANCE_KIND", "ResidentCredentialEffects"]

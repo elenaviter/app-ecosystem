@@ -1584,7 +1584,8 @@ async def sync_agent_capability_control(
             ),
             "expires_at": (
                 now + AGENT_CAPABILITY_CARD_LEASE_SECONDS
-                if existing_resident.expires_at <= now
+                if getattr(service, "_card_coordinator", None) is None
+                and existing_resident.expires_at <= now
                 and not existing_resident.access_token
                 else existing_resident.expires_at
             ),
@@ -1679,8 +1680,14 @@ async def sync_agent_capability_control(
             if transactional:
                 from .descriptor_agent_lifecycle import persist_descriptor_lifecycle
 
-                await persist_descriptor_lifecycle(service, user, original=existing_resident, resident=resident,
+                credential_ready = await persist_descriptor_lifecycle(service, user, original=existing_resident, resident=resident,
                     original_control=existing_control, control=record_from_card(control_authority), active_catalog=active)
+                if not credential_ready:
+                    return {**_transaction_refusal(DescriptorAgentCardRefused(
+                        "agent_capability_resident_issuance_not_enlisted", retryable=True, status=503)),
+                        "control_committed": control_changed, "card_committed": True,
+                        "control_card": record_from_card(control_authority).to_public_dict(),
+                        "card": resident.to_public_dict()}
             else:
                 await service._persist_record(resident, expected_revision=expected_resident_revision)
         except CardServingUnavailable as exc:

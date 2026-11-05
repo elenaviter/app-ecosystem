@@ -195,13 +195,16 @@ policies are revalidated before the decision. The administrator edit marker
 and label survive a descriptor refresh.
 
 First creation and credential rotation still need the inactive-original
-planner. Until enlisted, sync and selection changes requiring a credential
-return `agent_capability_resident_issuance_not_enlisted` before minting or
-writing either Card. A configured managed issuer's Control creation needs a
-creation authorization contract; the update/revoke issuer contract cannot
-authorize it, so it returns
-`agent_descriptor_control_creation_authority_unsupported`. The owner-edit
-path never makes an early minted credential transactional.
+planner. This interim draft must not merge or deploy before that planner is
+wired and qualified. Until enlisted, changes requiring issuance return
+`agent_capability_resident_issuance_not_enlisted` before minting. A changed
+Control can still commit with the existing resident even when its bearer is
+missing or expired; that answer explicitly says which Cards committed while
+credential issuance remains pending. Control narrowing never waits for a new
+credential. A fresh descriptor Control is issued locally under the group’s
+absence fence; configured update/revoke issuer policies continue to govern
+changes to an existing Control. The owner-edit path never makes an early
+minted credential transactional.
 
 Focused consent on a live descriptor resident uses the same local edit path
 and keeps its existing bearer. The merged standard grants and the aligned

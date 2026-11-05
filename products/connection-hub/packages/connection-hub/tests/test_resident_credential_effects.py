@@ -27,6 +27,10 @@ class _Issuance:
         self.raw, self.decision_id = raw, GROUP if created else TX
         self.slot = {"state": "bound", "outcome": "", "token_sha256": DIGEST}
         self.activations = []
+        self.now = int(time.time())
+
+    async def issuance_clock(self):
+        return self.now
 
     async def read_issuance_plan(self, transaction_id):
         assert transaction_id == self.decision_id
@@ -37,6 +41,8 @@ class _Issuance:
 
     async def activate_issued_credential(self, **kwargs):
         self.activations.append(kwargs)
+        if self.slot.get("state") == "activated":
+            return "applied"  # the productive SQL slot never rolls back an activated outcome
         outcome = "applied" if kwargs["card_live"] else "superseded"
         self.slot.update(state="activated" if outcome == "applied" else "released", outcome=outcome)
         return outcome
@@ -149,6 +155,27 @@ async def test_fresh_effect_replays_same_original_after_activation_and_custody_c
 
 
 @pytest.mark.asyncio
+async def test_lease_expiry_after_activation_cut_finishes_without_another_bearer_or_custody_write():
+    w = _world(fail=True)
+    with pytest.raises(ParticipantEffectRefused, match="card_effect_target_unavailable"):
+        await _dispatch(w)
+    assert w.store.slot["state"] == "activated" and w.handles.saved == []
+    w.store.now = w.candidate.expires_at
+    assert await _dispatch(w, live=None) == "superseded"
+    assert len(w.provider.activated) == 1 and w.provider.retired == [] and w.handles.saved == []
+
+
+@pytest.mark.asyncio
+async def test_moved_target_before_lease_expiry_never_reinstalls_an_activated_original():
+    w = _world(fail=True)
+    with pytest.raises(ParticipantEffectRefused):
+        await _dispatch(w)
+    with pytest.raises(ParticipantEffectRefused, match="card_effect_binding_mismatch"):
+        await _dispatch(w, live=None)
+    assert len(w.provider.activated) == 1 and w.handles.saved == []
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("missing_slot", [False, True])
 async def test_abort_retires_original_even_after_cut_before_hub_reservation(missing_slot):
     w = _world(state="aborted")
@@ -172,6 +199,7 @@ async def test_superseded_original_is_retired_without_activation_or_custody():
     ("tenant", "foreign"), ("project", "foreign"), ("access_id", "another-card"),
     ("base_revision", 99), ("candidate_revision", 99), ("card_content_hash", "f" * 64),
     ("expires_at", 1), ("slots", ["access", "refresh"]),
+    ("delivery_deadline", 600), ("base_revision", True),
     ("effect_digests", {"access": "f" * 64}),
 ])
 async def test_changed_stored_plan_refuses_before_activating_a_slot_or_provider(field, value):

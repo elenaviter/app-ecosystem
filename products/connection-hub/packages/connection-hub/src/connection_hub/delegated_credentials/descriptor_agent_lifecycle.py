@@ -38,11 +38,12 @@ def _prior_binding(resident: Any, control: Any) -> Any:
 
 async def persist_descriptor_lifecycle(service: Any, user: Mapping[str, Any], *, original: Any,
                                        resident: Any, original_control: Any, control: Any,
-                                       active_catalog: Any) -> None:
+                                       active_catalog: Any) -> bool:
     """Commit an existing bearer's descriptor sync, including a changed Control.
 
-    Issuance is refused before any write until its inactive-original planner
-    is enlisted. No path here invokes the ordinary active minter.
+    Return whether its credential is ready. A Control change is independent
+    of bearer availability and may commit while issuance remains pending.
+    No path here invokes the ordinary active minter.
     """
     from .automation_access import card_authority_from_record, _subject_from_user
 
@@ -62,11 +63,9 @@ async def persist_descriptor_lifecycle(service: Any, user: Mapping[str, Any], *,
         if candidate_shape_refusal("update", before.to_dict(), candidate.to_dict()) is not None:
             raise DescriptorAgentCardRefused("agent_capability_edit_identity_conflict")
         validate_descriptor_agent_additions(before, candidate, ceiling)
-    # A managed issuer's creation protocol is not represented by update/revoke
-    # IssuerRequest. Never impersonate an existing Card or omit that gate.
-    if prior_control is None and service._issuer_managed(control):
-        raise DescriptorAgentCardRefused("agent_descriptor_control_creation_authority_unsupported")
-    if (original is None or not original.access_token or original.expires_at <= int(time.time())):
+    changed_control = prior_control != ceiling
+    credential_needed = original is None or not original.access_token or original.expires_at <= int(time.time())
+    if original is None or (credential_needed and not changed_control):
         raise DescriptorAgentCardRefused("agent_capability_resident_issuance_not_enlisted", retryable=True, status=503)
     if (resident.access_token, resident.refresh_token, resident.session_id) != (
             original.access_token, original.refresh_token, original.session_id):
@@ -75,7 +74,6 @@ async def persist_descriptor_lifecycle(service: Any, user: Mapping[str, Any], *,
     catalog_digest = catalog_version_digest(active_catalog.version, active_catalog.content_hash)
     if ceiling.catalog_version != active_catalog.version:
         raise DescriptorAgentCardRefused("agent_capability_control_catalog_conflict", retryable=True)
-    changed_control = prior_control != ceiling
     if not changed_control:
         # The common same-Control case is the already-qualified owner-edit
         # decision, after advancing only this lifecycle's old binding snapshot.
@@ -83,7 +81,7 @@ async def persist_descriptor_lifecycle(service: Any, user: Mapping[str, Any], *,
         if before.control_card.control_revision == ceiling.card_revision:
             await service._persist_descriptor_agent_edit(original, resident, control=control,
                 active_catalog=active_catalog, actor_subject=actor)
-            return
+            return True
 
     request_id = secrets.token_urlsafe(18)
     caller = CallerWrite("update", actor, request_id=request_id)
@@ -157,7 +155,12 @@ async def persist_descriptor_lifecycle(service: Any, user: Mapping[str, Any], *,
                 actual = await decisions.read(row.transaction_id)
                 committed = actual is not None and actual.state == "committed"
                 outcome_known = actual is not None and actual.terminal
-                await coordinator.finish(row.transaction_id)
+                try:
+                    await coordinator.finish(row.transaction_id)
+                except Exception:
+                    # Recovery retries FINISH. Keep the original refusal as
+                    # this operation's cause and its structured error code.
+                    pass
         if isinstance(exc, (DecisionRefused, CardTransactionRefused)):
             raise DescriptorAgentCardRefused(str(exc), retryable=True) from None
         raise
@@ -168,6 +171,7 @@ async def persist_descriptor_lifecycle(service: Any, user: Mapping[str, Any], *,
                 state=state, card_revision=candidate.card_revision if committed else before.card_revision)
             await service._issuer_outcome(issuer_request, state=state,
                 card_revision=ceiling.card_revision if committed else prior_control.card_revision if prior_control else 0)
+    return not credential_needed
 
 
 __all__ = ["persist_descriptor_lifecycle"]

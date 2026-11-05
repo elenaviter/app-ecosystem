@@ -165,10 +165,41 @@ async def test_missing_credential_is_named_before_mint_or_control_write(tmp_path
         raise AssertionError("unplanned issuance must not call the ordinary minter")
 
     monkeypatch.setattr(service, "_mint_card_credential", mint)
-    answer = await service.sync_agent_capability_control({"user_id": OWNER}, **_refresh_arguments())
+    answer = await service.sync_agent_capability_control({"user_id": OWNER}, **_sync_arguments())
     assert answer["error"] == "agent_capability_resident_issuance_not_enlisted" and answer["retryable"]
     assert await _current(store, control) == control and await _current(store, resident) == resident
     assert decisions.rows == {} and service._persistence.direct == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("missing_handle", [False, True])
+async def test_expired_bearer_does_not_block_a_narrower_control_decision(tmp_path, monkeypatch, missing_handle):
+    from connection_hub.delegated_credentials.agent_capability_policy import AGENT_CAPABILITY_PROJECTION_PROPERTY
+    from connection_hub.delegated_credentials.controls.effective import effective_card_authority
+
+    service, store, decisions, resident, control, card_service, _ = await _consent_world(tmp_path)
+    assert (await _consent(service, resident))["ok"]
+    current = await _current(store, resident)
+    expired = replace(current, card_revision=current.card_revision + 1, expires_at=int(time.time()) - 10)
+    await card_service.commit(expired, subject_hash=subject_hash_for(OWNER),
+                              expected_revision=current.card_revision, now=int(time.time()))
+    if missing_handle:
+        handles = service._persistence.handles[resident.access_id]
+        service._persistence.handles[resident.access_id] = replace(handles, access_token="", session_id="")
+
+    async def mint(*args, **kwargs):
+        raise AssertionError("Control narrowing never depends on an ordinary mint")
+
+    monkeypatch.setattr(service, "_mint_card_credential", mint)
+    answer = await service.sync_agent_capability_control({"user_id": OWNER}, **_refresh_arguments(allow_post=False))
+    assert answer["error"] == "agent_capability_resident_issuance_not_enlisted" and answer["retryable"]
+    assert answer["control_committed"] and answer["card_committed"]
+    narrowed = await _current(store, control)
+    updated = await _current(store, resident)
+    projection = effective_card_authority(updated, narrowed).properties[AGENT_CAPABILITY_PROJECTION_PROPERTY]
+    assert f"slack/{POST}" not in projection["capabilities"]["named_service_operations"]
+    assert updated.expires_at == expired.expires_at and narrowed.card_revision == control.card_revision + 1
+    assert decisions.decisions == ["committed", "committed"] and service._persistence.direct == []
 
 
 @pytest.mark.asyncio

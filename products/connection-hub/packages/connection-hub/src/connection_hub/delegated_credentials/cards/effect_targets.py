@@ -295,8 +295,8 @@ class CredentialIssueTarget:
             card_live=live is not None))
         if outcome == "applied":
             if resident is not None:
-                await self._resident.finish(binding, resident, outcome=outcome, live=live)
-                return binding.effect_digest
+                result = await self._resident.finish(binding, resident, outcome=outcome, live=live)
+                return CREDENTIAL_ISSUE_SUPERSEDED if result == "superseded" else binding.effect_digest
             # W606: only a CREATE writes the new Card's handle metadata here; every later Card change
             # moves an existing row through its own ``handle_binding`` effect (one writer per row).
             created = binding.receipt().get("before") is None
