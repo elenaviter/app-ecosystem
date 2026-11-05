@@ -217,8 +217,8 @@ or committed issuance stays fenced. This fallback advances the binding while
 retaining the resident's prior positive authority; the response identifies
 the Cards actually committed and the pending issuance code. New positive
 standard grants still require the owner's delegability, independently of
-the Control ceiling. A fresh descriptor Control is issued locally under the
-group's absence fence; configured update/revoke issuer policies continue to
+the Control ceiling. With no dedicated descriptor issuer registration, a fresh
+Control is issued locally under the group's absence fence; configured update/revoke issuer policies continue to
 govern changes to an existing Control.
 
 Project ports `authorities.control_card` and `authorities.agent_card` do not
