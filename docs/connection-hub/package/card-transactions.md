@@ -171,6 +171,24 @@ receipt, matches all sealed immutable fields, and checks its committed state.
 Without the coordinator, a changed Save refuses
 `whole_card_save_transaction_unavailable` and keeps the draft.
 
+A descriptor-issued hosted Agent Card's owner edit is decided in the Hub.
+The Hub verifies the resident id and client, grantor partition, deployment,
+application and agent against the canonical stored descriptor Control. The
+Control must be active, credentialless, carry descriptor evidence and an exact
+snapshot, and match the resident binding's revision. A stale binding refuses;
+Save does not silently adopt a newer Control. The local participant reserves
+that Control revision and the active catalog's version plus content hash until
+the decision, and includes any invocation-policy effects in the same commit.
+New selections outside the current Control refuse by name. Stored Control
+administrator edits and configured issuer/caller policies keep their gates.
+Project-managed Cards retain their configured project route; an unknown issuer
+or a binding without a configured project route is refused. Recognizing a
+descriptor binding does not exempt other writers from the direct-write guard.
+
+This existing-Card edit requires unchanged credential handles. Descriptor sync,
+first creation and credential rotation need their own enlisted lifecycle; the
+owner-edit path does not make an early minted credential transactional.
+
 Implementation checkpoint: managed preflight, wire, candidate composition and
 real filesystem policy/coordinator failure-cut checks exist. Productive
 PB/database and browser qualification is still required; these local checks
