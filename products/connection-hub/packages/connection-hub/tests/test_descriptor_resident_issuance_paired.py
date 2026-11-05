@@ -16,6 +16,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from connection_hub.delegated_credentials.application_resources import application_resource
+from connection_hub.delegated_credentials.automation_access import record_from_card
 from connection_hub.delegated_credentials.cards import transaction_store as tx
 from connection_hub.delegated_credentials.cards.card_participant import PARTICIPANT
 from connection_hub.delegated_credentials.cards.effect_targets import compose_card_effects
@@ -83,9 +84,11 @@ async def _paired(tmp_path):
             tenant=w.authority.tenant, project=w.authority.project, application=APPLICATION, agent=AGENT)}
         answer = await seed.sync_agent_capability_control({"user_id": OWNER}, **w.arguments)
         assert answer["ok"], answer
-        w.resident = records.records[answer["card"]["access_id"]][0]
+        # The seed persistence splits authority and handles; lifecycle callers
+        # take their combined record, including the credential fields below.
+        w.resident = record_from_card(*records.records[answer["card"]["access_id"]])
         w.resident = replace(w.resident, access_token="", session_id="", last_four="")
-        w.control = records.records[answer["control_card"]["access_id"]][0]
+        w.control = record_from_card(*records.records[answer["control_card"]["access_id"]])
         w.service._config, w.service._catalog_resolver = seed._config, seed._catalog_resolver
         w.service._minter = AsyncMock(side_effect=AssertionError("transactions ON must not call the active minter"))
         catalog_store = BundleStorageDelegatedCatalogStore(tmp_path / "catalog")
