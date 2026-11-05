@@ -97,7 +97,7 @@ from .session_delivery import (
     notify_agent_session,
     reconcile_agent_session_queue,
 )
-from .resume_command import build_session_resume_command
+from .resume_command import build_session_resume_command, resume_details
 from .relay_faults import consume_relay_fault, pending_relay_faults
 from .off_loop import ChannelExecutors, run_off_loop
 from .local_work_scanner import LocalWorkScanner
@@ -2539,6 +2539,17 @@ class ProblemBoardHostRelayAdapter:
         ][-20:]
         if completed:
             payload["relay_degraded_intervals"] = completed
+        # W1014: the board builds the last known resume line from these while this relay is offline.
+        details = resume_details(
+            runtime_kind=self.config.runtime_kind,
+            runtime_session_id=self.config.runtime_session_id,
+            working_directory=self.config.workspace or self.config.working_directory,
+            launch=self.config.runtime_launch,
+            profile=resume_profile(self.config.claude_profile),
+            kdcube_profile=self.config.kdcube_profile,
+        )
+        if details:
+            payload["resume_details"] = details
         response = await self._account_action(
             payload,
             lambda: self.client.action(object_ref="work:worker:self", action="worker.publish", payload=payload),

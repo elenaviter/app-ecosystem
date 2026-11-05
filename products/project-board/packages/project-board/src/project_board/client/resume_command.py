@@ -223,4 +223,55 @@ def build_session_resume_command(
     }
 
 
-__all__ = ["RECONSTRUCTED", "build_session_resume_command"]
+def resume_details(
+    *,
+    runtime_kind: str,
+    runtime_session_id: str,
+    working_directory: str = "",
+    launch: Mapping[str, Any] | None = None,
+    profile: Mapping[str, Any] | None = None,
+    kdcube_profile: str = "",
+) -> dict[str, Any]:
+    """What the board needs to build this session's resume line while its relay is offline (W1014).
+
+    Operator, 2026-11-05: "this is actually the "chicken and the egg" problem
+    of PB. when the machine restarts, relay is off, and there's no way to
+    restore the agents since resume command is unavailable", then "i think A":
+    the relay sends the board the inputs of `build_session_resume_command`,
+    and the board builds the same line with the same function when the relay
+    cannot. Only those inputs leave the machine: the captured start line
+    (already stripped of secret-looking values at capture), its folder and
+    tmux session, the working folder resolved here, the Claude profile
+    folder and program, and the KDCube profile name. No environment, token
+    or credential. Empty when no line can be built for this session.
+    """
+
+    captured = dict(launch or {})
+    details: dict[str, Any] = {
+        "runtime_launch": {
+            "argv": [str(item) for item in captured.get("argv") or [] if isinstance(item, str) and item],
+            "cwd": str(captured.get("cwd") or ""),
+            "tmux_session": str(captured.get("tmux_session") or ""),
+        },
+        "captured_at": str(captured.get("captured_at") or ""),
+        "kdcube_profile": str(kdcube_profile or "").strip(),
+    }
+    try:
+        # Resolved on this machine: the board must not resolve another machine's path.
+        details["working_directory"] = _path(working_directory, field="worker.working_directory")
+        if str(runtime_kind or "").strip().lower() == "claude-code":
+            details["claude_profile"] = _profile(profile)
+        build_session_resume_command(
+            runtime_kind=runtime_kind,
+            runtime_session_id=runtime_session_id,
+            working_directory=details["working_directory"],
+            launch=details["runtime_launch"],
+            profile=details.get("claude_profile"),
+            kdcube_profile=details["kdcube_profile"],
+        )
+    except DomainError:
+        return {}
+    return details
+
+
+__all__ = ["RECONSTRUCTED", "build_session_resume_command", "resume_details"]

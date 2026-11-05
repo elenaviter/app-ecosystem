@@ -557,10 +557,37 @@ owner clicks terminal on a worker card
 ```
 
 The remote worker projection still contains no LOCAL path. Paths cross the
-network only inside this requested, expiring command view and never enter
-conversation turns, controls history, service events, or journals. The
-generator selects no model and adds no permission-bypass flag. The user runs
-the displayed command in a terminal on the named host.
+network only inside this requested, expiring command view and in the resume
+details below, and never enter conversation turns, controls history, service
+events, or journals. The generator selects no model and adds no
+permission-bypass flag. The user runs the displayed command in a terminal on
+the named host.
+
+**While the relay is offline** (W1014). After a reboot, a locked password
+store or a lost credential, the relay that would build the line is the thing
+that is down. Operator, 2026-11-05: "this is actually the "chicken and the
+egg" problem of PB. when the machine restarts, relay is off, and there's no
+way to restore the agents since resume command is unavailable"; of sending
+the inputs to the board, "its like discolsure", then "i think A". So:
+
+```text
+relay connects and publishes the worker (worker.publish)
+  -> payload carries resume_details: the inputs of the same line builder
+       captured start line (secret-looking values already dropped at capture),
+       its folder and tmux session, the working folder resolved on the host,
+       the Claude profile folder and program, the KDCube profile name,
+       captured_at
+  -> board stores them on the worker, replacing the previous set
+owner opens Resume while the relay is not connected
+  -> board builds the line with the same function from the stored details
+  -> the line passes the same structural check as a live line
+  -> dialog shows it as the last known line, with captured_at and the host
+```
+
+The details never appear in the worker projection, lists or cards; only the
+owner's Resume view reads them. No environment, token or credential is sent. A
+session for which no line can be built (a Claude agent without an account
+profile) sends none, and the dialog says why instead of waiting.
 
 ## Stop, Reassignment, Suspension, Retirement, And Revocation
 
