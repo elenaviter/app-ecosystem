@@ -88,7 +88,7 @@ from .runtime_account import read_host_login, read_runtime_account
 from .claude_profile import SessionAccount, read_session_account, resume_profile
 from .coordinate_queue import COORDINATE_LEASE_LOST, CoordinateQueue
 from .credential_refusal import credential_refused
-from .relay_pacing import HANDSHAKE_TIMEOUT_REASON, PACING_FILENAME, RelayPacing
+from .relay_pacing import HANDSHAKE_TIMEOUT_REASON, PACING_FILENAME, RelayPacing, connection_hub_failure_code
 from .relay_logging import relay_log_owner
 from .relay_trace import DiagnosticWriter, RelayActivityTrace, record_outbox_send
 from .relay_admission import is_namespace_handshake_timeout, is_runtime_unavailable
@@ -9520,6 +9520,7 @@ class ProblemBoardRelaySupervisor:
                     permanent=True,
                     reason=self._failure_code(result),
                     credential=credential_refused(result),
+                    connection_hub_error=connection_hub_failure_code(result),
                 )
                 identity = WorkerSessionIdentity.create(
                     channel.runtime_kind, channel.runtime_session_id
@@ -9648,6 +9649,7 @@ class ProblemBoardRelaySupervisor:
                 permanent=permanent,
                 reason=self._failure_code(result),
                 credential=permanent and credential_refused(result),
+                connection_hub_error=connection_hub_failure_code(result),
             )
             if not permanent:
                 self._record_channel_failure(pacing, channel.worker_name, result)

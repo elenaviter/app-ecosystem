@@ -82,6 +82,7 @@ import json
 import logging
 import os
 import random
+import re
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -133,6 +134,16 @@ def _error_chain(error: BaseException) -> list[BaseException]:
         chain.append(current)
         current = current.__cause__ or current.__context__
     return chain
+
+
+def connection_hub_failure_code(error: BaseException) -> str:
+    """Only the bounded Hub code, never an exception message or a response body."""
+    for item in _error_chain(error):
+        details = getattr(item, "details", None)
+        code = details.get("connection_hub_error") if isinstance(details, Mapping) else None
+        if type(code) is str and re.fullmatch(r"[a-z][a-z0-9_]{0,127}", code):
+            return code
+    return ""
 
 
 def rate_limit_wait(error: BaseException) -> float | None:
@@ -508,12 +519,17 @@ class RelayPacing:
         permanent: bool,
         reason: str,
         credential: bool = False,
+        connection_hub_error: str = "",
     ) -> None:
         self._state["pending"][name] = {
             "fingerprint": str(fingerprint),
             "permanent": bool(permanent),
             "reason": str(reason),
             "credential": bool(credential),
+            "connection_hub_error": (
+                connection_hub_error if type(connection_hub_error) is str
+                and re.fullmatch(r"[a-z][a-z0-9_]{0,127}", connection_hub_error) else ""
+            ),
             "refused_at": self._clock(),
         }
         if permanent:
@@ -664,6 +680,10 @@ def channel_pending_refusal(
         "permanent": record.get("permanent") is True,
         "credential": record.get("credential") is True,
         "reason": str(record.get("reason") or ""),
+        "connection_hub_error": (
+            record["connection_hub_error"] if type(record.get("connection_hub_error")) is str
+            and re.fullmatch(r"[a-z][a-z0-9_]{0,127}", record["connection_hub_error"]) else ""
+        ),
         "refused_at": _iso(refused_at) if refused_at else "",
         "retry": _channel_view(backoff, time.time()) if isinstance(backoff, Mapping) else None,
     }
