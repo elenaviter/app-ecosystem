@@ -153,7 +153,7 @@ sequenceDiagram
     Note over Board: Commit: the worker's identity and binding<br/>move to X, together with the Card decision
     Board->>Hub: Finish
     Hub-->>Board: X's attachment published, fences cleared
-    Board-->>Relay: Publish complete: the channel opens
+    Board-->>Relay: Publish complete: the worker activates, its channel stays open
 ```
 
 In words:
@@ -178,7 +178,9 @@ In words:
    - The board commits: the worker's identity and binding move to X together
      with the durable Card decision, or not at all.
    - Connection Hub finishes: it publishes X's attachment and clears the fences.
-     Only when that publish has completed does the relay's channel open.
+     Only when that publish has completed does the worker activate: its
+     channel, already open when it called `worker.publish`, stays open
+     instead of being dropped.
 5. **Then the project grants.** A new Card starts without the project grants;
    a project admin presses Team, the agent, **Fit to role**.
 
@@ -188,13 +190,15 @@ keeps its binding record. Even a Y that is still active no longer gives any
 attendance once the worker has moved to X. When the move is refused,
 `pb status` names Connection Hub's cause, and it does not suggest
 `authorize` again when the agent's current profile is in place and the refusal
-is not about its credential.
+is not about its credential (the pb side of W1013, App Ecosystem PR #936, in
+review).
 
 **Today step 4 fails (W1013).** On a build with Card transactions on, the board
 still makes this attach as a direct write (`control_card_attach`), and
 Connection Hub refuses it with `card_transactions_direct_write_refused`
 (HTTP 409). The board reports that as `work_project_control_connection_hub_refused`;
-the relay opens the channel and drops it again, and `pb status` keeps suggesting
+the relay's channel, open since before `worker.publish`, is dropped about half
+a second later, and `pb status` keeps suggesting
 `authorize`. Re-authorizing, restarting the relay and Fit to role do not help.
 W1013 moves the attach into the Card transaction described in step 4, which is
 its design as implemented on its draft branch, not yet shipped; until it ships,
