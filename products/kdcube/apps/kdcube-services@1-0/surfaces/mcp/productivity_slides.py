@@ -18,7 +18,7 @@ _BASIC = {
     "create": ("Create a presentation", "Create an empty presentation with a title."),
     "rename": ("Rename a presentation", "Change a presentation title."),
     "get_structure": ("Read native presentation structure", "Read masked native JSON with object IDs, EMU geometry and revision_id for a raw batch."),
-    "batch_update": ("Batch-edit a presentation", "Apply 1–50 allowlisted native requests with mandatory requiredRevisionId from get_structure. Slide deletion and comments use dedicated tools."),
+    "batch_update": ("Batch-edit a presentation", "Apply 1–50 allowlisted native requests with mandatory requiredRevisionId from get_structure. Slide deletion and comments use dedicated tools. Deleting an element may detach comment anchors. Raw media URLs are fetched by Google; use ordinary media actions for URL validation and staged-file delivery. On an uncertain result, read the presentation before retrying."),
 }
 
 
