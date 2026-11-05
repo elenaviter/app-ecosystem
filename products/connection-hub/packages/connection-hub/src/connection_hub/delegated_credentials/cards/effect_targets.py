@@ -133,13 +133,19 @@ class InvocationPolicyTarget:
 class GrantUnbindTarget:
     """Remove the old bearer's binding by its pinned digest."""
 
-    def __init__(self, grant_store: Any) -> None:
+    def __init__(self, grant_store: Any, *, resident: Any = None) -> None:
         self._grant_store = grant_store
+        self._resident = resident
 
     async def apply_once(self, binding: EffectBinding, payload: Mapping[str, Any]) -> str:
         revoke = getattr(self._grant_store, "revoke_access_grant_by_digest", None)
         if revoke is None:
             raise ParticipantEffectRefused("card_effect_adapter_unavailable")
+        if self._resident is not None:
+            # Authenticate the resident's actual decision before touching
+            # either old-session or old-grant authority. Ordinary unbinds
+            # without a resident issuance keep the existing digest path.
+            await self._resident.retire_previous(binding, payload)
         outcome = await revoke(payload["token_sha256"])
         if outcome not in ("revoked", "absent", "unbound"):
             raise ParticipantEffectRefused("card_effect_binding_mismatch")
@@ -434,13 +440,14 @@ def compose_card_effects(*, card_service: Any, card_store: Any, grant_store: Any
     async def read_receipt(transaction_id: str) -> Mapping[str, Any] | None:
         return await tx.read_receipt(card_store, transaction_id)
 
+    issue = CredentialIssueTarget(issuance_store, card_store, credential_handles,
+        decisions=decisions, resident_credentials=resident_credentials)
     applier = ParticipantEffectApplier(read_receipt=read_receipt, targets={
         "credential_lifetime": CredentialLifetimeTarget(grant_store),
         "invocation_policy": InvocationPolicyTarget(policies),
-        "grant_unbind": GrantUnbindTarget(grant_store),
+        "grant_unbind": GrantUnbindTarget(grant_store, resident=issue._resident),
         "account_delete": AccountDeleteTarget(accounts_for),
-        "credential_issue": CredentialIssueTarget(issuance_store, card_store, credential_handles,
-            decisions=decisions, resident_credentials=resident_credentials),
+        "credential_issue": issue,
         "handle_binding": HandleBindingTarget(credential_handles, card_store),
     })
     card_service.bind_effect_applier(applier.apply)

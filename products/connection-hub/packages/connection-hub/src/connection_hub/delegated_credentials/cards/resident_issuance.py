@@ -13,6 +13,7 @@ the same SDK original, without preparing a replacement.
 from __future__ import annotations
 
 import hashlib
+from dataclasses import replace
 from typing import Any, Mapping
 
 from ..oauth_issuance import OAuthIssuancePlan, OAuthIssuanceResult, SlotOutcome
@@ -21,6 +22,21 @@ from .model import CardCredentialHandles
 from .participant_effects import EffectBinding, ParticipantEffectRefused
 
 RESIDENT_ISSUANCE_KIND = "descriptor-resident"
+
+
+def _result(binding: EffectBinding, plan: OAuthIssuancePlan, *, outcome: str,
+             token_sha256: str) -> OAuthIssuanceResult:
+    committed = outcome != "released"
+    return OAuthIssuanceResult(
+        transaction_id=plan.transaction_id, intent_digest=plan.intent_digest,
+        state="committed" if committed else "aborted", access_id=plan.access_id,
+        card_revision=plan.candidate_revision if committed else plan.base_revision,
+        expires_at=plan.expires_at, delivery_deadline=plan.delivery_deadline,
+        receipt_digest=binding.receipt_digest if committed else "",
+        # ABORT's retirement is stable even if a late, previously in-flight
+        # reservation appears after the first cleanup saw no slot.
+        per_slot={"access": SlotOutcome(outcome, plan.effect_digests["access"],
+                                         token_sha256 if committed else "")})
 
 
 class ResidentCredentialEffects:
@@ -90,15 +106,7 @@ class ResidentCredentialEffects:
                 or (outcome == "released" and held and held.get("state") not in ("released", "expired"))
                 or (outcome == "superseded" and held.get("outcome") != "superseded")):
             raise ParticipantEffectRefused("card_effect_binding_mismatch")
-        committed = outcome != "released"
-        result = OAuthIssuanceResult(
-            transaction_id=plan.transaction_id, intent_digest=plan.intent_digest,
-            state="committed" if committed else "aborted", access_id=plan.access_id,
-            card_revision=plan.candidate_revision if committed else plan.base_revision,
-            expires_at=plan.expires_at, delivery_deadline=plan.delivery_deadline,
-            receipt_digest=binding.receipt_digest if committed else "",
-            per_slot={"access": SlotOutcome(outcome, plan.effect_digests["access"],
-                                             held.get("token_sha256", ""))})
+        result = _result(binding, plan, outcome=outcome, token_sha256=held.get("token_sha256", ""))
         if outcome != "applied":
             await self._provider.retire(plan=plan, result=result)
             return outcome
@@ -120,6 +128,32 @@ class ResidentCredentialEffects:
             raise ParticipantEffectRefused("card_effect_binding_mismatch")
         await self._handles.write(live, handles)
         return "applied"
+
+    async def retire_previous(self, binding: EffectBinding, payload: Mapping[str, Any]) -> None:
+        """A rotation's old activated session, pinned by the same committed receipt."""
+        receipt = binding.receipt()
+        issue = next((effect for effect in receipt["effects"]
+            if effect["kind"] == "credential_issue" and effect["key"] == "access"
+            and effect["payload"]["access_id"] == payload["access_id"]), None)
+        if issue is None:
+            return  # ordinary pre-existing grant_unbind, not resident issuance
+        from ..oauth_issuance import effect_digest
+
+        issue_binding = replace(binding, kind="credential_issue", key="access", effect_digest=effect_digest(issue))
+        plan = await self.context(issue_binding, issue["payload"], state="committed")
+        if plan is None:
+            return
+        retire = getattr(self._provider, "retire_previous", None)
+        if not callable(retire):
+            raise ParticipantEffectRefused("card_effect_adapter_unavailable")
+        held = (await self._store.issuance_reservations(plan.transaction_id)).get("access", {})
+        outcome = ("applied" if held.get("state") == "activated" else "superseded"
+                   if held.get("state") == "released" and held.get("outcome") == "superseded" else "")
+        if not outcome:
+            raise ParticipantEffectRefused("card_effect_binding_mismatch")
+        await retire(plan=plan, result=_result(issue_binding, plan, outcome=outcome,
+            token_sha256=held.get("token_sha256", "")),
+            session_id=payload["session_id"], token_sha256=payload["token_sha256"])
 
 
 __all__ = ["RESIDENT_ISSUANCE_KIND", "ResidentCredentialEffects"]

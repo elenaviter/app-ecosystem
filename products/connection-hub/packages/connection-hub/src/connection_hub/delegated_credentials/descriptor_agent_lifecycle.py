@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
+import logging
 import secrets
 import time
 from typing import Any, Mapping
@@ -22,6 +23,8 @@ from .descriptor_agent_card import (
     DescriptorAgentCardRefused, validate_descriptor_agent_additions, validate_descriptor_agent_control,
 )
 from .issuer_gate import IssuerWriteRefused, change_digest
+
+LOGGER = logging.getLogger(__name__)
 
 
 def _prior_binding(resident: Any, control: Any) -> Any:
@@ -63,6 +66,12 @@ async def persist_descriptor_lifecycle(service: Any, user: Mapping[str, Any], *,
         if candidate_shape_refusal("update", before.to_dict(), candidate.to_dict()) is not None:
             raise DescriptorAgentCardRefused("agent_capability_edit_identity_conflict")
         validate_descriptor_agent_additions(before, candidate, ceiling)
+    # Project authority ports never govern this descriptor path. An explicit
+    # dedicated descriptor issuer registration is a separate policy, and its
+    # update/revoke contract cannot authorize creation by pretending absence
+    # was an existing Card. Keep that exceptional case fail closed.
+    if prior_control is None and service._issuer_managed(control):
+        raise DescriptorAgentCardRefused("agent_descriptor_control_creation_authority_unsupported")
     changed_control = prior_control != ceiling
     credential_needed = original is None or not original.access_token or original.expires_at <= int(time.time())
     if original is None or (credential_needed and not changed_control):
@@ -160,7 +169,7 @@ async def persist_descriptor_lifecycle(service: Any, user: Mapping[str, Any], *,
                 except Exception:
                     # Recovery retries FINISH. Keep the original refusal as
                     # this operation's cause and its structured error code.
-                    pass
+                    LOGGER.warning("[descriptor-agent-lifecycle] abort FINISH pending transaction=%s", row.transaction_id)
         if isinstance(exc, (DecisionRefused, CardTransactionRefused)):
             raise DescriptorAgentCardRefused(str(exc), retryable=True) from None
         raise

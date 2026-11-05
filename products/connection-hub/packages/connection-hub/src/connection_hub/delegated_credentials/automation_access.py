@@ -11240,7 +11240,8 @@ class AutomationAccessService:
                                             "expected_revision": revisions.get((resource, operation), 0)}})
         return effects
 
-    async def _plan_card(self, plan: Mapping[str, Any], which: str, transaction_id: str = "") -> Any:
+    async def _plan_card(self, plan: Mapping[str, Any], which: str, transaction_id: str = "", *,
+                         member_index: int = 0) -> Any:
         """A plan's ``original`` or ``candidate`` Card: read by its link (W661 scope B), or a legacy v1
         plan's stored body.
 
@@ -11254,13 +11255,16 @@ class AutomationAccessService:
         from .cards.version_link import is_version_link, load_version, staging_tag
         from .oauth_issuance import IssuanceRefused
 
-        value = plan["intent"][which]
+        spec = plan["intent"]
+        member = spec["members"][member_index] if "members" in spec else spec
+        value = member[which]
         if not is_version_link(value):
             return CardAuthority.from_mapping(value)
         card_store = getattr(self._cards(), "card_store", None)
         if card_store is None:
             raise IssuanceRefused("card_transactions_unavailable", retryable=True)
-        subject_hash, access_id = plan["intent"]["subject_hash"], plan["access_id"]
+        subject_hash = member["subject_hash"]
+        access_id = member.get("access_id", plan["access_id"])
         try:
             if which == "original":
                 found = await card_store.read_revision(subject_hash=subject_hash, access_id=access_id,
@@ -11271,7 +11275,7 @@ class AutomationAccessService:
                 return found
             owners = {staging_tag("oauth-issuance-candidate", plan["decision_request_id"])}
             if transaction_id:
-                owners.add(member_transaction_id(transaction_id, 0) if plan["intent"]["shape"] == "group"
+                owners.add(member_transaction_id(transaction_id, member_index) if spec["shape"] == "group"
                            else transaction_id)
             try:
                 return await load_version(card_store, subject_hash=subject_hash, access_id=access_id, link=value,
@@ -11313,21 +11317,31 @@ class AutomationAccessService:
         from .cards.version_link import is_version_link, staging_tag
 
         spec = plan["intent"]
-        candidate = await self._plan_card(plan, "candidate", transaction_id)
         effects = tuple(dict(effect) for effect in spec["effects"])
         # W661 scope B (lane 3 + lane 4): a linked plan hands its planned candidate file to the intent record,
         # which ADOPTS that same file for the real transaction (member 0 of a group) under the Card section:
         # no second version. A legacy body plan sets neither field and keeps the old path.
+        if spec["shape"] == "group":
+            members = []
+            for index, member in enumerate(spec.get("members", (spec,))):
+                candidate = await self._plan_card(plan, "candidate", transaction_id, member_index=index)
+                frozen = {}
+                if is_version_link(member["candidate"]):
+                    frozen = {"candidate_link": dict(member["candidate"]),
+                        "candidate_staging_tag": staging_tag("oauth-issuance-candidate", plan["decision_request_id"])}
+                original = (await self._plan_card(plan, "original", transaction_id, member_index=index)
+                            if member["original"] is not None else None)
+                members.append(CardGroupMemberIntent(subject_hash=member["subject_hash"], original=original,
+                    candidate=candidate, action=member["action"], **frozen))
+            return CardGroupIntent(
+                transaction_id=transaction_id, intent_digest=intent_digest,
+                members=tuple(members), effects=effects, actor_subject=spec["actor_subject"],
+                actor_kind=spec["actor_kind"], reads=tuple(spec.get("reads", ())), catalog=spec.get("catalog", ""))
+        candidate = await self._plan_card(plan, "candidate", transaction_id)
         frozen = {}
         if is_version_link(spec["candidate"]):
             frozen = {"candidate_link": dict(spec["candidate"]),
                       "candidate_staging_tag": staging_tag("oauth-issuance-candidate", plan["decision_request_id"])}
-        if spec["shape"] == "group":
-            return CardGroupIntent(
-                transaction_id=transaction_id, intent_digest=intent_digest,
-                members=(CardGroupMemberIntent(subject_hash=spec["subject_hash"], original=None, candidate=candidate,
-                                               action=spec["action"], **frozen),),
-                effects=effects, actor_subject=spec["actor_subject"], actor_kind=spec["actor_kind"])
         return CardIntent(transaction_id=transaction_id, intent_digest=intent_digest, subject_hash=spec["subject_hash"],
                           original=await self._plan_card(plan, "original", transaction_id), candidate=candidate,
                           effects=effects,
@@ -11519,6 +11533,11 @@ class AutomationAccessService:
         from .cards.version_link import discard_hidden_version, is_version_link, staging_tag
 
         link = recorded.get("link") if isinstance(recorded, Mapping) else None
+        if isinstance(recorded, Mapping) and isinstance(recorded.get("members"), list):
+            removed = False
+            for member in recorded["members"]:
+                removed = await self._discard_planned_candidate(member, request) or removed
+            return removed
         card_store = getattr(self._cards(), "card_store", None)
         service = getattr(card_store, "_card_intent_service", None)
         if not is_version_link(link) or service is None:

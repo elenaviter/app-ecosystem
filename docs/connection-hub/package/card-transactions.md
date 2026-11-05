@@ -206,6 +206,14 @@ absence fence; configured update/revoke issuer policies continue to govern
 changes to an existing Control. The owner-edit path never makes an early
 minted credential transactional.
 
+Project ports `authorities.control_card` and `authorities.agent_card` do not
+govern descriptor creation. A separate explicit registration at
+`connections.delegated_credentials.issuer_authorities.kdcube_agent_descriptor`
+does govern that issuer. Its current update/revoke contract has no create
+action, so that exceptional first-create case refuses by name as
+`agent_descriptor_control_creation_authority_unsupported`, including an
+unavailable registered adapter, until a create contract is supplied.
+
 Focused consent on a live descriptor resident uses the same local edit path
 and keeps its existing bearer. The merged standard grants and the aligned
 capability selection are persisted in one Card revision, so a subsequent sync

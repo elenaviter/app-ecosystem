@@ -8,7 +8,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from connection_hub.delegated_credentials.cards.effect_targets import CredentialIssueTarget
+from connection_hub.delegated_credentials.cards.effect_targets import CredentialIssueTarget, GrantUnbindTarget
 from connection_hub.delegated_credentials.cards.model import CardCredentialHandles
 from connection_hub.delegated_credentials.cards.participant_effects import ParticipantEffectApplier, ParticipantEffectRefused
 from connection_hub.delegated_credentials.cards.resident_issuance import RESIDENT_ISSUANCE_KIND
@@ -60,6 +60,7 @@ class _Issuance:
 class _Provider:
     def __init__(self):
         self.activated, self.retired = [], []
+        self.previous = []
 
     async def activate(self, *, plan, result):
         self.activated.append((plan, result))
@@ -67,6 +68,9 @@ class _Provider:
 
     async def retire(self, *, plan, result):
         self.retired.append((plan, result))
+
+    async def retire_previous(self, **kwargs):
+        self.previous.append(kwargs)
 
 
 class _Handles:
@@ -230,3 +234,55 @@ async def test_a_resident_capable_host_requires_the_stored_plan_reader():
     with pytest.raises(ParticipantEffectRefused, match="card_effect_adapter_unavailable"):
         await _dispatch(w, "prepare")
     assert w.store.activations == [] and w.provider.activated == []
+
+
+@pytest.mark.asyncio
+async def test_rotation_retires_pinned_old_session_and_grant_after_install_with_replay():
+    w = _world()
+    old = {"kind": "grant_unbind", "key": "previous-resident", "payload": {
+        "access_id": w.candidate.access_id, "session_id": "synthetic-old-session", "token_sha256": "d" * 64}}
+    w.receipt["effects"].append(old)
+    revoked = []
+
+    class Grants:
+        async def revoke_access_grant_by_digest(self, digest):
+            assert w.handles.saved and w.provider.previous  # new custody first, then old session, then old grant
+            revoked.append(digest)
+            return "revoked"
+
+    def applier():
+        actual = w.applier()
+        actual._targets["grant_unbind"] = GrantUnbindTarget(Grants(),
+            resident=actual._targets["credential_issue"]._resident)
+        return actual
+
+    first = applier()
+    await first.apply("credential_issue", "access", w.issue["payload"], transaction_id=TX)
+    await first.apply("grant_unbind", old["key"], old["payload"], transaction_id=TX)
+    await applier().apply("grant_unbind", old["key"], old["payload"], transaction_id=TX)
+    assert revoked == ["d" * 64, "d" * 64]
+    assert len(w.provider.previous) == 2
+    assert w.provider.previous[0] == w.provider.previous[1]
+    assert w.provider.previous[0]["session_id"] == "synthetic-old-session"
+    assert w.provider.previous[0]["result"].per_slot["access"].token_sha256 == DIGEST
+
+
+@pytest.mark.asyncio
+async def test_old_session_retirement_refuses_a_false_decision_before_either_authority_changes():
+    w = _world()
+    old = {"kind": "grant_unbind", "key": "previous-resident", "payload": {
+        "access_id": w.candidate.access_id, "session_id": "synthetic-old-session", "token_sha256": "d" * 64}}
+    w.receipt["effects"].append(old)
+    w.store.slot.update(state="activated", outcome="applied")
+    w.row.state = "aborted"
+
+    class Grants:
+        async def revoke_access_grant_by_digest(self, digest):
+            pytest.fail("false resident decision must not revoke an old grant")
+
+    actual = w.applier()
+    actual._targets["grant_unbind"] = GrantUnbindTarget(Grants(),
+        resident=actual._targets["credential_issue"]._resident)
+    with pytest.raises(ParticipantEffectRefused, match="card_effect_binding_mismatch"):
+        await actual.apply("grant_unbind", old["key"], old["payload"], transaction_id=TX)
+    assert w.provider.previous == []
