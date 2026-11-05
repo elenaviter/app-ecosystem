@@ -146,8 +146,8 @@ that concern this repository so the history is discoverable from here.
 | 2026-11-04 | Native comment reads reveal the saved cell | — |
 | 2026-11-04 | A native thread does not prove an anchor | — |
 | 2026-11-04 | Typed Slides tools reuse the action pipeline | — |
+| 2026-11-05 | An accepted write and a text box each have two boundaries | — |
 
 Entries are listed newest last. The store itself is not public; the
 addresses here are titles, and the decisions that matter to users of this
 repository are always reflected in [`docs/`](../docs/README.md).
-| 2026-11-05 | An accepted write and a text box each have two boundaries | — |
