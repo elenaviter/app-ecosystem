@@ -6,6 +6,7 @@ import asyncio
 import pytest
 
 from project_board.client import first_run
+from project_board.client import cli
 from project_board.client.cli import _channel_not_usable_error
 from project_board.client.relay_pacing import (
     PACING_FILENAME, RelayPacing, channel_pending_refusal, connection_hub_failure_code,
@@ -17,7 +18,7 @@ from relay_helpers import make_host, make_supervisor
 CAUSE = "card_transactions_direct_write_refused"
 
 
-def test_pending_turn_carries_only_the_hub_code_to_status(tmp_path):
+def test_pending_turn_carries_only_the_hub_code_to_status(tmp_path, monkeypatch):
     async def scenario():
         host, identity, channel = make_host(tmp_path, authorized=False)
         supervisor = make_supervisor(host)
@@ -43,11 +44,27 @@ def test_pending_turn_carries_only_the_hub_code_to_status(tmp_path):
         assert f"Connection Hub cause: {CAUSE}" in text
         assert "refusal: work_project_control_connection_hub_refused" in text
         assert "pb worker authorize" not in text
+        monkeypatch.setattr(cli, "inspect_profile_metadata", lambda *args: {"state": first_run.AUTHORIZED})
         send_error = _channel_not_usable_error(host.path, channel, sending=True)
         assert send_error.details["connection_hub_error"] == CAUSE
         assert "authorize" not in send_error.details.get("required_action", "")
 
     asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("cause", ["", CAUSE])
+def test_missing_profile_keeps_authorize_even_with_an_old_noncredential_refusal(tmp_path, monkeypatch, cause):
+    host, _, channel = make_host(tmp_path, authorized=False)
+    pacing = RelayPacing(tmp_path / PACING_FILENAME)
+    pacing.record_pending_refusal(channel.worker_name, fingerprint="old", permanent=True,
+                                 reason="handshake_timeout", connection_hub_error=cause)
+    refusal = channel_pending_refusal(host.path, channel.worker_name)
+    session = {"enrolled": True, "profile": channel.profile, "channel_state": "pending_authorization",
+               "authorization": "profile_metadata_absent", "refusal": refusal}
+    step = first_run._next_step(first_run.SESSION_NOT_ATTENDING, config=str(host.path), relay={}, session=session)
+    assert step["step"] == "authorize_profile"
+    monkeypatch.setattr(cli, "inspect_profile_metadata", lambda *args: {"state": "profile_metadata_absent"})
+    assert "authorize" in _channel_not_usable_error(host.path, channel).details["required_action"]
 
 
 @pytest.mark.parametrize("value", ["secret message", "https://example.test/token", "x" * 129, {}, None])

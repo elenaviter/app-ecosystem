@@ -233,7 +233,8 @@ def _next_step(state: str, *, config: str, relay: Mapping[str, Any], session: Ma
         or session.get("channel_state") == "pending_authorization"
     ):
         refusal = dict(session.get("refusal") or {})
-        if refusal and refusal.get("credential") is not True:
+        if (refusal.get("connection_hub_error") and refusal.get("credential") is not True
+                and session.get("authorization") == AUTHORIZED):
             cause = refusal.get("connection_hub_error") or refusal.get("reason") or "channel refusal"
             retry = dict(refusal.get("retry") or {})
             return {

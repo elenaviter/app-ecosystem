@@ -2779,7 +2779,14 @@ def _channel_not_usable_error(
                 "retryable": False,
             },
         )
-    if refusal is not None:
+    profile_present = False
+    if refusal is not None and refusal.get("connection_hub_error"):
+        try:
+            profile_present = inspect_profile_metadata(HostRelayConfig.load(config_path), channel.profile).get(
+                "state") == "relay_observation_pending"
+        except Exception:
+            pass  # No current profile evidence: retain the original authorization guidance.
+    if refusal is not None and refusal.get("connection_hub_error") and profile_present:
         reason = refusal.get("connection_hub_error") or refusal.get("reason") or "channel refusal"
         return DomainError(
             "work_worker_channel_not_active",
