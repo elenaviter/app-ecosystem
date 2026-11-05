@@ -72,6 +72,20 @@ def test_a_parked_channel_names_its_refusal():
     assert "refusal: delegated_card_not_active · permanent True · credential refused True" in text
 
 
+def test_an_authorized_card_with_a_hub_binding_refusal_does_not_ask_for_authorization():
+    """Behavioural red/green witness that also collects on the pre-fix source."""
+    from project_board.client import first_run
+    status = _status(enrolled=True, channel_state="pending_authorization", authorization=first_run.AUTHORIZED,
+        refusal={"reason": "work_project_control_connection_hub_refused", "permanent": True,
+                 "credential": False, "connection_hub_error": "card_transactions_direct_write_refused"})
+    status["state"] = first_run.SESSION_NOT_ATTENDING
+    status["next"] = first_run._next_step(status["state"], config="synthetic", relay={}, session=status["session"])
+    assert status["next"]["step"] == "resolve_channel_refusal"
+    text = render_envelope({"ok": True, "result": status})
+    assert "Connection Hub cause: card_transactions_direct_write_refused" in text
+    assert "pb worker authorize" not in text
+
+
 def test_the_next_step_names_who_must_approve_it():
     # Ops, review of 1ffd4a22: a runnable command without its approver hides
     # that relay install, restart and source selection are the operator's.
