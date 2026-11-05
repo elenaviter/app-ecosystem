@@ -2540,7 +2540,10 @@ class ProblemBoardHostRelayAdapter:
         if completed:
             payload["relay_degraded_intervals"] = completed
         # W1014: the board builds the last known resume line from these while this relay is offline.
-        details = resume_details(
+        # Review P2: a host that refuses the live Resume view (receiver_policy.
+        # allow_session_resume_view false) sends none of it either; the marker
+        # replaces any line an earlier, allowed publish stored.
+        details = {"unavailable": "receiver_policy_session_resume_view_denied"} if not self.config.allow_session_resume_view else resume_details(
             runtime_kind=self.config.runtime_kind,
             runtime_session_id=self.config.runtime_session_id,
             working_directory=self.config.workspace or self.config.working_directory,

@@ -130,3 +130,29 @@ def test_worker_publish_carries_the_details_and_nothing_else_new(tmp_path):
     flat = repr(payload).lower()
     for word in ("review-only-secret", "secret", "password", "bearer", "cookie", "authorization", "mcp_servers"):
         assert word not in flat, word
+
+
+def test_a_host_that_refuses_the_resume_view_sends_the_refusal_not_the_details(tmp_path):
+    # Review P2: receiver_policy.allow_session_resume_view false covers the offline line too.
+    from test_attendance_materializes_project import _fresh_host
+
+    host, identity, field, config = _fresh_host(tmp_path)
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    published = []
+
+    class Client:
+        async def action(self, *, object_ref, action, payload=None):
+            if action == "worker.publish":
+                published.append(dict(payload or {}))
+            return {"ok": True, "object": {"worker_alias": config.worker_alias}}
+
+    launch = {"argv": ["codex", "--search"], "cwd": str(workspace), "tmux_session": "", "captured_at": "2026-11-05T21:00:00Z"}
+    allowed = dataclasses.replace(config, runtime_launch=launch, allow_session_resume_view=True)
+    asyncio.run(relay.ProblemBoardHostRelayAdapter(config=allowed, field=field, client=Client())._publish_worker())  # noqa: SLF001
+    refused = dataclasses.replace(allowed, allow_session_resume_view=False)
+    asyncio.run(relay.ProblemBoardHostRelayAdapter(config=refused, field=field, client=Client())._publish_worker())  # noqa: SLF001
+    first, second = published
+    assert first["resume_details"]["runtime_launch"]["argv"] == ["codex", "--search"]
+    assert second["resume_details"] == {"unavailable": "receiver_policy_session_resume_view_denied"}
+    assert str(workspace) not in repr(second)

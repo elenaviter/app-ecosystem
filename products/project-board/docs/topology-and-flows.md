@@ -594,7 +594,9 @@ header, say), is dropped with its value, so the last known line can differ
 from the real start. A session for which no line can be built (a Claude agent
 without an account profile) sends the reason instead, which replaces any
 earlier details, and the dialog says why instead of waiting. A client older
-than W1014 sends nothing and the board keeps what it has.
+than W1014 sends nothing and the board keeps what it has. A host whose
+`receiver_policy.allow_session_resume_view` is false, which refuses the live
+view, sends only that refusal here too, so its last known line is gone as well.
 
 ## Stop, Reassignment, Suspension, Retirement, And Revocation
 
