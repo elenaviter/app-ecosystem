@@ -13,7 +13,8 @@ import asyncio
 import dataclasses
 
 from project_board.client import relay
-from project_board.client.resume_command import RECONSTRUCTED, build_session_resume_command, resume_details
+from project_board.client.resume_command import RECONSTRUCTED, board_safe_argv, build_session_resume_command, resume_details
+from project_board.client.runtime_launch import sanitize
 
 SESSION = "1815da0e-8302-499b-b371-ba3a3a7fe17c"
 PROFILE = {"config_dir": "/home/ana/.claude-accounts/ana@example.com", "executable": "/home/ana/.local/bin/claude"}
@@ -60,11 +61,40 @@ def test_without_a_capture_the_board_builds_the_same_reconstructed_line_from_a_f
                                                 working_directory=str(workspace))["command"]
 
 
-def test_a_session_with_no_buildable_line_sends_nothing(tmp_path):
-    # A Claude agent without an account profile has no resume line (W763), so nothing is sent.
-    assert resume_details(runtime_kind="claude-code", runtime_session_id=SESSION, working_directory=str(tmp_path)) == {}
-    assert resume_details(runtime_kind="codex", runtime_session_id="", working_directory=str(tmp_path)) == {}
-    assert resume_details(runtime_kind="codex", runtime_session_id=SESSION, working_directory="relative/path") == {}
+def test_a_session_with_no_buildable_line_says_why_so_the_board_replaces_an_older_line(tmp_path):
+    # Review P2: a current client always answers; {"unavailable": code} replaces what an earlier publish stored.
+    assert resume_details(runtime_kind="claude-code", runtime_session_id=SESSION, working_directory=str(tmp_path)) == {
+        "unavailable": "work_session_resume_profile_required"}
+    assert resume_details(runtime_kind="codex", runtime_session_id="", working_directory=str(tmp_path)) == {
+        "unavailable": "work_session_resume_id_required"}
+    assert resume_details(runtime_kind="codex", runtime_session_id=SESSION, working_directory="relative/path") == {
+        "unavailable": "work_session_resume_path_invalid"}
+
+
+SECRET_MCP = '{"mcpServers":{"x":{"type":"http","url":"https://example.invalid/mcp","headers":{"Authorization":"Bearer review-only-secret"}}}}'
+
+
+def test_a_structured_secret_that_passes_the_capture_filter_never_leaves_the_host(tmp_path):
+    # Review P1 (codex-infra): --mcp-config takes inline JSON; capture's sanitize() keeps it.
+    started = ["claude", "--mcp-config", SECRET_MCP, "--add-dir", "/home/ana/.kdcube", "--dangerously-skip-permissions",
+               "--settings={\"env\":{\"X\":\"y\"}}", "--append-system-prompt", "be brief", "--disallowedTools", "AskUserQuestion"]
+    captured = sanitize(started, "claude-code")
+    assert SECRET_MCP in captured  # the deny-list alone lets it through
+    details = resume_details(runtime_kind="claude-code", runtime_session_id=SESSION, working_directory=str(tmp_path),
+                             launch={"argv": captured, "cwd": "/home/ana/ws", "tmux_session": ""}, profile=PROFILE)
+    assert details["runtime_launch"]["argv"] == [
+        "claude", "--add-dir", "/home/ana/.kdcube", "--dangerously-skip-permissions", "--disallowedTools", "AskUserQuestion"]
+    flat = repr(details)
+    for word in ("review-only-secret", "Authorization", "mcpServers", "--mcp-config", "--settings", "be brief"):
+        assert word not in flat, word
+
+
+def test_only_allow_listed_flags_pass_and_their_values_are_still_checked():
+    assert board_safe_argv(["codex", "--sandbox", "danger-full-access", "-c", "model_provider=x", "--search",
+                            "--model", "gpt", "do something"], "codex") == ["codex", "--sandbox", "danger-full-access", "--search", "--model", "gpt"]
+    assert board_safe_argv(["claude", "--add-dir", "/home/ana/tokens", "--model=opus", "--model={x}"], "claude-code") == [
+        "claude", "--model=opus"]
+    assert board_safe_argv(["claude", "--unknown-flag", "value", "--verbose"], "claude-code") == ["claude", "--verbose"]
 
 
 def test_worker_publish_carries_the_details_and_nothing_else_new(tmp_path):
@@ -83,7 +113,8 @@ def test_worker_publish_carries_the_details_and_nothing_else_new(tmp_path):
 
     codex_line = ["codex", "--sandbox", "danger-full-access", "--ask-for-approval", "never", "--search"]
     launched = dataclasses.replace(config, runtime_launch={
-        "argv": codex_line, "cwd": str(workspace), "tmux_session": "", "captured_at": "2026-11-05T21:00:00Z"})
+        "argv": [*codex_line, "-c", f"mcp_servers.x.http_headers={SECRET_MCP}"], "cwd": str(workspace),
+        "tmux_session": "", "captured_at": "2026-11-05T21:00:00Z"})
     adapter = relay.ProblemBoardHostRelayAdapter(config=launched, field=field, client=Client())
     asyncio.run(adapter._publish_worker())  # noqa: SLF001
     [payload] = published
@@ -95,6 +126,7 @@ def test_worker_publish_carries_the_details_and_nothing_else_new(tmp_path):
     assert details["captured_at"] == "2026-11-05T21:00:00Z"
     assert _board_line(details, "codex", launched.runtime_session_id) == (
         f"cd {workspace} && codex resume {launched.runtime_session_id} --sandbox danger-full-access --ask-for-approval never --search")
-    flat = repr(details).lower()
-    for word in ("token", "secret", "password", "bearer", "cookie", "authorization"):
+    assert details["runtime_launch"]["argv"] == codex_line
+    flat = repr(payload).lower()
+    for word in ("review-only-secret", "secret", "password", "bearer", "cookie", "authorization", "mcp_servers"):
         assert word not in flat, word

@@ -573,21 +573,28 @@ the inputs to the board, "its like discolsure", then "i think A". So:
 ```text
 relay connects and publishes the worker (worker.publish)
   -> payload carries resume_details: the inputs of the same line builder
-       captured start line (secret-looking values already dropped at capture),
+       captured start line reduced to an allow-list of launch flags, each
+       value refused when it holds secret words or inline JSON,
        its folder and tmux session, the working folder resolved on the host,
        the Claude profile folder and program, the KDCube profile name,
        captured_at
-  -> board stores them on the worker, replacing the previous set
+  -> board checks them again and stores them on the worker, replacing the
+     previous set
 owner opens Resume while the relay is not connected
-  -> board builds the line with the same function from the stored details
+  -> board builds the line with the same function from the stored details,
+     keeping the host's spelling of its folders (never resolved on the board)
   -> the line passes the same structural check as a live line
   -> dialog shows it as the last known line, with captured_at and the host
 ```
 
 The details never appear in the worker projection, lists or cards; only the
-owner's Resume view reads them. No environment, token or credential is sent. A
-session for which no line can be built (a Claude agent without an account
-profile) sends none, and the dialog says why instead of waiting.
+owner's Resume view reads them. No environment, token or credential is sent:
+any other flag, such as a configuration passed inline (`--mcp-config` with a
+header, say), is dropped with its value, so the last known line can differ
+from the real start. A session for which no line can be built (a Claude agent
+without an account profile) sends the reason instead, which replaces any
+earlier details, and the dialog says why instead of waiting. A client older
+than W1014 sends nothing and the board keeps what it has.
 
 ## Stop, Reassignment, Suspension, Retirement, And Revocation
 

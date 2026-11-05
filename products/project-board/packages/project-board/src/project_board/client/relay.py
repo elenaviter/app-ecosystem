@@ -2548,8 +2548,9 @@ class ProblemBoardHostRelayAdapter:
             profile=resume_profile(self.config.claude_profile),
             kdcube_profile=self.config.kdcube_profile,
         )
-        if details:
-            payload["resume_details"] = details
+        # Always sent by this client: {"unavailable": code} replaces an earlier line
+        # (review P2); only a client older than W1014 omits the field.
+        payload["resume_details"] = details
         response = await self._account_action(
             payload,
             lambda: self.client.action(object_ref="work:worker:self", action="worker.publish", payload=payload),
