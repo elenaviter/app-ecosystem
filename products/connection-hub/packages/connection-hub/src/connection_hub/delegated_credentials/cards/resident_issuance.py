@@ -33,6 +33,8 @@ class ResidentCredentialEffects:
         """Authenticate a resident plan against this exact local receipt and decision."""
         reader = getattr(self._store, "read_issuance_plan", None)
         if not callable(reader):
+            if self._provider is not None:
+                raise ParticipantEffectRefused("card_effect_adapter_unavailable")
             return None  # legacy OAuth targets need only their existing slot port
         receipt = binding.receipt()
         group = receipt.get("group")

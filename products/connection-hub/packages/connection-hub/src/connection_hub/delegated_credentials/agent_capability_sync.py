@@ -82,6 +82,9 @@ from connection_hub.delegated_credentials.catalog.descriptors import (
 )
 from connection_hub.delegated_credentials.catalog.reconcile import reconcile_selection
 from connection_hub.delegated_credentials.catalog.resolver import CatalogUnavailable
+from connection_hub.delegated_credentials.caller_writer_gate import CallerWriteRefused
+from connection_hub.delegated_credentials.descriptor_agent_card import DescriptorAgentCardRefused
+from connection_hub.delegated_credentials.issuer_gate import IssuerWriteRefused
 from connection_hub.delegated_credentials.controls.effective import (
     ControlCardMismatch,
     effective_card_authority,
@@ -113,6 +116,12 @@ from connection_hub.delegated_credentials.resource_operations import (
 
 
 _LOGGER = logging.getLogger(__name__)
+
+
+def _transaction_refusal(exc: Any) -> dict[str, Any]:
+    answer = exc.to_dict()
+    answer.setdefault("retryable", False)
+    return answer
 
 
 # A descriptor-synchronized Agent Card is the same portable caller Card used by
@@ -1242,7 +1251,9 @@ async def sync_agent_capability_control(
             delegate_subject="",
             source=ACCESS_SOURCE_CONTROL,
             card_kind=CARD_KIND_CONTROL,
-            label=_clean(issuer_label) or f"{application} / {agent_id}",
+            label=(existing_control.label if existing_control is not None and
+                   dict(existing_control.provenance or {}).get(AGENT_DESCRIPTOR_CARD_EDIT_PROVENANCE_KEY) is True
+                   else _clean(issuer_label) or f"{application} / {agent_id}"),
             card_revision=(
                 existing_control.card_revision + 1
                 if existing_control is not None
@@ -1280,25 +1291,19 @@ async def sync_agent_capability_control(
         snapshot_refusal = control_snapshot_refusal(control_authority)
         if snapshot_refusal is not None:
             return snapshot_refusal
-        try:
-            await service._persist_record(
-                record_from_card(control_authority),
-                expected_revision=(
-                    existing_control.card_revision
-                    if existing_control is not None
-                    else 0
-                ),
-            )
-        except CardServingUnavailable as exc:
-            return _serving_state_unavailable(exc)
-        except (CardUnavailable, CardConflict, CardCommitFailed) as exc:
-            return {
-                "ok": False,
-                "error": "agent_descriptor_control_not_committed",
-                "reason": getattr(exc, "reason", ""),
-                "retryable": True,
-                "status": 503,
-            }
+        if getattr(service, "_card_coordinator", None) is None:
+            try:
+                await service._persist_record(
+                    record_from_card(control_authority),
+                    expected_revision=existing_control.card_revision if existing_control is not None else 0,
+                )
+            except CardServingUnavailable as exc:
+                return _serving_state_unavailable(exc)
+            except (CallerWriteRefused, IssuerWriteRefused) as exc:
+                return exc.to_dict()
+            except (CardUnavailable, CardConflict, CardCommitFailed) as exc:
+                return {"ok": False, "error": "agent_descriptor_control_not_committed",
+                        "reason": getattr(exc, "reason", ""), "retryable": True, "status": 503}
 
     try:
         authority = AgentCapabilityPolicy.from_property(
@@ -1383,6 +1388,11 @@ async def sync_agent_capability_control(
         )
         if current_selection.resource != agent_resource:
             raise AgentCapabilityPolicyError("agent_capability_resource_mismatch")
+        if getattr(service, "_card_coordinator", None) is not None and requested_selection is not None:
+            stored_selection = (AgentCapabilityPolicy.from_property(raw_current_selection)
+                                if raw_current_selection is not None else AgentCapabilityPolicy.empty(agent_resource))
+            if any(requested_selection.subtract(stored_selection).subtract(authority).capabilities.values()):
+                raise DescriptorAgentCardRefused("agent_capability_selection_outside_control")
         if replace_selection:
             if requested_selection is None:
                 raise AgentCapabilityPolicyError("agent_capability_selection_missing")
@@ -1396,6 +1406,8 @@ async def sync_agent_capability_control(
                 current_selection,
                 defaults,
             )
+    except DescriptorAgentCardRefused as exc:
+        return _transaction_refusal(exc)
     except AgentCapabilityPolicyError as exc:
         return {"ok": False, "error": exc.reason, "status": 400}
 
@@ -1411,6 +1423,8 @@ async def sync_agent_capability_control(
             control_revision=control_authority.card_revision,
         )
     )
+    if getattr(service, "_card_coordinator", None) is not None:
+        binding = dataclasses.replace(binding, control_revision=control_authority.card_revision)
     reconciled_standard: ResolvedCardAuthority | None = None
     managed_resource_keys: set[str] = set()
     if isinstance(descriptor_payload.get("standard_authority"), Mapping):
@@ -1631,13 +1645,11 @@ async def sync_agent_capability_control(
         resident = dataclasses.replace(existing_resident, **replacements)
         expected_resident_revision = existing_resident.card_revision
 
+    transactional = getattr(service, "_card_coordinator", None) is not None
+    credential_issued = False
     try:
-        resident, credential_issued = await _ensure_resident_card_credential(
-            service,
-            user,
-            resident,
-            now=now,
-        )
+        if not transactional:
+            resident, credential_issued = await _ensure_resident_card_credential(service, user, resident, now=now)
     except Exception as exc:
         _LOGGER.error(
             "[agent-capability-sync] credential issuance failed card=%s operation=sync failure_type=%s",
@@ -1657,18 +1669,24 @@ async def sync_agent_capability_control(
             card_authority_from_record(resident),
             card_revision=existing_resident.card_revision,
         )
-        resident_changed = credential_issued or (
+        resident_changed = credential_issued or (transactional and (
+            not existing_resident.access_token or existing_resident.expires_at <= now)) or (
             comparable.to_dict()
             != card_authority_from_record(existing_resident).to_dict()
         )
-    if resident_changed:
+    if resident_changed or (transactional and control_changed):
         try:
-            await service._persist_record(
-                resident,
-                expected_revision=expected_resident_revision,
-            )
+            if transactional:
+                from .descriptor_agent_lifecycle import persist_descriptor_lifecycle
+
+                await persist_descriptor_lifecycle(service, user, original=existing_resident, resident=resident,
+                    original_control=existing_control, control=record_from_card(control_authority), active_catalog=active)
+            else:
+                await service._persist_record(resident, expected_revision=expected_resident_revision)
         except CardServingUnavailable as exc:
             return _serving_state_unavailable(exc)
+        except (DescriptorAgentCardRefused, CallerWriteRefused, IssuerWriteRefused) as exc:
+            return _transaction_refusal(exc)
         except (CardUnavailable, CardConflict, CardCommitFailed) as exc:
             return {
                 "ok": False,
@@ -1849,6 +1867,13 @@ async def update_agent_capability_selection(
             "status": 409,
         }
 
+    transactional = getattr(service, "_card_coordinator", None) is not None
+    if transactional:
+        try:
+            control = await service._descriptor_control_for_resident(resident, grantor_subject=grantor_subject)
+        except (DescriptorAgentCardRefused, CallerWriteRefused, IssuerWriteRefused) as exc:
+            return _transaction_refusal(exc)
+
     try:
         authority = AgentCapabilityPolicy.from_property(
             dict(control.properties or {}).get(
@@ -1875,11 +1900,15 @@ async def update_agent_capability_selection(
                 if raw_current is not None
                 else AgentCapabilityPolicy.empty(authority.resource)
             )
+            if transactional and any(requested.subtract(current).subtract(authority).capabilities.values()):
+                raise DescriptorAgentCardRefused("agent_capability_selection_outside_control")
             selected = replace_visible_selection(
                 current=current,
                 authority=authority,
                 requested=requested,
             )
+    except DescriptorAgentCardRefused as exc:
+        return _transaction_refusal(exc)
     except AgentCapabilityPolicyError as exc:
         return {"ok": False, "error": exc.reason, "status": 400}
 
@@ -1922,13 +1951,17 @@ async def update_agent_capability_selection(
             if key != "resource_acceptance"
         },
     )
+    credential_issued = False
     try:
-        updated, credential_issued = await _ensure_resident_card_credential(
-            service,
-            user,
-            updated,
-            now=int(time.time()),
-        )
+        if transactional:
+            if not resident.access_token or resident.expires_at <= int(time.time()):
+                raise DescriptorAgentCardRefused(
+                    "agent_capability_resident_issuance_not_enlisted", retryable=True, status=503)
+        else:
+            updated, credential_issued = await _ensure_resident_card_credential(
+                service, user, updated, now=int(time.time()))
+    except DescriptorAgentCardRefused as exc:
+        return _transaction_refusal(exc)
     except Exception as exc:
         _LOGGER.error(
             "[agent-capability-sync] credential issuance failed card=%s operation=selection-update failure_type=%s",
@@ -1952,12 +1985,17 @@ async def update_agent_capability_selection(
         changed = False
     else:
         try:
-            await service._persist_record(
-                updated,
-                expected_revision=resident.card_revision,
-            )
+            if transactional:
+                await service._persist_descriptor_agent_edit(resident, updated, control=control,
+                    active_catalog=await service._active_catalog(), actor_subject=grantor_subject)
+            else:
+                await service._persist_record(updated, expected_revision=resident.card_revision)
         except CardServingUnavailable as exc:
             return _serving_state_unavailable(exc)
+        except (DescriptorAgentCardRefused, CallerWriteRefused, IssuerWriteRefused) as exc:
+            return _transaction_refusal(exc)
+        except CatalogUnavailable:
+            return {"ok": False, "error": "catalog_unavailable", "retryable": True, "status": 503}
         except CardConflict as exc:
             return {
                 "ok": False,

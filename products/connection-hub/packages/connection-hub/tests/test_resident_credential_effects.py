@@ -193,3 +193,12 @@ async def test_actual_decision_and_configured_adapter_are_required_before_prepar
     with pytest.raises(ParticipantEffectRefused, match="card_effect_binding_mismatch"):
         await _dispatch(w)
     assert w.store.activations == [] and w.provider.activated == []
+
+
+@pytest.mark.asyncio
+async def test_a_resident_capable_host_requires_the_stored_plan_reader():
+    w = _world(state="prepared")
+    w.store.read_issuance_plan = None
+    with pytest.raises(ParticipantEffectRefused, match="card_effect_adapter_unavailable"):
+        await _dispatch(w, "prepare")
+    assert w.store.activations == [] and w.provider.activated == []

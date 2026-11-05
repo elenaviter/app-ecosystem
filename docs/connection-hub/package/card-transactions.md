@@ -186,15 +186,35 @@ is refused. A known application binding without a project route keeps its
 ordinary writer rules. Recognizing a descriptor binding does not exempt other
 writers from the direct-write guard.
 
-This existing-Card edit requires unchanged credential handles. Descriptor sync,
-first creation and credential rotation need their own enlisted lifecycle; the
-owner-edit path does not make an early minted credential transactional.
+This existing-Card edit requires unchanged credential handles. A descriptor
+sync that keeps the existing live bearer reserves the unchanged Control, or
+writes a changed Control and the resident under one group decision. Sync may
+advance the resident's binding to that exact current Control; owner Save stays
+strict about a stale binding. Configured Control issuer and resident writer
+policies are revalidated before the decision. The administrator edit marker
+and label survive a descriptor refresh.
+
+First creation and credential rotation still need the inactive-original
+planner. Until enlisted, sync and selection changes requiring a credential
+return `agent_capability_resident_issuance_not_enlisted` before minting or
+writing either Card. A configured managed issuer's Control creation needs a
+creation authorization contract; the update/revoke issuer contract cannot
+authorize it, so it returns
+`agent_descriptor_control_creation_authority_unsupported`. The owner-edit
+path never makes an early minted credential transactional.
 
 Focused consent on a live descriptor resident uses the same local edit path
 and keeps its existing bearer. The merged standard grants and the aligned
 capability selection are persisted in one Card revision, so a subsequent sync
 reads the consented selection. An explicit replacement can remove a selection;
 sync does not union removed choices back into it.
+
+The explicit capability-selection endpoint uses the same held-Control and
+catalog decision for a live resident, with a named refusal for additions
+above the ceiling. Capability projection and standard service-grant
+reconciliation across all selection categories still require qualification.
+Transaction policy refusals retain a non-secret error code and explicit
+retryability for the SDK adapter.
 
 Implementation checkpoint: managed preflight, wire, candidate composition and
 real filesystem policy/coordinator failure-cut checks exist. Productive
