@@ -66,7 +66,13 @@ setConnectionsCallOperation(async (_method, operation, data) => {
     if (answer === 'stale') return { ok: false, status: 409, error: 'delegated_card_revision_conflict', message: 'stale' } as never
     if (answer === 'lost' && saves === 1) throw new Error('Failed to fetch')
     if (answer === 'lost') return { ok: false, status: 409, error: 'delegated_card_revision_conflict', message: 'stale' } as never
-    return { ok: true, card_revision: 5, access: { ...card, card_revision: 5 } } as never
+    const saved = { ...card, card_revision: 5, ...(hosted ? {
+      resource_grants: data?.resource_grants ?? card.resource_grants,
+      resource_operations: data?.resource_operations ?? card.resource_operations,
+      account_scope: data?.account_scope ?? card.account_scope,
+    } : {}) }
+    ;(window as unknown as Record<string, unknown>).__saved = saved
+    return { ok: true, card_revision: 5, access: saved } as never
   }
   return { ok: true } as never
 })

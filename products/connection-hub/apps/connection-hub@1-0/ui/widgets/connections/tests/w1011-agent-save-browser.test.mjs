@@ -48,6 +48,7 @@ test('a hosted-agent permission-only Save omits properties and closes the real e
     assert.equal(saves[0].expected_catalog_version, 'cat-1')
     assert.deepEqual(saves[0].resource_operations['https://svc.example.test/mcp'], ['read'])
     await page.getByRole('button', { name: 'Save', exact: true }).waitFor({ state: 'hidden', timeout: 10000 })
+    assert.deepEqual(await page.evaluate(() => window.__saved.resource_operations['https://svc.example.test/mcp']), ['read'])
     assert.deepEqual(errors, [])
     await page.screenshot({ path: screenshot, fullPage: true })
     t.diagnostic(`Hosted-agent Save screenshot: ${screenshot}`)
