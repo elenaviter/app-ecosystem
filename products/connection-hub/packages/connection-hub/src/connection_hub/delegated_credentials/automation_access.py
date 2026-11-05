@@ -10900,6 +10900,10 @@ class AutomationAccessService:
         """W603: the PostgreSQL OAuth authority holding issuance plans and reservations (composition only)."""
         self._oauth_issuance_store = store
 
+    def bind_resident_credentials(self, provider: Any) -> None:
+        """Trusted host adapter for inactive resident originals; never supplied by an API caller."""
+        self._resident_credentials = provider
+
     def _issuance_parts(self) -> tuple[Any, Any, Any, int, Any]:
         from .oauth_issuance import IssuanceRefused
 

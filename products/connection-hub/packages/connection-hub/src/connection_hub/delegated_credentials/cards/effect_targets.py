@@ -225,10 +225,15 @@ class CredentialIssueTarget:
     issued Card stays readable; a replay writes the same metadata again.
     """
 
-    def __init__(self, issuance_store: Any, card_store: Any, credential_handles: Any = None) -> None:
+    def __init__(self, issuance_store: Any, card_store: Any, credential_handles: Any = None, *,
+                 decisions: Any = None, resident_credentials: Any = None) -> None:
+        from .resident_issuance import ResidentCredentialEffects
+
         self._grant_store = issuance_store
         self._card_store = card_store
         self._credential_handles = credential_handles
+        self._resident = ResidentCredentialEffects(store=issuance_store, decisions=decisions,
+            provider=resident_credentials, handles=credential_handles)
 
     @staticmethod
     def _decision_id(binding: EffectBinding) -> str:
@@ -274,6 +279,7 @@ class CredentialIssueTarget:
                 else "card_effect_binding_mismatch") from None
 
     async def prepare_once(self, binding: EffectBinding, payload: Mapping[str, Any]) -> str:
+        await self._resident.context(binding, payload, state="prepared")
         outcome = await self._store(self._call("bind_issued_credential")(
             transaction_id=self._decision_id(binding), slot=payload["slot"], effect_digest=binding.effect_digest,
             access_id=payload["access_id"], card_revision=payload["card_revision"]))
@@ -283,10 +289,14 @@ class CredentialIssueTarget:
 
     async def apply_once(self, binding: EffectBinding, payload: Mapping[str, Any]) -> str:
         live = await self._live_card(binding, payload)
+        resident = await self._resident.context(binding, payload, state="committed", live=live)
         outcome = await self._store(self._call("activate_issued_credential")(
             transaction_id=self._decision_id(binding), slot=payload["slot"], effect_digest=binding.effect_digest,
             card_live=live is not None))
         if outcome == "applied":
+            if resident is not None:
+                await self._resident.finish(binding, resident, outcome=outcome, live=live)
+                return binding.effect_digest
             # W606: only a CREATE writes the new Card's handle metadata here; every later Card change
             # moves an existing row through its own ``handle_binding`` effect (one writer per row).
             created = binding.receipt().get("before") is None
@@ -299,12 +309,17 @@ class CredentialIssueTarget:
                     raise ParticipantEffectRefused("card_effect_target_unavailable") from None
             return binding.effect_digest
         if outcome == CREDENTIAL_ISSUE_SUPERSEDED:
+            if resident is not None:
+                await self._resident.finish(binding, resident, outcome=outcome)
             return CREDENTIAL_ISSUE_SUPERSEDED
         raise ParticipantEffectRefused("card_effect_binding_mismatch")
 
     async def release_once(self, binding: EffectBinding, payload: Mapping[str, Any]) -> str:
+        resident = await self._resident.context(binding, payload, state="aborted")
         await self._store(self._call("release_issued_credential")(
             transaction_id=self._decision_id(binding), slot=payload["slot"]))
+        if resident is not None:
+            await self._resident.finish(binding, resident, outcome="released")
         return binding.effect_digest
 
 
@@ -406,7 +421,8 @@ class HandleBindingTarget:
 
 def compose_card_effects(*, card_service: Any, card_store: Any, grant_store: Any,
                          policies: Any, accounts_for: Any = None, issuance_store: Any = None,
-                         credential_handles: Any = None) -> ParticipantEffectApplier:
+                         credential_handles: Any = None, decisions: Any = None,
+                         resident_credentials: Any = None) -> ParticipantEffectApplier:
     """Bind one validated applier to a Card service's effect hooks.
 
     The receipt reader is the Card store's own durable receipt; the targets are
@@ -423,7 +439,8 @@ def compose_card_effects(*, card_service: Any, card_store: Any, grant_store: Any
         "invocation_policy": InvocationPolicyTarget(policies),
         "grant_unbind": GrantUnbindTarget(grant_store),
         "account_delete": AccountDeleteTarget(accounts_for),
-        "credential_issue": CredentialIssueTarget(issuance_store, card_store, credential_handles),
+        "credential_issue": CredentialIssueTarget(issuance_store, card_store, credential_handles,
+            decisions=decisions, resident_credentials=resident_credentials),
         "handle_binding": HandleBindingTarget(credential_handles, card_store),
     })
     card_service.bind_effect_applier(applier.apply)

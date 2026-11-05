@@ -1,0 +1,110 @@
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 Elena Viter
+
+"""Resident custody behind the existing credential_issue effect.
+
+Only the stored plan selects this adapter. A provider receives a typed result
+after the real decision and slot state have been read; caller objects never
+establish that authority. FINISH keeps the Card fenced until the original
+bearer is installed. Replaying after either activation or installation reads
+the same SDK original, without preparing a replacement.
+"""
+
+from __future__ import annotations
+
+import hashlib
+from typing import Any, Mapping
+
+from ..oauth_issuance import OAuthIssuancePlan, OAuthIssuanceResult, SlotOutcome
+from .identity import CARD_KIND_AGENT
+from .model import CardCredentialHandles
+from .participant_effects import EffectBinding, ParticipantEffectRefused
+
+RESIDENT_ISSUANCE_KIND = "descriptor-resident"
+
+
+class ResidentCredentialEffects:
+    def __init__(self, *, store: Any, decisions: Any, provider: Any, handles: Any) -> None:
+        self._store, self._decisions = store, decisions
+        self._provider, self._handles = provider, handles
+
+    async def context(self, binding: EffectBinding, payload: Mapping[str, Any], *,
+                      state: str, live: Any = None) -> OAuthIssuancePlan | None:
+        """Authenticate a resident plan against this exact local receipt and decision."""
+        reader = getattr(self._store, "read_issuance_plan", None)
+        if not callable(reader):
+            return None  # legacy OAuth targets need only their existing slot port
+        receipt = binding.receipt()
+        group = receipt.get("group")
+        decision_id = group["transaction_id"] if isinstance(group, Mapping) else binding.transaction_id
+        stored = await reader(decision_id)
+        raw = stored.get("plan") if isinstance(stored, Mapping) else None
+        if not isinstance(raw, Mapping) or raw.get("issuance_kind") != RESIDENT_ISSUANCE_KIND:
+            return None
+        if (self._decisions is None or self._handles is None
+                or any(not callable(getattr(self._provider, name, None)) for name in ("activate", "retire"))):
+            raise ParticipantEffectRefused("card_effect_adapter_unavailable")
+        row = await self._decisions.read(decision_id)
+        try:
+            before, after = receipt.get("before"), receipt["after"]
+            base_revision = 0 if before is None else before["card_revision"]
+            valid = (stored["transaction_id"] == decision_id and row is not None
+                and row.state in (("preparing", "prepared") if state == "prepared" else (state,))
+                and row.intent.digest == receipt["intent_digest"]
+                and raw["intent"]["card_kind"] == CARD_KIND_AGENT and raw["slots"] == ["access"]
+                and payload["slot"] == "access" and raw["effect_digests"]["access"] == binding.effect_digest
+                and raw["access_id"] == receipt["access_id"] == payload["access_id"]
+                and raw["base_revision"] == base_revision
+                and raw["candidate_revision"] == after["card_revision"] == payload["card_revision"]
+                and raw["card_content_hash"] == after["content_hash"]
+                and raw["expires_at"] == after["expires_at"] == payload["expires_at"]
+                and raw["tenant"] == self._store.tenant and raw["project"] == self._store.project)
+            if not valid:
+                raise ValueError("binding")
+            # Terminal retirement needs identity only. For activation the exact
+            # committed live Card supplies the snapshot, as the ordinary plan reader does.
+            snapshot = {"operations": [], "resource_grants": {}, "resource_operations": {}}
+            if live is not None:
+                if (live.card_kind != CARD_KIND_AGENT or live.access_id != raw["access_id"]
+                        or live.content_hash() != raw["card_content_hash"]):
+                    raise ValueError("target")
+                snapshot = {"operations": list(live.operations),
+                            "resource_grants": dict(live.resource_grants),
+                            "resource_operations": dict(live.resource_operations)}
+            return OAuthIssuancePlan.from_mapping({**raw, **snapshot, "transaction_id": decision_id,
+                                                   "intent_digest": row.intent.digest})
+        except (KeyError, TypeError, ValueError, AttributeError):
+            raise ParticipantEffectRefused("card_effect_binding_mismatch") from None
+
+    async def finish(self, binding: EffectBinding, plan: OAuthIssuancePlan, *,
+                     outcome: str, live: Any = None) -> None:
+        """Install only an applied original, or retire an authenticated terminal one."""
+        reservations = await self._store.issuance_reservations(plan.transaction_id)
+        held = reservations.get("access", {})
+        if ((outcome == "applied" and held.get("state") != "activated")
+                or (outcome == "released" and held and held.get("state") not in ("released", "expired"))
+                or (outcome == "superseded" and held.get("outcome") != "superseded")):
+            raise ParticipantEffectRefused("card_effect_binding_mismatch")
+        committed = outcome != "released"
+        result = OAuthIssuanceResult(
+            transaction_id=plan.transaction_id, intent_digest=plan.intent_digest,
+            state="committed" if committed else "aborted", access_id=plan.access_id,
+            card_revision=plan.candidate_revision if committed else plan.base_revision,
+            expires_at=plan.expires_at, delivery_deadline=plan.delivery_deadline,
+            receipt_digest=binding.receipt_digest if committed else "",
+            per_slot={"access": SlotOutcome(outcome, plan.effect_digests["access"],
+                                             held.get("token_sha256", ""))})
+        if outcome != "applied":
+            await self._provider.retire(plan=plan, result=result)
+            return
+        if live is None:
+            raise ParticipantEffectRefused("card_effect_binding_mismatch")
+        handles = await self._provider.activate(plan=plan, result=result)
+        if (type(handles) is not CardCredentialHandles or handles.access_id != plan.access_id
+                or not handles.access_token or handles.refresh_token or not handles.session_id
+                or hashlib.sha256(handles.access_token.encode("utf-8")).hexdigest() != held.get("token_sha256")):
+            raise ParticipantEffectRefused("card_effect_binding_mismatch")
+        await self._handles.write(live, handles)
+
+
+__all__ = ["RESIDENT_ISSUANCE_KIND", "ResidentCredentialEffects"]

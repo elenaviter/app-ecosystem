@@ -1666,6 +1666,7 @@ def _invocation_policy_service(entrypoint: Any) -> Any:
                 accounts_for=lambda owner: _delegated_to_kdcube_store(entrypoint, owner),
                 issuance_store=_durable_authority(entrypoint).oauth,
                 credential_handles=_durable_authority(entrypoint).card_handles,
+                resident_credentials=_resident_credential_provider(),
             )
             return await CardPolicyMarkerSettler(
                 card_store=persistence.card_store, coordinator=coordinator, callers=built.callers,
@@ -2082,11 +2083,21 @@ async def _bind_card_transactions(entrypoint: Any, service: Any, *, persistence:
                            managed_control_scopes=managed_scopes,
                            # W603: an original code exchange plans and activates its credentials in this
                            # authority; without it begin_oauth_issuance refuses card_transactions_unavailable.
-                           issuance_store=_durable_authority(entrypoint).oauth)
+                           issuance_store=_durable_authority(entrypoint).oauth,
+                           credential_handles=_durable_authority(entrypoint).card_handles,
+                           resident_credentials=_resident_credential_provider())
     # W638: a managed Card edit is forwarded to the host that plans its scope,
     # signed with that caller's authority request signer. A caller whose
     # signer secret is unavailable gets no forwarder: its edits stay refused.
     service.bind_managed_card_edit(await _managed_card_edit_forwarders(entrypoint))
+
+
+def _resident_credential_provider() -> Any:
+    """The same inactive-original adapter for request and fresh recovery composition."""
+    from kdcube_ai_app.auth.bundle import get_bundle_session_authority
+    from kdcube_ai_app.apps.chat.sdk.integrations.connection_hub.delegated_credentials.cards.resident_issuance import ResidentCredentialProvider
+
+    return ResidentCredentialProvider(authority_factory=get_bundle_session_authority)
 
 
 async def _managed_card_edit_forwarders(entrypoint: Any) -> dict[str, Any]:
@@ -4422,7 +4433,11 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
             persistence=persistence, decisions=decisions, grant_store=await _oauth_grant_store(self),
             policies=_invocation_policy_service(self),
             authorities=(await _card_participant_callers(self, persistence)).authorities,
-            catalog_store=_delegated_catalog_store(self))
+            catalog_store=_delegated_catalog_store(self),
+            accounts_for=lambda owner: _delegated_to_kdcube_store(self, owner),
+            issuance_store=_durable_authority(self).oauth,
+            credential_handles=_durable_authority(self).card_handles,
+            resident_credentials=_resident_credential_provider())
         # The cron runs on one process per tick, not always the same one, so the
         # page cursor is shared in Redis; a missing or unreadable one restarts at "".
         tenant, project = _runtime_tenant_project(self)
@@ -4784,7 +4799,11 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
                 card_transaction_coordinator(
                     persistence=persistence, decisions=decisions, grant_store=await _oauth_grant_store(self),
                     policies=_invocation_policy_service(self), authorities=built.authorities,
-                    catalog_store=_delegated_catalog_store(self))
+                    catalog_store=_delegated_catalog_store(self),
+                    accounts_for=lambda owner: _delegated_to_kdcube_store(self, owner),
+                    issuance_store=_durable_authority(self).oauth,
+                    credential_handles=_durable_authority(self).card_handles,
+                    resident_credentials=_resident_credential_provider())
             except Exception:
                 LOGGER.exception("[connection-hub.card-transactions] participant operation unavailable")
                 raise
