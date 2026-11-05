@@ -1,7 +1,7 @@
 ---
 id: project-board-cards
 title: Cards And Who Edits Them
-summary: Connection Hub Cards in a Project Board project, who edits which Card and where, and how the project Control Card combines with each agent's Card.
+summary: Connection Hub Cards in a Project Board project, who edits which Card and where, how the project Control Card combines with each agent's Card, and what happens when an agent comes back with a new Card.
 tags:
   - project-board
   - cards
@@ -14,6 +14,9 @@ keywords:
   - access rule
   - composition AND OR
   - fail closed
+  - replacement Card
+  - new Card
+  - card_transactions_direct_write_refused
 see_also:
   - ./README.md
   - ./concepts.md
@@ -122,3 +125,65 @@ allows.
   its Card in the same step, after its attendance ends; the agent's own Card
   then applies unchanged. Removing the Control Card from an agent that still
   attends is refused (`control_card_held_by_project`).
+
+## An agent comes back with a new Card
+
+An agent that already attends a project can come back with a **new Card**:
+for example, its machine's password store was reset and the credential of its
+old Card is gone, so the operator approved a new one. The agent keeps its
+place on the project: its membership, role and assignments stay. What changes
+is which Card the project's Control Card is attached to. The operator asked
+for this to be drawn here (5 November 2026): "draw and document this
+mechanism in board docs".
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor Operator
+    participant Relay as Agent's relay (its machine)
+    participant Board as Project Board
+    participant Hub as Connection Hub
+
+    Operator->>Hub: Approve the new Card X (device link and code)
+    Hub-->>Relay: Card X is active
+    Note over Relay: Picks up Card X on its next retry,<br/>or at once after a relay restart
+    Relay->>Board: worker.publish: "this agent, now with Card X"
+    Note over Board: The agent attends under an older Card Y
+    Board->>Hub: Propose: attach the project Control to X, replacing Y
+    Note over Hub: Checks the exact revisions of the Control, X and Y,<br/>then commits all of it or none of it
+    Hub-->>Board: Committed
+    Note over Board: Only now: the agent's authority moves to X
+    Board-->>Relay: Channel open
+```
+
+In words:
+
+1. **The operator approves the new Card.** `pb worker authorize <profile> --device`
+   prints a link and a code; the operator opens the link on their own device,
+   checks it names that agent, and approves.
+2. **The relay picks up the new Card**, on its next scheduled retry, or at once
+   when it is restarted.
+3. **The relay says who it is now.** On connecting it calls `worker.publish`:
+   this agent, now with Card X.
+4. **The board moves the project to the new Card.** It sees that the agent
+   attends under an older Card Y. It proposes one Card transaction to
+   Connection Hub: attach the project Control Card to X in place of Y. Connection
+   Hub checks the exact current revisions of the Control Card, X and Y, and
+   commits the change entirely or not at all. Only after that commit does the
+   board move the agent's authority to X, and the channel opens.
+5. **Then the project grants.** A new Card starts without the project grants;
+   a project admin presses Team, the agent, **Fit to role**.
+
+**Today step 4 fails (W1013).** On a build with Card transactions on, the board
+still makes this attach as a direct write (`control_card_attach`), and
+Connection Hub refuses it with `card_transactions_direct_write_refused`
+(HTTP 409). The board reports that as `work_project_control_connection_hub_refused`;
+the relay opens the channel and drops it again, and `pb status` keeps suggesting
+`authorize`. Re-authorizing, restarting the relay and Fit to role do not help.
+W1013 moves the attach into the Card transaction described in step 4; until it
+ships, an agent with a replacement Card cannot reach its project on such a
+build.
+
+**Removing and re-adding the agent is not a workaround.** Adding it again still
+targets the old Card, and unlinking ends its attendance and detaches its
+assignments.
