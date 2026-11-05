@@ -89,6 +89,26 @@ async def test_selection_cannot_grant_a_standard_permission_the_owner_cannot_del
 
 
 @pytest.mark.asyncio
+async def test_unknown_named_selection_is_preserved_on_sync_and_requires_review_before_checkbox_edit(tmp_path):
+    from connection_hub.delegated_credentials.cards.model import NamedServiceSelection
+    from test_descriptor_agent_consent import _sync_arguments
+
+    service, store, decisions, resident, _, cards, _ = await _consent_world(tmp_path)
+    unknown = replace(resident, card_revision=resident.card_revision + 1,
+                      named_service_operations=NamedServiceSelection.unknown())
+    await cards.commit(unknown, subject_hash=subject_hash_for(OWNER),
+                       expected_revision=resident.card_revision, now=int(time.time()))
+    refused = await _select(service, unknown, READ)
+    assert refused["error"] == "agent_capability_named_selection_review_required" and refused["retryable"] is False
+    assert await _current(store, resident) == unknown and decisions.rows == {}
+    refreshed = await service.sync_agent_capability_control({"user_id": OWNER}, **_sync_arguments())
+    assert refreshed["ok"], refreshed
+    saved = await _current(store, resident)
+    assert saved.named_service_operations.is_unknown
+    assert saved.resource_grants == unknown.resource_grants and saved.named_services == unknown.named_services
+
+
+@pytest.mark.asyncio
 async def test_control_withdrawal_and_resident_binding_commit_as_one_group(tmp_path):
     service, store, decisions, resident, control, _, _ = await _consent_world(tmp_path)
     assert (await _consent(service, resident))["ok"]

@@ -1650,7 +1650,18 @@ async def sync_agent_capability_control(
     transactional = getattr(service, "_card_coordinator", None) is not None
     credential_issued = False
     try:
-        if transactional:
+        if transactional and existing_resident is not None and existing_resident.named_service_operations.is_unknown:
+            if replace_selection:
+                raise DescriptorAgentCardRefused("agent_capability_named_selection_review_required")
+            # A refresh is not fresh consent for an ambiguous legacy boundary.
+            # Retain its exact standard state; the stored Control still narrows
+            # serving. Only an explicit reviewed Card edit may resolve it.
+            resident = dataclasses.replace(resident,
+                resource_grants=existing_resident.resource_grants,
+                resource_operations=existing_resident.resource_operations, operations=existing_resident.operations,
+                named_service_operations=existing_resident.named_service_operations,
+                named_services=existing_resident.named_services, account_scope=existing_resident.account_scope)
+        elif transactional:
             from .descriptor_agent_selection import selected_standard_maps
 
             grants, operations, named = selected_standard_maps(resident=resident,

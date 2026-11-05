@@ -53,6 +53,8 @@ def selected_standard_maps(*, resident: Any, control: Any, authority: Any, selec
     namespaces.update(unquote(value.split("/", 1)[0])
                       for value in authority.capabilities.get("named_service_operations", ()) if "/" in value)
     raw = resident.named_service_operations
+    if raw.is_unknown:
+        raise DescriptorAgentCardRefused("agent_capability_named_selection_review_required")
     named = {resource: {namespace: set(values) for namespace, values in rows.items()}
              for resource, rows in raw.operations.items()} if raw.is_exact else {}
     ceiling_named = control.named_service_operations

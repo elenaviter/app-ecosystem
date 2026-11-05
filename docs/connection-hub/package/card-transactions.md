@@ -249,6 +249,9 @@ resources are preserved. MCP routing comes from the Control's stored metadata;
 an old missing mapping refuses `agent_capability_standard_mapping_refresh_required`
 until a paired descriptor sync refreshes it. Owner Save does not use the raw
 consumer descriptor as another ACL.
+An unknown legacy named-service selection remains unchanged on ordinary sync.
+A checkbox edit refuses `agent_capability_named_selection_review_required`
+until an explicit reviewed Card edit resolves the ambiguous boundary.
 
 Transaction refusals carry bounded error/reason codes and explicit retryability
 through the SDK provider, typed runtime exception, app response and workspace
