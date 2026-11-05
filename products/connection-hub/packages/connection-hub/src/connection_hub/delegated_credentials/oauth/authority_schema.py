@@ -201,6 +201,14 @@ ALTER TABLE {schema}.{TABLE_ISSUANCE_PLANS}
     ADD COLUMN IF NOT EXISTS candidate_released BOOLEAN NOT NULL DEFAULT FALSE;
 ALTER TABLE {schema}.{TABLE_ISSUANCE_PLANS}
     ADD COLUMN IF NOT EXISTS candidate_gone BOOLEAN NOT NULL DEFAULT FALSE;
+-- Resident original cleanup is acknowledged only after actual SDK retirement
+-- (or the complete committed FINISH). The immutable plan itself is unchanged.
+ALTER TABLE {schema}.{TABLE_ISSUANCE_PLANS}
+    ADD COLUMN IF NOT EXISTS resident_cleanup_completed_at TIMESTAMPTZ;
+CREATE INDEX IF NOT EXISTS connection_hub_resident_original_cleanup_idx
+    ON {schema}.{TABLE_ISSUANCE_PLANS} (tenant, project, decision_request_id)
+    WHERE transaction_id IS NOT NULL AND resident_cleanup_completed_at IS NULL
+      AND plan->>'issuance_kind'='descriptor-resident';
 CREATE INDEX IF NOT EXISTS connection_hub_oauth_issuance_plans_unreleased_idx
     ON {schema}.{TABLE_ISSUANCE_PLANS} (tenant, project, reserved_until)
     WHERE transaction_id IS NULL AND NOT candidate_gone;

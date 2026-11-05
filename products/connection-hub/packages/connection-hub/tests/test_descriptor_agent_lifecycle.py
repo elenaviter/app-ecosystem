@@ -34,7 +34,7 @@ def _refresh_arguments(*, allow_post=True):
 
 
 async def _select(service, resident, *operations):
-    return await service.update_agent_capability_selection({"user_id": OWNER}, access_id=resident.access_id,
+    return await service.update_agent_capability_selection({"user_id": OWNER, "roles": ["kdcube:role:super-admin"]}, access_id=resident.access_id,
         selected_capabilities=_policy_with_named_operations(*operations), expected_card_revision=resident.card_revision)
 
 
@@ -62,6 +62,30 @@ async def test_new_selection_above_ceiling_returns_nonretryable_code_before_a_de
     answer = await _select(service, resident, READ, POST)
     assert answer["error"] == "agent_capability_selection_outside_control" and answer["retryable"] is False
     assert decisions.rows == {} and await _current(store, resident) == resident
+
+
+@pytest.mark.asyncio
+async def test_deselection_removes_standard_post_authority_and_sync_preserves_the_choice(tmp_path):
+    service, store, decisions, resident, _, _, _ = await _consent_world(tmp_path)
+    assert (await _consent(service, resident))["ok"]
+    held = await _current(store, resident)
+    assert (await _select(service, held, READ))["ok"]
+    narrowed = await _current(store, resident)
+    from test_descriptor_agent_consent import NAMED_RESOURCE, _sync_arguments
+
+    assert POST not in narrowed.named_service_operations.operations[NAMED_RESOURCE]["slack"]
+    assert "slack:post" not in narrowed.resource_grants[NAMED_RESOURCE]
+    answer = await service.sync_agent_capability_control({"user_id": OWNER}, **_sync_arguments())
+    assert answer["ok"] and await _current(store, resident) == narrowed
+
+
+@pytest.mark.asyncio
+async def test_selection_cannot_grant_a_standard_permission_the_owner_cannot_delegate(tmp_path):
+    service, store, decisions, resident, _, _, _ = await _consent_world(tmp_path)
+    answer = await service.update_agent_capability_selection({"user_id": OWNER}, access_id=resident.access_id,
+        selected_capabilities=_policy_with_named_operations(READ, POST), expected_card_revision=resident.card_revision)
+    assert answer["ok"] is False and answer["retryable"] is False
+    assert await _current(store, resident) == resident and decisions.rows == {}
 
 
 @pytest.mark.asyncio

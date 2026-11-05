@@ -202,7 +202,7 @@ class IssuanceReservationStore:
 
         No candidate or bearer is returned. The host re-reads each actual
         decision; a deadline alone never authorizes retirement as an ABORT.
-        The cursor wraps, revisiting immutable plans idempotently.
+        The cursor wraps over pending work. Acknowledged cleanup is excluded.
         """
         if type(after) is not str or (after and not _HEX64.fullmatch(after)):
             raise IssuanceStoreRefused("issuance_request_invalid")
@@ -213,6 +213,7 @@ class IssuanceReservationStore:
                     FROM {self.schema}.{TABLE_ISSUANCE_PLANS}
                     WHERE tenant=$1 AND project=$2 AND decision_request_id > $3
                       AND transaction_id IS NOT NULL AND reserved_until <= clock_timestamp()
+                      AND resident_cleanup_completed_at IS NULL
                       AND plan->>'issuance_kind'='descriptor-resident'
                     ORDER BY decision_request_id LIMIT $4""",
                 self.tenant, self.project, after, count + 1)
@@ -221,6 +222,22 @@ class IssuanceReservationStore:
         return {"items": [{"decision_request_id": str(row["decision_request_id"]),
                            "transaction_id": str(row["transaction_id"])} for row in page],
                 "next_after": str(page[-1]["decision_request_id"]) if more and page else ""}
+
+    async def complete_resident_original_cleanup(self, *, transaction_id: str) -> None:
+        """Host acknowledgement after authenticated SDK retirement or complete COMMIT FINISH.
+
+        This only bounds cleanup work; it never authorizes a Card or credential.
+        It does not change the plan bytes, reservation or real decision.
+        """
+        if type(transaction_id) is not str or not _HEX64.fullmatch(transaction_id):
+            raise IssuanceStoreRefused("issuance_transaction_invalid")
+        async with self._pool.acquire() as connection:
+            await connection.execute(
+                f"""UPDATE {self.schema}.{TABLE_ISSUANCE_PLANS}
+                    SET resident_cleanup_completed_at=COALESCE(resident_cleanup_completed_at, clock_timestamp())
+                    WHERE tenant=$1 AND project=$2 AND transaction_id=$3
+                      AND plan->>'issuance_kind'='descriptor-resident'""",
+                self.tenant, self.project, transaction_id)
 
     @asynccontextmanager
     async def issuance_completion_section(self, transaction_id: str, *,

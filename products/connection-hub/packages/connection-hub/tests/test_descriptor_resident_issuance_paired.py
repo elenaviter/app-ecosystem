@@ -26,6 +26,8 @@ from test_agent_capability_control_sync import AGENT, APPLICATION, OWNER, _servi
 from test_descriptor_agent_consent import _sync_arguments
 from test_w603_original_issuance import _world
 
+USER = {"user_id": OWNER, "roles": ["kdcube:role:super-admin"]}
+
 
 @asynccontextmanager
 async def _paired(tmp_path):
@@ -101,6 +103,17 @@ def _request(w, *, original=None, resident=None, original_control=None, control=
                 control=control or w.control, active_catalog=w.catalog, lease_seconds=lease_seconds)
 
 
+@pytest.mark.asyncio
+async def test_control_ceiling_does_not_grant_permissions_the_owner_cannot_delegate(tmp_path):
+    from kdcube_ai_app.auth.tests.test_bound_session_issuance_store import counts
+
+    async with _paired(tmp_path) as w:
+        with pytest.raises(ResidentIssuancePending, match="agent_capability_grants_not_delegable"):
+            await issue_descriptor_resident(w.service, {"user_id": OWNER}, **_request(w))
+        assert await counts(w.sessions) == (0, 0, 0)
+        assert await w.store.read_current_authority(subject_hash=w.subject_hash, access_id=w.resident.access_id) is None
+
+
 async def _usable(w, bearer):
     from kdcube_ai_app.auth.bundle import BundleSessionAuthManager
     from kdcube_ai_app.auth.AuthManager import AuthenticationError
@@ -129,7 +142,7 @@ async def test_public_sync_first_create_begins_before_inactive_preparation_and_c
             return prepared
 
         monkeypatch.setattr(w.provider, "prepare", inspect)
-        answer = await w.service.sync_agent_capability_control({"user_id": OWNER}, **w.arguments)
+        answer = await w.service.sync_agent_capability_control(USER, **w.arguments)
         assert answer["ok"], answer
         assert len(plans) == 1
         plan = plans[0]
@@ -142,18 +155,18 @@ async def test_public_sync_first_create_begins_before_inactive_preparation_and_c
         assert len(group["participant_candidates"][PARTICIPANT]["cards"]) == 2
         assert plan.slots == ("access",) and plan.delivery_deadline == plan.expires_at
         assert w.service._minter.await_count == 0
-        again = await w.service.sync_agent_capability_control({"user_id": OWNER}, **w.arguments)
+        again = await w.service.sync_agent_capability_control(USER, **w.arguments)
         assert again["ok"] and (await w.service._load_record_any_state(plan.access_id, grantor_subject=OWNER))[0] == loaded[0]
 
 
 @pytest.mark.asyncio
 async def test_rotation_custody_cut_recovers_one_original_before_retiring_old_session(tmp_path, monkeypatch):
     async with _paired(tmp_path) as w:
-        old = await issue_descriptor_resident(w.service, {"user_id": OWNER}, **_request(w))
+        old = await issue_descriptor_resident(w.service, USER, **_request(w))
         control = (await w.service._load_record_any_state(w.control.access_id, grantor_subject=OWNER))[0]
         candidate = replace(old, card_revision=old.card_revision + 1)
         request = _request(w, original=old, resident=candidate, original_control=control, control=control)
-        plan = await begin_descriptor_resident_issuance(w.service, {"user_id": OWNER}, **request)
+        plan = await begin_descriptor_resident_issuance(w.service, USER, **request)
         original = await w.provider.prepare(plan=plan)
 
         async def fail(**kwargs):
@@ -161,13 +174,13 @@ async def test_rotation_custody_cut_recovers_one_original_before_retiring_old_se
 
         monkeypatch.setattr(w.secrets, "create", fail)
         with pytest.raises(ResidentIssuancePending, match="resident_issuance_pending"):
-            await issue_descriptor_resident(w.service, {"user_id": OWNER}, **request)
+            await issue_descriptor_resident(w.service, USER, **request)
         assert (await w.decisions.read(plan.transaction_id)).state == "committed"
         assert await _usable(w, old.access_token) is not None
-        assert await begin_descriptor_resident_issuance(w.service, {"user_id": OWNER}, **request) == plan
+        assert await begin_descriptor_resident_issuance(w.service, USER, **request) == plan
         w.recompose()  # fresh SDK provider, custody manager and handle store
         await w.service._card_coordinator[0].finish(plan.transaction_id)
-        saved = await issue_descriptor_resident(w.service, {"user_id": OWNER}, **request)
+        saved = await issue_descriptor_resident(w.service, USER, **request)
         assert saved.session_id == original.receipt.session_id and saved.access_token != old.access_token
         assert await _usable(w, saved.access_token) is not None
         assert await _usable(w, old.access_token) is None
@@ -182,7 +195,7 @@ async def test_pg_expiry_before_stage_records_abort_then_retires_inactive_origin
         coordinator, intents, decisions, _ = w.service._card_coordinator
         w.service.bind_card_coordinator(coordinator, intents=intents, decisions=decisions, intent_ttl_seconds=1)
         request = _request(w)
-        plan = await begin_descriptor_resident_issuance(w.service, {"user_id": OWNER}, **request)
+        plan = await begin_descriptor_resident_issuance(w.service, USER, **request)
         await w.provider.prepare(plan=plan)  # crash before Hub reserve or STAGE
         assert not (await decisions.read(plan.transaction_id)).terminal
         async with w.pool.acquire() as connection:
@@ -191,12 +204,82 @@ async def test_pg_expiry_before_stage_records_abort_then_retires_inactive_origin
         assert row.state == "aborted"
         await coordinator.finish(plan.transaction_id)
         assert (await recover_resident_originals(w.service))["retired"] == 1
+        assert (await recover_resident_originals(w.service))["retired"] == 0
         w.recompose()
         with pytest.raises(SessionIssuanceRefused, match="issuance_terminal"):
             await w.provider.prepare(plan=plan)
-        second = await begin_descriptor_resident_issuance(w.service, {"user_id": OWNER}, **request)
+        second = await begin_descriptor_resident_issuance(w.service, USER, **request)
         assert second.transaction_id != plan.transaction_id and second.expires_at > plan.expires_at
-        assert await begin_descriptor_resident_issuance(w.service, {"user_id": OWNER}, **request) == second
+        assert await begin_descriptor_resident_issuance(w.service, USER, **request) == second
+
+
+@pytest.mark.asyncio
+async def test_renew_policy_refusal_still_commits_descriptor_withdrawal(tmp_path):
+    from connection_hub.delegated_credentials.agent_capability_control import AGENT_DESCRIPTOR_ISSUER_KIND
+    from connection_hub.delegated_credentials.caller_writer_gate import CallerWriterRegistry
+    from test_delegated_access_renewal import _Policy
+
+    class RefuseRenew(_Policy):
+        def _decision(self, request):
+            self.allow = request.action != "renew"
+            return super()._decision(request)
+
+    async with _paired(tmp_path) as w:
+        old = await issue_descriptor_resident(w.service, USER, **_request(w, lease_seconds=1))
+        async with w.pool.acquire() as connection:
+            await connection.execute("SELECT pg_sleep(1.1)")
+        policy = RefuseRenew(True)
+        registry = CallerWriterRegistry()
+        registry.register(AGENT_DESCRIPTOR_ISSUER_KIND, policy)
+        w.service.bind_caller_writers(registry)
+        arguments = _sync_arguments(allow_post=False)
+        arguments["capability_authority"] = {**arguments["capability_authority"],
+                                             "resource": w.arguments["capability_authority"]["resource"]}
+        arguments.update(descriptor_revision="descriptor-withdrawal", descriptor_payload={"revision": "descriptor-withdrawal"})
+        answer = await w.service.sync_agent_capability_control(USER, **arguments)
+        assert answer["ok"] is False and answer["reason"] == "pb_refused"
+        assert answer["control_committed"] and answer["card_committed"]
+        control = (await w.service._load_record_any_state(w.control.access_id, grantor_subject=OWNER))[0]
+        assert control.card_revision == w.control.card_revision + 1
+        assert ("decide", "renew") in policy.calls and ("decide", "update") in policy.calls
+        assert (await w.service._load_record_any_state(old.access_id, grantor_subject=OWNER))[0].control_card.control_revision == control.card_revision
+
+
+@pytest.mark.asyncio
+async def test_consent_requires_descriptor_sync_before_first_creation_and_rotates_an_expired_resident(tmp_path):
+    from test_descriptor_agent_consent import _consent
+
+    async with _paired(tmp_path) as w:
+        missing = await _consent(w.service, w.resident)
+        assert missing["error"] == "agent_descriptor_resident_sync_required"
+        assert w.service._minter.await_count == 0
+        old = await issue_descriptor_resident(w.service, USER, **_request(w, lease_seconds=1))
+        async with w.pool.acquire() as connection:
+            await connection.execute("SELECT pg_sleep(1.1)")
+        answer = await _consent(w.service, old)
+        assert answer["ok"] and answer["access_token"]
+        saved = (await w.service._load_record_any_state(old.access_id, grantor_subject=OWNER))[0]
+        assert saved.card_revision == old.card_revision + 1 and saved.session_id != old.session_id
+        assert answer["access_token"] == saved.access_token and await _usable(w, saved.access_token) is not None
+        assert w.service._minter.await_count == 0
+
+
+@pytest.mark.asyncio
+async def test_selection_rotates_an_expired_resident_without_using_the_active_minter(tmp_path):
+    from test_descriptor_agent_consent import READ, _policy_with_named_operations
+
+    async with _paired(tmp_path) as w:
+        old = await issue_descriptor_resident(w.service, USER, **_request(w, lease_seconds=1))
+        async with w.pool.acquire() as connection:
+            await connection.execute("SELECT pg_sleep(1.1)")
+        choice = {**_policy_with_named_operations(READ), "resource": w.arguments["capability_authority"]["resource"]}
+        answer = await w.service.update_agent_capability_selection(USER, access_id=old.access_id,
+            expected_card_revision=old.card_revision, selected_capabilities=choice)
+        assert answer["ok"], answer
+        saved = (await w.service._load_record_any_state(old.access_id, grantor_subject=OWNER))[0]
+        assert saved.card_revision == old.card_revision + 1 and saved.session_id != old.session_id
+        assert await _usable(w, saved.access_token) is not None and w.service._minter.await_count == 0
+
 
 
 @pytest.mark.asyncio
@@ -204,7 +287,7 @@ async def test_pg_card_expiry_after_committed_custody_cut_finishes_without_insta
     from kdcube_ai_app.auth.tests.test_bound_session_issuance_store import counts
 
     async with _paired(tmp_path) as w:
-        plan = await begin_descriptor_resident_issuance(w.service, {"user_id": OWNER}, **_request(w, lease_seconds=2))
+        plan = await begin_descriptor_resident_issuance(w.service, USER, **_request(w, lease_seconds=2))
         prepared = await w.provider.prepare(plan=plan)
         await w.service.reserve_oauth_issuance(plan=plan, slot="access", token_sha256=prepared.receipt.bearer_sha256,
             record=prepared.record, ttl_seconds=prepared.ttl_seconds)

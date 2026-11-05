@@ -45,3 +45,6 @@ async def test_cleanup_pages_are_bounded_references_excluding_future_unbound_and
         assert last == {"items": [{"decision_request_id": second[0], "transaction_id": second[1]}],
                         "next_after": ""}
         assert await store.resident_issuance_cleanup_page(limit=1) == page  # wrap revisits immutable originals
+        await store.complete_resident_original_cleanup(transaction_id=first[1])
+        await store.complete_resident_original_cleanup(transaction_id=first[1])
+        assert await store.resident_issuance_cleanup_page(limit=1) == last

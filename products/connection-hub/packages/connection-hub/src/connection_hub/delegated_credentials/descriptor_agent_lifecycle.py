@@ -88,6 +88,23 @@ async def persist_descriptor_lifecycle(service: Any, user: Mapping[str, Any], *,
             if original is None or not changed_control or not exc.control_fallback:
                 raise
             issuance_error = exc
+    else:
+        from .descriptor_agent_selection import validate_new_standard_authority
+        from .descriptor_resident_issuance import ResidentIssuancePending
+
+        try:
+            await validate_new_standard_authority(service, user, original=original, resident=resident, active=active_catalog)
+        except DescriptorAgentCardRefused as exc:
+            if not changed_control:
+                raise
+            issuance_error = ResidentIssuancePending(exc.reason, retryable=exc.retryable)
+    if issuance_error is not None:
+        # Failure did not authorize a new positive selection. Publish the
+        # changed Control with the old resident authority and advanced binding;
+        # its current Control still narrows it independently of that failure.
+        resident = replace(original, card_revision=original.card_revision + 1,
+                           control_card=resident.control_card)
+        candidate = card_authority_from_record(resident)
     if (resident.access_token, resident.refresh_token, resident.session_id) != (
             original.access_token, original.refresh_token, original.session_id):
         raise DescriptorAgentCardRefused("agent_capability_credential_change_not_enlisted", status=409)
@@ -192,7 +209,7 @@ async def persist_descriptor_lifecycle(service: Any, user: Mapping[str, Any], *,
                 state=state, card_revision=candidate.card_revision if committed else before.card_revision)
             await service._issuer_outcome(issuer_request, state=state,
                 card_revision=ceiling.card_revision if committed else prior_control.card_revision if prior_control else 0)
-    return issuance_error if credential_needed else resident
+    return issuance_error if issuance_error is not None else resident
 
 
 __all__ = ["persist_descriptor_lifecycle"]

@@ -5234,6 +5234,17 @@ class AutomationAccessService:
                 existing = await self._load_record(
                     access_id, grantor_subject=grantor_subject
                 )
+                if (existing is None and getattr(self, "_card_coordinator", None) is not None
+                        and is_resident_client_id(client_id)):
+                    current = await self._load_record_any_state(access_id, grantor_subject=grantor_subject)
+                    if current is not None and current[1] == CARD_STATE_ACTIVE:
+                        existing = current[0]
+                    elif current is None:
+                        # The descriptor lifecycle creates the canonical pair.
+                        # A consent cannot invent its Control or mint first.
+                        return DescriptorAgentCardRefused("agent_descriptor_resident_sync_required").to_dict()
+                    else:
+                        return DescriptorAgentCardRefused("agent_capability_card_not_active").to_dict()
                 if existing is not None:
                     existing = await self._managed_grant_base(existing)  # W727
             except CardUnavailable as exc:
@@ -5512,8 +5523,10 @@ class AutomationAccessService:
                 _application_write=_application_write)
             if saved.get("ok") is not True:
                 return saved
-            return {**saved, "access_token": existing.access_token,
-                    "authorization_header": f"Bearer {existing.access_token}" if existing.access_token else ""}
+            current = await self._load_record_any_state(existing.access_id, grantor_subject=grantor_subject)
+            token = current[0].access_token if current is not None and current[1] == CARD_STATE_ACTIVE else ""
+            return {**saved, "access_token": token,
+                    "authorization_header": f"Bearer {token}" if token else ""}
         if existing is not None and self._managed_direct_write_refused() is not None:
             # W727: a grant onto a managed Card (the caller's own My Card, or a bound agent Card the
             # project authorizes) is that project's transaction; no credential is minted for it. A grant
@@ -5532,6 +5545,11 @@ class AutomationAccessService:
                 return forwarded
 
         ttl = _bounded_ttl(ttl_seconds)
+        if getattr(self, "_card_coordinator", None) is not None and is_resident_client_id(client_id):
+            # Every hosted resident must use its enlisted lifecycle. Project
+            # routes above can forward their governed write; no fallthrough
+            # may mint an active credential before the owning decision.
+            return DescriptorAgentCardRefused("resident_issuance_authority_not_enlisted").to_dict()
         now = int(time.time())
         created_at = created_at_override or now
         grantor_authority = _grantor_authority(
@@ -6585,6 +6603,12 @@ class AutomationAccessService:
             return {"ok": False, "error": "delegated_access_requires_access_id"}
         try:
             existing = await self._load_record(access_id, grantor_subject=grantor_subject)
+            if existing is None and getattr(self, "_card_coordinator", None) is not None:
+                current = await self._load_record_any_state(access_id, grantor_subject=grantor_subject)
+                if (current is not None and current[1] == CARD_STATE_ACTIVE
+                        and current[0].control_card is not None
+                        and current[0].control_card.issuer_kind == AGENT_DESCRIPTOR_ISSUER_KIND):
+                    existing = current[0]
         except CardUnavailable as exc:
             return {
                 "ok": False,
@@ -7090,6 +7114,23 @@ class AutomationAccessService:
                 return {"ok": False, "error": "invocation_policy_unavailable" if unavailable
                         else "invocation_modes_invalid", "status": 503 if unavailable else 400,
                         "message": "The permission choices were not saved. Your draft is kept."}
+        if (descriptor_control_record is not None
+                and (not existing.access_token or existing.expires_at <= int(time.time()))):
+            from .agent_capability_sync import AGENT_CAPABILITY_CARD_LEASE_SECONDS
+            from .descriptor_resident_issuance import issue_descriptor_resident
+
+            try:
+                updated = await issue_descriptor_resident(self, user, original=existing, resident=updated,
+                    original_control=descriptor_control_record, control=descriptor_control_record,
+                    active_catalog=active, lease_seconds=AGENT_CAPABILITY_CARD_LEASE_SECONDS,
+                    effects=save_effects)
+            except (DescriptorAgentCardRefused, CallerWriteRefused, IssuerWriteRefused) as exc:
+                return {"retryable": False, **exc.to_dict()}
+            except (CardUnavailable, CardConflict, CardCommitFailed):
+                return {"ok": False, "error": "resident_issuance_pending", "retryable": True, "status": 503}
+            saved = updated.to_public_dict()
+            saved["catalog_drift"] = card_drift(card=updated, active=active, baseline=active)
+            return {"ok": True, "access": saved, "pruned": reconciled.to_public_dict()}
         try:
             before_commit, issuer_request = await self._issuer_before_commit(
                 existing, user, action="update",

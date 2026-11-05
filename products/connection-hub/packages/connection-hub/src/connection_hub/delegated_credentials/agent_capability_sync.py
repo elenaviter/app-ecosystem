@@ -1140,6 +1140,7 @@ async def sync_agent_capability_control(
         existing_descriptor is not None
         and existing_descriptor.kind == AGENT_DESCRIPTOR_ACCEPTANCE_KIND
         and existing_descriptor.revision == descriptor_revision
+        and existing_descriptor.digest == descriptor_evidence.digest
     )
     if (
         existing_control is not None
@@ -1649,8 +1650,25 @@ async def sync_agent_capability_control(
     transactional = getattr(service, "_card_coordinator", None) is not None
     credential_issued = False
     try:
-        if not transactional:
+        if transactional:
+            from .descriptor_agent_selection import selected_standard_maps
+
+            grants, operations, named = selected_standard_maps(resident=resident,
+                control=record_from_card(control_authority), authority=authority, selected=selected, config=catalog_config)
+            aligned = await resolve_agent_descriptor_standard_authority(service, active=active,
+                owner_subject=grantor_subject, resource_grants=grants, resource_operations=operations,
+                named_service_operations=named.to_stored(), properties=resident.properties)
+            if aligned.error is not None:
+                return {"retryable": False, **aligned.error}
+            resident = dataclasses.replace(resident,
+                resource_grants={key: tuple(values) for key, values in aligned.resource_grants.items()},
+                resource_operations={key: tuple(values) for key, values in aligned.resource_operations.items()},
+                operations=tuple(aligned.operations), named_service_operations=aligned.named_service_operations,
+                named_services=copy.deepcopy(aligned.named_services))
+        else:
             resident, credential_issued = await _ensure_resident_card_credential(service, user, resident, now=now)
+    except DescriptorAgentCardRefused as exc:
+        return _transaction_refusal(exc)
     except Exception as exc:
         _LOGGER.error(
             "[agent-capability-sync] credential issuance failed card=%s operation=sync failure_type=%s",
@@ -1683,10 +1701,12 @@ async def sync_agent_capability_control(
                 issued_or_pending = await persist_descriptor_lifecycle(service, user, original=existing_resident, resident=resident,
                     original_control=existing_control, control=record_from_card(control_authority), active_catalog=active)
                 if isinstance(issued_or_pending, DescriptorAgentCardRefused):
+                    saved_resident = await service._load_record_any_state(resident_id, grantor_subject=grantor_subject)
+                    saved_control = await service._load_record_any_state(control_id, grantor_subject=grantor_subject)
                     return {**_transaction_refusal(issued_or_pending),
                         "control_committed": control_changed, "card_committed": True,
-                        "control_card": record_from_card(control_authority).to_public_dict(),
-                        "card": resident.to_public_dict()}
+                        "control_card": saved_control[0].to_public_dict(),
+                        "card": saved_resident[0].to_public_dict()}
                 resident = issued_or_pending
                 credential_issued = (existing_resident is None or resident.session_id != existing_resident.session_id
                                      or resident.access_token != existing_resident.access_token)
@@ -1927,7 +1947,30 @@ async def update_agent_capability_selection(
 
     standard_replacement: dict[str, Any] = {}
     standard_materialized = False
-    if reset_to_control_defaults:
+    if transactional:
+        from .descriptor_agent_selection import selected_standard_maps
+
+        try:
+            active = await service._active_catalog()
+            config = await service._catalog_config(active, owner_subject=grantor_subject)
+            grants, operations, named = selected_standard_maps(resident=resident, control=control,
+                authority=authority, selected=selected, config=config)
+            resolved = await service._resolve_card_authority(user=user, existing=resident, active=active,
+                resource_grants=grants, resource_operations=operations, operations=(),
+                named_service_operations=named.to_stored(), account_scope=resident.account_scope,
+                properties=resident_selection_properties(resident.properties, selection=selected))
+            if resolved.error is not None:
+                return {"retryable": False, **resolved.error}
+            standard_replacement = {"resource_grants": {key: tuple(value) for key, value in resolved.resource_grants.items()},
+                "resource_operations": {key: tuple(value) for key, value in resolved.resource_operations.items()},
+                "operations": tuple(resolved.operations), "named_service_operations": resolved.named_service_operations,
+                "named_services": copy.deepcopy(resolved.named_services), "account_scope": resolved.account_scope}
+            standard_materialized = True
+        except DescriptorAgentCardRefused as exc:
+            return _transaction_refusal(exc)
+        except CatalogUnavailable:
+            return {"ok": False, "error": "catalog_unavailable", "retryable": True, "status": 503}
+    elif reset_to_control_defaults:
         standard_materialized = _defaults_cover_control_standard_authority(
             authority=authority,
             defaults=selected,
@@ -1968,8 +2011,12 @@ async def update_agent_capability_selection(
     try:
         if transactional:
             if not resident.access_token or resident.expires_at <= int(time.time()):
-                raise DescriptorAgentCardRefused(
-                    "agent_capability_resident_issuance_not_enlisted", retryable=True, status=503)
+                from .descriptor_resident_issuance import issue_descriptor_resident
+
+                updated = await issue_descriptor_resident(service, user, original=resident, resident=updated,
+                    original_control=control, control=control, active_catalog=active,
+                    lease_seconds=AGENT_CAPABILITY_CARD_LEASE_SECONDS)
+                credential_issued = True
         else:
             updated, credential_issued = await _ensure_resident_card_credential(
                 service, user, updated, now=int(time.time()))
@@ -1998,10 +2045,10 @@ async def update_agent_capability_selection(
         changed = False
     else:
         try:
-            if transactional:
+            if transactional and not credential_issued:
                 await service._persist_descriptor_agent_edit(resident, updated, control=control,
                     active_catalog=await service._active_catalog(), actor_subject=grantor_subject)
-            else:
+            elif not transactional:
                 await service._persist_record(updated, expected_revision=resident.card_revision)
         except CardServingUnavailable as exc:
             return _serving_state_unavailable(exc)

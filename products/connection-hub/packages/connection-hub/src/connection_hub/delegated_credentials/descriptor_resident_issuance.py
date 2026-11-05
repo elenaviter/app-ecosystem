@@ -13,7 +13,7 @@ from dataclasses import replace
 from datetime import datetime, timezone
 import hashlib
 import logging
-from typing import Any, Mapping
+from typing import Any, Mapping, Sequence
 
 from service_foundation.coordination.durable_decision_log import DecisionRefused
 from connection_hub.authority_registry import DELEGATED_CLIENT_AUTHORITY_ID
@@ -48,7 +48,7 @@ class ResidentIssuancePending(DescriptorAgentCardRefused):
 
 
 def _inputs(before: Any, candidate: Any, prior_control: Any, control: Any, *,
-            catalog: str, lease_seconds: int) -> dict[str, Any]:
+            catalog: str, lease_seconds: int, effects: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
     selected = candidate.to_dict()
     selected["expires_at"] = 0  # the stored planning clock plus the explicit lease policy sets this
     if before is None:
@@ -58,7 +58,8 @@ def _inputs(before: Any, candidate: Any, prior_control: Any, control: Any, *,
         ceiling["created_at"] = 0
     return {"kind": RESIDENT_ISSUANCE_KIND, "original": before.to_dict() if before else None,
         "candidate": selected, "original_control": prior_control.to_dict() if prior_control else None,
-        "control": ceiling, "catalog": catalog, "lease_seconds": lease_seconds}
+        "control": ceiling, "catalog": catalog, "lease_seconds": lease_seconds,
+        "effects": [dict(effect) for effect in effects]}
 
 
 async def retire_aborted_original(service: Any, *, transaction_id: str) -> bool:
@@ -83,6 +84,7 @@ async def retire_aborted_original(service: Any, *, transaction_id: str) -> bool:
         delivery_deadline=plan.delivery_deadline, receipt_digest="",
         per_slot={"access": SlotOutcome("released", plan.effect_digests["access"], "")})
     await provider.retire(plan=plan, result=result)
+    await store.complete_resident_original_cleanup(transaction_id=transaction_id)
     return True
 
 
@@ -118,7 +120,8 @@ async def _pointer(store: Any, original: Any, candidate: Any) -> Any:
 
 async def _store_plan(service: Any, store: Any, *, before: Any, candidate: Any, prior_control: Any,
                       control: Any, original_record: Any, request: str, logical: str, ordinal: int,
-                      input_digest: str, catalog: str, lease_seconds: int, ttl: int) -> Mapping[str, Any]:
+                      input_digest: str, catalog: str, lease_seconds: int, ttl: int,
+                      extra_effects: Sequence[Mapping[str, Any]]) -> Mapping[str, Any]:
     now = await _planning_clock(service, store, request=request, ttl=ttl)
     candidate = replace(candidate, created_at=now if before is None else candidate.created_at,
                          expires_at=now + lease_seconds)
@@ -142,6 +145,7 @@ async def _store_plan(service: Any, store: Any, *, before: Any, candidate: Any, 
         effects.append({"kind": "grant_unbind", "key": "previous-resident", "payload": {
             "access_id": candidate.access_id, "session_id": original_record.session_id,
             "token_sha256": hashlib.sha256(original_record.access_token.encode("utf-8")).hexdigest()}})
+    effects.extend(dict(effect) for effect in extra_effects)
     changed_control = prior_control != control
     pairs = [(before, candidate)]
     if changed_control:
@@ -201,7 +205,8 @@ async def _store_plan(service: Any, store: Any, *, before: Any, candidate: Any, 
 
 async def begin_descriptor_resident_issuance(service: Any, user: Mapping[str, Any], *, original: Any,
                                              resident: Any, original_control: Any, control: Any,
-                                             active_catalog: Any, lease_seconds: int) -> Any:
+                                             active_catalog: Any, lease_seconds: int,
+                                             effects: Sequence[Mapping[str, Any]] = ()) -> Any:
     """Return the same original while uncertain; only a real ABORT permits another attempt."""
     from .automation_access import card_authority_from_record, _subject_from_user
     from .descriptor_agent_lifecycle import _prior_binding
@@ -230,7 +235,7 @@ async def begin_descriptor_resident_issuance(service: Any, user: Mapping[str, An
     if ceiling.catalog_version != active_catalog.version:
         raise IssuanceRefused("agent_capability_control_catalog_conflict", retryable=True)
     digest = original_input_digest(_inputs(before, candidate, prior_control, ceiling,
-                                          catalog=catalog, lease_seconds=lease_seconds))
+                                          catalog=catalog, lease_seconds=lease_seconds, effects=effects))
     logical = decision_request_id(scope=f"{store.tenant}:{store.project}:{RESIDENT_ISSUANCE_KIND}",
         grantor_subject=actor, client_id=candidate.client_id, original_request_id=digest)
     async with service._oauth_request_section(logical):
@@ -256,9 +261,12 @@ async def begin_descriptor_resident_issuance(service: Any, user: Mapping[str, An
             ordinal = raw["resident_attempt"] + 1
         request = decision_request_id(scope=RESIDENT_ISSUANCE_KIND, grantor_subject=actor,
             client_id=candidate.client_id, original_request_id=f"{logical}:{ordinal}")
+        from .descriptor_agent_selection import validate_new_standard_authority
+
+        await validate_new_standard_authority(service, user, original=original, resident=resident, active=active_catalog)
         raw = await _store_plan(service, store, before=before, candidate=candidate, prior_control=prior_control,
             control=ceiling, original_record=original, request=request, logical=logical, ordinal=ordinal,
-            input_digest=digest, catalog=catalog, lease_seconds=lease_seconds, ttl=ttl)
+            input_digest=digest, catalog=catalog, lease_seconds=lease_seconds, ttl=ttl, extra_effects=effects)
         return await service._begin_planned_issuance(raw, intents=intents, decisions=decisions, store=store)
 
 
@@ -381,17 +389,68 @@ async def _abort_before_completion(service: Any, plan: Any) -> bool:
         return False
 
 
+async def _control_fallback_without_commit(service: Any, user: Mapping[str, Any], *, original: Any,
+        resident: Any, original_control: Any, control: Any, active_catalog: Any, lease_seconds: int,
+        effects: Sequence[Mapping[str, Any]]) -> bool:
+    """Check the plan/decision, independently of the failure's reason.
+
+    Plan persistence precedes BEGIN. Under its same request section, absence
+    therefore proves this issuance never began. A stored but unbound plan
+    must replay BEGIN/binding before we can authenticate and finish ABORT.
+    Lost responses and actual COMMITs never authorize this fallback.
+    """
+    from .automation_access import card_authority_from_record, _subject_from_user
+
+    store = getattr(service, "_oauth_issuance_store", None)
+    if store is None:
+        return True  # composition preflight failed before any planner write
+    try:
+        _, intents, decisions, _, _ = service._issuance_parts()
+        actor = _subject_from_user(user)
+        before = card_authority_from_record(original) if original is not None else None
+        prior = card_authority_from_record(original_control) if original_control is not None else None
+        candidate, ceiling = card_authority_from_record(resident), card_authority_from_record(control)
+        digest = original_input_digest(_inputs(before, candidate, prior, ceiling,
+            catalog=catalog_version_digest(active_catalog.version, active_catalog.content_hash),
+            lease_seconds=lease_seconds, effects=effects))
+        logical = decision_request_id(scope=f"{store.tenant}:{store.project}:{RESIDENT_ISSUANCE_KIND}",
+            grantor_subject=actor, client_id=candidate.client_id, original_request_id=digest)
+        async with service._oauth_request_section(logical):
+            latest = await store.latest_resident_issuance(logical)
+            if latest is None:
+                return True
+            if latest["transaction_id"]:
+                row = await decisions.read(latest["transaction_id"])
+                if row is None or row.state == "committed":
+                    return False
+                plan = await service._issuance_plan(latest["plan"], row.transaction_id, row.intent.digest, snapshot=False)
+            else:
+                plan = await service._begin_planned_issuance(latest["plan"], intents=intents, decisions=decisions, store=store)
+            return await _abort_before_completion(service, plan)
+    except Exception:
+        return False  # an unknown decision or unavailable authority remains fenced
+
+
 async def issue_descriptor_resident(service: Any, user: Mapping[str, Any], *, original: Any, resident: Any,
                                     original_control: Any, control: Any, active_catalog: Any,
-                                    lease_seconds: int) -> Any:
+                                    lease_seconds: int, effects: Sequence[Mapping[str, Any]] = ()) -> Any:
     """Prepare inactive only after BEGIN; return custody only after the one FINISH."""
     try:
         plan = await begin_descriptor_resident_issuance(service, user, original=original, resident=resident,
-            original_control=original_control, control=control, active_catalog=active_catalog, lease_seconds=lease_seconds)
-    except IssuanceRefused as exc:
+            original_control=original_control, control=control, active_catalog=active_catalog,
+            lease_seconds=lease_seconds, effects=effects)
+    except (IssuanceRefused, DescriptorAgentCardRefused, CallerWriteRefused, IssuerWriteRefused) as exc:
         reason = "resident_issuance_adapter_unavailable" if exc.reason == "card_transactions_unavailable" else exc.reason
-        raise ResidentIssuancePending(reason, retryable=exc.retryable,
-            control_fallback=exc.reason in {"card_transactions_unavailable", "resident_issuance_adapter_unavailable"}) from None
+        fallback = await _control_fallback_without_commit(service, user, original=original, resident=resident,
+            original_control=original_control, control=control, active_catalog=active_catalog,
+            lease_seconds=lease_seconds, effects=effects)
+        raise ResidentIssuancePending(reason, retryable=getattr(exc, "retryable", False),
+                                      control_fallback=fallback) from None
+    except Exception:
+        fallback = await _control_fallback_without_commit(service, user, original=original, resident=resident,
+            original_control=original_control, control=control, active_catalog=active_catalog,
+            lease_seconds=lease_seconds, effects=effects)
+        raise ResidentIssuancePending("resident_issuance_planning_unavailable", control_fallback=fallback) from None
     provider = service._resident_credentials
     _, _, decisions, _, _ = service._issuance_parts()
     row = await decisions.read(plan.transaction_id)
@@ -444,6 +503,8 @@ async def recover_resident_originals(service: Any, *, after: str = "", limit: in
             row = await decisions.read(transaction_id)
             if row is not None and row.state == "aborted":
                 retired += int(await retire_aborted_original(service, transaction_id=transaction_id))
+            elif row is not None and row.state == "committed" and PARTICIPANT in row.finished:
+                await store.complete_resident_original_cleanup(transaction_id=transaction_id)
         except Exception:
             failed += 1
             LOGGER.warning("[descriptor-resident-issuance] terminal cleanup pending transaction=%s", transaction_id)
