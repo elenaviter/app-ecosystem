@@ -1,8 +1,12 @@
 """Paired resident lifecycle: real PG decisions/sessions/handles, files and Redis.
 
 Run on a qualified paired Hub/SDK source runner with both test DSNs and REDIS_URL.
-Only the serving projection and signing key are synthetic. Custody uses the
-SDK's file secrets manager; every fresh composition reads the same private files.
+The shared W603 harness supplies real durable stores and Redis, with test
+ports for projection and local mutation/request locks. The SDK authority uses
+its real PostgreSQL session store with a test cache and synthetic signing key.
+Custody uses the SDK's file secrets manager across fresh compositions. These
+cases qualify durable lifecycle/expiry cuts; the broad gate also owes the
+production lock, cache and complete admission coverage.
 """
 
 from contextlib import asynccontextmanager
