@@ -186,7 +186,7 @@ is refused. A known application binding without a project route keeps its
 ordinary writer rules. Recognizing a descriptor binding does not exempt other
 writers from the direct-write guard.
 
-This existing-Card edit requires unchanged credential handles. A descriptor
+An edit that keeps a live resident bearer uses unchanged credential handles. A descriptor
 sync that keeps the existing live bearer reserves the unchanged Control, or
 writes a changed Control and the resident under one group decision. Sync may
 advance the resident's binding to that exact current Control; owner Save stays
@@ -194,17 +194,32 @@ strict about a stale binding. Configured Control issuer and resident writer
 policies are revalidated before the decision. The administrator edit marker
 and label survive a descriptor refresh.
 
-First creation and credential rotation still need the inactive-original
-planner. This interim draft must not merge or deploy before that planner is
-wired and qualified. Until enlisted, changes requiring issuance return
-`agent_capability_resident_issuance_not_enlisted` before minting. A changed
-Control can still commit with the existing resident even when its bearer is
-missing or expired; that answer explicitly says which Cards committed while
-credential issuance remains pending. Control narrowing never waits for a new
-credential. A fresh descriptor Control is issued locally under the group’s
-absence fence; configured update/revoke issuer policies continue to govern
-changes to an existing Control. The owner-edit path never makes an early
-minted credential transactional.
+First creation and credential rotation use an immutable resident-original
+plan in the existing issuance table. Each member carries linked original and
+candidate versions; a changed Control is a member and an unchanged Control is
+a held read. The planner pins the PostgreSQL planning clock, Card expiry,
+catalog digest and ordered effects, and begins and binds the one decision
+before the SDK prepares an inactive original. A retry reuses that original
+while the outcome is uncertain. The SDK access-only delivery deadline is the
+Card lease, rather than the shorter external OAuth delivery interval.
+
+After COMMIT, the credential effect activates and installs that same original
+through resident custody. Only after installation does the following effect
+retire the pinned previous session and grant. A custody cut keeps the Card
+fenced; FINISH recovers the same bearer. Fixed Card expiry never creates a
+replacement credential. A prepared original left before STAGE is retired only
+after an actual ABORT. The bounded cleanup page acknowledges completed work
+in the existing plan row, leaving its immutable plan and real decision intact.
+
+A changed Control can still commit with the existing resident when issuance
+fails, if the plan never began or its actual ABORT has finished. An uncertain
+or committed issuance stays fenced. This fallback advances the binding while
+retaining the resident's prior positive authority; the response identifies
+the Cards actually committed and the pending issuance code. New positive
+standard grants still require the owner's delegability, independently of
+the Control ceiling. A fresh descriptor Control is issued locally under the
+group's absence fence; configured update/revoke issuer policies continue to
+govern changes to an existing Control.
 
 Project ports `authorities.control_card` and `authorities.agent_card` do not
 govern descriptor creation. A separate explicit registration at
@@ -220,12 +235,28 @@ capability selection are persisted in one Card revision, so a subsequent sync
 reads the consented selection. An explicit replacement can remove a selection;
 sync does not union removed choices back into it.
 
+Consent and selection on a missing or expired credential use the enlisted
+resident issuance path. Consent before descriptor sync refuses
+`agent_descriptor_resident_sync_required`; it cannot invent the Control or
+fall through to an active minter.
+
 The explicit capability-selection endpoint uses the same held-Control and
 catalog decision for a live resident, with a named refusal for additions
-above the ceiling. Capability projection and standard service-grant
-reconciliation across all selection categories still require qualification.
-Transaction policy refusals retain a non-secret error code and explicit
-retryability for the SDK adapter.
+above the ceiling. Explicit named-service and resource selections align their
+standard grants and operations in that same revision, using the current
+stored Control and active provider catalog. Hidden preferences and unrelated
+resources are preserved. MCP routing comes from the Control's stored metadata;
+an old missing mapping refuses `agent_capability_standard_mapping_refresh_required`
+until a paired descriptor sync refreshes it. Owner Save does not use the raw
+consumer descriptor as another ACL.
+
+Transaction refusals carry bounded error/reason codes and explicit retryability
+through the SDK provider, typed runtime exception, app response and workspace
+state/logs. Payloads, exception text and consent URLs are excluded from that
+error boundary. These draft implementations require exact paired-head review
+and the full qualified off-host gate before merge or deployment. The paired
+resident fixture file must execute with zero skips, including real PostgreSQL
+decision/session/handle stores, file custody, Redis, expiry and recovery cuts.
 
 Implementation checkpoint: managed preflight, wire, candidate composition and
 real filesystem policy/coordinator failure-cut checks exist. Productive
