@@ -145,15 +145,15 @@ sequenceDiagram
     participant Hub as Connection Hub
 
     Operator->>Hub: Approve the new Card X (device link and code)
-    Hub-->>Relay: Card X is active
     Note over Relay: Picks up Card X on its next retry,<br/>or at once after a relay restart
     Relay->>Board: worker.publish: "this agent, now with Card X"
-    Note over Board: The agent attends under an older Card Y
-    Board->>Hub: Propose: attach the project Control to X, replacing Y
-    Note over Hub: Checks the exact revisions of the Control, X and Y,<br/>then commits all of it or none of it
-    Hub-->>Board: Committed
-    Note over Board: Only now: the agent's authority moves to X
-    Board-->>Relay: Channel open
+    Note over Board: The agent attends under an older Card Y.<br/>Y is pinned by the board's own records
+    Board->>Hub: Plan: attach agent Card X under the existing project Control
+    Hub-->>Board: Prepared: the current revisions of X and the Control are fenced
+    Note over Board: Commit: the worker's identity and binding<br/>move to X, together with the Card decision
+    Board->>Hub: Finish
+    Hub-->>Board: X's attachment published, fences cleared
+    Board-->>Relay: Publish complete: the channel opens
 ```
 
 In words:
@@ -165,14 +165,30 @@ In words:
    when it is restarted.
 3. **The relay says who it is now.** On connecting it calls `worker.publish`:
    this agent, now with Card X.
-4. **The board moves the project to the new Card.** It sees that the agent
-   attends under an older Card Y. It proposes one Card transaction to
-   Connection Hub: attach the project Control Card to X in place of Y. Connection
-   Hub checks the exact current revisions of the Control Card, X and Y, and
-   commits the change entirely or not at all. Only after that commit does the
-   board move the agent's authority to X, and the channel opens.
+4. **The board decides, and moves the project to the new Card in one Card
+   transaction.**
+   - The board sees that the agent attends under an older Card Y. It proposes
+     the ordinary "attach agent" plan for X under the project's existing
+     Control Card.
+   - Connection Hub prepares it by fencing the current revisions of X and of
+     the Control Card, so neither can change underneath.
+   - Y is pinned by the board's own records of that agent (its registry entry,
+     binding, native identity and owner). Connection Hub neither reads nor
+     changes Y.
+   - The board commits: the worker's identity and binding move to X together
+     with the durable Card decision, or not at all.
+   - Connection Hub finishes: it publishes X's attachment and clears the fences.
+     Only when that publish has completed does the relay's channel open.
 5. **Then the project grants.** A new Card starts without the project grants;
    a project admin presses Team, the agent, **Fit to role**.
+
+What stays and what does not: the agent keeps its attendance, role and
+assignments; they belong to the same worker. A revoked Y stays revoked and
+keeps its binding record. Even a Y that is still active no longer gives any
+attendance once the worker has moved to X. When the move is refused,
+`pb status` names Connection Hub's cause, and it does not suggest
+`authorize` again when the agent's current profile is in place and the refusal
+is not about its credential.
 
 **Today step 4 fails (W1013).** On a build with Card transactions on, the board
 still makes this attach as a direct write (`control_card_attach`), and
@@ -180,9 +196,9 @@ Connection Hub refuses it with `card_transactions_direct_write_refused`
 (HTTP 409). The board reports that as `work_project_control_connection_hub_refused`;
 the relay opens the channel and drops it again, and `pb status` keeps suggesting
 `authorize`. Re-authorizing, restarting the relay and Fit to role do not help.
-W1013 moves the attach into the Card transaction described in step 4; until it
-ships, an agent with a replacement Card cannot reach its project on such a
-build.
+W1013 moves the attach into the Card transaction described in step 4, which is
+its design as implemented on its draft branch, not yet shipped; until it ships,
+an agent with a replacement Card cannot reach its project on such a build.
 
 **Removing and re-adding the agent is not a workaround.** Adding it again still
 targets the old Card, and unlinking ends its attendance and detaches its
