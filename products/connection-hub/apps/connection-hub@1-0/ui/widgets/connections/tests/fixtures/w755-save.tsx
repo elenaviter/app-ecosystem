@@ -19,6 +19,16 @@ const RES = 'https://svc.example.test/mcp'
 const target = 'urn:kdcube:app:tenant-a:project-a:assistant%401-0:worker'
 const selection = { schema: 'connection_hub.agent_capability_policy.v1', resource: target,
   capabilities: { tools: ['tool.z%2Fread', 'tool.a%20write'], empty: [] } }
+const controlAuthority = {
+  resource_grants: { [RES]: ['svc:read'] },
+  resource_operations: { [RES]: ['read', 'write', 'delete'] },
+  named_service_operations: {}, account_scope: {},
+  properties: {
+    'kdcube.agent_capability_authority': selection,
+    'connection_hub.control_snapshot': { schema: 'connection_hub.control_snapshot.v1',
+      mode: 'exact', state: 'exact', basis_catalog_version: 'cat-1' },
+  },
+}
 const card = {
   access_id: 'card-1', source: 'manual', card_kind: 'automation', state: 'active', label: 'Build token',
   client_id: 'manual:card-1', grantor_subject: 'person-1', delegate_subject: 'person-1', card_revision: 4,
@@ -29,9 +39,8 @@ const card = {
     source: 'agent', card_kind: 'agent', client_id: 'kdcube-agent:assistant@1-0:worker',
     properties: { 'kdcube.agent_capability_selection': selection }, composition_mode: 'and',
     control_card: { state: 'active', composition_mode: 'and',
-      control_authority: { resource_grants: { [RES]: ['svc:read'] },
-        resource_operations: { [RES]: ['read', 'write', 'delete'] },
-        properties: { 'kdcube.agent_capability_authority': selection } },
+      authority: { ...controlAuthority, resource_operations: { [RES]: ['read', 'write'] } },
+      control_authority: controlAuthority,
       binding: { control_id: 'descriptor-control-1', issuer_kind: 'kdcube_agent_descriptor',
         issuer_ref: target, control_revision: 2 } },
   } : {}),
@@ -48,6 +57,13 @@ setConnectionsCallOperation(async (_method, operation, data) => {
   if (operation === 'delegated_access_list') {
     return { ok: true, platform_user_id: 'person-1', items: [card], grant_options: [{ grant: 'svc:read' }],
       resources: [catalog] } as never
+  }
+  if (hosted && operation === 'control_card_get' && data?.control_id === 'descriptor-control-1') {
+    return { ok: true, access: { ...controlAuthority,
+      access_id: 'descriptor-control-1', source: 'control', card_kind: 'control', state: 'active',
+      label: 'Hosted agent Control', grantor_subject: 'person-1', card_revision: 2,
+      catalog_version: 'cat-1', credentialless: true,
+    }, resources: [catalog] } as never
   }
   if (operation === 'delegated_access_update') {
     const saves = calls.filter((call) => call.operation === 'delegated_access_update').length

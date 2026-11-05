@@ -11571,14 +11571,18 @@ class AutomationAccessService:
 
         Called only inside the request's section. The Card's own section nests inside it (the order begin and
         record use). An adopted file (any other owner) is never touched: lane 3 owns it."""
-        from .cards.version_link import discard_hidden_version, is_version_link, staging_tag
-
-        link = recorded.get("link") if isinstance(recorded, Mapping) else None
         if isinstance(recorded, Mapping) and isinstance(recorded.get("members"), list):
             removed = False
             for member in recorded["members"]:
-                removed = await self._discard_planned_candidate(member, request) or removed
+                removed = await self._discard_planned_candidate_version(member, request) or removed
             return removed
+        return await self._discard_planned_candidate_version(recorded, request)
+
+    async def _discard_planned_candidate_version(self, recorded: Mapping[str, Any], request: str) -> bool:
+        """Discard one member under its Card fence, inside the caller's claimed request."""
+        from .cards.version_link import discard_hidden_version, is_version_link, staging_tag
+
+        link = recorded.get("link") if isinstance(recorded, Mapping) else None
         card_store = getattr(self._cards(), "card_store", None)
         service = getattr(card_store, "_card_intent_service", None)
         if not is_version_link(link) or service is None:

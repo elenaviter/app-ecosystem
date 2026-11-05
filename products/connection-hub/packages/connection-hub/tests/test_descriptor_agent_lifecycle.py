@@ -13,7 +13,7 @@ import pytest
 from connection_hub.delegated_credentials.agent_capability_control import (
     AGENT_DESCRIPTOR_CARD_EDIT_PROVENANCE_KEY, AGENT_DESCRIPTOR_ISSUER_KIND,
 )
-from connection_hub.delegated_credentials.agent_capability_policy import AGENT_CAPABILITY_SELECTION_PROPERTY
+from connection_hub.delegated_credentials.agent_capability_policy import AGENT_CAPABILITY_SELECTION_PROPERTY, AgentCapabilityPolicy
 from connection_hub.delegated_credentials.caller_writer_gate import CallerWriterRegistry
 from connection_hub.delegated_credentials.cards import transaction_store as tx
 from connection_hub.delegated_credentials.cards.card_participant import PARTICIPANT
@@ -48,7 +48,8 @@ async def test_explicit_selection_uses_local_control_and_catalog_reservations(tm
     monkeypatch.setattr(service, "_mint_card_credential", mint)
     assert (await _select(service, resident, READ, POST))["ok"]
     saved = await _current(store, resident)
-    assert saved.properties[AGENT_CAPABILITY_SELECTION_PROPERTY] == _policy_with_named_operations(READ, POST)
+    assert AgentCapabilityPolicy.from_property(saved.properties[AGENT_CAPABILITY_SELECTION_PROPERTY]) == (
+        AgentCapabilityPolicy.from_property(_policy_with_named_operations(READ, POST)))
     row = next(iter(decisions.rows.values()))
     reads = row.intent.payload["participant_inputs"][PARTICIPANT]["dependency_revisions"]
     assert reads[f"card:{subject_hash_for(OWNER)}:{control.access_id}"] == control.card_revision

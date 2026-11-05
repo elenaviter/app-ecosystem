@@ -19,6 +19,7 @@ def _sync_arguments(*, allow_post=True):
         "descriptor_payload": {"revision": "descriptor-r1"},
         "capability_authority": _policy_with_named_operations(*operations),
         "resource_grants": {NAMED_RESOURCE: ["named_services:use", "slack:read", *(["slack:post"] if allow_post else [])]},
+        "resource_operations": {NAMED_RESOURCE: ["named_services_call"]},
         "named_service_operations": {NAMED_RESOURCE: {"slack": operations}},
     }
 
@@ -99,7 +100,7 @@ async def test_focused_consent_saves_approved_account_binding_with_selection_and
 async def test_owner_screen_permission_save_without_properties_commits_and_aligns_selection(tmp_path):
     service, store, decisions, resident, _, _, _ = await _consent_world(tmp_path)
     answer = await service.update_access(
-        {"user_id": OWNER}, access_id=resident.access_id,
+        {"user_id": OWNER, "roles": ["kdcube:role:super-admin"]}, access_id=resident.access_id,
         resource_grants={NAMED_RESOURCE: ["named_services:use", "slack:read", "slack:post"]},
         resource_operations={NAMED_RESOURCE: []},
         named_service_operations={NAMED_RESOURCE: {"slack": [READ, POST]}},

@@ -145,6 +145,10 @@ test('Agent Cards use the ordinary Card workbench plus KDCube metadata', () => {
     new URL('../src/features/delegatedAccess/DelegatedAccessPanel.tsx', import.meta.url),
     'utf8',
   )
+  const editorProperties = readFileSync(
+    new URL('../src/features/delegatedAccess/cardEditorProperties.ts', import.meta.url),
+    'utf8',
+  )
 
   assert.match(panel, /title="KDCube agent defaults"/)
   assert.match(panel, /title="KDCube administrator preset"/)
@@ -152,7 +156,8 @@ test('Agent Cards use the ordinary Card workbench plus KDCube metadata', () => {
   assert.match(panel, /renderEditResourceSections\(record, effectiveComposition\)/)
   assert.match(panel, /renderAccountScopePicker\(/)
   assert.match(panel, /updateDelegatedAccess\(\{/)
-  assert.match(panel, /AGENT_CAPABILITY_SELECTION_PROPERTY/)
+  assert.match(panel, /changedEditorCardProperties/)
+  assert.match(editorProperties, /AGENT_CAPABILITY_SELECTION_PROPERTY/)
   assert.match(panel, /AGENT_CAPABILITY_DEFAULTS_PROPERTY/)
   assert.match(panel, /const capabilityControl = item\.control_card;/)
   assert.match(panel, /descriptor initialize this preset/)

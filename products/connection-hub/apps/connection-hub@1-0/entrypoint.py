@@ -2075,6 +2075,8 @@ async def _bind_card_transactions(entrypoint: Any, service: Any, *, persistence:
     # still protects its P (it fails closed rather than open).
     managed_scopes = [descriptor.plan_scope_prefix
                       for descriptor in participant_caller_descriptors(_connections_config(entrypoint)).values()]
+    authority = _durable_authority(entrypoint)
+    credential_handles = getattr(authority, "card_handles", None)
     bind_card_transactions(service, persistence=persistence, decisions=decisions, grant_store=grant_store,
                            policies=_invocation_policy_service(entrypoint),
                            authorities=(await _card_participant_callers(entrypoint, persistence)).authorities,
@@ -2083,9 +2085,10 @@ async def _bind_card_transactions(entrypoint: Any, service: Any, *, persistence:
                            managed_control_scopes=managed_scopes,
                            # W603: an original code exchange plans and activates its credentials in this
                            # authority; without it begin_oauth_issuance refuses card_transactions_unavailable.
-                           issuance_store=_durable_authority(entrypoint).oauth,
-                           credential_handles=_durable_authority(entrypoint).card_handles,
-                           resident_credentials=_resident_credential_provider())
+                           issuance_store=authority.oauth,
+                           credential_handles=credential_handles,
+                           resident_credentials=(_resident_credential_provider()
+                                                 if credential_handles is not None else None))
     # W638: a managed Card edit is forwarded to the host that plans its scope,
     # signed with that caller's authority request signer. A caller whose
     # signer secret is unavailable gets no forwarder: its edits stay refused.

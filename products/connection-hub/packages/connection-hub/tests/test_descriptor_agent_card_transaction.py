@@ -11,6 +11,7 @@ import pytest
 
 from connection_hub.delegated_credentials.cards import transaction_store as tx
 from connection_hub.delegated_credentials.cards.card_participant import PARTICIPANT
+from connection_hub.delegated_credentials.cards.model import authority_is_usable
 from connection_hub.delegated_credentials.cards.service import CardConflict, CardServingUnavailable
 from connection_hub.delegated_credentials.cards.store import CardStorageError, subject_hash_for
 from connection_hub.delegated_credentials.caller_writer_gate import CallerWriteRefused, CallerWriterRegistry
@@ -33,6 +34,15 @@ class StoredPersistence:
         return None if current is None else (current[1], self.handles[access_id])
 
     load_current = load
+
+    async def list_active(self, *, subject_hash, now=None):
+        moment = int(time.time()) if now is None else now
+        result = []
+        for access_id in await self.store.list_card_ids(subject_hash=subject_hash):
+            loaded = await self.store.read_current_authority(subject_hash=subject_hash, access_id=access_id)
+            if loaded is not None and authority_is_usable(loaded[1], moment):
+                result.append(loaded[1])
+        return result
 
     async def current_revision(self, access_id, *, subject_hash):
         current = await self.load(access_id, subject_hash=subject_hash)
@@ -137,7 +147,7 @@ async def test_control_is_reserved_until_the_local_commit_decision(tmp_path, mon
 
     async def check(transaction_id, decision, **kwargs):
         if decision == "committed":
-            with pytest.raises((CardConflict, CardStorageError), match="reserved"):
+            with pytest.raises((CardConflict, CardStorageError), match="card_transaction_unresolved"):
                 await card_service.commit(replace(control, card_revision=control.card_revision + 1),
                     subject_hash=subject_hash_for(OWNER), expected_revision=control.card_revision, now=int(time.time()))
             checked.append(True)
@@ -212,8 +222,9 @@ async def test_enlisted_descriptor_caller_gate_binds_the_candidate_and_witness(t
     active = await service._active_catalog()
 
     async def save():
+        handles = service._persistence.handles[resident.access_id]
         await service._persist_descriptor_agent_edit(
-            record_from_card(resident), record_from_card(candidate), control=record_from_card(control),
+            record_from_card(resident, handles), record_from_card(candidate, handles), control=record_from_card(control),
             active_catalog=active, actor_subject=OWNER)
 
     if mutate_during_gate:
