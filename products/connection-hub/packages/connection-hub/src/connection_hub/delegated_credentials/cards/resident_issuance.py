@@ -40,9 +40,10 @@ def _result(binding: EffectBinding, plan: OAuthIssuancePlan, *, outcome: str,
 
 
 class ResidentCredentialEffects:
-    def __init__(self, *, store: Any, decisions: Any, provider: Any, handles: Any) -> None:
+    def __init__(self, *, store: Any, decisions: Any, provider: Any, handles: Any, read_card: Any) -> None:
         self._store, self._decisions = store, decisions
         self._provider, self._handles = provider, handles
+        self._read_card = read_card
 
     async def context(self, binding: EffectBinding, payload: Mapping[str, Any], *,
                       state: str, live: Any = None) -> OAuthIssuancePlan | None:
@@ -130,7 +131,14 @@ class ResidentCredentialEffects:
         return "applied"
 
     async def retire_previous(self, binding: EffectBinding, payload: Mapping[str, Any]) -> None:
-        """A rotation's old activated session, pinned by the same committed receipt."""
+        """Retire the old session only after new custody, or when no Card is live.
+
+        FINISH executes recorded effects in order and stops on failure. This
+        metadata fence also refuses an out-of-order cutoff after slot
+        activation but before installation. A superseded new issuance may
+        retire the old session only while its authoritative Card is no longer
+        live; it never logs out a live Card's old session without new custody.
+        """
         receipt = binding.receipt()
         issue = next((effect for effect in receipt["effects"]
             if effect["kind"] == "credential_issue" and effect["key"] == "access"
@@ -151,6 +159,19 @@ class ResidentCredentialEffects:
                    if held.get("state") == "released" and held.get("outcome") == "superseded" else "")
         if not outcome:
             raise ParticipantEffectRefused("card_effect_binding_mismatch")
+        current = await self._read_card(issue_binding, issue["payload"])
+        now = await self._store.issuance_clock()
+        if current is not None and current.state == "active" and current.expires_at > now:
+            if outcome != "applied":
+                raise ParticipantEffectRefused("card_effect_binding_mismatch")
+            read_binding = getattr(self._handles, "binding_identity", None)
+            if not callable(read_binding):
+                raise ParticipantEffectRefused("card_effect_adapter_unavailable")
+            installed = await read_binding(plan.access_id)
+            if (not isinstance(installed, Mapping) or installed.get("from_fingerprint") != held.get("token_sha256")
+                    or installed.get("from_revision") != plan.candidate_revision
+                    or installed.get("from_expires_at") != plan.expires_at):
+                raise ParticipantEffectRefused("card_effect_binding_mismatch")
         await retire(plan=plan, result=_result(issue_binding, plan, outcome=outcome,
             token_sha256=held.get("token_sha256", "")),
             session_id=payload["session_id"], token_sha256=payload["token_sha256"])

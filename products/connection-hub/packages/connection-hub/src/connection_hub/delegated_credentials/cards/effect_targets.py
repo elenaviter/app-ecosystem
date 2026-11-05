@@ -239,7 +239,7 @@ class CredentialIssueTarget:
         self._card_store = card_store
         self._credential_handles = credential_handles
         self._resident = ResidentCredentialEffects(store=issuance_store, decisions=decisions,
-            provider=resident_credentials, handles=credential_handles)
+            provider=resident_credentials, handles=credential_handles, read_card=self._current_card)
 
     @staticmethod
     def _decision_id(binding: EffectBinding) -> str:
@@ -252,8 +252,8 @@ class CredentialIssueTarget:
             raise ParticipantEffectRefused("card_effect_adapter_unavailable")
         return operation
 
-    async def _live_card(self, binding: EffectBinding, payload: Mapping[str, Any]) -> Any:
-        """The committed revision when it is still the authoritative live Card; otherwise None."""
+    async def _current_card(self, binding: EffectBinding, payload: Mapping[str, Any]) -> Any:
+        """The authoritative Card, including this transaction's own fenced candidate."""
         receipt = binding.receipt()
         subject_hash, access_id = receipt["subject_hash"], receipt["access_id"]
         raw = await self._card_store.read_pointer_document(subject_hash=subject_hash, access_id=access_id)
@@ -263,9 +263,14 @@ class CredentialIssueTarget:
         else:
             current = await self._card_store.read_current_authority(subject_hash=subject_hash, access_id=access_id)
             authority = None if current is None else current[1]
+        return authority
+
+    async def _live_card(self, binding: EffectBinding, payload: Mapping[str, Any]) -> Any:
+        """The committed revision when it is still the authoritative live Card; otherwise None."""
+        authority = await self._current_card(binding, payload)
         if authority is None:
             return None
-        committed = CardCurrentPointer.from_mapping(receipt["after"])
+        committed = CardCurrentPointer.from_mapping(binding.receipt()["after"])
         now = await self._call("issuance_clock")()
         live = (authority.access_id == payload["access_id"] == committed.access_id
                 and authority.card_revision == payload["card_revision"] == committed.card_revision

@@ -83,6 +83,14 @@ class _Handles:
             raise OSError("synthetic custody cut")
         self.saved.append((card, handles))
 
+    async def binding_identity(self, access_id):
+        if not self.saved:
+            return None
+        card, handles = self.saved[-1]
+        assert access_id == card.access_id
+        return {"from_fingerprint": hashlib.sha256(handles.access_token.encode()).hexdigest(),
+                "from_revision": card.card_revision, "from_expires_at": card.expires_at}
+
 
 def _world(*, created=False, state="committed", fail=False):
     saved = _receipt(created=created, state=state)
@@ -122,6 +130,7 @@ def _world(*, created=False, state="committed", fail=False):
             return deepcopy(saved)
 
         target._live_card = current
+        target._resident._read_card = current
         return ParticipantEffectApplier(read_receipt=receipt, targets={"credential_issue": target})
 
     return SimpleNamespace(receipt=saved, candidate=candidate, issue=issue, store=store,
@@ -279,6 +288,66 @@ async def test_old_session_retirement_refuses_a_false_decision_before_either_aut
     class Grants:
         async def revoke_access_grant_by_digest(self, digest):
             pytest.fail("false resident decision must not revoke an old grant")
+
+    actual = w.applier()
+    actual._targets["grant_unbind"] = GrantUnbindTarget(Grants(),
+        resident=actual._targets["credential_issue"]._resident)
+    with pytest.raises(ParticipantEffectRefused, match="card_effect_binding_mismatch"):
+        await actual.apply("grant_unbind", old["key"], old["payload"], transaction_id=TX)
+    assert w.provider.previous == []
+
+
+@pytest.mark.asyncio
+async def test_recorded_effect_order_stops_at_custody_cut_and_cutoff_checks_installation(tmp_path, monkeypatch):
+    from connection_hub.delegated_credentials.cards import transaction_store as tx
+
+    w = _world(fail=True)
+    old = {"kind": "grant_unbind", "key": "previous-resident", "payload": {
+        "access_id": w.candidate.access_id, "session_id": "synthetic-old-session", "token_sha256": "d" * 64}}
+    w.receipt["effects"].append(old)
+    revoked = []
+
+    class Grants:
+        async def revoke_access_grant_by_digest(self, digest):
+            revoked.append(digest)
+            return "revoked"
+
+    actual = w.applier()
+    actual._targets["grant_unbind"] = GrantUnbindTarget(Grants(),
+        resident=actual._targets["credential_issue"]._resident)
+    marker_store = SimpleNamespace(root=tmp_path)
+    with pytest.raises(ParticipantEffectRefused, match="card_effect_target_unavailable"):
+        await tx.apply_effects(marker_store, w.receipt, actual.apply)
+    assert w.store.slot["state"] == "activated" and w.provider.previous == [] and revoked == []
+    # Even an out-of-order direct internal invocation cannot skip new custody.
+    with pytest.raises(ParticipantEffectRefused, match="card_effect_binding_mismatch"):
+        await actual.apply("grant_unbind", old["key"], old["payload"], transaction_id=TX)
+    assert w.provider.previous == [] and revoked == []
+
+    async def completed(*args):
+        return None
+
+    # This test exercises the real recorded-effects loop; Card publication
+    # fencing and real session authentication have separate integration tests.
+    monkeypatch.setattr(tx, "_retire_pointer", completed)
+    monkeypatch.setattr(tx, "_clear_marker", completed)
+    await tx.apply_effects(marker_store, w.receipt, actual.apply)
+    assert len(w.handles.saved) == 1 and len(w.provider.previous) == 1 and revoked == ["d" * 64]
+    await tx.apply_effects(marker_store, w.receipt, actual.apply)
+    assert len(w.provider.previous) == 1 and revoked == ["d" * 64]
+
+
+@pytest.mark.asyncio
+async def test_superseded_new_issuance_never_retires_old_session_while_a_card_is_live():
+    w = _world()
+    old = {"kind": "grant_unbind", "key": "previous-resident", "payload": {
+        "access_id": w.candidate.access_id, "session_id": "synthetic-old-session", "token_sha256": "d" * 64}}
+    w.receipt["effects"].append(old)
+    w.store.slot.update(state="released", outcome="superseded")
+
+    class Grants:
+        async def revoke_access_grant_by_digest(self, digest):
+            pytest.fail("superseded on a live Card must not revoke the old grant")
 
     actual = w.applier()
     actual._targets["grant_unbind"] = GrantUnbindTarget(Grants(),
