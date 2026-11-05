@@ -150,3 +150,4 @@ that concern this repository so the history is discoverable from here.
 Entries are listed newest last. The store itself is not public; the
 addresses here are titles, and the decisions that matter to users of this
 repository are always reflected in [`docs/`](../docs/README.md).
+| 2026-11-05 | An accepted write and a text box each have two boundaries | — |
