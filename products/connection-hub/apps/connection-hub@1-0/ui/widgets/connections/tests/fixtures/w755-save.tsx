@@ -12,14 +12,29 @@ import { DelegatedAccessPanel } from '../../src/features/delegatedAccess/Delegat
 import { loadDelegatedAccess } from '../../src/features/delegatedAccess/delegatedAccessSlice'
 import '../../src/styles.css'
 
-const answer = new URLSearchParams(window.location.search).get('answer') || 'ok'
+const params = new URLSearchParams(window.location.search)
+const answer = params.get('answer') || 'ok'
+const hosted = params.get('card') === 'agent'
 const RES = 'https://svc.example.test/mcp'
+const target = 'urn:kdcube:app:tenant-a:project-a:assistant%401-0:worker'
+const selection = { schema: 'connection_hub.agent_capability_policy.v1', resource: target,
+  capabilities: { tools: ['tool.z%2Fread', 'tool.a%20write'], empty: [] } }
 const card = {
   access_id: 'card-1', source: 'manual', card_kind: 'automation', state: 'active', label: 'Build token',
   client_id: 'manual:card-1', grantor_subject: 'person-1', delegate_subject: 'person-1', card_revision: 4,
   catalog_version: 'cat-1', created_at: 1_760_000_000, expires_at: 1_960_000_000,
   resource_grants: { [RES]: ['svc:read'] }, resource_operations: { [RES]: ['read', 'write'] }, account_scope: {},
   properties: {}, composition_mode: '',
+  ...(hosted ? {
+    source: 'agent', card_kind: 'agent', client_id: 'kdcube-agent:assistant@1-0:worker',
+    properties: { 'kdcube.agent_capability_selection': selection }, composition_mode: 'and',
+    control_card: { state: 'active', composition_mode: 'and',
+      control_authority: { resource_grants: { [RES]: ['svc:read'] },
+        resource_operations: { [RES]: ['read', 'write', 'delete'] },
+        properties: { 'kdcube.agent_capability_authority': selection } },
+      binding: { control_id: 'descriptor-control-1', issuer_kind: 'kdcube_agent_descriptor',
+        issuer_ref: target, control_revision: 2 } },
+  } : {}),
 }
 const catalog = {
   resource: RES, label: 'Service', grants: ['svc:read'],
@@ -36,6 +51,14 @@ setConnectionsCallOperation(async (_method, operation, data) => {
   }
   if (operation === 'delegated_access_update') {
     const saves = calls.filter((call) => call.operation === 'delegated_access_update').length
+    // The real backend's property check remains strict. This recording bridge
+    // lets the mounted browser prove the permission-only request omits a
+    // reconstructed map; backend transaction qualification is a separate gate.
+    if (hosted && data?.properties !== undefined
+        && JSON.stringify(data.properties) !== JSON.stringify(card.properties)) {
+      return { ok: false, status: 409, error: 'managed_card_edit_fields_unsupported',
+        message: 'managed_card_edit_fields_unsupported' } as never
+    }
     if (answer === 'refused') return { ok: false, status: 409, error: 'card_plan_selection_invalid', message: 'Refused by the project: card_plan_selection_invalid.' } as never
     if (answer === 'unchanged') return { ok: true, unchanged: true, card_revision: 4, access: card } as never
     if (answer === 'mode_required') return { ok: false, status: 409, error: 'invocation_mode_required', operations: [{ resource: RES, operation: 'write' }] } as never

@@ -34,13 +34,14 @@ async def _consent_world(tmp_path, *, allow_post=True):
     return await _world(tmp_path, pair=(service, resident, control))
 
 
-async def _consent(service, resident, *, merge=True, operation=POST):
+async def _consent(service, resident, *, merge=True, operation=POST, account_scope=None):
     return await service.create_access(
         {"user_id": OWNER, "roles": ["kdcube:role:super-admin"]}, label="Focused consent",
         client_id=resident.client_id, merge_existing=merge, expected_card_revision=resident.card_revision,
         resource_grants={NAMED_RESOURCE: ["named_services:use", "slack:post" if operation == POST else "slack:read"]},
         resource_operations={NAMED_RESOURCE: []},
         named_service_operations={NAMED_RESOURCE: {"slack": [operation]}},
+        account_scope=account_scope,
         request_id=f"focused-consent-{resident.card_revision}-{operation}")
 
 
@@ -68,6 +69,63 @@ async def test_focused_consent_commits_selection_with_grants_and_survives_repeat
         assert replay["ok"], replay
         assert await _current(store, resident) == saved
     assert decisions.decisions == ["committed"]
+
+
+@pytest.mark.asyncio
+async def test_focused_consent_saves_approved_account_binding_with_selection_and_keeps_it_on_sync(tmp_path):
+    service, store, decisions, resident, _, _, _ = await _consent_world(tmp_path)
+    approved = {"slack": {"approved-workspace": ["slack:post"]}}
+    answer = await _consent(service, resident, account_scope=approved)
+    assert answer["ok"], answer
+    saved = await _current(store, resident)
+    assert saved.card_revision == resident.card_revision + 1
+    assert saved.account_scope == {"slack": {"approved-workspace": ("slack:post",)}}
+    assert set(_selection(saved)) == {f"slack/{READ}", f"slack/{POST}"}
+    assert decisions.decisions == ["committed"] and service._persistence.direct == []
+
+    # The next focused consent names no account. Cumulative consent and normal
+    # sync both retain the exact account/claim the person already approved.
+    answer = await _consent(service, saved, operation=READ)
+    assert answer["ok"], answer
+    cumulative = await _current(store, resident)
+    assert cumulative.account_scope == saved.account_scope
+    for _ in range(3):
+        replay = await service.sync_agent_capability_control({"user_id": OWNER}, **_sync_arguments())
+        assert replay["ok"], replay
+        assert await _current(store, resident) == cumulative
+
+
+@pytest.mark.asyncio
+async def test_owner_screen_permission_save_without_properties_commits_and_aligns_selection(tmp_path):
+    service, store, decisions, resident, _, _, _ = await _consent_world(tmp_path)
+    answer = await service.update_access(
+        {"user_id": OWNER}, access_id=resident.access_id,
+        resource_grants={NAMED_RESOURCE: ["named_services:use", "slack:read", "slack:post"]},
+        resource_operations={NAMED_RESOURCE: []},
+        named_service_operations={NAMED_RESOURCE: {"slack": [READ, POST]}},
+        expected_card_revision=resident.card_revision, expected_catalog_version=resident.catalog_version,
+        invocation_modes={}, _screen_save=True, request_id="owner-permission-only-save")
+    assert answer["ok"], answer
+    saved = await _current(store, resident)
+    assert saved.card_revision == resident.card_revision + 1
+    assert set(saved.named_service_operations.operations[NAMED_RESOURCE]["slack"]) == {READ, POST}
+    assert set(_selection(saved)) == {f"slack/{READ}", f"slack/{POST}"}
+    assert decisions.decisions == ["committed"] and service._persistence.direct == []
+
+
+@pytest.mark.asyncio
+async def test_owner_screen_explicit_property_change_still_refuses_by_name(tmp_path):
+    service, store, decisions, resident, _, _, _ = await _consent_world(tmp_path)
+    answer = await service.update_access(
+        {"user_id": OWNER}, access_id=resident.access_id,
+        resource_grants=resident.resource_grants, resource_operations=resident.resource_operations,
+        named_service_operations=resident.named_service_operations.to_stored(),
+        properties={**resident.properties, "explicit-property-edit": True},
+        expected_card_revision=resident.card_revision, expected_catalog_version=resident.catalog_version,
+        invocation_modes={}, _screen_save=True, request_id="owner-explicit-property-save")
+    assert answer["ok"] is False and answer["error"] == "managed_card_edit_fields_unsupported"
+    assert await _current(store, resident) == resident
+    assert decisions.decisions == [] and service._persistence.direct == []
 
 
 @pytest.mark.asyncio

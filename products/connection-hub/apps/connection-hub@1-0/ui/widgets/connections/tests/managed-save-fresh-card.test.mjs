@@ -91,8 +91,9 @@ test('a changed property-backed choice still travels, and the server names that 
   assert.deepEqual(changedCardProperties({ a: [2, 1] }, { a: [1, 2] }), { a: [2, 1] })
 })
 
-test('the managed person-Control Save sends properties through changedCardProperties against the stored seed', () => {
-  assert.match(panel, /properties: projectPersonControl\s*\? changedCardProperties\(selectedProperties, propertiesFor\(\s*seedApplicationOperationRolePolicy\(item\.properties, item\.resource_grants\),\s*cardConversationTargets\(item\.properties\),\s*\)\)\s*: selectedProperties,/)
+test('every whole-Card Save compares the complete property projection against its stored editor seed', () => {
+  assert.match(panel, /const editedProperties = changedEditorCardProperties\(\{\s*selected: baseProperties,\s*seeded: propertiesFor\(\s*seedApplicationOperationRolePolicy\(item\.properties, item\.resource_grants\),\s*cardConversationTargets\(item\.properties\),\s*\),/)
+  assert.match(panel, /properties: editedProperties,/)
   assert.match(panel, /const baseProperties = propertiesFor\(editApplicationRolePolicy, editConversationTargets\);/)
 })
 
