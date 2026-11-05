@@ -1680,14 +1680,20 @@ async def sync_agent_capability_control(
             if transactional:
                 from .descriptor_agent_lifecycle import persist_descriptor_lifecycle
 
-                credential_ready = await persist_descriptor_lifecycle(service, user, original=existing_resident, resident=resident,
+                issued_or_pending = await persist_descriptor_lifecycle(service, user, original=existing_resident, resident=resident,
                     original_control=existing_control, control=record_from_card(control_authority), active_catalog=active)
-                if not credential_ready:
-                    return {**_transaction_refusal(DescriptorAgentCardRefused(
-                        "agent_capability_resident_issuance_not_enlisted", retryable=True, status=503)),
+                if isinstance(issued_or_pending, DescriptorAgentCardRefused):
+                    return {**_transaction_refusal(issued_or_pending),
                         "control_committed": control_changed, "card_committed": True,
                         "control_card": record_from_card(control_authority).to_public_dict(),
                         "card": resident.to_public_dict()}
+                resident = issued_or_pending
+                credential_issued = (existing_resident is None or resident.session_id != existing_resident.session_id
+                                     or resident.access_token != existing_resident.access_token)
+                current_control = await service._load_record_any_state(control_id, grantor_subject=grantor_subject)
+                if current_control is None or current_control[1] != CARD_STATE_ACTIVE:
+                    raise DescriptorAgentCardRefused("agent_capability_control_not_active")
+                control_authority = card_authority_from_record(current_control[0])
             else:
                 await service._persist_record(resident, expected_revision=expected_resident_revision)
         except CardServingUnavailable as exc:

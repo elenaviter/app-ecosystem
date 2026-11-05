@@ -41,10 +41,11 @@ def _prior_binding(resident: Any, control: Any) -> Any:
 
 async def persist_descriptor_lifecycle(service: Any, user: Mapping[str, Any], *, original: Any,
                                        resident: Any, original_control: Any, control: Any,
-                                       active_catalog: Any) -> bool:
+                                       active_catalog: Any) -> Any:
     """Commit an existing bearer's descriptor sync, including a changed Control.
 
-    Return whether its credential is ready. A Control change is independent
+    Return the current resident, or the named pending-issuance refusal after
+    an independent Control group committed. A Control change is independent
     of bearer availability and may commit while issuance remains pending.
     No path here invokes the ordinary active minter.
     """
@@ -74,8 +75,19 @@ async def persist_descriptor_lifecycle(service: Any, user: Mapping[str, Any], *,
         raise DescriptorAgentCardRefused("agent_descriptor_control_creation_authority_unsupported")
     changed_control = prior_control != ceiling
     credential_needed = original is None or not original.access_token or original.expires_at <= int(time.time())
-    if original is None or (credential_needed and not changed_control):
-        raise DescriptorAgentCardRefused("agent_capability_resident_issuance_not_enlisted", retryable=True, status=503)
+    issuance_error = None
+    if credential_needed:
+        from .agent_capability_sync import AGENT_CAPABILITY_CARD_LEASE_SECONDS
+        from .descriptor_resident_issuance import issue_descriptor_resident, ResidentIssuancePending
+
+        try:
+            return await issue_descriptor_resident(service, user, original=original, resident=resident,
+                original_control=original_control, control=control, active_catalog=active_catalog,
+                lease_seconds=AGENT_CAPABILITY_CARD_LEASE_SECONDS)
+        except ResidentIssuancePending as exc:
+            if original is None or not changed_control or not exc.control_fallback:
+                raise
+            issuance_error = exc
     if (resident.access_token, resident.refresh_token, resident.session_id) != (
             original.access_token, original.refresh_token, original.session_id):
         raise DescriptorAgentCardRefused("agent_capability_credential_change_not_enlisted", status=409)
@@ -90,7 +102,7 @@ async def persist_descriptor_lifecycle(service: Any, user: Mapping[str, Any], *,
         if before.control_card.control_revision == ceiling.card_revision:
             await service._persist_descriptor_agent_edit(original, resident, control=control,
                 active_catalog=active_catalog, actor_subject=actor)
-            return True
+            return resident
 
     request_id = secrets.token_urlsafe(18)
     caller = CallerWrite("update", actor, request_id=request_id)
@@ -180,7 +192,7 @@ async def persist_descriptor_lifecycle(service: Any, user: Mapping[str, Any], *,
                 state=state, card_revision=candidate.card_revision if committed else before.card_revision)
             await service._issuer_outcome(issuer_request, state=state,
                 card_revision=ceiling.card_revision if committed else prior_control.card_revision if prior_control else 0)
-    return not credential_needed
+    return issuance_error if credential_needed else resident
 
 
 __all__ = ["persist_descriptor_lifecycle"]

@@ -4462,6 +4462,26 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
             await redis.set(cursor_key, report["next_after"])
         except Exception:  # noqa: BLE001
             LOGGER.warning("[connection-hub.card-transactions] recovery cursor not saved")
+        # Resident originals can be prepared after BEGIN but before STAGE.
+        # abort_unstaged has no effect release; authenticate their actual
+        # ABORTs in one bounded plan page after the ordinary recovery pass.
+        resident_originals = None
+        resident_cursor_key = f"connection-hub:card-transactions:resident-originals:{tenant}:{project}"
+        try:
+            from connection_hub.delegated_credentials.descriptor_resident_issuance import recover_resident_originals
+
+            try:
+                value = await redis.get(resident_cursor_key)
+                resident_after = value.decode("utf-8") if isinstance(value, bytes) else (value or "")
+            except Exception:
+                resident_after = ""
+            resident_originals = await recover_resident_originals(
+                await _automation_access_service(self, None), after=resident_after, limit=50)
+            await redis.set(resident_cursor_key, resident_originals["next_after"])
+            report["ok"] = report["ok"] and resident_originals["failed"] == 0
+        except Exception:
+            report["ok"] = False
+            LOGGER.warning("[connection-hub.card-transactions] resident original cleanup pending")
         # W651 retention: after recovery finished what it could, delete the sealed read collections whose
         # deadline passed and that no in-flight transaction names; bounded per tick.
         collections = None
@@ -4473,7 +4493,7 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
                 LOGGER.warning("[connection-hub.card-transactions] collection retention failed reason=%s",
                                type(exc).__name__)
         return {"enabled": True, **report, "stale_catalog_marker_cleared": stale_marker_age is not None,
-                "collections": collections}
+                "collections": collections, "resident_originals": resident_originals}
 
     # ── named-service over HTTP (serves the whole contract) ──────────────────
 

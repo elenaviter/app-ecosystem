@@ -166,7 +166,7 @@ async def test_missing_credential_is_named_before_mint_or_control_write(tmp_path
 
     monkeypatch.setattr(service, "_mint_card_credential", mint)
     answer = await service.sync_agent_capability_control({"user_id": OWNER}, **_sync_arguments())
-    assert answer["error"] == "agent_capability_resident_issuance_not_enlisted" and answer["retryable"]
+    assert answer["error"] == "resident_issuance_adapter_unavailable" and answer["retryable"]
     assert await _current(store, control) == control and await _current(store, resident) == resident
     assert decisions.rows == {} and service._persistence.direct == []
 
@@ -192,7 +192,7 @@ async def test_expired_bearer_does_not_block_a_narrower_control_decision(tmp_pat
 
     monkeypatch.setattr(service, "_mint_card_credential", mint)
     answer = await service.sync_agent_capability_control({"user_id": OWNER}, **_refresh_arguments(allow_post=False))
-    assert answer["error"] == "agent_capability_resident_issuance_not_enlisted" and answer["retryable"]
+    assert answer["error"] == "resident_issuance_adapter_unavailable" and answer["retryable"]
     assert answer["control_committed"] and answer["card_committed"]
     narrowed = await _current(store, control)
     updated = await _current(store, resident)

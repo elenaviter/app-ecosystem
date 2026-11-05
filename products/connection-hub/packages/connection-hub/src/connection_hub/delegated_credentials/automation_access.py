@@ -11552,6 +11552,13 @@ class AutomationAccessService:
                     return False  # adopted by a transaction: not ours to delete
                 raise
 
+    @staticmethod
+    def _issuance_candidate_references(plan: Mapping[str, Any]) -> list[dict[str, Any]]:
+        spec = plan.get("intent") or {}
+        return [{"link": member.get("candidate"), "subject_hash": member.get("subject_hash"),
+                 "access_id": member.get("access_id", plan.get("access_id"))}
+                for member in spec.get("members", (spec,))]
+
     def enable_oauth_candidate_cleanup(self, enabled: bool = True) -> None:
         """W704: THE activation switch for every planned-candidate deletion, OFF by default. Off: the planner
         keeps an old attempt's file and the cleanup releases nothing (no deletion anywhere, the documented
@@ -11594,9 +11601,11 @@ class AutomationAccessService:
                 claimed = await store.claim_expired_plan_attempt(request, planned_at=planned_at)
                 if claimed is None:
                     continue
-                link = claimed.get("link")
-                if link and not (stored is not None and link == stored["plan"]["intent"].get("candidate")):
-                    released += int(await self._discard_planned_candidate(claimed, request))
+                claimed_refs = claimed.get("members", (claimed,))
+                protected = self._issuance_candidate_references(stored["plan"]) if stored is not None else []
+                discarded = [reference for reference in claimed_refs if reference.get("link") and reference not in protected]
+                if discarded:
+                    released += int(await self._discard_planned_candidate({"members": discarded}, request))
                 await store.finish_released_plan_attempt(request, planned_at=planned_at)
         for request in await store.unbegun_expired_plans(limit=limit):
             async with self._try_oauth_request_section(request) as held:
@@ -11614,10 +11623,8 @@ class AutomationAccessService:
                 plan = await store.claim_unbegun_plan_candidate(request)
                 if plan is None:
                     continue
-                intent = plan.get("intent") or {}
                 released += int(await self._discard_planned_candidate(
-                    {"link": intent.get("candidate"), "subject_hash": intent.get("subject_hash"),
-                     "access_id": plan.get("access_id")}, request))
+                    {"members": self._issuance_candidate_references(plan)}, request))
                 await store.finish_released_plan_candidate(request)
         return released
 
@@ -11732,7 +11739,7 @@ class AutomationAccessService:
                     await coordinator.finish(transaction_id)
                 except Exception:  # noqa: BLE001 - undecided, or effects/serving behind: pending, finished again later
                     _LOGGER.warning("[connection_hub.oauth_issuance] issuance not finished: transaction=%s",
-                                    transaction_id, exc_info=True)
+                                    transaction_id, exc_info=plan.get("issuance_kind") != "descriptor-resident")
         except IssuanceStoreRefused as exc:
             if exc.reason != "issuance_completion_busy":
                 raise IssuanceRefused(exc.reason) from None
@@ -11758,6 +11765,13 @@ class AutomationAccessService:
         from .cards.card_participant import PARTICIPANT
         from .cards.transaction_store import CardTransactionRefused
         from .oauth_issuance import IssuanceRefused
+
+        from .cards.resident_issuance import RESIDENT_ISSUANCE_KIND
+
+        if plan.get("issuance_kind") == RESIDENT_ISSUANCE_KIND:
+            from .descriptor_resident_issuance import decide_descriptor_resident_issuance
+
+            return await decide_descriptor_resident_issuance(self, plan, trusted, coordinator=coordinator, renew=renew)
 
         known = (DecisionRefused, CardTransactionRefused, CallerWriteRefused, IssuerWriteRefused, CardConflict,
                  IssuanceRefused)
