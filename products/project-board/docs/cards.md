@@ -54,16 +54,6 @@ see_also:
   project Control Card first. With OR, an operation runs if either Card
   allows it (next section).
 
-## Replacement worker Cards
-
-A replacement credential keeps the worker's native session identity. Its project
-Control attachment and PB identity binding must be completed through the project's
-Card transaction before the channel becomes active. Reauthorizing again does not
-repair a server-side attachment failure. When a channel is pending, `pb status`
-shows the relay's refusal and its bounded Connection Hub cause code. A recorded
-noncredential refusal routes that code to the coordinator, without an authorize
-command; an actual credential refusal keeps the owner authorization step.
-
 ## Project files
 
 Two operations govern the [project files](concepts.md#project-files):
