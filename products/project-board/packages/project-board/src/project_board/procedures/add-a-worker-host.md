@@ -504,9 +504,25 @@ Two different PIDs, or no `True` within 15 s (`exit 124`), means the password di
 printf 'New password: '; read -rs P; echo; printf 'Again: '; read -rs Q; echo; if [ -n "$P" ] && [ "$P" = "$Q" ]; then systemctl --user stop gnome-keyring-daemon.socket gnome-keyring-daemon.service 2>/dev/null; pkill -u "$USER" -x gnome-keyring-d; mv ~/.local/share/keyrings/login.keyring ~/.local/share/keyrings/login.keyring.old-$(date +%Y%m%d-%H%M) 2>/dev/null; printf %s "$P" | gnome-keyring-daemon --replace --unlock --components=secrets >/dev/null; echo "store created"; else echo "the two entries are empty or differ; nothing changed"; fi; unset P Q
 ```
 
-Then run the check. A reset loses only what the old store held: each agent on this host authorizes again (step 11).
+Then run the check. **A reset is a last resort: it loses every agent's Card credential on this host**, and the agents do not simply authorize again (W1012). The old store is kept as `~/.local/share/keyrings/login.keyring.old-<date>`; if the old password turns up, moving that file back and unlocking it restores everything. Otherwise, after the reset:
 
-**A relay that was already running** (a reboot, or a store unlocked after the relay started) picks the unlock up on its next attempt, within about a minute, with no restart: while the store is locked it refuses by name (`credential_store_locked`) instead of waiting for a prompt, and retries (W558). A client older than this change needs the relay restarted once after the unlock (`systemctl --user restart kdcube-problem-board-relay-*.service`, the operator approves).
+1. Run the check, then reconnect the relay: `systemctl --user restart 'kdcube-problem-board-relay-*.service'`.
+2. **Revoke each agent's old Card in Connection Hub.** Connection Hub accepts a reconnect to an existing Card only with proof the machine held it, and refuses with `work_relay_card_continuity_required`. The replacement in the next step first revokes the old Card with the stored credential, which the reset lost, so without this it stops with `work_relay_profile_disconnect_required` and prints the old Card's `access_id`. Find that Card in Connection Hub and revoke it.
+3. **Give each agent a new Card.** In each agent's session it runs `pb worker authorize <its profile> --device --replace-card` (its profile is what `pb status` prints in that session). The operator opens the link on their own device, checks the request names that agent, and approves (step 11).
+4. **Put each agent back on its project.** What was set on the old Card is set again: check the agent is still on the project's Team, and press Fit to role on its row again if it had it (step 12).
+
+**A relay that was already running** (a reboot, or a store unlocked after the relay started) picks the unlock up on its next attempt, within about a minute, with no restart: while the store is locked it refuses by name (`credential_store_locked`) instead of waiting for a prompt, and retries (W558). After repeated refusals its wait between attempts grows to several minutes, so after a reboot the operator restarts it once to reconnect at once (below). A client older than this change needs the relay restarted once after the unlock (`systemctl --user restart kdcube-problem-board-relay-*.service`, the operator approves).
+
+### After a reboot
+
+The relay service starts again by itself, but the password store is locked. Until it is unlocked, no agent on the host can reach the board, and the board's Resume dialog waits for this host's relay. The **operator**, in an SSH session as the agents' user, in this order:
+
+1. **Unlock the store** with the store password from their password manager: the unlock line above. Nothing is shown while typing.
+2. **Check:** `pb status` must say the keyring is usable.
+3. **Reconnect the relay now:** `systemctl --user restart 'kdcube-problem-board-relay-*.service'`.
+4. **Resume each agent:** open it on the board and press Resume; the dialog gives that agent's line for this host. Run it on the host, then type `resume` in the session.
+
+The board's Connect a machine dialog (Part 1) shows the same steps, and the last resort for a lost store password, with the lines to copy.
 
 **The alternative W258 has to choose between** is in that item's note: the person
 types it (nothing stored, a person needed after every reboot), or the machine
