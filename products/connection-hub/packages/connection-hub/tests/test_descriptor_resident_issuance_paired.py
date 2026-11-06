@@ -17,6 +17,9 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+# Release wheel gates omit the paired SDK; skip before test-body SDK imports.
+pytest.importorskip("kdcube_ai_app", reason="the paired SDK source must be installed on the test worker")
+
 from connection_hub.delegated_credentials.application_resources import application_resource
 from connection_hub.delegated_credentials.automation_access import record_from_card
 from connection_hub.delegated_credentials.cards import transaction_store as tx
@@ -39,7 +42,6 @@ EXPIRY_TEST_LEASE_SECONDS = 30
 
 @asynccontextmanager
 async def _paired(tmp_path):
-    pytest.importorskip("kdcube_ai_app", reason="the paired SDK source must be installed on the test worker")
     from kdcube_ai_app.auth.bundle.session_store import PostgresBundleSessionStore
     from kdcube_ai_app.infra.secrets.manager import SecretsFileSecretsManager, SecretsManagerConfig
     from kdcube_ai_app.infra.secrets.ephemeral import KDCubeEphemeralSecretStore
