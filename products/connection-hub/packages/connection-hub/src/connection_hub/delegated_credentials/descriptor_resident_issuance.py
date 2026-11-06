@@ -155,8 +155,14 @@ async def _store_plan(service: Any, store: Any, *, before: Any, candidate: Any, 
         raise IssuanceRefused("resident_issuance_group_lead_invalid")
     reads = [] if changed_control else [{"subject_hash": subject_hash_for(control.grantor_subject),
         "access_id": control.access_id, "revision": control.card_revision}]
+
+    def member_action(old: Any, new: Any) -> str:
+        # Keep the same action at planning, caller policy and Hub STAGE. Only
+        # the resident rotates its lease; the existing Control is an update.
+        return "create" if old is None else "renew" if new.access_id == candidate.access_id else "update"
+
     projection = hub_group_participant_input(
-        members=[group_member(original=old, candidate=new, action="create" if old is None else "update")
+        members=[group_member(original=old, candidate=new, action=member_action(old, new))
                  for old, new in pairs], actor_subject=candidate.grantor_subject, actor_kind="caller",
         effects=effects, reads=reads, catalog_version_digest=catalog)
     at = datetime.fromtimestamp(now, tz=timezone.utc)
@@ -166,7 +172,7 @@ async def _store_plan(service: Any, store: Any, *, before: Any, candidate: Any, 
         members.append({"subject_hash": subject_hash_for(new.grantor_subject), "access_id": new.access_id,
             "original": await _pointer(card_store, old, new),
             "candidate": planned_link(authority=new, at=at, tag=tag),
-            "action": "create" if old is None else "update"})
+            "action": member_action(old, new)})
     recorded = {"members": [{"link": member["candidate"], "subject_hash": member["subject_hash"],
         "access_id": member["access_id"]} for member in members]}
     attempt = await store.read_plan_attempt(request)

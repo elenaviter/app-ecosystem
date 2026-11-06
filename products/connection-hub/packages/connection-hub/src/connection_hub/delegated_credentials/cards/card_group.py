@@ -55,7 +55,7 @@ MAX_GROUP_CANDIDATE_BYTES = 256 * 1024
 _MEMBER_FIELDS = frozenset({"subject_hash", "access_id", "action", "original_revision", "original_absent",
                             "candidate"})
 # W639: an agent Card leaving a project is a group member with action detach.
-_ACTIONS = frozenset({"create", "update", "attach", "detach", "revoke", "recreate"})
+_ACTIONS = frozenset({"create", "update", "renew", "attach", "detach", "revoke", "recreate"})
 
 
 def _refuse(reason: str) -> DecisionRefused:

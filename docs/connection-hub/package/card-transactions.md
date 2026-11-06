@@ -202,6 +202,9 @@ catalog digest and ordered effects, and begins and binds the one decision
 before the SDK prepares an inactive original. A retry reuses that original
 while the outcome is uncertain. The SDK access-only delivery deadline is the
 Card lease, rather than the shorter external OAuth delivery interval.
+An existing resident member uses `renew` at planning, policy and Hub STAGE;
+its Control member remains `update`. The generic action shape checks still
+pin identity and reject an expiry change presented as an ordinary update.
 
 After COMMIT, the credential effect activates and installs that same original
 through resident custody. Only after installation does the following effect
@@ -223,6 +226,10 @@ standard grants still require the owner's delegability, independently of
 the Control ceiling. With no dedicated descriptor issuer registration, a fresh
 Control is issued locally under the group's absence fence; configured update/revoke issuer policies continue to
 govern changes to an existing Control.
+The fallback policy reads the durable current resident even when its lease
+has ended. It does not prepare a credential re-wrap for an ended candidate;
+the old expired metadata remains unusable, and later renewal uses the ordinary
+resident issuance path.
 
 Project ports `authorities.control_card` and `authorities.agent_card` do not
 govern descriptor creation. A separate explicit registration at

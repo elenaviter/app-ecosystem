@@ -210,6 +210,9 @@ async def test_expired_resident_and_changed_control_rotate_under_one_committed_g
 
         async def inspect(*, plan):
             assert not (await w.decisions.read(plan.transaction_id)).terminal
+            intent = await w.service._card_coordinator[1].load(plan.transaction_id)
+            assert {member.candidate.access_id: member.action for member in intent.members} == {
+                old.access_id: "renew", w.control.access_id: "update"}
             plans.append(plan)
             return await prepare(plan=plan)
 
@@ -311,7 +314,21 @@ async def test_renew_policy_refusal_still_commits_descriptor_withdrawal(tmp_path
         control = (await w.service._load_record_any_state(w.control.access_id, grantor_subject=OWNER))[0]
         assert control.card_revision == w.control.card_revision + 1
         assert ("decide", "renew") in policy.calls and ("decide", "update") in policy.calls
-        assert (await w.service._load_record_any_state(old.access_id, grantor_subject=OWNER))[0].control_card.control_revision == control.card_revision
+        narrowed = (await w.service._load_record_any_state(old.access_id, grantor_subject=OWNER))[0]
+        assert narrowed.control_card.control_revision == control.card_revision
+        assert narrowed.expires_at == old.expires_at
+        assert await _usable(w, old.access_token) is None
+        # The expired handle was not re-wrapped, revived, or removed to make
+        # the fallback succeed. A later permitted renewal still recovers it.
+        policy.allow = True
+        registry = CallerWriterRegistry()
+        registry.register(AGENT_DESCRIPTOR_ISSUER_KIND, _Policy(True))
+        w.service.bind_caller_writers(registry)
+        recovered = await w.service.sync_agent_capability_control(USER, **arguments)
+        assert recovered["ok"], recovered
+        live = (await w.service._load_record_any_state(old.access_id, grantor_subject=OWNER))[0]
+        assert live.access_id == old.access_id and live.expires_at > old.expires_at
+        assert await _usable(w, live.access_token) is not None
 
 
 @pytest.mark.asyncio

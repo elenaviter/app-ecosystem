@@ -2537,7 +2537,11 @@ class AutomationAccessService:
             return None, None
         current = None
         if expected_revision > 0:
-            loaded = await self._cards().load(authority.access_id, subject_hash=_subject_key(authority.grantor_subject))
+            persistence = self._cards()
+            # A policy question needs the current durable base, including an
+            # expired Card being narrowed or renewed; serving load omits it.
+            load = getattr(persistence, "load_current", None) or persistence.load
+            loaded = await load(authority.access_id, subject_hash=_subject_key(authority.grantor_subject))
             current = loaded[0] if loaded is not None else None
         binding = binding_of(current) if current is not None else ("", "")
         if not binding[0]:
@@ -2621,12 +2625,15 @@ class AutomationAccessService:
         Redis-held one that binds no revision), a row already not at the base
         revision, a create, or an ending Card carries no effect.
         """
+        from .cards.model import authority_is_usable
+
         handles = getattr(self, "_card_credential_handles", None)
         if handles is None or not callable(getattr(handles, "binding_identity", None)):
             return []
         effects = []
+        now = int(time.time())
         for original, candidate in pairs:
-            if original is None or candidate.state != CARD_STATE_ACTIVE:
+            if original is None or not authority_is_usable(candidate, now):
                 continue
             identity = await handles.binding_identity(candidate.access_id)
             if not isinstance(identity, Mapping) or identity.get("from_revision") != original.card_revision:
@@ -2635,7 +2642,7 @@ class AutomationAccessService:
                 "access_id": candidate.access_id, "from_identity": identity["from_identity"],
                 "from_fingerprint": identity["from_fingerprint"],
                 # An agent row's re-wrap envelope is prepared at this fixed instant (0 when there is none).
-                "prepared_at": int(time.time()) if identity["from_fingerprint"] else 0,
+                "prepared_at": now if identity["from_fingerprint"] else 0,
                 "from_revision": identity["from_revision"], "from_expires_at": identity["from_expires_at"],
                 "card_revision": candidate.card_revision, "expires_at": candidate.expires_at}})
         return effects
