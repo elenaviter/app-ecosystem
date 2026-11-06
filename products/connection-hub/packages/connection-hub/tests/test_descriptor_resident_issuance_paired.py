@@ -358,6 +358,7 @@ async def test_consent_requires_descriptor_sync_before_first_creation_and_rotate
 
 @pytest.mark.asyncio
 async def test_selection_rotates_an_expired_resident_without_using_the_active_minter(tmp_path):
+    from kdcube_ai_app.auth.tests.test_bound_session_issuer import authority
     from test_descriptor_agent_consent import READ, _policy_with_named_operations
 
     async with _paired(tmp_path) as w:
@@ -371,6 +372,13 @@ async def test_selection_rotates_an_expired_resident_without_using_the_active_mi
         saved = (await w.service._load_record_any_state(old.access_id, grantor_subject=OWNER))[0]
         assert saved.card_revision == old.card_revision + 1 and saved.session_id != old.session_id
         assert await _usable(w, saved.access_token) is not None and w.service._minter.await_count == 0
+        # Access-only resident originals have no refresh credential. Even the
+        # trusted session extension route cannot revive the old hard-ended
+        # session or attach it to the newly renewed Card lease.
+        assert not old.refresh_token and not saved.refresh_token
+        ended = await w.sessions.get_validation_state(old.session_id)
+        assert ended is None or ended.hard_expires_at <= old.expires_at
+        assert await authority(w.sessions).touch(old.session_id, expires_at=saved.expires_at) is None
 
 
 
