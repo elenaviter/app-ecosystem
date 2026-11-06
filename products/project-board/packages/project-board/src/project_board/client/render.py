@@ -473,10 +473,12 @@ def _render_first_run_status(result: Mapping[str, Any]) -> list[str]:
     if refusal:
         lines.append(
             "refusal: {} · permanent {} · credential refused {}".format(
-                refusal.get("code") or refusal.get("error_code") or "-",
+                refusal.get("code") or refusal.get("error_code") or refusal.get("reason") or "-",
                 refusal.get("permanent", "?"), refusal.get("credential", "?"),
             )
         )
+        if refusal.get("connection_hub_error"):
+            lines.append(f"Connection Hub cause: {refusal['connection_hub_error']}")
     relay_commit = str(relay_source.get("commit") or "")
     client_commit = str(client_source.get("commit") or "")
     lines.append(

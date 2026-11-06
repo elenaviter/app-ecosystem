@@ -2779,6 +2779,25 @@ def _channel_not_usable_error(
                 "retryable": False,
             },
         )
+    profile_present = False
+    if refusal is not None and refusal.get("connection_hub_error"):
+        try:
+            profile_present = inspect_profile_metadata(HostRelayConfig.load(config_path), channel.profile).get(
+                "state") == "relay_observation_pending"
+        except Exception:
+            pass  # No current profile evidence: retain the original authorization guidance.
+    if refusal is not None and refusal.get("connection_hub_error") and profile_present:
+        reason = refusal.get("connection_hub_error") or refusal.get("reason") or "channel refusal"
+        return DomainError(
+            "work_worker_channel_not_active",
+            f"The relay recorded {reason}. Report this code to the project coordinator. "
+            "The relay retries on its schedule; this refusal does not indicate that authorization is needed.",
+            status=409,
+            details={**base, "reason": refusal.get("reason") or "",
+                     "connection_hub_error": refusal.get("connection_hub_error") or "",
+                     "credential_refused": False, "who_acts": "coordinator",
+                     "retryable": False},
+        )
     reason = (refusal or {}).get("reason") or ""
     recorded = f" The relay recorded {reason}, which does not prove the grant was refused." if reason else ""
     return DomainError(
