@@ -52,5 +52,6 @@ async def test_card_transactions_bind_the_issuance_authority_and_no_handle_store
     await module._bind_card_transactions(SimpleNamespace(pg_pool=object()), service,
                                          persistence=persistence, grant_store=None)
     assert captured.get("credential_handles") is None
+    assert captured.get("resident_credentials") is None
     assert captured["issuance_store"] is issuance
     assert captured["decisions"] is decisions

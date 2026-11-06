@@ -17,11 +17,8 @@ import {
   withConversationTargets,
 } from './conversationTargets';
 import {
-  AGENT_CAPABILITY_DEFAULTS_PROPERTY,
-  AGENT_CAPABILITY_SELECTION_PROPERTY,
   agentCapabilitySelectionFromMap,
   agentCapabilitySelectionMap,
-  agentCapabilitySelectionProperty,
   cardAgentCapabilityAuthority,
   cardAgentCapabilityDefaults,
   cardAgentDescriptorTarget,
@@ -31,6 +28,7 @@ import {
   type AgentCapabilitySelection,
 } from './agentCapabilitySelection';
 import { AgentCapabilityPolicyView } from './AgentCapabilityPolicyView';
+import { changedEditorCardProperties } from './cardEditorProperties';
 import {
   agentCapabilityCardLifecycle,
   isAgentCapabilityCard,
@@ -41,7 +39,6 @@ import {
   applicationOperationPropertiesForSelection,
   applicationOperationRolePolicy,
   changeApplicationDefaultRole,
-  changedCardProperties,
   changeApplicationOperationRole,
   delegableApplicationRoles,
   removeApplicationOperationRole,
@@ -3420,23 +3417,21 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
       && isAgentDescriptorControl(item.properties)
       ? cardAgentCapabilityAuthority(item.properties)
       : null;
-    const selectedProperties = capabilityAuthority
-      ? {
-          ...baseProperties,
-          [AGENT_CAPABILITY_SELECTION_PROPERTY]: agentCapabilitySelectionProperty(
-            capabilityAuthority.resource,
-            editAgentCapabilities,
-          ),
-        }
-      : descriptorAuthority
-        ? {
-            ...baseProperties,
-            [AGENT_CAPABILITY_DEFAULTS_PROPERTY]: agentCapabilitySelectionProperty(
-              descriptorAuthority.resource,
-              editAgentCapabilities,
-            ),
-          }
-        : baseProperties;
+    const editedProperties = changedEditorCardProperties({
+      selected: baseProperties,
+      seeded: propertiesFor(
+        seedApplicationOperationRolePolicy(item.properties, item.resource_grants),
+        cardConversationTargets(item.properties),
+      ),
+      selectedCapabilities: editAgentCapabilities,
+      seededCapabilities: agentCapabilitySelectionMap(
+        descriptorAuthority
+          ? cardAgentCapabilityDefaults(item.properties)
+          : cardAgentCapabilitySelection(item.properties),
+      ),
+      capabilityAuthority,
+      descriptorAuthority,
+    });
     const descriptorTarget = descriptorAuthority
       ? cardAgentDescriptorTarget(item.properties)
       : null;
@@ -3469,14 +3464,9 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
       compositionMode: item.source === 'control'
         ? (projectPersonControl ? 'and' : editCompositionMode)
         : undefined,
-      // W661 save #2: a managed person-Control Save carries the selection only; properties travel
-      // only when the person changed one, and the server then names that refusal.
-      properties: projectPersonControl
-        ? changedCardProperties(selectedProperties, propertiesFor(
-          seedApplicationOperationRolePolicy(item.properties, item.resource_grants),
-          cardConversationTargets(item.properties),
-        ))
-        : selectedProperties,
+      // A permission-only Save carries the selection. Explicit property changes
+      // still travel so the server can validate or name their refusal.
+      properties: editedProperties,
       projectPersonControl: projectPersonControl || undefined,
       projectAgentCard: projectAgentCard || undefined,
       projectControlCard: projectControlCard || undefined,

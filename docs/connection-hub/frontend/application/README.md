@@ -27,6 +27,13 @@ runtime adapters. This page owns the KDCube-hosted application composition;
 the [Connection Hub architecture](../../connection-hub-architecture.md) owns
 the cross-surface semantic and storage map.
 
+A whole-Card Save sends permission selections together with only the property
+choices the person changed. The editor compares its complete property projection
+with the same projection of the saved editor seed, including hosted-agent
+capability selections and descriptor Control defaults. Rebuilding those values
+does not add a property edit to a permission-only Save. Explicit property changes
+still reach the backend for validation and its supported-field checks.
+
 It has three responsibilities that must stay separate:
 
 ```text

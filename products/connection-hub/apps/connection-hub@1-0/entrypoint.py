@@ -1666,6 +1666,7 @@ def _invocation_policy_service(entrypoint: Any) -> Any:
                 accounts_for=lambda owner: _delegated_to_kdcube_store(entrypoint, owner),
                 issuance_store=_durable_authority(entrypoint).oauth,
                 credential_handles=_durable_authority(entrypoint).card_handles,
+                resident_credentials=_resident_credential_provider(),
             )
             return await CardPolicyMarkerSettler(
                 card_store=persistence.card_store, coordinator=coordinator, callers=built.callers,
@@ -2074,6 +2075,8 @@ async def _bind_card_transactions(entrypoint: Any, service: Any, *, persistence:
     # still protects its P (it fails closed rather than open).
     managed_scopes = [descriptor.plan_scope_prefix
                       for descriptor in participant_caller_descriptors(_connections_config(entrypoint)).values()]
+    authority = _durable_authority(entrypoint)
+    credential_handles = getattr(authority, "card_handles", None)
     bind_card_transactions(service, persistence=persistence, decisions=decisions, grant_store=grant_store,
                            policies=_invocation_policy_service(entrypoint),
                            authorities=(await _card_participant_callers(entrypoint, persistence)).authorities,
@@ -2082,11 +2085,22 @@ async def _bind_card_transactions(entrypoint: Any, service: Any, *, persistence:
                            managed_control_scopes=managed_scopes,
                            # W603: an original code exchange plans and activates its credentials in this
                            # authority; without it begin_oauth_issuance refuses card_transactions_unavailable.
-                           issuance_store=_durable_authority(entrypoint).oauth)
+                           issuance_store=authority.oauth,
+                           credential_handles=credential_handles,
+                           resident_credentials=(_resident_credential_provider()
+                                                 if credential_handles is not None else None))
     # W638: a managed Card edit is forwarded to the host that plans its scope,
     # signed with that caller's authority request signer. A caller whose
     # signer secret is unavailable gets no forwarder: its edits stay refused.
     service.bind_managed_card_edit(await _managed_card_edit_forwarders(entrypoint))
+
+
+def _resident_credential_provider() -> Any:
+    """The same inactive-original adapter for request and fresh recovery composition."""
+    from kdcube_ai_app.auth.bundle import get_bundle_session_authority
+    from kdcube_ai_app.apps.chat.sdk.integrations.connection_hub.delegated_credentials.cards.resident_issuance import ResidentCredentialProvider
+
+    return ResidentCredentialProvider(authority_factory=get_bundle_session_authority)
 
 
 async def _managed_card_edit_forwarders(entrypoint: Any) -> dict[str, Any]:
@@ -4422,7 +4436,11 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
             persistence=persistence, decisions=decisions, grant_store=await _oauth_grant_store(self),
             policies=_invocation_policy_service(self),
             authorities=(await _card_participant_callers(self, persistence)).authorities,
-            catalog_store=_delegated_catalog_store(self))
+            catalog_store=_delegated_catalog_store(self),
+            accounts_for=lambda owner: _delegated_to_kdcube_store(self, owner),
+            issuance_store=_durable_authority(self).oauth,
+            credential_handles=_durable_authority(self).card_handles,
+            resident_credentials=_resident_credential_provider())
         # The cron runs on one process per tick, not always the same one, so the
         # page cursor is shared in Redis; a missing or unreadable one restarts at "".
         tenant, project = _runtime_tenant_project(self)
@@ -4447,6 +4465,26 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
             await redis.set(cursor_key, report["next_after"])
         except Exception:  # noqa: BLE001
             LOGGER.warning("[connection-hub.card-transactions] recovery cursor not saved")
+        # Resident originals can be prepared after BEGIN but before STAGE.
+        # abort_unstaged has no effect release; authenticate their actual
+        # ABORTs in one bounded plan page after the ordinary recovery pass.
+        resident_originals = None
+        resident_cursor_key = f"connection-hub:card-transactions:resident-originals:{tenant}:{project}"
+        try:
+            from connection_hub.delegated_credentials.descriptor_resident_issuance import recover_resident_originals
+
+            try:
+                value = await redis.get(resident_cursor_key)
+                resident_after = value.decode("utf-8") if isinstance(value, bytes) else (value or "")
+            except Exception:
+                resident_after = ""
+            resident_originals = await recover_resident_originals(
+                await _automation_access_service(self, None), after=resident_after, limit=50)
+            await redis.set(resident_cursor_key, resident_originals["next_after"])
+            report["ok"] = report["ok"] and resident_originals["failed"] == 0
+        except Exception:
+            report["ok"] = False
+            LOGGER.warning("[connection-hub.card-transactions] resident original cleanup pending")
         # W651 retention: after recovery finished what it could, delete the sealed read collections whose
         # deadline passed and that no in-flight transaction names; bounded per tick.
         collections = None
@@ -4458,7 +4496,7 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
                 LOGGER.warning("[connection-hub.card-transactions] collection retention failed reason=%s",
                                type(exc).__name__)
         return {"enabled": True, **report, "stale_catalog_marker_cleared": stale_marker_age is not None,
-                "collections": collections}
+                "collections": collections, "resident_originals": resident_originals}
 
     # ── named-service over HTTP (serves the whole contract) ──────────────────
 
@@ -4784,7 +4822,11 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
                 card_transaction_coordinator(
                     persistence=persistence, decisions=decisions, grant_store=await _oauth_grant_store(self),
                     policies=_invocation_policy_service(self), authorities=built.authorities,
-                    catalog_store=_delegated_catalog_store(self))
+                    catalog_store=_delegated_catalog_store(self),
+                    accounts_for=lambda owner: _delegated_to_kdcube_store(self, owner),
+                    issuance_store=_durable_authority(self).oauth,
+                    credential_handles=_durable_authority(self).card_handles,
+                    resident_credentials=_resident_credential_provider())
             except Exception:
                 LOGGER.exception("[connection-hub.card-transactions] participant operation unavailable")
                 raise
