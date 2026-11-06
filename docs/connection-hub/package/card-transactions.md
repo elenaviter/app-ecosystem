@@ -207,7 +207,10 @@ After COMMIT, the credential effect activates and installs that same original
 through resident custody. Only after installation does the following effect
 retire the pinned previous session and grant. A custody cut keeps the Card
 fenced; FINISH recovers the same bearer. Fixed Card expiry never creates a
-replacement credential. A prepared original left before STAGE is retired only
+replacement credential. If the Card lease ends after SQL activation but before
+custody completes, FINISH records `superseded` without installing the expired
+original. Recovery reports that recorded effect outcome even though the SQL
+slot retains its earlier activated state. A prepared original left before STAGE is retired only
 after an actual ABORT. The bounded cleanup page acknowledges completed work
 in the existing plan row, leaving its immutable plan and real decision intact.
 

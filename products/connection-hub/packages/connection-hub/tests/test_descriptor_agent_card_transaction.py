@@ -5,6 +5,7 @@ productive PostgreSQL and the SDK credential adapter need separate qualification
 """
 
 from dataclasses import replace
+import hashlib
 import time
 
 import pytest
@@ -60,6 +61,16 @@ async def _world(tmp_path, *, pair=None):
     service, resident, control = pair if pair is not None else await _descriptor_pair()
     handles = {key: value[1] for key, value in service._persistence.records.items()}
     host, store, decisions, _, _ = await _host(tmp_path / "cards")
+    begin = decisions.begin
+
+    async def begin_distinct(draft, **kwargs):
+        # The shared single-decision test store otherwise binds every request
+        # to the same TXID. These lifecycle cases exercise sequential saves.
+        kwargs.setdefault("transaction_id", hashlib.sha256(
+            f"{draft.replay_scope}\0{draft.request_id}".encode()).hexdigest())
+        return await begin(draft, **kwargs)
+
+    decisions.begin = begin_distinct
     coordinator, intents, _, ttl = host._card_coordinator
     card_service = coordinator.participants[PARTICIPANT]._service
     for card in (control, resident):

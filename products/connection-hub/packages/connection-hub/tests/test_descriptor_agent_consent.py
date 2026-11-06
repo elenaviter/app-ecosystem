@@ -28,10 +28,17 @@ async def _consent_world(tmp_path, *, allow_post=True):
     service, persistence = _service(named_services=True)
     answer = await service.sync_agent_capability_control(
         {"user_id": OWNER}, **_sync_arguments(allow_post=allow_post),
-        selected_capabilities=_policy_with_named_operations(READ))
+        selected_capabilities=_policy_with_named_operations(READ),
+        # The synthetic descriptor has no entries from which the trusted
+        # resolver could derive standard defaults. Supply the READ selection
+        # explicitly, as a real descriptor's resolved defaults would do.
+        selected_resource_grants={NAMED_RESOURCE: ["named_services:use", "slack:read"]},
+        selected_resource_operations={NAMED_RESOURCE: ["named_services_call"]},
+        selected_named_service_operations={NAMED_RESOURCE: {"slack": [READ]}})
     assert answer["ok"], answer
     resident = persistence.records[answer["card"]["access_id"]][0]
     control = persistence.records[answer["control_card"]["access_id"]][0]
+    assert set(resident.named_service_operations.operations[NAMED_RESOURCE]["slack"]) == {READ}
     return await _world(tmp_path, pair=(service, resident, control))
 
 

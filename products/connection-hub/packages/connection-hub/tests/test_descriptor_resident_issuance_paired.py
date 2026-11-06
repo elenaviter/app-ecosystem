@@ -159,8 +159,9 @@ async def test_public_sync_first_create_begins_before_inactive_preparation_and_c
         assert await _usable(w, loaded[0].access_token) is not None
         row = await w.decisions.read(plan.transaction_id)
         assert row.state == "committed" and PARTICIPANT in row.finished
-        group = row.intent.payload["participant_inputs"][PARTICIPANT]
-        assert len(group["participant_candidates"][PARTICIPANT]["cards"]) == 2
+        stored = await w.authority.read_issuance_plan(plan.transaction_id)
+        assert {member["access_id"] for member in stored["plan"]["intent"]["members"]} == {
+            plan.access_id, w.control.access_id}
         assert plan.slots == ("access",) and plan.delivery_deadline == plan.expires_at
         assert w.service._minter.await_count == 0
         again = await w.service.sync_agent_capability_control(USER, **w.arguments)
@@ -373,4 +374,12 @@ async def test_pg_card_expiry_after_committed_custody_cut_finishes_without_insta
         result = await w.service.complete_oauth_issuance(transaction_id=plan.transaction_id)
         assert result.state == "committed" and result.per_slot["access"].outcome == "superseded"
         assert await counts(w.sessions) == before  # no new reservation, signing or session activation
+        assert (await w.metadata.read_current(plan.access_id)) is None
+        # A second fresh composition must reconstruct the same public outcome
+        # even though the SQL reservation was activated before the custody cut.
+        assert (await w.authority.issuance_reservations(plan.transaction_id))["access"]["state"] == "activated"
+        w.recompose()
+        replay = await w.service.complete_oauth_issuance(transaction_id=plan.transaction_id)
+        assert replay.state == "committed" and replay.per_slot["access"].outcome == "superseded"
+        assert await counts(w.sessions) == before
         assert (await w.metadata.read_current(plan.access_id)) is None

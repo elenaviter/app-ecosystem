@@ -158,7 +158,7 @@ test('Agent Cards use the ordinary Card workbench plus KDCube metadata', () => {
   assert.match(panel, /updateDelegatedAccess\(\{/)
   assert.match(panel, /changedEditorCardProperties/)
   assert.match(editorProperties, /AGENT_CAPABILITY_SELECTION_PROPERTY/)
-  assert.match(panel, /AGENT_CAPABILITY_DEFAULTS_PROPERTY/)
+  assert.match(editorProperties, /AGENT_CAPABILITY_DEFAULTS_PROPERTY/)
   assert.match(panel, /const capabilityControl = item\.control_card;/)
   assert.match(panel, /descriptor initialize this preset/)
   assert.match(panel, /descriptorCapabilityDefaults/)

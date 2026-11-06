@@ -5207,6 +5207,8 @@ class AutomationAccessService:
             for provider, accounts in normalize_account_scope(account_scope).items()
         }
 
+        from .descriptor_agent_card import DescriptorAgentCardRefused
+
         requested_client_id = _clean(client_id)
         access_source = ACCESS_SOURCE_MANUAL
         created_at_override: int | None = None
@@ -11869,13 +11871,33 @@ class AutomationAccessService:
 
         row = await decisions.read(trusted.transaction_id)
         reservations = await store.issuance_reservations(trusted.transaction_id)
+        terminal_slots = {}
+        if plan.get("issuance_kind") == "descriptor-resident":
+            # SQL activation can precede a custody cut. FINISH records the
+            # effect's terminal lease outcome without rewriting that SQL slot.
+            # Reconstruct the public result from that durable outcome too.
+            from .cards import transaction_store as tx
+
+            card_store = self._cards().card_store
+            local = await tx.read_receipt(card_store, trusted.transaction_id)
+            if local is not None and tx.is_group_receipt(local):
+                local = await tx.read_receipt(card_store, local["members"][0]["transaction_id"])
+            if (local is not None and local["intent_digest"] == trusted.intent_digest
+                    and local["state"] == "committed"):
+                outcomes = await tx.effect_outcomes(card_store, local["transaction_id"])
+                for index, effect in enumerate(local.get("effects", ())):
+                    if (effect["kind"] == "credential_issue"
+                            and effect["payload"]["access_id"] == trusted.access_id
+                            and outcomes.get(str(index)) == "superseded"):
+                        terminal_slots[effect["key"]] = "superseded"
         per_slot = {}
         for slot in trusted.slots:
             held = reservations.get(slot, {})
             state, outcome = held.get("state", ""), held.get("outcome", "")
             per_slot[slot] = SlotOutcome(
-                outcome=("applied" if state == "activated" else "superseded" if outcome == "superseded"
-                         else "released" if state in ("released", "expired") else "pending"),
+                outcome=(terminal_slots.get(slot) or (
+                    "applied" if state == "activated" else "superseded" if outcome == "superseded"
+                    else "released" if state in ("released", "expired") else "pending")),
                 effect_digest=trusted.effect_digests[slot], token_sha256=held.get("token_sha256", ""))
         finished = row.finished.get(PARTICIPANT) if row is not None else None
         if row is not None and row.state == "committed" and finished is not None and all(
