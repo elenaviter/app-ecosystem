@@ -287,12 +287,28 @@ def test_the_reset_is_the_persons_and_follows_the_check_table():
     assert "An agent never proposes or runs the reset itself" in only
     table = text.index("| You see | It means | Do |")
     assert text.index("busctl --user status org.freedesktop.secrets") < table < text.index("**Only these lines.**")
-    for row in ("one number from `pgrep`, the same as `PID=`", "several numbers from `pgrep`, or `PID=` is none of them", "`command not found` before `done`"):
-        assert row in text, row
+    rows = []
+    for line in text[table:].splitlines()[2:]:
+        if not line.startswith("|"):
+            break
+        rows.append(line)
+    assert [row.split(" | ")[0].lstrip("| ") for row in rows] == [
+        "one number from `pgrep`, the same as `PID=`",
+        "several numbers from `pgrep`, or `PID=` is none of them",
+        "nothing or an error from either line",
+        "`command not found` before `done`",
+    ]
+    # Review P1: the PIDs identify processes only; no row says the password was
+    # wrong or leads to a reset, and a usable store needs none.
+    assert not any("password was wrong" in row or "reset only" in row for row in rows)
+    assert "means the store is usable: stop here, nothing needs a reset" in text
+    assert "the table never proves a wrong password" in only
     assert "The person runs the reset, never an agent" in text
     assert "that refusal prints the `access_id` too" not in text
     skill = SKILL.read_text(encoding="utf-8")
     assert "exactly the unlock, check and reset" not in skill
-    assert "Never propose or run the reset" in skill
+    assert "Never propose or run the reset" in skill and "never proves a wrong password" in skill
+    assert "shows the password is wrong" not in skill
     public = PUBLIC.read_text(encoding="utf-8")
     assert "Nothing else is lost" not in public and "never proposes or runs the reset" in public
+    assert "means the password\n  was wrong" not in public and "do not reset, keep the store" in public

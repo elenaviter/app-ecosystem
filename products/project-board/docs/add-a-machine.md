@@ -199,13 +199,14 @@ never on the machine and never in an agent's history.
   on the machine can remind you of it.
 - **You will be asked again after the machine reboots**, and only then. Network
   drops and agent restarts do not need it.
-- **If the check fails, it is not always a lost password.** Compare the first two
-  lines' output: one number from `pgrep`, the same as `PID=`, means the password
-  was wrong; several numbers, or `PID=` none of them, means the machine still
-  uses an old daemon, so run the unlock line again and do not reset;
-  `command not found` before `done` means the line broke when pasted, so copy it
-  again as one line.
-- **If it is really lost, or you mistyped it the first time**, you reset; an agent
+- **If the check fails, it is not always a lost password.** The first two lines
+  show which keyring process the agents talk to, not why the store is locked.
+  Several numbers from `pgrep`, or `PID=` none of them: the machine may still use
+  an old daemon, so run the unlock line again and do not reset. `command not found`
+  before `done`: the line broke when pasted, so copy it again as one line. One
+  number, the same as `PID=`: type the password again carefully; if it still
+  fails, do not reset, keep the store and ask for help with what the lines printed.
+- **Only if you know it is lost, or you mistyped it the first time**, you reset; an agent
   never proposes or runs the reset. It asks the new password twice and, only when both match, sets
   the old store aside and creates a new one. Every agent on the machine then needs
   a new Card: follow "I forgot the store (vault) password" in the board's Connect
