@@ -199,9 +199,19 @@ never on the machine and never in an agent's history.
   on the machine can remind you of it.
 - **You will be asked again after the machine reboots**, and only then. Network
   drops and agent restarts do not need it.
-- **If it is lost, or you mistyped it the first time**, reset: it asks the new password twice and, only when both match, sets
-  the old store aside and creates a new one. Then repeat
-  steps 5 and 6 for each agent. Nothing else is lost.
+- **If the check fails, it is not always a lost password.** Compare the first two
+  lines' output: one number from `pgrep`, the same as `PID=`, means the password
+  was wrong; several numbers, or `PID=` none of them, means the machine still
+  uses an old daemon, so run the unlock line again and do not reset;
+  `command not found` before `done` means the line broke when pasted, so copy it
+  again as one line.
+- **If it is really lost, or you mistyped it the first time**, you reset; an agent
+  never proposes or runs the reset. It asks the new password twice and, only when both match, sets
+  the old store aside and creates a new one. Every agent on the machine then needs
+  a new Card: follow "I forgot the store (vault) password" in the board's Connect
+  a machine dialog. On a desktop, try your login password first: a desktop's
+  store also holds its saved passwords, Wi-Fi and application tokens, and a reset
+  erases them all.
 
   ```bash
   printf 'New password: '; read -rs P; echo; printf 'Again: '; read -rs Q; echo; if [ -n "$P" ] && [ "$P" = "$Q" ]; then systemctl --user stop gnome-keyring-daemon.socket gnome-keyring-daemon.service 2>/dev/null; pkill -u "$USER" -x gnome-keyring-d; mv ~/.local/share/keyrings/login.keyring ~/.local/share/keyrings/login.keyring.old-$(date +%Y%m%d-%H%M) 2>/dev/null; printf %s "$P" | gnome-keyring-daemon --replace --unlock --components=secrets >/dev/null; echo "store created"; else echo "the two entries are empty or differ; nothing changed"; fi; unset P Q

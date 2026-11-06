@@ -271,3 +271,28 @@ def test_every_start_or_resume_begins_with_the_machine_self_test():
     paragraph = section[test_at:section.index("1. Read the repository instructions")]
     assert "begins with `pb status`" in paragraph and "a session resumed after its machine restarted" in paragraph
     assert "add-a-worker-host step 6" in paragraph and "no keyring command of your own" in paragraph
+
+
+# W1012 user review (6 Nov 2026), points 3 and 7: a failed unlock is not always
+# a lost password, and only the person resets the store, never an agent.
+
+SKILL = ROOT / "src" / "project_board" / "procedures" / "problem-board-worker" / "SKILL.md"
+
+
+def test_the_reset_is_the_persons_and_follows_the_check_table():
+    text = PROCEDURE.read_text(encoding="utf-8")
+    only = text[text.index("**Only these lines.**"):]
+    only = only[:only.index("\n\n")]
+    assert "exactly the unlock and check above" in only
+    assert "An agent never proposes or runs the reset itself" in only
+    table = text.index("| You see | It means | Do |")
+    assert text.index("busctl --user status org.freedesktop.secrets") < table < text.index("**Only these lines.**")
+    for row in ("one number from `pgrep`, the same as `PID=`", "several numbers from `pgrep`, or `PID=` is none of them", "`command not found` before `done`"):
+        assert row in text, row
+    assert "The person runs the reset, never an agent" in text
+    assert "that refusal prints the `access_id` too" not in text
+    skill = SKILL.read_text(encoding="utf-8")
+    assert "exactly the unlock, check and reset" not in skill
+    assert "Never propose or run the reset" in skill
+    public = PUBLIC.read_text(encoding="utf-8")
+    assert "Nothing else is lost" not in public and "never proposes or runs the reset" in public
