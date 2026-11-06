@@ -503,7 +503,7 @@ timeout 15 "$HOME/.kdcube/client-runtime/tools/problem-board/releases/current/ve
 | nothing or an error from either line | no keyring service answers, or the line could not run | no reset; report what the lines printed |
 | `command not found` before `done` | the line broke when it was pasted | copy the whole line again, as one line |
 
-Both of the last two looked exactly like a lost password on a real host: on 5 October the unit's daemon kept the bus name, so pb and the relay stayed on the old, locked store, and on 12 October a pasted line broke at a newline, printed `--replace: command not found` and then `done` (W558's recovery record, lessons 4 and 5).
+Two cases looked exactly like a lost password on a real host, an old daemon and a pasted line that broke: on 5 October the unit's daemon kept the bus name, so pb and the relay stayed on the old, locked store, and on 12 October a pasted line broke at a newline, printed `--replace: command not found` and then `done` (W558's recovery record, lessons 4 and 5).
 
 **Only these lines.** The host agent gives the operator exactly the unlock and check above, never another keyring command of its own. **The reset is the person's alone:** it is run only by the person, only when the person knows the password is lost and the store is still not usable after the check table; the table never proves a wrong password. An agent never proposes or runs the reset itself (W1012 user review: "the last resort, only when the unlock fails" read as permission). On mint (2026-10-05) an improvised `gnome-keyring-daemon --unlock` left a stray daemon that broke the store further, and a restart of the keyring unit without asking added another (W558). If the check fails twice, stop, change nothing more, and report what each line printed to the coordinator.
 
@@ -545,7 +545,7 @@ the complete step 13 migration proof has passed for every configured target.
 The relay service starts again by itself, but the password store is locked. Until it is unlocked, no agent on the host can reach the board, and the board's Resume dialog waits for this host's relay. The **operator**, in an SSH session as the agents' user, in this order:
 
 1. **Unlock the store** with the store password from their password manager: the unlock line above. Nothing is shown while typing.
-2. **Check:** `pb status --format brief`: its `prerequisites:` line must end with `keyring usable`; a locked store shows `keyring NOT usable, fix:` followed by the unlock line. If it still says `NOT usable`, do not reset: the check table in step 6 tells a wrong password from a store the host is not using.
+2. **Check:** `pb status --format brief`: its `prerequisites:` line must end with `keyring usable`; a locked store shows `keyring NOT usable, fix:` followed by the unlock line. If it still says `NOT usable`, do not reset: the check table in step 6 shows which keyring process pb talks to, and what to do or report.
 3. **Reconnect the relay now:** `systemctl --user restart 'kdcube-problem-board-relay-*.service'`.
 4. **Resume each agent:** open it on the board and press Resume; the dialog gives that agent's line for this host. Run it on the host, then type `resume` in the session.
 

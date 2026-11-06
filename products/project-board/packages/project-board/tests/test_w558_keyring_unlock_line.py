@@ -308,7 +308,8 @@ def test_the_reset_is_the_persons_and_follows_the_check_table():
     skill = SKILL.read_text(encoding="utf-8")
     assert "exactly the unlock, check and reset" not in skill
     assert "Never propose or run the reset" in skill and "never proves a wrong password" in skill
-    assert "shows the password is wrong" not in skill
+    assert "shows the password is wrong" not in skill and "rules out" not in skill
+    assert "tells a wrong password" not in text and "Both of the last two" not in text
     public = PUBLIC.read_text(encoding="utf-8")
     assert "Nothing else is lost" not in public and "never proposes or runs the reset" in public
     assert "means the password\n  was wrong" not in public and "do not reset, keep the store" in public
