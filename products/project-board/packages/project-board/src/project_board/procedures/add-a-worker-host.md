@@ -504,9 +504,9 @@ Two different PIDs, or no `True` within 15 s (`exit 124`), means the password di
 printf 'New password: '; read -rs P; echo; printf 'Again: '; read -rs Q; echo; if [ -n "$P" ] && [ "$P" = "$Q" ]; then systemctl --user stop gnome-keyring-daemon.socket gnome-keyring-daemon.service 2>/dev/null; pkill -u "$USER" -x gnome-keyring-d; mv ~/.local/share/keyrings/login.keyring ~/.local/share/keyrings/login.keyring.old-$(date +%Y%m%d-%H%M) 2>/dev/null; printf %s "$P" | gnome-keyring-daemon --replace --unlock --components=secrets >/dev/null; echo "store created"; else echo "the two entries are empty or differ; nothing changed"; fi; unset P Q
 ```
 
-Then run the check. A reset loses only what the old store held: each agent on this host authorizes again (step 11).
+Then run the check. **A reset is a last resort: it loses every agent's Card credential on this host**, and the agents do not simply authorize again (W1012): continue with "I forgot the store (vault) password" at the end of this step.
 
-**A relay that was already running** (a reboot, or a store unlocked after the relay started) picks the unlock up on its next attempt, within about a minute, with no restart: while the store is locked it refuses by name (`credential_store_locked`) instead of waiting for a prompt, and retries (W558). A client older than this change needs the relay restarted once after the unlock (`systemctl --user restart kdcube-problem-board-relay-*.service`, the operator approves).
+**A relay that was already running** (a reboot, or a store unlocked after the relay started) picks the unlock up on its next attempt, with no restart: while the store is locked it refuses by name (`credential_store_locked`) instead of waiting for a prompt, and retries on a schedule (W558). After repeated refusals the wait between attempts grows to several minutes, so after a reboot the operator restarts it once to reconnect without waiting (below). A client older than this change needs the relay restarted once after the unlock (`systemctl --user restart kdcube-problem-board-relay-*.service`, the operator approves).
 
 **The alternative W258 has to choose between** is in that item's note: the person
 types it (nothing stored, a person needed after every reboot), or the machine
@@ -530,6 +530,36 @@ step 13 first.
 
 An existing host keeps its former `/opt` or `problem-board-venv` install until
 the complete step 13 migration proof has passed for every configured target.
+
+### After the machine restarted
+
+The relay service starts again by itself, but the password store is locked. Until it is unlocked, no agent on the host can reach the board, and the board's Resume dialog waits for this host's relay. The **operator**, in an SSH session as the agents' user, in this order:
+
+1. **Unlock the store** with the store password from their password manager: the unlock line above. Nothing is shown while typing.
+2. **Check:** `pb status` must say the keyring is usable.
+3. **Reconnect the relay now:** `systemctl --user restart 'kdcube-problem-board-relay-*.service'`.
+4. **Resume each agent:** open it on the board and press Resume; the dialog gives that agent's line for this host. Run it on the host, then type `resume` in the session.
+
+The board's Connect a machine dialog (Part 1) shows the same steps, and the last resort for a lost store password, with the lines to copy.
+
+**An agent that got a new Card** (after "I forgot the store (vault) password" below) starts without its project grants: after approving it, the operator presses Team, the agent, Fit to role, and the agent then connects by itself; a host on an older pb client may still suggest `authorize` in `pb status`, which is only its wording. **On a board older than the W1013 fix** (merged 6 Nov 2026), a replacement Card does not activate: Connection Hub refuses its Card attach (`card_transactions_direct_write_refused`), which the board reports as `work_project_control_connection_hub_refused`. Fit to role does not clear that, and no operator action does; the board needs the fix. Report it to the coordinator.
+
+### I forgot the store (vault) password
+
+The last resort, when the unlock fails because the store password is lost. Reset the store with the reset line above, then follow these steps in order. The old store is kept as `~/.local/share/keyrings/login.keyring.old-<date>`; if the old password turns up **before** you revoke the old Cards (step 2 below), moving that file back and unlocking it restores those Cards' credentials. After a Card is revoked, the old file cannot bring it back, and moving it over the new store also drops any new Card already approved.
+
+1. Run the check, then reconnect the relay: `systemctl --user restart 'kdcube-problem-board-relay-*.service'`.
+2. **Revoke each agent's old Card in Connection Hub**, and note its `access_id` (`aut_...`). Connection Hub accepts a reconnect to an existing Card only with proof the machine held it, and refuses with `work_relay_card_continuity_required`. Do not use `pb worker authorize --replace-card` here: it first disconnects the old Card with the local credential the reset lost, so it always stops with `work_relay_profile_disconnect_required`, even after the Card is revoked (that refusal prints the `access_id` too).
+3. **Remove the agent's stale local profile record.** The documented command, `connection-hub profile remove <profile> --server-card-revoked --access-id <access_id>` ([local client helper](../../../../../../../docs/connection-hub/local-client-helper.md)), is not installed on worker hosts: pb's environment has the Connection Hub library, not its CLI. **pb has no host command for this today.** Until it does, run the same library call in pb's own Python, with `<state root>` from `connection_hub.state_root` in this host's `relay.json`, `<its profile>` as `pb status` prints it in that agent's session, and `<access_id>` from step 2. It removes only this host's record of the revoked Card:
+
+   ```bash
+   "$HOME/.kdcube/client-runtime/tools/problem-board/releases/current/venv/bin/python" -c 'from pathlib import Path; from connection_hub.caller.paths import StatePaths; from connection_hub.caller.services import build_caller_services; build_caller_services(paths=StatePaths(Path("<state root>").expanduser())).profile_service.remove("<its profile>", server_card_revoked=True, access_id="<access_id>")'
+   ```
+
+4. **Give each agent a new Card.** In each agent's session it runs plain `pb worker authorize <its profile> --device` (without `--replace-card`). The operator opens the link on their own device, checks the request names that agent, and approves (step 11).
+5. **Put each agent back on its project.** A new Card starts without the project grants: the operator checks the agent is still on the project's Team, then presses Team, the agent, Fit to role (step 12). On a board older than the W1013 fix, the replacement Card does not activate (see "After the machine restarted" above).
+
+This order ran on spark1 on 5 Nov 2026 (profile `problem-board-claude-557121e82850`) up to the new Card's approval; the revoke-then-`--replace-card` order did not. On that day the agent's channel did not activate, because of the board defect W1013 fixed; after that board fix (6 Nov 2026) the same agent activated on its new Card with no further operator step.
 
 ## 7. Give the host access to exactly the project's repositories
 
