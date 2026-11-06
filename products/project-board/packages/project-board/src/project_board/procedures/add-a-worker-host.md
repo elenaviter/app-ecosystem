@@ -542,7 +542,7 @@ The relay service starts again by itself, but the password store is locked. Unti
 
 The board's Connect a machine dialog (Part 1) shows the same steps, and the last resort for a lost store password, with the lines to copy.
 
-**An agent that got a new Card** (after "I forgot the store (vault) password" below) starts without its project grants: after approving it, the operator presses Team, the agent, Fit to role. **On a board older than the W1013 fix** (merged 6 Nov 2026), a replacement Card does not activate: Connection Hub refuses its Card attach (`card_transactions_direct_write_refused`), which the board reports as `work_project_control_connection_hub_refused`. Fit to role does not clear that, and no operator action does; the board needs the fix. Report it to the coordinator.
+**An agent that got a new Card** (after "I forgot the store (vault) password" below) starts without its project grants: after approving it, the operator presses Team, the agent, Fit to role, and the agent then connects by itself; a host on an older pb client may still suggest `authorize` in `pb status`, which is only its wording. **On a board older than the W1013 fix** (merged 6 Nov 2026), a replacement Card does not activate: Connection Hub refuses its Card attach (`card_transactions_direct_write_refused`), which the board reports as `work_project_control_connection_hub_refused`. Fit to role does not clear that, and no operator action does; the board needs the fix. Report it to the coordinator.
 
 ### I forgot the store (vault) password
 
