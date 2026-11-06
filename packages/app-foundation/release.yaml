@@ -1,36 +1,22 @@
 package:
   id: app-foundation
-  ref: "2026.10.25.0100"
+  ref: "2026.11.06.1119"
   description: |
-    Requested coverage since 2026.10.18.1804.
+    Changes since 2026.10.25.0200 (tagged; PyPI's latest is 2026.10.25.100). Source: App Ecosystem main 7d914691.
 
-    New changes since the PB set published on 19 October at 22:00 Berlin time:
-
-    - Project Board workers can discover and call the services allowed by their Cards. The client validates service arguments before sending them and preserves the project's permissions for each worker.
-    - Repeating an identical setup reuses the existing host record. Procedure installation and verification name every covered directory.
-    - Procedure installation and verification cover `~/.claude` and the current session's own configuration directory by default. Other directories are covered only when explicitly named; multiple named directories are supported, and hooks and settings stay within that selection.
-    - Repeating a single-value command option with conflicting values now fails before any operation, with a clear error; one send has one recipient.
-    - The relay recovers from lost outbox leases without stopping unrelated mail, settles an in-flight outbox row in its own copy, and avoids repeating mailbox reconciliation for an unchanged owner view. Project syncs compare before locking and write only when data changes. Retention holds the writer lock one day at a time. Slow-turn diagnostics name the longest store call and outbox send time.
-    - Retirement reconciliation keeps one routed publication per host, groups host-local originals by their required sender, and adopts overdue routed batches. Outbox claiming checks only due rows and expired leases.
-    - Connection Hub's secret flow asks for consent in the CLI, keeps the exact door and resource binding, carries that resource through token refreshes, and explains refused token exchanges. A Card entered through a secret door can add only reachable, exact secrets. A used one-time permission asks again, and its consent label reflects the committed result.
-    - Delegated catalog rows and Card editors stay bound to the entry that granted access. Editing a project's Control Card goes through that project, where its permissions are checked. Project Control account policies govern linked services and resources, and a save is bounded by the saver's typed permission proof.
-    - A project bounds an agent Card save only for the resources it governs. Grants for other resources are bounded by the owner's proven authority.
-    - A Card save refused for permissions beyond the saver's authority names those permissions in its signed answer.
-    - Long-lived Cards retain the revision links needed to settle earlier policy changes after token renewal or issuer updates.
-    - Tools listed and called through the delegated MCP gateway follow the agent's Card combined with any linked Control, including its AND/OR rule and External MCP/A2A switches. An unresolvable or invalid linked Control is refused; an agent without a Control keeps its Card's permissions.
-    - App Foundation adds A2A 1.0 client and server building blocks. Connection Hub can store an explicitly enabled A2A connection. Platform installation and activation of inbound A2A routes remain separate release work.
-    - Test collection identifiers are stable across workers, and dated recovery fixtures no longer depend on expired test dates. The client diagnoses broken hashlib BLAKE2 support and refuses to select an affected release.
-
-    Previously shipped within the requested coverage, by the 19 October evening release:
-
-    - Project exports can be imported through the supported client flow, with browser import documentation. Resume and authorization commands identify the selected profile.
-    - The Redis lock policy check can read INFO memory when CONFIG is restricted; an unknown policy is still refused.
-    - The client, procedures and documentation use the Project Board name.
-
-    Connection Hub CLI carries the PB snapshot version at preparation, and its separate release is qualified after its required kdcube-cli version is available. If its dependency metadata changes after the PB tag, that CLI release receives a distinct later version and tag.
+    - pb status names the Connection Hub cause when a worker's Card is refused or cannot be attached, instead of asking to authorize again (W1013, #936). The board documentation describes how a returning agent's new Card is attached, with a warning against removing and re-adding the agent (#937).
+    - The relay sends allow-listed resume details on worker.publish, so the board can show an agent's last known resume line (W1014, #938).
+    - The add-a-worker-host procedure has steps for after a machine reboot and for a lost password store, including revoking the old Card and giving each agent a new one (W1012, #935).
+    - Connection Hub decides hosted descriptor agent Cards in its own transactions (W1011, #933).
+    - Connection Hub: approving an external client's consent demand adds the requested named-service operation to the Card's held selection instead of replacing it (#932). A refused named-service selection names each action and the grants it is missing (#926).
+    - Staged uploads and Telegram media are bound to their authenticated owner; this requires a platform SDK with the owner-bound file-staging API (#931).
+    - pb client: workspace and scratch listings and receipts print bounded brief output (counts and the newest records); JSON output is unchanged (#924).
+    - Project Board contract and rules: the worker profile holds project.role.handover.decide, usable only by the knowledge-keeper role holder (W1007, #930); project.role.get documents its hand-over paging fields (W1005, #929).
+    - Project Board documentation: low-disk alerts go to the owners of the machine's agents (W991, #923), and knowledge on the board (#927).
+    - Tests and release tooling: the package suite is green on main (pinned history clocks, procedure revision 2026.10.26.1 recorded, and the release script resets the Hub record after a separate CLI release) (#925); the endpoint scan reads its input before host isolation (#928); the paired descriptor tests skip at collection when the platform SDK is absent, so the release gate runs without it (#939).
 
 components:
   python_package:
     id: app-foundation
     path: packages/app-foundation
-    version: "2026.10.25.0100"
+    version: "2026.11.06.1119"

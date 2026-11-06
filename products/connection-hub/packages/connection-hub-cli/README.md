@@ -200,7 +200,7 @@ management grants; a deployment administrator is.
 
    This flow uses `connection-hub-cli` 2026.10.25.0200 or later, which installs
    `kdcube-cli` 2026.10.25.0130 or later and the App Ecosystem packages at
-   2026.10.25.0100 or later. The deployment must also run the Connection Hub
+   2026.11.06.1119 or later. The deployment must also run the Connection Hub
    app source from that App Ecosystem release: the hosted app supplies the
    authorization-code exchange fix. Check the CLI version before continuing.
    To use an unpublished revision, run both CLIs from source at the revisions
