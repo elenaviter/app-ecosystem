@@ -193,6 +193,9 @@ advance the resident's binding to that exact current Control; owner Save stays
 strict about a stale binding. Configured Control issuer and resident writer
 policies are revalidated before the decision. The administrator edit marker
 and label survive a descriptor refresh.
+An issuance policy refusal keeps its non-retryable code after an actual ABORT;
+it is not reported as a retryable service outage. The lifecycle still finishes
+that ABORT before it may commit an independent Control narrowing.
 
 Passive sync preserves the owner's stored standard restrictions, including a
 removed outer named-service bridge even when an inner choice remains selected.

@@ -266,6 +266,10 @@ async def test_catalog_move_after_inactive_preparation_aborts_without_publishing
         monkeypatch.setattr(w.provider, "prepare", move)
         answer = await w.service.sync_agent_capability_control(USER, **w.arguments)
         assert answer["ok"] is False and len(plans) == 1
+        # A catalog cut after preparation is a recoverable issuance failure,
+        # not the non-retryable caller/issuer policy refusal below.
+        assert answer["retryable"] is True and answer["status"] == 503
+        assert answer["error"] != "pb_refused"
         row = await w.decisions.read(plans[0].transaction_id)
         assert row.state == "aborted"
         assert await w.store.read_current_authority(subject_hash=w.subject_hash, access_id=w.resident.access_id) is None
@@ -322,6 +326,7 @@ async def test_renew_policy_refusal_still_commits_descriptor_withdrawal(tmp_path
         arguments.update(descriptor_revision="descriptor-withdrawal", descriptor_payload={"revision": "descriptor-withdrawal"})
         answer = await w.service.sync_agent_capability_control(USER, **arguments)
         assert answer["ok"] is False and answer["error"] == "pb_refused", answer
+        assert answer["retryable"] is False and answer["status"] == 409
         assert answer["control_committed"] and answer["card_committed"]
         control = (await w.service._load_record_any_state(w.control.access_id, grantor_subject=OWNER))[0]
         assert control.card_revision == w.control.card_revision + 1

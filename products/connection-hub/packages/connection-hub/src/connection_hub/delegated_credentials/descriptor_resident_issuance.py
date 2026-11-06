@@ -304,6 +304,7 @@ async def decide_descriptor_resident_issuance(service: Any, raw: Mapping[str, An
         ceiling = control_member.candidate
     caller_request = issuer_request = None
     reason = ""
+    policy_refusal = None
     committed_here = False
     known = (DecisionRefused, CardTransactionRefused, CallerWriteRefused, IssuerWriteRefused,
              CardConflict, IssuanceRefused, DescriptorAgentCardRefused)
@@ -349,6 +350,8 @@ async def decide_descriptor_resident_issuance(service: Any, raw: Mapping[str, An
         committed_here = True
     except known as exc:
         reason = str(getattr(exc, "reason", "") or exc)[:128]
+        if isinstance(exc, (CallerWriteRefused, IssuerWriteRefused)):
+            policy_refusal = exc
         if await renew():
             try:
                 await coordinator.decide(plan.transaction_id, "aborted")
@@ -364,6 +367,11 @@ async def decide_descriptor_resident_issuance(service: Any, raw: Mapping[str, An
             await service._issuer_outcome(issuer_request, state=state,
                 card_revision=ceiling.card_revision if committed else
                 control_member.original.card_revision if control_member is not None and control_member.original else 0)
+    if policy_refusal is not None and actual is not None and actual.state == "aborted":
+        # Preserve the gate's retryability for the lifecycle caller, which
+        # finishes this ABORT before considering independent Control fallback.
+        # An unknown outcome or another process's COMMIT still wins above.
+        raise policy_refusal
     return committed_here, reason
 
 
