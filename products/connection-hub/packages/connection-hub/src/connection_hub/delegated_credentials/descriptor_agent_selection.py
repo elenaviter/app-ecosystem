@@ -38,7 +38,7 @@ async def validate_new_standard_authority(service: Any, user: Any, *, original: 
 
 
 def selected_standard_maps(*, resident: Any, control: Any, authority: Any, selected: Any,
-                           config: Any) -> tuple[dict[str, list[str]], dict[str, list[str]], Any]:
+                           config: Any, allow_additions: bool = True) -> tuple[dict[str, list[str]], dict[str, list[str]], Any]:
     """Preserve hidden choices and unrelated resources; replace the visible standard choices.
 
     The Control and provider-owned catalog are the only authority inputs.
@@ -153,7 +153,29 @@ def selected_standard_maps(*, resident: Any, control: Any, authority: Any, selec
         needed = {grant for tool in configured.tools or () if tool.name in operations[resource] for grant in tool.grants or ()}
         grants[resource] = (grants.get(resource, set()) - removed) | needed
 
-    return ({resource: sorted(values) for resource, values in grants.items() if values},
-            {resource: sorted(values) for resource, values in operations.items() if resource in grants and grants[resource]},
-            NamedServiceSelection.exact({resource: {namespace: sorted(values) for namespace, values in rows.items() if values}
+    if not allow_additions:
+        # Passive sync carries the owner's stored standard restrictions. A
+        # saved inner choice cannot recreate a bridge or claim the owner
+        # removed. Creation and an explicit selection save still resolve new
+        # authority, subject to the ordinary delegability and Control checks.
+        grants = {resource: values & set(resident.resource_grants.get(resource, ()))
+                  for resource, values in grants.items()}
+        operations = {resource: values & set(resident.resource_operations.get(resource, ()))
+                      for resource, values in operations.items()}
+        if not raw.is_all:
+            named = {resource: {namespace: values & set(raw.operations.get(resource, {}).get(namespace, ()))
+                                for namespace, values in rows.items()}
+                     for resource, rows in named.items()}
+
+    def ordered(values, held):
+        # These dimensions are sets, but the durable Card preserves order.
+        # A refresh must not write a revision just to sort an unchanged set.
+        return [value for value in held if value in values] + sorted(values - set(held))
+
+    return ({resource: ordered(values, resident.resource_grants.get(resource, ()))
+             for resource, values in grants.items() if values},
+            {resource: ordered(values, resident.resource_operations.get(resource, ()))
+             for resource, values in operations.items() if resource in grants and grants[resource]},
+            NamedServiceSelection.exact({resource: {namespace: ordered(values, raw.operations.get(resource, {}).get(namespace, ()))
+                                                   for namespace, values in rows.items() if values}
                 for resource, rows in named.items() if any(rows.values())}))

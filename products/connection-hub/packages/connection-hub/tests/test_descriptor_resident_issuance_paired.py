@@ -12,6 +12,7 @@ production lock, cache and complete admission coverage.
 from contextlib import asynccontextmanager
 from dataclasses import replace
 import hashlib
+import time
 from unittest.mock import AsyncMock
 
 import pytest
@@ -33,6 +34,7 @@ from test_descriptor_agent_consent import _sync_arguments
 from test_w603_original_issuance import _world
 
 USER = {"user_id": OWNER, "roles": ["kdcube:role:super-admin"]}
+EXPIRY_TEST_LEASE_SECONDS = 30
 
 
 @asynccontextmanager
@@ -134,6 +136,15 @@ async def _usable(w, bearer):
         return None
 
 
+async def _past_expiry(w, expires_at):
+    # Give PREPARE/COMMIT/custody a usable lease first, then cross the integer
+    # second used by both the Card and session clocks. A one-second lease can
+    # expire during preparation, and a fixed 1.1s wait can land at exp == now.
+    async with w.pool.acquire() as connection:
+        await connection.execute("SELECT pg_sleep($1::double precision)", max(0.0, expires_at + 1 - time.time()))
+    assert int(time.time()) > expires_at
+
+
 @pytest.mark.asyncio
 async def test_public_sync_first_create_begins_before_inactive_preparation_and_commits_both_cards(tmp_path, monkeypatch):
     from kdcube_ai_app.auth.tests.test_bound_session_issuer import resigned
@@ -204,9 +215,8 @@ async def test_rotation_custody_cut_recovers_one_original_before_retiring_old_se
 @pytest.mark.asyncio
 async def test_expired_resident_and_changed_control_rotate_under_one_committed_group(tmp_path, monkeypatch):
     async with _paired(tmp_path) as w:
-        old = await issue_descriptor_resident(w.service, USER, **_request(w, lease_seconds=2))
-        async with w.pool.acquire() as connection:
-            await connection.execute("SELECT pg_sleep(2.1)")
+        old = await issue_descriptor_resident(w.service, USER, **_request(w, lease_seconds=EXPIRY_TEST_LEASE_SECONDS))
+        await _past_expiry(w, old.expires_at)
         prepare, plans = w.provider.prepare, []
 
         async def inspect(*, plan):
@@ -226,7 +236,9 @@ async def test_expired_resident_and_changed_control_rotate_under_one_committed_g
         assert answer["ok"] and len(plans) == 1, answer
         row = await w.decisions.read(plans[0].transaction_id)
         assert row.state == "committed" and PARTICIPANT in row.finished
-        assert len(row.intent.payload["participant_inputs"][PARTICIPANT]["participant_candidates"][PARTICIPANT]["cards"]) == 2
+        stored = await w.authority.read_issuance_plan(plans[0].transaction_id)
+        assert {member["access_id"] for member in stored["plan"]["intent"]["members"]} == {
+            old.access_id, w.control.access_id}
         control = (await w.service._load_record_any_state(w.control.access_id, grantor_subject=OWNER))[0]
         resident = (await w.service._load_record_any_state(old.access_id, grantor_subject=OWNER))[0]
         assert (control.card_revision, resident.card_revision, resident.control_card.control_revision) == (2, 2, 2)
@@ -298,9 +310,8 @@ async def test_renew_policy_refusal_still_commits_descriptor_withdrawal(tmp_path
             return super()._decision(request)
 
     async with _paired(tmp_path) as w:
-        old = await issue_descriptor_resident(w.service, USER, **_request(w, lease_seconds=1))
-        async with w.pool.acquire() as connection:
-            await connection.execute("SELECT pg_sleep(1.1)")
+        old = await issue_descriptor_resident(w.service, USER, **_request(w, lease_seconds=EXPIRY_TEST_LEASE_SECONDS))
+        await _past_expiry(w, old.expires_at)
         policy = RefuseRenew(True)
         registry = CallerWriterRegistry()
         registry.register(AGENT_DESCRIPTOR_ISSUER_KIND, policy)
@@ -310,7 +321,7 @@ async def test_renew_policy_refusal_still_commits_descriptor_withdrawal(tmp_path
                                              "resource": w.arguments["capability_authority"]["resource"]}
         arguments.update(descriptor_revision="descriptor-withdrawal", descriptor_payload={"revision": "descriptor-withdrawal"})
         answer = await w.service.sync_agent_capability_control(USER, **arguments)
-        assert answer["ok"] is False and answer["reason"] == "pb_refused"
+        assert answer["ok"] is False and answer["error"] == "pb_refused", answer
         assert answer["control_committed"] and answer["card_committed"]
         control = (await w.service._load_record_any_state(w.control.access_id, grantor_subject=OWNER))[0]
         assert control.card_revision == w.control.card_revision + 1
@@ -345,9 +356,8 @@ async def test_consent_requires_descriptor_sync_before_first_creation_and_rotate
         missing = await _consent(w.service, w.resident)
         assert missing["error"] == "agent_descriptor_resident_sync_required"
         assert w.service._minter.await_count == 0
-        old = await issue_descriptor_resident(w.service, USER, **_request(w, lease_seconds=1))
-        async with w.pool.acquire() as connection:
-            await connection.execute("SELECT pg_sleep(1.1)")
+        old = await issue_descriptor_resident(w.service, USER, **_request(w, lease_seconds=EXPIRY_TEST_LEASE_SECONDS))
+        await _past_expiry(w, old.expires_at)
         answer = await _consent(w.service, old)
         assert answer["ok"] and answer["access_token"]
         saved = (await w.service._load_record_any_state(old.access_id, grantor_subject=OWNER))[0]
@@ -362,9 +372,8 @@ async def test_selection_rotates_an_expired_resident_without_using_the_active_mi
     from test_descriptor_agent_consent import READ, _policy_with_named_operations
 
     async with _paired(tmp_path) as w:
-        old = await issue_descriptor_resident(w.service, USER, **_request(w, lease_seconds=1))
-        async with w.pool.acquire() as connection:
-            await connection.execute("SELECT pg_sleep(1.1)")
+        old = await issue_descriptor_resident(w.service, USER, **_request(w, lease_seconds=EXPIRY_TEST_LEASE_SECONDS))
+        await _past_expiry(w, old.expires_at)
         choice = {**_policy_with_named_operations(READ), "resource": w.arguments["capability_authority"]["resource"]}
         answer = await w.service.update_agent_capability_selection(USER, access_id=old.access_id,
             expected_card_revision=old.card_revision, selected_capabilities=choice)
@@ -378,7 +387,10 @@ async def test_selection_rotates_an_expired_resident_without_using_the_active_mi
         assert not old.refresh_token and not saved.refresh_token
         ended = await w.sessions.get_validation_state(old.session_id)
         assert ended is None or ended.hard_expires_at <= old.expires_at
+        touched = await authority(w.sessions).touch(old.session_id, expires_at=saved.expires_at, now=old.expires_at)
+        assert touched is None or touched["exp"] <= old.expires_at
         assert await authority(w.sessions).touch(old.session_id, expires_at=saved.expires_at) is None
+        assert await _usable(w, old.access_token) is None
 
 
 
@@ -387,7 +399,7 @@ async def test_pg_card_expiry_after_committed_custody_cut_finishes_without_insta
     from kdcube_ai_app.auth.tests.test_bound_session_issuance_store import counts
 
     async with _paired(tmp_path) as w:
-        plan = await begin_descriptor_resident_issuance(w.service, USER, **_request(w, lease_seconds=2))
+        plan = await begin_descriptor_resident_issuance(w.service, USER, **_request(w, lease_seconds=EXPIRY_TEST_LEASE_SECONDS))
         prepared = await w.provider.prepare(plan=plan)
         await w.service.reserve_oauth_issuance(plan=plan, slot="access", token_sha256=prepared.receipt.bearer_sha256,
             record=prepared.record, ttl_seconds=prepared.ttl_seconds)
@@ -399,8 +411,7 @@ async def test_pg_card_expiry_after_committed_custody_cut_finishes_without_insta
         result = await w.service.complete_oauth_issuance(transaction_id=plan.transaction_id)
         assert result.state == "pending" and (await w.decisions.read(plan.transaction_id)).state == "committed"
         before = await counts(w.sessions)
-        async with w.pool.acquire() as connection:
-            await connection.execute("SELECT pg_sleep(2.1)")
+        await _past_expiry(w, plan.expires_at)
         w.recompose()
         result = await w.service.complete_oauth_issuance(transaction_id=plan.transaction_id)
         assert result.state == "committed" and result.per_slot["access"].outcome == "superseded"

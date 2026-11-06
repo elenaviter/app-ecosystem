@@ -2,7 +2,9 @@
 
 import pytest
 
-from connection_hub.delegated_credentials.agent_capability_policy import AGENT_CAPABILITY_SELECTION_PROPERTY
+from connection_hub.delegated_credentials.agent_capability_policy import (
+    AGENT_CAPABILITY_DEFAULTS_PROPERTY, AGENT_CAPABILITY_SELECTION_PROPERTY,
+)
 from test_agent_capability_control_sync import (
     AGENT, APPLICATION, NAMED_RESOURCE, OWNER, _policy_with_named_operations, _service,
 )
@@ -101,6 +103,7 @@ async def test_focused_consent_saves_approved_account_binding_with_selection_and
         replay = await service.sync_agent_capability_control({"user_id": OWNER}, **_sync_arguments())
         assert replay["ok"], replay
         assert await _current(store, resident) == cumulative
+    assert decisions.decisions == ["committed", "committed"]
 
 
 @pytest.mark.asyncio
@@ -146,10 +149,48 @@ async def test_replace_consent_removes_the_saved_choice_and_sync_does_not_reintr
     narrowed = await _current(store, resident)
     assert set(narrowed.named_service_operations.operations[NAMED_RESOURCE]["slack"]) == {READ}
     assert set(_selection(narrowed)) == {f"slack/{READ}"}
-    replay = await service.sync_agent_capability_control({"user_id": OWNER}, **_sync_arguments())
-    assert replay["ok"], replay
-    assert await _current(store, resident) == narrowed
+    # Replace also removed the outer bridge. Passive sync must retain this
+    # independent restriction even though the inner READ choice remains.
+    assert not narrowed.resource_operations.get(NAMED_RESOURCE)
+    for _ in range(3):
+        replay = await service.sync_agent_capability_control({"user_id": OWNER}, **_sync_arguments())
+        assert replay["ok"], replay
+        unchanged = await _current(store, resident)
+        assert unchanged == narrowed
+        assert not unchanged.resource_operations.get(NAMED_RESOURCE)
     assert decisions.decisions == ["committed", "committed"]
+
+
+@pytest.mark.asyncio
+async def test_new_descriptor_default_stays_unselected_and_withdrawn_choice_restores_without_new_grants(tmp_path):
+    service, store, decisions, resident, _, _, _ = await _consent_world(tmp_path, allow_post=False)
+    for revision, offered, visible in (
+        ("descriptor-add-post-default", [READ, POST], {f"slack/{READ}"}),
+        ("descriptor-withdraw-read", [POST], set()),
+        ("descriptor-restore-read", [READ, POST], {f"slack/{READ}"}),
+    ):
+        arguments = _sync_arguments()
+        arguments.update(
+            descriptor_revision=revision,
+            descriptor_payload={"revision": revision, "capability_defaults": _policy_with_named_operations(POST)},
+            capability_authority=_policy_with_named_operations(*offered),
+            resource_grants={NAMED_RESOURCE: ["named_services:use", *(
+                "slack:read" if operation == READ else "slack:post" for operation in offered)]},
+            named_service_operations={NAMED_RESOURCE: {"slack": offered}})
+        answer = await service.sync_agent_capability_control({"user_id": OWNER}, **arguments)
+        assert answer["ok"], answer
+        saved = await _current(store, resident)
+        assert saved.resource_grants == resident.resource_grants
+        assert saved.resource_operations == resident.resource_operations
+        assert saved.named_service_operations == resident.named_service_operations
+        assert set(_selection(saved)) == {f"slack/{READ}"}
+        assert set(answer["projection"]["capabilities"].get("named_service_operations", ())) == visible
+        defaults = answer["control_card"]["properties"][AGENT_CAPABILITY_DEFAULTS_PROPERTY]
+        assert defaults["capabilities"]["named_service_operations"] == [f"slack/{POST}"]
+    assert decisions.decisions == ["committed"] * 3
+    replay = await service.sync_agent_capability_control({"user_id": OWNER}, **arguments)
+    assert replay["ok"] and await _current(store, resident) == saved
+    assert decisions.decisions == ["committed"] * 3
 
 
 @pytest.mark.asyncio

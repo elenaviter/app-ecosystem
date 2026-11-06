@@ -194,6 +194,16 @@ strict about a stale binding. Configured Control issuer and resident writer
 policies are revalidated before the decision. The administrator edit marker
 and label survive a descriptor refresh.
 
+Passive sync preserves the owner's stored standard restrictions, including a
+removed outer named-service bridge even when an inner choice remains selected.
+It does not add claims or operations from the descriptor ceiling. Creation and
+an explicit selection save may add authority through the normal owner and
+Control checks. Unchanged sets retain their stored order so a refresh does not
+commit a new Card revision just to reorder consent.
+Control withdrawal still closes effective access immediately. A previously
+selected hidden choice stays stored and can become effective when restored;
+that is different from granting a new descriptor default to an existing Card.
+
 First creation and credential rotation use an immutable resident-original
 plan in the existing issuance table. Each member carries linked original and
 candidate versions; a changed Control is a member and an unchanged Control is

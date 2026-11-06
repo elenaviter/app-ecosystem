@@ -7,6 +7,7 @@ productive PostgreSQL and the SDK credential adapter need separate qualification
 from dataclasses import replace
 import hashlib
 import time
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -82,6 +83,8 @@ async def _world(tmp_path, *, pair=None):
     await catalog_store.publish_active(active)
     tx.bind_catalog_reservations(store, CatalogReservations(catalog_store))
     service._persistence = StoredPersistence(store, handles)
+    # This filesystem/decision fixture does not compose notification Redis.
+    service.notify_change = AsyncMock()
     service.bind_card_coordinator(coordinator, intents=intents, decisions=decisions, intent_ttl_seconds=ttl)
     return service, store, decisions, resident, control, card_service, catalog_store
 

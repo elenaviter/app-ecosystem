@@ -1664,8 +1664,10 @@ async def sync_agent_capability_control(
         elif transactional:
             from .descriptor_agent_selection import selected_standard_maps
 
-            grants, operations, named = selected_standard_maps(resident=resident,
-                control=record_from_card(control_authority), authority=authority, selected=selected, config=catalog_config)
+            passive_sync = existing_resident is not None and not replace_selection
+            grants, operations, named = selected_standard_maps(resident=existing_resident if passive_sync else resident,
+                control=record_from_card(control_authority), authority=authority, selected=selected, config=catalog_config,
+                allow_additions=not passive_sync)
             aligned = await resolve_agent_descriptor_standard_authority(service, active=active,
                 owner_subject=grantor_subject, resource_grants=grants, resource_operations=operations,
                 named_service_operations=named.to_stored(), properties=resident.properties)
