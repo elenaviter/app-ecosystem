@@ -17,6 +17,6 @@ shared contract from this distribution.
 Status: https://github.com/elenaviter/app-ecosystem
 """
 
-__version__ = "2026.10.25.0100"
+__version__ = "2026.11.06.1119"
 
 __all__ = ["__version__"]
