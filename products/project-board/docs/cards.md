@@ -1,7 +1,7 @@
 ---
 id: project-board-cards
 title: Cards And Who Edits Them
-summary: Connection Hub Cards in a Project Board project, who edits which Card and where, and how the project Control Card combines with each agent's Card.
+summary: Connection Hub Cards in a Project Board project, who edits which Card and where, how the project Control Card combines with each agent's Card, and what happens when an agent comes back with a new Card.
 tags:
   - project-board
   - cards
@@ -14,6 +14,9 @@ keywords:
   - access rule
   - composition AND OR
   - fail closed
+  - replacement Card
+  - new Card
+  - card_transactions_direct_write_refused
 see_also:
   - ./README.md
   - ./concepts.md
@@ -122,3 +125,87 @@ allows.
   its Card in the same step, after its attendance ends; the agent's own Card
   then applies unchanged. Removing the Control Card from an agent that still
   attends is refused (`control_card_held_by_project`).
+
+## An agent comes back with a new Card
+
+An agent that already attends a project can come back with a **new Card**:
+for example, its machine's password store was reset and the credential of its
+old Card is gone, so the operator approved a new one. The agent keeps its
+place on the project: its membership, role and assignments stay. What changes
+is which Card the project's Control Card is attached to. The operator asked
+for this to be drawn here (5 November 2026): "draw and document this
+mechanism in board docs".
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor Operator
+    participant Relay as Agent's relay (its machine)
+    participant Board as Project Board
+    participant Hub as Connection Hub
+
+    Operator->>Hub: Approve the new Card X (device link and code)
+    Note over Relay: Picks up Card X on its next retry,<br/>or at once after a relay restart
+    Relay->>Board: worker.publish: "this agent, now with Card X"
+    Note over Board: The agent attends under an older Card Y.<br/>Y is pinned by the board's own records
+    Board->>Hub: Plan: attach agent Card X under the existing project Control
+    Hub-->>Board: Prepared: the current revisions of X and the Control are fenced
+    Note over Board: Commit: the worker's identity and binding<br/>move to X, together with the Card decision
+    Board->>Hub: Finish
+    Hub-->>Board: X's attachment published, fences cleared
+    Board-->>Relay: Publish complete: the worker activates, its channel stays open
+```
+
+In words:
+
+1. **The operator approves the new Card.** `pb worker authorize <profile> --device`
+   prints a link and a code; the operator opens the link on their own device,
+   checks it names that agent, and approves.
+2. **The relay picks up the new Card**, on its next scheduled retry, or at once
+   when it is restarted.
+3. **The relay says who it is now.** On connecting it calls `worker.publish`:
+   this agent, now with Card X.
+4. **The board decides, and moves the project to the new Card in one Card
+   transaction.**
+   - The board sees that the agent attends under an older Card Y. It proposes
+     the ordinary "attach agent" plan for X under the project's existing
+     Control Card.
+   - Connection Hub prepares it by fencing the current revisions of X and of
+     the Control Card, so neither can change underneath.
+   - Y is pinned by the board's own records of that agent (its registry entry,
+     binding, native identity and owner). Connection Hub neither reads nor
+     changes Y.
+   - The board commits: the worker's identity and binding move to X together
+     with the durable Card decision, or not at all.
+   - Connection Hub finishes: it publishes X's attachment and clears the fences.
+     Only when that publish has completed does the worker activate: its
+     channel, already open when it called `worker.publish`, stays open
+     instead of being dropped.
+5. **Then the project grants.** A new Card starts without the project grants;
+   a project admin presses Team, the agent, **Fit to role**.
+
+What stays and what does not: the agent keeps its attendance, role and
+assignments; they belong to the same worker. A revoked Y stays revoked and
+keeps its binding record. Even a Y that is still active no longer gives any
+attendance once the worker has moved to X. When the move is refused,
+`pb status` names Connection Hub's cause, and it does not suggest
+`authorize` again when the agent's current profile is in place and the refusal
+is not about its credential. That is the pb side of W1013 (App Ecosystem
+PR #936); it reaches a machine with the pb client release that includes it.
+
+**Before the W1013 board fix, step 4 failed.** A board without it made this
+attach as a direct write (`control_card_attach`), and with Card transactions
+on, Connection Hub refused it with `card_transactions_direct_write_refused`
+(HTTP 409). The board reported that as `work_project_control_connection_hub_refused`;
+the relay's channel, open since before `worker.publish`, was dropped about half
+a second later, and `pb status` kept suggesting `authorize`. Re-authorizing,
+restarting the relay and Fit to role did not help. The board fix (W1013)
+moves the attach into the Card transaction described in step 4; a
+board that runs it activates a replacement Card with no operator step beyond
+the approval. The `pb status` wording above is separate: it comes with the pb
+client release, so a machine on an older client can still suggest
+`authorize` after a refusal.
+
+**Removing and re-adding the agent is not a workaround.** Adding it again still
+targets the old Card, and unlinking ends its attendance and detaches its
+assignments.
