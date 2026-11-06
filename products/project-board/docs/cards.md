@@ -190,19 +190,21 @@ keeps its binding record. Even a Y that is still active no longer gives any
 attendance once the worker has moved to X. When the move is refused,
 `pb status` names Connection Hub's cause, and it does not suggest
 `authorize` again when the agent's current profile is in place and the refusal
-is not about its credential (the pb side of W1013, App Ecosystem PR #936, in
-review).
+is not about its credential. That is the pb side of W1013 (App Ecosystem
+PR #936); it reaches a machine with the pb client release that includes it.
 
-**Today step 4 fails (W1013).** On a build with Card transactions on, the board
-still makes this attach as a direct write (`control_card_attach`), and
-Connection Hub refuses it with `card_transactions_direct_write_refused`
-(HTTP 409). The board reports that as `work_project_control_connection_hub_refused`;
-the relay's channel, open since before `worker.publish`, is dropped about half
-a second later, and `pb status` keeps suggesting
-`authorize`. Re-authorizing, restarting the relay and Fit to role do not help.
-W1013 moves the attach into the Card transaction described in step 4, which is
-its design as implemented on its draft branch, not yet shipped; until it ships,
-an agent with a replacement Card cannot reach its project on such a build.
+**Before the W1013 board fix, step 4 failed.** A board without it made this
+attach as a direct write (`control_card_attach`), and with Card transactions
+on, Connection Hub refused it with `card_transactions_direct_write_refused`
+(HTTP 409). The board reported that as `work_project_control_connection_hub_refused`;
+the relay's channel, open since before `worker.publish`, was dropped about half
+a second later, and `pb status` kept suggesting `authorize`. Re-authorizing,
+restarting the relay and Fit to role did not help. The board fix (W1013)
+moves the attach into the Card transaction described in step 4; a
+board that runs it activates a replacement Card with no operator step beyond
+the approval. The `pb status` wording above is separate: it comes with the pb
+client release, so a machine on an older client can still suggest
+`authorize` after a refusal.
 
 **Removing and re-adding the agent is not a workaround.** Adding it again still
 targets the old Card, and unlinking ends its attendance and detaches its
