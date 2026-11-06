@@ -542,7 +542,7 @@ The relay service starts again by itself, but the password store is locked. Unti
 
 The board's Connect a machine dialog (Part 1) shows the same steps, and the last resort for a lost store password, with the lines to copy.
 
-**An agent that got a new Card** (after "I forgot the store (vault) password" below) starts without its project grants: after approving it, the operator presses Team, the agent, Fit to role. **Known open defect (W1012):** a replacement Card may still not activate: Connection Hub refuses its Card attach (`card_transactions_direct_write_refused`), which the board reports as `work_project_control_connection_hub_refused`. Fit to role does not clear that, and no operator action does on the current build: the fix is W1013. Report it to the coordinator.
+**An agent that got a new Card** (after "I forgot the store (vault) password" below) starts without its project grants: after approving it, the operator presses Team, the agent, Fit to role. **On a board older than the W1013 fix** (merged 6 Nov 2026), a replacement Card does not activate: Connection Hub refuses its Card attach (`card_transactions_direct_write_refused`), which the board reports as `work_project_control_connection_hub_refused`. Fit to role does not clear that, and no operator action does; the board needs the fix. Report it to the coordinator.
 
 ### I forgot the store (vault) password
 
@@ -557,7 +557,7 @@ The last resort, when the unlock fails because the store password is lost. Reset
    ```
 
 4. **Give each agent a new Card.** In each agent's session it runs plain `pb worker authorize <its profile> --device` (without `--replace-card`). The operator opens the link on their own device, checks the request names that agent, and approves (step 11).
-5. **Put each agent back on its project.** A new Card starts without the project grants: the operator checks the agent is still on the project's Team, then presses Team, the agent, Fit to role (step 12). Activation of the replacement Card is a known open defect (see "After the machine restarted" above).
+5. **Put each agent back on its project.** A new Card starts without the project grants: the operator checks the agent is still on the project's Team, then presses Team, the agent, Fit to role (step 12). On a board older than the W1013 fix, the replacement Card does not activate (see "After the machine restarted" above).
 
 This order ran on spark1 on 5 Nov 2026 (profile `problem-board-claude-557121e82850`) up to the new Card's approval; the revoke-then-`--replace-card` order did not. Whether the agent's channel activates after Fit to role is still being checked (W1012), so this section claims no more than that.
 
