@@ -11,6 +11,7 @@ production lock, cache and complete admission coverage.
 
 from contextlib import asynccontextmanager
 from dataclasses import replace
+import hashlib
 from unittest.mock import AsyncMock
 
 import pytest
@@ -329,6 +330,11 @@ async def test_renew_policy_refusal_still_commits_descriptor_withdrawal(tmp_path
         live = (await w.service._load_record_any_state(old.access_id, grantor_subject=OWNER))[0]
         assert live.access_id == old.access_id and live.expires_at > old.expires_at
         assert await _usable(w, live.access_token) is not None
+        binding = await w.handles.binding_identity(live.access_id)
+        assert binding["from_revision"] == live.card_revision
+        assert binding["from_expires_at"] == live.expires_at
+        assert binding["from_fingerprint"] == hashlib.sha256(live.access_token.encode()).hexdigest()
+        assert await _usable(w, old.access_token) is None
 
 
 @pytest.mark.asyncio

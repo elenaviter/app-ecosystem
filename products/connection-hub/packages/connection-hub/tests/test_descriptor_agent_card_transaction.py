@@ -132,6 +132,32 @@ async def test_classification_does_not_exempt_the_generic_direct_writer(tmp_path
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("control_renew", [False, True])
+async def test_group_renew_cannot_renew_control_or_bypass_resident_issuance(tmp_path, control_renew):
+    from service_foundation.coordination.durable_decision_log import DecisionRefused
+    from connection_hub.delegated_credentials.cards.card_group import group_member, hub_group_participant_input
+    from connection_hub.delegated_credentials.oauth_issuance import credential_issue_effect
+
+    _, _, _, resident, control, _, _ = await _world(tmp_path)
+    changed = replace(resident, card_revision=resident.card_revision + 1, expires_at=resident.expires_at + 60)
+    members, effects = [], []
+    reads = [{"subject_hash": subject_hash_for(OWNER), "access_id": control.access_id,
+              "revision": control.card_revision}]
+    if control_renew:
+        ceiling = replace(control, card_revision=control.card_revision + 1)
+        changed = replace(changed, control_card=replace(changed.control_card,
+                                                       control_revision=ceiling.card_revision))
+        members.append(group_member(original=control, candidate=ceiling, action="renew"))
+        effects = [credential_issue_effect(access_id=changed.access_id, slot="access",
+            expires_at=changed.expires_at, card_revision=changed.card_revision)]
+        reads = []
+    members.append(group_member(original=resident, candidate=changed, action="renew"))
+    with pytest.raises(DecisionRefused, match="card_group_renew_invalid"):
+        hub_group_participant_input(members=members, effects=effects, reads=reads,
+                                    actor_subject=OWNER, actor_kind="caller")
+
+
+@pytest.mark.asyncio
 async def test_control_moving_between_validation_and_prepare_aborts_owner_save(tmp_path, monkeypatch):
     service, store, decisions, resident, control, card_service, _ = await _world(tmp_path)
     write = service._coordinated_write

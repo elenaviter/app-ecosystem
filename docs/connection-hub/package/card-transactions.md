@@ -205,6 +205,9 @@ Card lease, rather than the shorter external OAuth delivery interval.
 An existing resident member uses `renew` at planning, policy and Hub STAGE;
 its Control member remains `update`. The generic action shape checks still
 pin identity and reject an expiry change presented as an ordinary update.
+Group `renew` requires a descriptor resident and its matching original-issuance
+credential effect. A Control member or an owner-edit group without that effect
+cannot use it.
 
 After COMMIT, the credential effect activates and installs that same original
 through resident custody. Only after installation does the following effect
@@ -226,8 +229,9 @@ standard grants still require the owner's delegability, independently of
 the Control ceiling. With no dedicated descriptor issuer registration, a fresh
 Control is issued locally under the group's absence fence; configured update/revoke issuer policies continue to
 govern changes to an existing Control.
-The fallback policy reads the durable current resident even when its lease
-has ended. It does not prepare a credential re-wrap for an ended candidate;
+Only this descriptor lifecycle's fallback policy reads the durable current
+resident when its lease has ended; other enlisted writers keep their existing
+serving read. It does not prepare a credential re-wrap for an ended candidate;
 the old expired metadata remains unusable, and later renewal uses the ordinary
 resident issuance path.
 

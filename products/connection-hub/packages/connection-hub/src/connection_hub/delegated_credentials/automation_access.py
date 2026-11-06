@@ -2524,7 +2524,7 @@ class AutomationAccessService:
 
     async def _enlisted_gate(
         self, authority: CardAuthority, *, expected_revision: int, caller_write: CallerWrite | None,
-        candidate: Mapping[str, Any] | None = None,
+        candidate: Mapping[str, Any] | None = None, include_expired: bool = False,
     ) -> tuple[Callable[[], Awaitable[None]] | None, Any]:
         """W580/B: the bound-Card gate for a writer that did not bring its own.
 
@@ -2538,9 +2538,9 @@ class AutomationAccessService:
         current = None
         if expected_revision > 0:
             persistence = self._cards()
-            # A policy question needs the current durable base, including an
-            # expired Card being narrowed or renewed; serving load omits it.
-            load = getattr(persistence, "load_current", None) or persistence.load
+            # Descriptor lifecycle alone includes an expired durable base for
+            # its independent Control narrowing. Other writers keep serving load.
+            load = persistence.load_current if include_expired else persistence.load
             loaded = await load(authority.access_id, subject_hash=_subject_key(authority.grantor_subject))
             current = loaded[0] if loaded is not None else None
         binding = binding_of(current) if current is not None else ("", "")

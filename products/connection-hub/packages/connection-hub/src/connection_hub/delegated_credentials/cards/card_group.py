@@ -180,6 +180,25 @@ def validate_group_candidate(value: Any, *, reads: Sequence[Mapping[str, Any]] =
         raise _refuse("card_group_too_large")
     for member in members:
         _validate_member(member)
+        if member["action"] == "renew":
+            from ..agent_capability_control import AGENT_DESCRIPTOR_ISSUER_KIND
+            from .identity import CARD_KIND_AGENT
+
+            candidate = CardAuthority.from_mapping(member["candidate"])
+            binding = candidate.control_card
+            # A group renewal is the descriptor resident's original-issuance
+            # action, never a way to renew a Control or an ordinary owner edit.
+            # The credential effect's PREPARE authenticates the stored plan and
+            # reservation; the ordinary action/identity checks still run at STAGE.
+            issued = [effect for effect in value["effects"]
+                if effect["kind"] == "credential_issue" and effect["key"] == "access"
+                and effect["payload"].get("access_id") == candidate.access_id
+                and effect["payload"].get("card_revision") == candidate.card_revision
+                and effect["payload"].get("expires_at") == candidate.expires_at]
+            if (candidate.card_kind != CARD_KIND_AGENT or candidate.source != "agent"
+                    or binding is None or binding.issuer_kind != AGENT_DESCRIPTOR_ISSUER_KIND
+                    or len(issued) != 1):
+                raise _refuse("card_group_renew_invalid")
     keys = [_member_key(member) for member in members]
     if len(set(keys)) != len(keys):
         raise _refuse("card_group_member_duplicate")

@@ -148,7 +148,7 @@ async def persist_descriptor_lifecycle(service: Any, user: Mapping[str, Any], *,
     outcome_known = True
     try:
         caller_gate, caller_request = await service._enlisted_gate(
-            candidate, expected_revision=before.card_revision, caller_write=caller)
+            candidate, expected_revision=before.card_revision, caller_write=caller, include_expired=True)
         issuer_gate = None
         if changed_control and original_control is not None:
             issuer_gate, issuer_request = await service._issuer_before_commit(
