@@ -17,6 +17,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tomllib
 from pathlib import Path
 
 import pytest
@@ -100,17 +101,22 @@ def test_the_sweep_moves_only_the_cli_floors_never_its_version_or_readme(tmp_pat
                       encoding="utf-8")
     _git(root, "add", "-A")
     _git(root, "commit", "-q", "-m", "readme")
-    cli_version = release_pb.read_cli_version(root)
+    cli_pyproject = "products/connection-hub/packages/connection-hub-cli/pyproject.toml"
+
+    def cli_metadata() -> dict:
+        return tomllib.loads((root / cli_pyproject).read_text(encoding="utf-8"))["project"]
+
+    cli_version = cli_metadata()["version"]
     new = "2099.01.02.0304"
 
     changed = release_pb.apply_version(root, current, new, "What changed.")
 
     names = {str(path.relative_to(root)) for path in changed}
-    assert release_pb.CLI_PYPROJECT in names
+    assert readme.read_text(encoding="utf-8").count(current) == 1, "the sweep rewrote the published CLI's README"
     assert "products/connection-hub/packages/connection-hub-cli/README.md" not in names
-    assert readme.read_text(encoding="utf-8").count(current) == 1
-    assert release_pb.read_cli_version(root) == cli_version
-    assert f"connection-hub[client]>={new}" in (root / release_pb.CLI_PYPROJECT).read_text(encoding="utf-8")
+    assert cli_pyproject in names
+    assert cli_metadata()["version"] == cli_version
+    assert f"connection-hub[client]>={new}" in (root / cli_pyproject).read_text(encoding="utf-8")
     product = yaml.safe_load((root / "products/connection-hub/release.yaml").read_text(encoding="utf-8"))
     assert product["components"]["cli_package"]["version"] == cli_version
 
@@ -245,7 +251,7 @@ def test_the_publish_wait_refuses_a_success_that_ends_after_its_deadline() -> No
 
     clock = _Clock()
 
-    def slow(target: str, timeout: float) -> bool:
+    def slow(target: str, timeout: float | None = None) -> bool:  # accepts the old one-argument probe too
         clock.now += 0.4
         return True
 
