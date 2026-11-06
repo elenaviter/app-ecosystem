@@ -58,32 +58,46 @@ def install_target(package_path: str, tested: bool) -> str:
     return f"{package_path}[test]" if tested else package_path
 
 
-def resolves(target: str) -> bool:
-    """Whether `pip install -e <target>` would succeed now, without installing it."""
+PROBE_LIMIT = 5 * 60
 
-    return subprocess.run(
-        [sys.executable, "-m", "pip", "install", "--dry-run", "--ignore-installed",
-         "--no-cache-dir", "--quiet", "-e", target],
-        capture_output=True,
-    ).returncode == 0
+
+def resolves(target: str, timeout: float) -> bool:
+    """Whether `pip install -e <target>` would succeed now, without installing it.
+
+    A resolver or build backend that does not finish within `timeout` seconds
+    is a failed check, never a success.
+    """
+
+    try:
+        return subprocess.run(
+            [sys.executable, "-m", "pip", "install", "--dry-run", "--ignore-installed",
+             "--no-cache-dir", "--quiet", "-e", target],
+            capture_output=True,
+            timeout=timeout,
+        ).returncode == 0
+    except subprocess.TimeoutExpired:
+        return False
 
 
 def wait(
     target: str,
     names: list[str],
     *,
-    probe: Callable[[str], bool] = resolves,
+    probe: Callable[[str, float], bool] = resolves,
     needed: int = 3,
     interval: float = 20.0,
     limit: float = 20 * 60,
+    probe_limit: float = PROBE_LIMIT,
     clock: Callable[[], float] = time.monotonic,
     sleep: Callable[[float], None] = time.sleep,
     say: Callable[[str], None] = print,
 ) -> int:
     """Return the number of probes once `needed` consecutive ones resolved.
 
-    Raises SystemExit when the install has not resolved `needed` times in a
-    row within `limit` seconds.
+    Everything happens inside `limit` seconds: each probe gets at most the
+    budget that remains (and at most `probe_limit`), a success that ends after
+    the deadline does not count, and no sleep runs past it. Raises SystemExit
+    when the install has not resolved `needed` times in a row in time.
     """
 
     if not names:
@@ -92,20 +106,24 @@ def wait(
     deadline = clock() + limit
     streak = probes = 0
     while True:
+        remaining = deadline - clock()
+        if remaining <= 0:
+            raise SystemExit(
+                f"the install of {target} did not resolve {', '.join(names)} "
+                f"{needed} times in a row within {int(limit // 60)} minutes"
+            )
         probes += 1
-        if probe(target):
+        resolved = probe(target, min(remaining, probe_limit))
+        if clock() > deadline:
+            continue  # a check that ended after the deadline proves nothing; the top of the loop fails
+        if resolved:
             streak += 1
             if streak >= needed:
                 say(f"the install of {target} resolves {', '.join(names)} ({streak} consecutive checks)")
                 return probes
         else:
             streak = 0
-        if clock() > deadline:
-            raise SystemExit(
-                f"the install of {target} did not resolve {', '.join(names)} "
-                f"{needed} times in a row within {int(limit // 60)} minutes"
-            )
-        sleep(interval)
+        sleep(max(0.0, min(interval, deadline - clock())))
 
 
 def main(argv: list[str] | None = None) -> int:

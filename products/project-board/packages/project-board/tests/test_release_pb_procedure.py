@@ -219,7 +219,7 @@ def test_the_publish_wait_needs_consecutive_resolutions_of_the_install() -> None
     probed = []
     clock = _Clock()
 
-    def probe(target: str) -> bool:
+    def probe(target: str, timeout: float) -> bool:
         probed.append(target)
         return next(answers)
 
@@ -235,9 +235,58 @@ def test_the_publish_wait_fails_the_step_when_the_install_never_resolves() -> No
 
     clock = _Clock()
     with pytest.raises(SystemExit, match="did not resolve connection-hub 3 times in a row within 20 minutes"):
-        publish_wait.wait("pkg[test]", ["connection-hub"], probe=lambda _: False, clock=clock,
+        publish_wait.wait("pkg[test]", ["connection-hub"], probe=lambda _target, _timeout: False, clock=clock,
                           sleep=clock.sleep, say=lambda _: None)
-    assert clock.now > 20 * 60
+    assert clock.now == 20 * 60  # it slept up to the deadline, not past it
+
+
+def test_the_publish_wait_refuses_a_success_that_ends_after_its_deadline() -> None:
+    """Review of #941 at 924e6175: a third success ending at 1.2 s of a 1 s budget was accepted."""
+
+    clock = _Clock()
+
+    def slow(target: str, timeout: float) -> bool:
+        clock.now += 0.4
+        return True
+
+    with pytest.raises(SystemExit, match="did not resolve"):
+        publish_wait.wait("pkg", ["connection-hub"], probe=slow, needed=3, interval=0, limit=1,
+                          clock=clock, sleep=clock.sleep, say=lambda _: None)
+
+
+def test_each_probe_and_sleep_stays_inside_the_remaining_budget() -> None:
+    clock = _Clock()
+    timeouts, sleeps = [], []
+
+    def probe(target: str, timeout: float) -> bool:
+        timeouts.append(timeout)
+        clock.now += 7
+        return False
+
+    def sleep(seconds: float) -> None:
+        sleeps.append(seconds)
+        clock.sleep(seconds)
+
+    with pytest.raises(SystemExit):
+        publish_wait.wait("pkg", ["connection-hub"], probe=probe, interval=20, limit=60, probe_limit=30,
+                          clock=clock, sleep=sleep, say=lambda _: None)
+    assert timeouts[0] == 30  # capped by probe_limit
+    assert all(0 < value <= 30 for value in timeouts)
+    assert timeouts[-1] < 30  # the last probe gets only what is left
+    assert all(seconds >= 0 for seconds in sleeps)
+    assert clock.now <= 60 + 7  # nothing starts after the deadline
+
+
+def test_a_pip_child_that_times_out_is_a_failed_check(monkeypatch) -> None:
+    seen = {}
+
+    def hung(args, **kwargs):
+        seen.update(kwargs)
+        raise subprocess.TimeoutExpired(args, kwargs["timeout"])
+
+    monkeypatch.setattr(publish_wait.subprocess, "run", hung)
+    assert publish_wait.resolves("pkg[test]", 12.5) is False
+    assert seen["timeout"] == 12.5
 
 
 def test_the_publish_wait_names_the_set_floors_and_installs_what_the_tests_install() -> None:
@@ -249,7 +298,7 @@ def test_the_publish_wait_names_the_set_floors_and_installs_what_the_tests_insta
     assert publish_wait.waiting_for(project_board / "pyproject.toml", "2000.01.01.0100") == []
     assert publish_wait.install_target("p", True) == "p[test]"
     assert publish_wait.install_target("p", False) == "p"
-    assert publish_wait.wait("p", [], probe=lambda _: pytest.fail("no probe"), say=lambda _: None) == 0
+    assert publish_wait.wait("p", [], probe=lambda _target, _timeout: pytest.fail("no probe"), say=lambda _: None) == 0
 
 
 # PENDING (W1016): the board's GitHub App cannot push workflow files, so the
