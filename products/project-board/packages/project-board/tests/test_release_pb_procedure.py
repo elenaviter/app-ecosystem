@@ -13,6 +13,7 @@ recurring silently.
 from __future__ import annotations
 
 import importlib.util
+import re
 import shutil
 import subprocess
 import sys
@@ -88,6 +89,52 @@ def test_prepare_sets_the_new_version_everywhere_and_leaves_no_old_one(tmp_path:
     assert product["components"]["python_package"]["version"] == new
 
 
+def test_the_sweep_moves_only_the_cli_floors_never_its_version_or_readme(tmp_path: Path) -> None:
+    """W1016: the CLI is versioned on its own; #940 had to restore its README floor by hand."""
+
+    root = _copy_of_the_set(tmp_path)
+    current = release_pb.read_version(root)
+    cli = root / "products/connection-hub/packages/connection-hub-cli"
+    readme = cli / "README.md"
+    readme.write_text(f"The published CLI installs the App Ecosystem packages at {current} or later.\n",
+                      encoding="utf-8")
+    _git(root, "add", "-A")
+    _git(root, "commit", "-q", "-m", "readme")
+    cli_version = release_pb.read_cli_version(root)
+    new = "2099.01.02.0304"
+
+    changed = release_pb.apply_version(root, current, new, "What changed.")
+
+    names = {str(path.relative_to(root)) for path in changed}
+    assert release_pb.CLI_PYPROJECT in names
+    assert "products/connection-hub/packages/connection-hub-cli/README.md" not in names
+    assert readme.read_text(encoding="utf-8").count(current) == 1
+    assert release_pb.read_cli_version(root) == cli_version
+    assert f"connection-hub[client]>={new}" in (root / release_pb.CLI_PYPROJECT).read_text(encoding="utf-8")
+    product = yaml.safe_load((root / "products/connection-hub/release.yaml").read_text(encoding="utf-8"))
+    assert product["components"]["cli_package"]["version"] == cli_version
+
+
+def test_the_sweep_refuses_to_move_the_cli_version(tmp_path: Path) -> None:
+    root = _copy_of_the_set(tmp_path)
+    current = release_pb.read_version(root)
+    pyproject = root / release_pb.CLI_PYPROJECT
+    text = pyproject.read_text(encoding="utf-8")
+    pyproject.write_text(text.replace(f'version = "{release_pb.read_cli_version(root)}"', f'version = "{current}"'),
+                         encoding="utf-8")
+    with pytest.raises(release_pb.ReleaseError, match="a CLI release sets it"):
+        release_pb.apply_version(root, current, "2099.01.02.0304", "What changed.")
+
+
+def test_the_release_opening_says_the_cli_is_not_released() -> None:
+    line = release_pb.cli_boundary("2099.01.02.0304", "2099.01.01.0100")
+    assert "not released here" in line and "2099.01.01.0100" in line and ">=2099.01.02.0304" in line
+    assert "carries" not in line
+    assert "carries the version" not in SCRIPT.read_text(encoding="utf-8")
+    guide = (REPOSITORY_ROOT / "docs" / "releases.md").read_text(encoding="utf-8")
+    assert "carries the\nsame version" not in guide and "is not part\nof the set" in guide
+
+
 # The versions below are fixed and never the set's current one: `prepare`
 # rewrites every file of the set that names the current version.
 
@@ -142,6 +189,84 @@ def test_the_workflow_publishes_the_set_in_order_and_stops_at_a_failure() -> Non
     ).replace("inputs.package == 'pb-set'", ""), "steps read the matrix package"
     for package in release_pb.SET:
         assert f'"{package.path}"' in text and f'"{package.import_name}"' in text, package.name
+
+
+def _publish_wait():
+    spec = importlib.util.spec_from_file_location("publish_wait", REPOSITORY_ROOT / "scripts" / "publish_wait.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+publish_wait = _publish_wait()
+
+
+class _Clock:
+    def __init__(self) -> None:
+        self.now = 0.0
+
+    def __call__(self) -> float:
+        return self.now
+
+    def sleep(self, seconds: float) -> None:
+        self.now += seconds
+
+
+def test_the_publish_wait_needs_consecutive_resolutions_of_the_install() -> None:
+    """W1016, run 42207266620: one success then a stale edge must not reach the tests."""
+
+    answers = iter([False, True, False, True, True, True])
+    probed = []
+    clock = _Clock()
+
+    def probe(target: str) -> bool:
+        probed.append(target)
+        return next(answers)
+
+    count = publish_wait.wait("pkg[test]", ["connection-hub"], probe=probe, clock=clock, sleep=clock.sleep,
+                              say=lambda _: None)
+
+    assert count == 6
+    assert probed == ["pkg[test]"] * 6
+
+
+def test_the_publish_wait_fails_the_step_when_the_install_never_resolves() -> None:
+    """The index-lag case: the file is on the index, the install does not resolve, Test package is not reached."""
+
+    clock = _Clock()
+    with pytest.raises(SystemExit, match="did not resolve connection-hub 3 times in a row within 20 minutes"):
+        publish_wait.wait("pkg[test]", ["connection-hub"], probe=lambda _: False, clock=clock,
+                          sleep=clock.sleep, say=lambda _: None)
+    assert clock.now > 20 * 60
+
+
+def test_the_publish_wait_names_the_set_floors_and_installs_what_the_tests_install() -> None:
+    project_board = REPOSITORY_ROOT / "products/project-board/packages/project-board"
+    version = release_pb.read_version(REPOSITORY_ROOT)
+    assert {"app-foundation", "connection-hub", "service-foundation"} <= set(
+        publish_wait.waiting_for(project_board / "pyproject.toml", version)
+    )
+    assert publish_wait.waiting_for(project_board / "pyproject.toml", "2000.01.01.0100") == []
+    assert publish_wait.install_target("p", True) == "p[test]"
+    assert publish_wait.install_target("p", False) == "p"
+    assert publish_wait.wait("p", [], probe=lambda _: pytest.fail("no probe"), say=lambda _: None) == 0
+
+
+# PENDING (W1016): the board's GitHub App cannot push workflow files, so the
+# workflow change waits on the operator's choice (grant the permission, or
+# apply the patch herself). strict=True turns this into a failure the moment
+# the workflow calls the script, so the marker cannot outlive the change.
+@pytest.mark.xfail(strict=True, reason="PENDING W1016: workflow change awaits the operator (workflows permission)")
+def test_the_publish_workflow_waits_with_the_install_the_tests_run() -> None:
+    workflow = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
+    steps = {step.get("name"): step for step in workflow["jobs"]["build-and-publish"]["steps"]}
+    wait_run = steps["Wait for first-party dependencies of this version on the index"]["run"]
+    test_run = steps["Test package"]["run"]
+    assert "python scripts/publish_wait.py" in wait_run and "pip download" not in wait_run
+    # The wait resolves the [test] extra exactly for the packages whose tests install it.
+    condition = re.compile(r"^\s*if (.+); then$", re.M)
+    assert condition.search(wait_run).group(1) == condition.search(test_run).group(1)
+    assert 'tested="--tested"' in wait_run and "$tested" in wait_run
 
 
 def test_the_release_guide_leads_with_the_procedure() -> None:
