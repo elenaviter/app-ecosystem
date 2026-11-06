@@ -664,4 +664,7 @@ The request requires an active worker linked to the selected project. The
 command exists remotely only in an owner-scoped five-minute view. Closing the
 view erases it immediately; expiry performs the same erasure. If the receiving
 host disables `allow_session_resume_view`, the view reports that refusal and
-does not expose any path.
+does not expose any path. The same setting stops the relay from sending the
+inputs of its resume line with `worker.publish` (W1014): it sends the refusal
+code instead, which replaces any details an earlier, allowed publish left on
+the board, so the board shows no last known line for this host either.
