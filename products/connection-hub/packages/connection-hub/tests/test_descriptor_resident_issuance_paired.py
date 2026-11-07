@@ -41,7 +41,7 @@ EXPIRY_TEST_LEASE_SECONDS = 30
 
 
 @asynccontextmanager
-async def _paired(tmp_path):
+async def _paired(tmp_path, *, postgres_clock: int | None = None):
     from kdcube_ai_app.auth.bundle.session_store import PostgresBundleSessionStore
     from kdcube_ai_app.infra.secrets.manager import SecretsFileSecretsManager, SecretsManagerConfig
     from kdcube_ai_app.infra.secrets.ephemeral import KDCubeEphemeralSecretStore
@@ -53,7 +53,7 @@ async def _paired(tmp_path):
     )
     from kdcube_ai_app.auth.tests.test_bound_session_issuer import authority
 
-    async with _world(tmp_path / "cards", postgres_handles=True) as w:
+    async with _world(tmp_path / "cards", postgres_handles=True, postgres_clock=postgres_clock) as w:
         w.subject_hash = subject_hash_for(OWNER)
         w.sessions = PostgresBundleSessionStore(pg_pool=w.pool, tenant=w.authority.tenant, project=w.authority.project)
         await w.sessions.ensure_schema()
@@ -281,18 +281,26 @@ async def test_catalog_move_after_inactive_preparation_aborts_without_publishing
 @pytest.mark.asyncio
 async def test_pg_expiry_before_stage_records_abort_then_retires_inactive_original_and_retries(tmp_path):
     from kdcube_ai_app.auth.bundle.session_issuance import SessionIssuanceRefused
+    from service_foundation.coordination.durable_decision_log import DecisionRefused
 
-    async with _paired(tmp_path) as w:
-        coordinator, intents, decisions, _ = w.service._card_coordinator
-        w.service.bind_card_coordinator(coordinator, intents=intents, decisions=decisions, intent_ttl_seconds=1)
+    # Freeze PostgreSQL's clock for every store, then advance to the exact
+    # decision deadline. Preparation and retries keep the normal 60s intent
+    # lease regardless of runner speed or the wall clock's fractional second.
+    async with _paired(tmp_path, postgres_clock=int(time.time())) as w:
+        coordinator, _, decisions, _ = w.service._card_coordinator
         request = _request(w)
         plan = await begin_descriptor_resident_issuance(w.service, USER, **request)
         await w.provider.prepare(plan=plan)  # crash before Hub reserve or STAGE
-        assert not (await decisions.read(plan.transaction_id)).terminal
+        before = await decisions.read(plan.transaction_id)
+        assert not before.terminal
         async with w.pool.acquire() as connection:
-            await connection.execute("SELECT pg_sleep(1.1)")
+            await connection.execute(f"UPDATE {w.schema}.test_clock SET epoch=$1", before.intent.expires_at - 1)
+        with pytest.raises(DecisionRefused, match="^not_expired$"):
+            await decisions.abort_expired(plan.transaction_id)
+        async with w.pool.acquire() as connection:
+            await connection.execute(f"UPDATE {w.schema}.test_clock SET epoch=$1", before.intent.expires_at)
         row = await decisions.abort_expired(plan.transaction_id)
-        assert row.state == "aborted"
+        assert row.state == "aborted" and row.decided_at == before.intent.expires_at
         await coordinator.finish(plan.transaction_id)
         assert (await recover_resident_originals(w.service))["retired"] == 1
         assert (await recover_resident_originals(w.service))["retired"] == 0

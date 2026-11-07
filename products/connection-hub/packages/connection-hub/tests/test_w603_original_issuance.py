@@ -52,7 +52,8 @@ SCOPES = ["memories:read"]
 
 
 @asynccontextmanager
-async def _world(tmp_path, *, postgres_handles: bool = False, with_policies: bool = False):
+async def _world(tmp_path, *, postgres_handles: bool = False, with_policies: bool = False,
+                 postgres_clock: int | None = None):
     dsn = os.environ.get("CONNECTION_HUB_TEST_POSTGRES_DSN")
     if not dsn or not os.environ.get("REDIS_URL"):
         pytest.skip("CONNECTION_HUB_TEST_POSTGRES_DSN and REDIS_URL are required")
@@ -60,12 +61,26 @@ async def _world(tmp_path, *, postgres_handles: bool = False, with_policies: boo
     import redis.asyncio as redis_asyncio
     from service_foundation.coordination.durable_decision_log import Coordinator, PostgresDecisionStore
 
-    redis_client = redis_asyncio.from_url(os.environ["REDIS_URL"])
-    pool = await asyncpg.create_pool(dsn, min_size=1, max_size=6)
     namespace = uuid.uuid4().hex[:10]
     schema = f"hub_w603_{namespace}"
+
+    async def setup(connection):
+        if postgres_clock is not None:
+            # Explicit pg_catalog ordering lets this isolated schema supply
+            # clock_timestamp() to the real SQL, on every pooled connection.
+            await connection.execute(f"SET search_path TO {schema}, pg_catalog")
+
+    redis_client = redis_asyncio.from_url(os.environ["REDIS_URL"])
+    pool = await asyncpg.create_pool(dsn, min_size=1, max_size=6, setup=setup)
     async with pool.acquire() as connection:
         await connection.execute(f"CREATE SCHEMA {schema}")
+        if postgres_clock is not None:
+            await connection.execute(f"CREATE TABLE {schema}.test_clock (epoch BIGINT NOT NULL)")
+            await connection.execute(f"INSERT INTO {schema}.test_clock VALUES ($1)", postgres_clock)
+            await connection.execute(f"""CREATE FUNCTION {schema}.clock_timestamp()
+                RETURNS TIMESTAMPTZ LANGUAGE SQL VOLATILE AS $$
+                    SELECT to_timestamp(epoch) FROM {schema}.test_clock
+                $$""")
     decisions = PostgresDecisionStore(pool, schema=schema, namespace="connection-hub-w603")
     await decisions.ensure_schema()
     authority = PostgresOAuthAuthorityStore(pg_pool=pool, tenant=f"t-{namespace}", project="w603")
