@@ -3,9 +3,13 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 
 import {
+  accountSatisfying,
   agentCardConsentFromParams,
   agentCardResolutionMessage,
   consentProviderFor,
+  consentRequirements,
+  controlUnavailable,
+  newRequestedClaims,
   proposeConsentAccount,
   requestedOperationInControl,
   resolveAgentCard,
@@ -36,40 +40,69 @@ test('only an explicit agent_card_consent marker selects Card consent review', (
   assert.equal(request({ agent_card_consent: '1', agent_client_id: CLIENT }), null, 'the resource is required')
 })
 
-test('the Card is resolved from the viewer\'s own Cards; a named access_id must be that agent\'s', () => {
+test('the Card is the viewer\'s single active Card for the agent; a named access_id must be that Card', () => {
   const card = { access_id: 'agent-1', client_id: CLIENT, state: 'active' }
   const other = { access_id: 'agent-2', client_id: 'kdcube-agent:other:main', state: 'active' }
   const base = request({ agent_card_consent: '1', agent_client_id: CLIENT, resource: NAMED })
   assert.deepEqual(resolveAgentCard([card, other], base, true), { state: 'loading' })
   assert.deepEqual(resolveAgentCard([card, other], base, false), { state: 'resolved', card })
   assert.deepEqual(resolveAgentCard([other], base, false), { state: 'refused', reason: 'agent_card_not_found' })
-  assert.deepEqual(
-    resolveAgentCard([card, { ...card, access_id: 'agent-3' }], base, false),
-    { state: 'refused', reason: 'agent_card_ambiguous' },
-    'two Cards for one agent are never guessed between',
-  )
+  assert.deepEqual(resolveAgentCard([card, { ...card, access_id: 'agent-3' }], base, false), { state: 'refused', reason: 'agent_card_ambiguous' })
   assert.deepEqual(resolveAgentCard([{ ...card, state: 'revoked' }], base, false), { state: 'refused', reason: 'agent_card_not_found' })
-  const named = { ...base, accessId: 'agent-2' }
-  assert.deepEqual(resolveAgentCard([card, other], named, false), { state: 'refused', reason: 'agent_card_mismatch' })
+  assert.deepEqual(resolveAgentCard([card, other], { ...base, accessId: 'agent-2' }, false), { state: 'refused', reason: 'agent_card_mismatch' })
   assert.deepEqual(resolveAgentCard([card, other], { ...base, accessId: 'agent-1' }, false), { state: 'resolved', card })
+  // An inactive named record is never resolved through its id, even when it is the agent's.
+  const old = { ...card, access_id: 'agent-old', state: 'revoked' }
+  assert.deepEqual(resolveAgentCard([old, card], { ...base, accessId: 'agent-old' }, false), { state: 'refused', reason: 'agent_card_mismatch' })
+  assert.deepEqual(resolveAgentCard([old], { ...base, accessId: 'agent-old' }, false), { state: 'refused', reason: 'agent_card_not_found' })
+  // A named id does not bypass two active Cards for the same agent.
+  assert.deepEqual(resolveAgentCard([card, { ...card, access_id: 'agent-3' }], { ...base, accessId: 'agent-1' }, false), { state: 'refused', reason: 'agent_card_ambiguous' })
   assert.match(agentCardResolutionMessage('agent_card_mismatch', CLIENT), /does not belong to agent/)
   assert.match(agentCardResolutionMessage('agent_card_ambiguous', CLIENT), /more than one active Card/)
 })
 
-test('the proposed account: the named capable one, else the sole capable one, else the owner chooses', () => {
+test('the proposed account: the named one only if capable, else the sole capable one, else the owner chooses', () => {
   const google1 = { account_id: 'g1', provider_id: 'google', claims: ['slides:read', 'slides:write'] }
   const google2 = { account_id: 'g2', provider_id: 'google', claims: ['slides:read'] }
   const readOnly = { account_id: 'g3', provider_id: 'google', claims: ['drive:read'] }
   const slack = { account_id: 's1', provider_id: 'slack', claims: ['slides:read'] }
-  assert.deepEqual(proposeConsentAccount([google1, readOnly, slack], 'google', 'slides:read'), { kind: 'sole', accountId: 'g1' })
-  assert.deepEqual(proposeConsentAccount([google1, google2], 'google', 'slides:read'), { kind: 'choose', candidates: ['g1', 'g2'] })
-  assert.deepEqual(proposeConsentAccount([google1, google2], 'google', 'slides:read', 'g2'), { kind: 'named', accountId: 'g2' })
+  const need = (claims, accountId) => ({ providerId: 'google', claims, accountId })
+  assert.deepEqual(proposeConsentAccount([google1, readOnly, slack], need(['slides:read'])), { kind: 'sole', accountId: 'g1' })
+  assert.deepEqual(proposeConsentAccount([google1, google2], need(['slides:read'])), { kind: 'choose', candidates: ['g1', 'g2'] })
+  assert.deepEqual(proposeConsentAccount([google1, google2], need(['slides:read'], 'g2')), { kind: 'named', accountId: 'g2' })
+  // A named account that is absent or cannot do it is never answered by another account.
+  assert.deepEqual(proposeConsentAccount([google1, readOnly], need(['slides:read'], 'g3')), { kind: 'named_unavailable', accountId: 'g3' })
+  assert.deepEqual(proposeConsentAccount([google1], need(['slides:read'], 'gone')), { kind: 'named_unavailable', accountId: 'gone' })
+  assert.deepEqual(proposeConsentAccount([readOnly], need(['slides:read'])), { kind: 'none' })
+  // A two-claim requirement needs one account with both.
+  assert.deepEqual(proposeConsentAccount([google1, google2], need(['slides:read', 'slides:write'])), { kind: 'sole', accountId: 'g1' })
+  // Satisfied already: the named account only, when named.
+  const held = { google: { g1: ['slides:read'], g2: ['slides:read'] } }
+  assert.equal(accountSatisfying(held, need(['slides:read'])), 'g1')
+  assert.equal(accountSatisfying(held, need(['slides:read'], 'g2')), 'g2')
+  assert.equal(accountSatisfying(held, need(['slides:read'], 'g3')), '')
+  assert.equal(accountSatisfying(held, need(['slides:read', 'slides:write'])), '')
+})
+
+test('the requirements: the explicit account demand, or every requirement of the operation with all its claims', () => {
+  const accounts = [{ account_id: 'g1', provider_id: 'google', claims: ['sheets:read', 'sheets:write'] }]
+  const accountOnly = request({ agent_card_consent: '1', agent_client_id: CLIENT, resource: NAMED, account_claim: 'sheets:read', account_provider_id: 'google', account_id: 'g1' })
+  assert.deepEqual(consentRequirements(accountOnly, [], accounts), [{ providerId: 'google', claims: ['sheets:read'], accountId: 'g1' }])
+  const op = request({ agent_card_consent: '1', agent_client_id: CLIENT, resource: NAMED, namespace: 'sheets', operation: 'values.update' })
   assert.deepEqual(
-    proposeConsentAccount([google1, readOnly], 'google', 'slides:read', 'g3'),
-    { kind: 'sole', accountId: 'g1' },
-    'a named account that cannot do the claim is not proposed',
+    consentRequirements(op, [{ providerId: 'google', claims: ['sheets:read', 'sheets:write'] }, { providerId: 'slack', claims: ['chat:write'] }], accounts),
+    [{ providerId: 'google', claims: ['sheets:read', 'sheets:write'] }, { providerId: 'slack', claims: ['chat:write'] }],
   )
-  assert.deepEqual(proposeConsentAccount([readOnly], 'google', 'slides:read'), { kind: 'none' })
+})
+
+test('a claims-only request adds its new door claims; a fail-closed Control blocks approval', () => {
+  assert.deepEqual(newRequestedClaims(['named_services:use'], ['memories:read', 'named_services:use']), ['memories:read'])
+  assert.deepEqual(newRequestedClaims(['memories:read'], ['memories:read']), [])
+  assert.equal(controlUnavailable(undefined), false)
+  assert.equal(controlUnavailable({ state: 'not_controlled' }), false)
+  assert.equal(controlUnavailable({ state: 'active' }), false)
+  assert.equal(controlUnavailable({ state: 'active', fail_closed: true }), true)
+  assert.equal(controlUnavailable({ state: 'unavailable' }), true)
 })
 
 test('the provider comes from the capability requirement, else from the only provider holding the claim', () => {
@@ -103,6 +136,10 @@ test('the Control ceiling for one resource: none bound, fail closed, a list, or 
   assert.equal(controlNamedOperations(undefined, NAMED), null)
   assert.equal(controlNamedOperations({ state: 'not_controlled' }, NAMED), null)
   assert.deepEqual(controlNamedOperations({ state: 'unavailable', fail_closed: true }, NAMED), {}, 'a Control that cannot be read offers nothing')
+  assert.deepEqual(
+    controlNamedOperations({ state: 'active', fail_closed: true, control_authority: { named_service_operations: { [NAMED]: { slides: ['object.list'] } } } }, NAMED),
+    {}, 'an active but fail-closed Control offers nothing',
+  )
   const active = { state: 'active', control_authority: { named_service_operations: { [NAMED]: { slides: ['provider.about', 'object.list'] } } } }
   assert.deepEqual(controlNamedOperations(active, NAMED), { slides: ['provider.about', 'object.list'] })
   assert.equal(operationInControl(controlNamedOperations(active, NAMED), 'slides', 'provider.capabilities'), false)

@@ -102,16 +102,16 @@ export function resolveAgentCard<T extends { access_id: string; client_id?: stri
   loading: boolean,
 ): AgentCardResolution<T> {
   if (loading) return { state: 'loading' };
+  // The owner's single active Card for this agent first; a supplied access_id
+  // only has to be that Card. An inactive named record or one of several active
+  // Cards is never picked through the id.
   const cards = items.filter((item) => (item.client_id || '') === request.clientId
     && (item.state || 'active') === 'active');
-  if (request.accessId) {
-    const named = items.find((item) => item.access_id === request.accessId);
-    if (!named) return { state: 'refused', reason: 'agent_card_not_found' };
-    if ((named.client_id || '') !== request.clientId) return { state: 'refused', reason: 'agent_card_mismatch' };
-    return { state: 'resolved', card: named };
-  }
   if (!cards.length) return { state: 'refused', reason: 'agent_card_not_found' };
   if (cards.length > 1) return { state: 'refused', reason: 'agent_card_ambiguous' };
+  if (request.accessId && request.accessId !== cards[0].access_id) {
+    return { state: 'refused', reason: 'agent_card_mismatch' };
+  }
   return { state: 'resolved', card: cards[0] };
 }
 
@@ -135,27 +135,71 @@ export interface ConsentAccount {
 
 export type AccountProposal =
   | { kind: 'named'; accountId: string }
+  | { kind: 'named_unavailable'; accountId: string }
   | { kind: 'sole'; accountId: string }
   | { kind: 'choose'; candidates: string[] }
   | { kind: 'none' };
 
-/** Which account the consent proposes for `claim` on `providerId`: the one the
- *  link names when it can do it, else the only one that can; several capable
- *  accounts are the owner's explicit choice, so none is proposed. */
+/** One account requirement of the request: an account of `providerId` that
+ *  holds every claim. `accountId` is set when the request names the exact
+ *  account; then only that account can satisfy it. */
+export interface ConsentRequirement {
+  providerId: string;
+  claims: string[];
+  accountId?: string;
+}
+
+export function capableAccounts(accounts: readonly ConsentAccount[], requirement: ConsentRequirement): ConsentAccount[] {
+  return accounts.filter((account) => account.provider_id === requirement.providerId
+    && requirement.claims.every((claim) => (account.claims || []).includes(claim)));
+}
+
+/** Which account the consent proposes for one requirement. A named account is
+ *  proposed only if it can do every claim; otherwise the request stays
+ *  unsatisfiable here (the owner connects or upgrades that account), never
+ *  answered by another account. Unnamed: the only capable account, or the
+ *  owner's explicit choice among several. */
 export function proposeConsentAccount(
   accounts: readonly ConsentAccount[],
-  providerId: string,
-  claim: string,
-  namedAccountId?: string,
+  requirement: ConsentRequirement,
 ): AccountProposal {
-  const capable = accounts.filter((account) => account.provider_id === providerId
-    && (account.claims || []).includes(claim));
-  if (namedAccountId && capable.some((account) => account.account_id === namedAccountId)) {
-    return { kind: 'named', accountId: namedAccountId };
+  const capable = capableAccounts(accounts, requirement);
+  if (requirement.accountId) {
+    return capable.some((account) => account.account_id === requirement.accountId)
+      ? { kind: 'named', accountId: requirement.accountId }
+      : { kind: 'named_unavailable', accountId: requirement.accountId };
   }
   if (capable.length === 1) return { kind: 'sole', accountId: capable[0].account_id };
   if (capable.length > 1) return { kind: 'choose', candidates: capable.map((account) => account.account_id) };
   return { kind: 'none' };
+}
+
+/** The account in `scope` that already satisfies the requirement (the named
+ *  one only, when it is named), or '' when none does. */
+export function accountSatisfying(
+  scope: Record<string, Record<string, string[]>>,
+  requirement: ConsentRequirement,
+): string {
+  const held = scope[requirement.providerId] || {};
+  const ids = requirement.accountId ? [requirement.accountId] : Object.keys(held);
+  return ids.find((accountId) => requirement.claims.every((claim) => (held[accountId] || []).includes(claim))) || '';
+}
+
+/** The request's account requirements: the explicit account demand (its
+ *  provider, claim and exact account) or every requirement of the requested
+ *  operation, each with all its claims. */
+export function consentRequirements(
+  request: AgentCardConsentRequest,
+  operationRequirements: ReadonlyArray<{ providerId: string; claims: string[] }>,
+  accounts: readonly ConsentAccount[],
+): ConsentRequirement[] {
+  if (request.accountClaim) {
+    const providerId = consentProviderFor(request.accountClaim, operationRequirements, accounts, request.accountProviderId);
+    return providerId ? [{ providerId, claims: [request.accountClaim], accountId: request.accountId }] : [];
+  }
+  return operationRequirements
+    .filter((requirement) => requirement.providerId && requirement.claims.length)
+    .map((requirement) => ({ providerId: requirement.providerId, claims: Array.from(new Set(requirement.claims)) }));
 }
 
 /** The provider whose accounts can hold `claim`: the one the request names, else
@@ -174,6 +218,16 @@ export function consentProviderFor(
     .filter((account) => (account.claims || []).includes(claim))
     .map((account) => account.provider_id)));
   return providers.length === 1 ? providers[0] : '';
+}
+
+/** The scope with every claim of one requirement added on one account (never removed). */
+export function withAccountClaims(
+  scope: Record<string, Record<string, string[]>>,
+  providerId: string,
+  accountId: string,
+  claims: string[],
+): Record<string, Record<string, string[]>> {
+  return claims.reduce((next, claim) => withProposedAccountClaim(next, providerId, accountId, claim), scope);
 }
 
 /** The Card's account scope with the proposed account+claim added (never removed). */
@@ -218,7 +272,7 @@ export function controlNamedOperations(
   resource: string,
 ): Record<string, string[]> | null {
   if (!control || control.state === 'not_controlled') return null;
-  if (control.state !== 'active' || !control.control_authority) return {};
+  if (control.state !== 'active' || control.fail_closed || !control.control_authority) return {};
   const named = control.control_authority.named_service_operations;
   if (named === '*') return { '*': ['*'] };
   return { ...(named?.['*'] || {}), ...(named?.[resource] || {}) };
@@ -313,13 +367,13 @@ export function outsideControlText(
 /** Whether an outer (MCP/REST) operation is inside the agent's Control: none
  *  bound allows it, an unavailable Control allows nothing. */
 export function outerOperationInControl(
-  control: { state?: string; control_authority?: DelegatedControlCardAuthority; external_mcp_family?: string } | null | undefined,
+  control: { state?: string; fail_closed?: boolean; control_authority?: DelegatedControlCardAuthority; external_mcp_family?: string } | null | undefined,
   resource: string,
   operation?: string,
 ): boolean {
   if (!operation) return true;
   if (!control || control.state === 'not_controlled') return true;
-  if (control.state !== 'active' || !control.control_authority) return false;
+  if (control.state !== 'active' || control.fail_closed || !control.control_authority) return false;
   return controlKeepsCallerOperation(control.control_authority, resource, operation, control.external_mcp_family);
 }
 
@@ -367,4 +421,16 @@ export function agentCardOuterGrant(
   }
   const held = card.resource_operations?.[request.resource] || [];
   return { ...base, resourceOperations: Array.from(new Set([...held, request.outerOperation])) };
+}
+
+/** A bound Control that cannot be read (not active, or fail-closed): nothing
+ *  can be approved on the Card until it can. */
+export function controlUnavailable(control: { state?: string; fail_closed?: boolean } | null | undefined): boolean {
+  if (!control || control.state === 'not_controlled') return false;
+  return control.state !== 'active' || Boolean(control.fail_closed);
+}
+
+/** Door claims the request asks for that the Card does not hold yet. */
+export function newRequestedClaims(heldClaims: readonly string[], requested: readonly string[]): string[] {
+  return requested.filter((claim) => !heldClaims.includes(claim));
 }

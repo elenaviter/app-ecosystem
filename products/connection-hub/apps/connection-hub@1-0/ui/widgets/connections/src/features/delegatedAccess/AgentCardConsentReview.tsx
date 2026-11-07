@@ -19,16 +19,20 @@ import type {
 } from '../../api/types';
 import { agentGrantWirePayload } from './agentGrantPayload';
 import {
+  accountSatisfying,
   agentCardConsentGrant,
   agentCardOuterGrant,
-  consentProviderFor,
+  capableAccounts,
+  consentRequirements,
   controlNamedOperations,
+  controlUnavailable,
+  newRequestedClaims,
   operationInControl,
   outerOperationInControl,
   outerPolicyState,
   outsideControlText,
   proposeConsentAccount,
-  withProposedAccountClaim,
+  withAccountClaims,
   type AgentCardConsentRequest,
   type ConsentAccount,
 } from './agentCardConsent';
@@ -69,24 +73,29 @@ export function AgentCardConsentReview({
   const control = (card.control_card || card.project_control) as DelegatedControlCardView | undefined;
   const ceiling = controlNamedOperations(control, request.resource);
   const operationAllowed = operationInControl(ceiling, request.namespace, request.operation);
-  const claim = request.accountClaim
-    || capability?.accountRequirements.flatMap((requirement) => requirement.claims)[0]
-    || '';
-  const providerId = claim
-    ? consentProviderFor(claim, capability?.accountRequirements || [], accounts, request.accountProviderId)
-    : '';
-  const proposal = useMemo(
-    () => (providerId && claim ? proposeConsentAccount(accounts, providerId, claim, request.accountId) : { kind: 'none' as const }),
-    [accounts, providerId, claim, request.accountId],
+  // Every account requirement of the request: the explicit account demand
+  // (provider, claim, exact account) or each requirement of the requested
+  // operation with all its claims. One account per requirement holds them all.
+  const requirements = useMemo(
+    () => consentRequirements(request, capability?.accountRequirements || [], accounts),
+    [request, capability, accounts],
   );
-  const capable = accounts.filter((account) => account.provider_id === providerId
-    && (!claim || (account.claims || []).includes(claim)));
   const heldScope: Scope = card.account_scope || {};
-  const [scope, setScope] = useState<Scope>(() => (
-    proposal.kind === 'named' || proposal.kind === 'sole'
-      ? withProposedAccountClaim(heldScope, providerId, proposal.accountId, claim)
-      : heldScope
-  ));
+  const proposals = useMemo(
+    () => requirements.map((requirement) => proposeConsentAccount(accounts, requirement)),
+    [requirements, accounts],
+  );
+  // The account chosen per requirement ('' = none yet). A requirement the Card
+  // already satisfies keeps that account; a named or sole capable account is proposed.
+  const [chosen, setChosen] = useState<string[]>(() => requirements.map((requirement, index) => {
+    const held = accountSatisfying(heldScope, requirement);
+    if (held) return held;
+    const proposal = proposals[index];
+    return proposal.kind === 'named' || proposal.kind === 'sole' ? proposal.accountId : '';
+  }));
+  const scope: Scope = requirements.reduce((next, requirement, index) => (
+    chosen[index] ? withAccountClaims(next, requirement.providerId, chosen[index], requirement.claims) : next
+  ), heldScope);
   const [operationSelected, setOperationSelected] = useState(operationAllowed && Boolean(request.operation));
   // An outer (MCP/REST) operation keeps the pending page's once/always contract:
   // chosen beside that one operation, or fixed by the request, and sent in the
@@ -103,23 +112,20 @@ export function AgentCardConsentReview({
   const [done, setDone] = useState(false);
   const [error, setError] = useState('');
 
-  const toggle = (accountId: string, value: string, checked: boolean) => {
-    setScope((current) => {
-      const accountsMap = { ...(current[providerId] || {}) };
-      const held = new Set(accountsMap[accountId] || []);
-      if (checked) held.add(value); else held.delete(value);
-      if (held.size) accountsMap[accountId] = Array.from(held); else delete accountsMap[accountId];
-      const next = { ...current };
-      if (Object.keys(accountsMap).length) next[providerId] = accountsMap; else delete next[providerId];
-      return next;
-    });
-  };
-  const bound = (accountId: string) => (scope[providerId]?.[accountId] || []).includes(claim);
-  const heldBound = (accountId: string) => (heldScope[providerId]?.[accountId] || []).includes(claim);
-  const accountChosen = !claim || capable.some((account) => bound(account.account_id));
-  const addsSomething = JSON.stringify(scope) !== JSON.stringify(heldScope) || operationSelected || outerSelected;
+  const satisfied = requirements.every((requirement, index) => {
+    const accountId = chosen[index];
+    if (!accountId) return false;
+    if (requirement.accountId && accountId !== requirement.accountId) return false;
+    return capableAccounts(accounts, requirement).some((account) => account.account_id === accountId)
+      || Boolean(accountSatisfying(heldScope, { ...requirement, accountId }));
+  });
+  const heldClaims = card.resource_grants?.[request.resource] || [];
+  const addsClaims = newRequestedClaims(heldClaims, request.claims).length > 0;
+  const addsSomething = JSON.stringify(scope) !== JSON.stringify(heldScope)
+    || operationSelected || outerSelected || addsClaims;
   const outerReady = !outerSelected || policy === 'none' || (policy !== 'missing' && Boolean(mode));
-  const canApprove = !busy && !done && accountChosen && addsSomething && outerReady;
+  const blockedByControl = controlUnavailable(control);
+  const canApprove = !busy && !done && !blockedByControl && satisfied && addsSomething && outerReady;
 
   const approve = async () => {
     setBusy(true);
@@ -152,7 +158,6 @@ export function AgentCardConsentReview({
   };
 
   const who = agentName(request.clientId);
-  const heldClaims = card.resource_grants?.[request.resource] || [];
   return (
     <section className="card card-attention agent-card-consent" data-testid="agent-card-consent">
       <div className="card-head">
@@ -229,45 +234,76 @@ export function AgentCardConsentReview({
           ) : null}
         </div>
       ) : null}
-      {claim ? (
-        <div className="request-review-section agent-card-consent-accounts" data-testid="agent-card-consent-accounts">
-          <div className="account-title">
-            Which {providerLabel(providerId) || 'connected'} account may this agent use for <code>{claim}</code>?
-          </div>
-          {proposal.kind === 'choose' ? (
-            <div className="notice" style={{ marginTop: 6 }}>Several of your accounts can do this. Choose the one this agent may use.</div>
-          ) : null}
-          {!capable.length ? (
-            <div className="notice" style={{ marginTop: 6 }}>
-              None of your connected {providerLabel(providerId) || ''} accounts can do <code>{claim}</code>. Connect one first.
-            </div>
-          ) : (
-            <ul className="accounts">
-              {capable.map((account) => {
-                const requested = request.accountId === account.account_id
-                  || ((proposal.kind === 'sole' || proposal.kind === 'named') && proposal.accountId === account.account_id);
-                return (
-                  <li className={`account${requested ? ' agent-card-consent-requested' : ''}`} key={account.account_id}>
-                    <label style={{ display: 'flex', gap: 10, alignItems: 'baseline' }}>
-                      <input
-                        type="checkbox"
-                        checked={bound(account.account_id)}
-                        disabled={done || heldBound(account.account_id)}
-                        onChange={(event) => toggle(account.account_id, claim, event.target.checked)}
-                      />
-                      <span>
-                        <span className="account-title">{accountLabel(account.account_id)}</span>{' '}
-                        <code>{claim}</code>
-                        {heldBound(account.account_id) ? <span className="badge badge-ok" style={{ marginLeft: 8 }}>already allowed</span> : null}
-                        {requested && !heldBound(account.account_id) ? <span className="badge badge-warn" style={{ marginLeft: 8 }}>requested</span> : null}
-                      </span>
-                    </label>
-                  </li>
-                );
-              })}
-            </ul>
-          )}
+      {newRequestedClaims(heldClaims, request.claims).length ? (
+        <div className="request-review-section" data-testid="agent-card-consent-claims">
+          <div className="account-title">Permissions to add</div>
+          <code>{newRequestedClaims(heldClaims, request.claims).join(', ')}</code>
         </div>
+      ) : null}
+      {requirements.map((requirement, index) => {
+        const capable = capableAccounts(accounts, requirement);
+        const proposal = proposals[index];
+        const heldAccount = accountSatisfying(heldScope, requirement);
+        const claimsText = requirement.claims.join(' and ');
+        return (
+          <div
+            className="request-review-section agent-card-consent-accounts"
+            data-testid="agent-card-consent-accounts"
+            key={`${requirement.providerId}:${requirement.claims.join(',')}`}
+          >
+            <div className="account-title">
+              Which {providerLabel(requirement.providerId) || 'connected'} account may this agent use for <code>{claimsText}</code>?
+            </div>
+            {proposal.kind === 'named_unavailable' && !heldAccount ? (
+              <div className="notice" style={{ marginTop: 6 }} data-testid="agent-card-consent-named-unavailable">
+                The agent asked for the account <strong>{accountLabel(proposal.accountId)}</strong>, which is not connected
+                or cannot do <code>{claimsText}</code>. Connect or upgrade that account first; another account does not
+                answer this request.
+              </div>
+            ) : null}
+            {proposal.kind === 'choose' && !heldAccount ? (
+              <div className="notice" style={{ marginTop: 6 }}>Several of your accounts can do this. Choose the one this agent may use.</div>
+            ) : null}
+            {proposal.kind === 'none' && !heldAccount ? (
+              <div className="notice" style={{ marginTop: 6 }}>
+                None of your connected {providerLabel(requirement.providerId) || ''} accounts can do <code>{claimsText}</code>. Connect one first.
+              </div>
+            ) : null}
+            {capable.length && !(requirement.accountId && proposal.kind === 'named_unavailable') ? (
+              <ul className="accounts">
+                {capable
+                  .filter((account) => !requirement.accountId || account.account_id === requirement.accountId)
+                  .map((account) => {
+                    const held = heldAccount === account.account_id;
+                    const requested = requirement.accountId === account.account_id
+                      || (proposal.kind === 'sole' && proposal.accountId === account.account_id);
+                    return (
+                      <li className={`account${requested ? ' agent-card-consent-requested' : ''}`} key={account.account_id}>
+                        <label style={{ display: 'flex', gap: 10, alignItems: 'baseline' }}>
+                          <input
+                            type="radio"
+                            name={`agent-card-consent-${index}`}
+                            checked={chosen[index] === account.account_id}
+                            disabled={done || Boolean(heldAccount)}
+                            onChange={() => setChosen((current) => current.map((value, at) => (at === index ? account.account_id : value)))}
+                          />
+                          <span>
+                            <span className="account-title">{accountLabel(account.account_id)}</span>{' '}
+                            <code>{claimsText}</code>
+                            {held ? <span className="badge badge-ok" style={{ marginLeft: 8 }}>already allowed</span> : null}
+                            {requested && !held ? <span className="badge badge-warn" style={{ marginLeft: 8 }}>requested</span> : null}
+                          </span>
+                        </label>
+                      </li>
+                    );
+                  })}
+              </ul>
+            ) : null}
+          </div>
+        );
+      })}
+      {blockedByControl ? (
+        <div className="notice" role="status">This agent&apos;s Control cannot be read now, so nothing can be added to its Card. Try again later.</div>
       ) : null}
       {error ? <div className="error" role="alert">{error}</div> : null}
       {done ? (

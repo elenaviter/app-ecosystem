@@ -13,6 +13,7 @@ import '../../src/styles.css'
 
 const NAMED = '*/api/integrations/bundles/*/*/kdcube-services@1-0/public/mcp/named_services*'
 const SERVICE = 'https://service.example/mcp'
+const MEMORIES = '*/api/integrations/bundles/*/*/kdcube-services@1-0/public/mcp/memories*'
 const CLIENT = 'kdcube-agent:workspace@2026-03-31-13-36:main'
 const OPS = ['provider.about', 'provider.capabilities', 'object.list', 'object.upsert']
 const grantOf = (op: string) => (op === 'object.upsert' ? 'slides:write' : 'slides:read')
@@ -28,19 +29,22 @@ const card = () => ({
   named_service_operations: { [NAMED]: { slides: ['object.list'] } },
   catalog_row_by_resource: { [NAMED]: NAMED }, account_scope: bound, properties: {}, composition_mode: '',
   control_card: {
-    state: 'active', binding: { issuer_kind: 'agent_descriptor', issuer_ref: 'workspace', label: 'Descriptor ceiling' },
+    state: 'active', ...(variant === 'fail-closed' ? { fail_closed: true } : {}), binding: { issuer_kind: 'agent_descriptor', issuer_ref: 'workspace', label: 'Descriptor ceiling' },
     // An exact Control snapshot, as the runtime composes it: records_export is inside, records_purge is not.
     control_authority: {
-      named_service_operations: { [NAMED]: { slides: ['provider.about', 'object.list', 'object.upsert'] } },
-      resource_grants: { [NAMED]: ['named_services:use', 'slides:read', 'slides:write'], [SERVICE]: ['records:read'] },
+      named_service_operations: { [NAMED]: { slides: ['provider.about', 'object.list', 'object.upsert'], sheets: ['values.update'] } },
+      resource_grants: { [NAMED]: ['named_services:use', 'slides:read', 'slides:write'], [SERVICE]: ['records:read'], [MEMORIES]: ['memories:read'] },
       resource_operations: { [NAMED]: ['named_services_call'], [SERVICE]: ['records_list', 'records_export'] },
       account_scope: {},
       properties: { 'connection_hub.control_snapshot': { schema: 'connection_hub.control_snapshot.v1', mode: 'exact', state: 'exact', basis_catalog_version: 'cat-1' } },
     },
   },
 })
-let bound: Record<string, Record<string, string[]>> = {}
+let bound: Record<string, Record<string, string[]>> = variant === 'named-incapable-bound'
+  ? { google: { google_acct_1: ['slides:read'] } } : {}
 const resources = [{
+  resource: MEMORIES, label: 'Memories', grants: ['memories:read', 'memories:write'], operations: [],
+}, {
   resource: SERVICE, label: 'Records service', grants: ['records:read'],
   operations: [{ name: 'records_list', grants: ['records:read'] }, { name: 'records_export', grants: ['records:read'] }, { name: 'records_purge', grants: ['records:read'] }],
 }, {
@@ -50,11 +54,19 @@ const resources = [{
     tools: Object.fromEntries(OPS.map((op) => [op, { operation: op, grants: [grantOf(op)] }])),
     connected_accounts: [{ provider_id: 'google', provider_label: 'Google', claims: ['slides:read', 'slides:write'],
       claims_by_operation: Object.fromEntries(OPS.map((op) => [op, [grantOf(op)]])) }],
+  }, {
+    // A Sheets write needs two claims on one Google account, as the shipped productivity_sheets descriptor declares.
+    namespace: 'sheets', label: 'Spreadsheets',
+    tools: { 'values.update': { operation: 'values.update', grants: ['sheets:write'] } },
+    connected_accounts: [{ provider_id: 'google', provider_label: 'Google', claims: ['sheets:read', 'sheets:write'],
+      claims_by_operation: { 'values.update': ['sheets:read', 'sheets:write'] } }],
   }],
 }]
-const google = (id: string, email: string) => ({ account_id: id, provider_id: 'google', display_name: email, email,
-  claims: ['slides:read', 'slides:write'], status: 'active', has_credential: true })
+const google = (id: string, email: string, claims = ['slides:read', 'slides:write', 'sheets:read', 'sheets:write']) => ({
+  account_id: id, provider_id: 'google', display_name: email, email, claims, status: 'active', has_credential: true })
 const accounts = variant === 'choose' ? [google('google_acct_1', 'owner@example.test'), google('google_acct_2', 'work@example.test')]
+  : variant === 'named-incapable-bound' ? [google('google_acct_1', 'owner@example.test'), google('google_acct_ro', 'readonly@example.test', ['drive:read'])]
+  : variant === 'two-claims' ? [google('google_acct_1', 'owner@example.test'), google('google_acct_ro', 'readonly@example.test', ['sheets:read'])]
   : [google('google_acct_1', 'owner@example.test')]
 const calls: Array<{ operation: string, data: Record<string, unknown> }> = []
 ;(window as unknown as Record<string, unknown>).__calls = calls
@@ -62,7 +74,8 @@ const calls: Array<{ operation: string, data: Record<string, unknown> }> = []
 setConnectionsCallOperation(async (_method, operation, data) => {
   calls.push({ operation, data: JSON.parse(JSON.stringify(data || {})) })
   if (operation === 'delegated_access_list') {
-    return { ok: true, platform_user_id: 'person-1', items: [card()],
+    const old = { ...card(), access_id: 'agent-old-revoked', state: 'revoked' }
+    return { ok: true, platform_user_id: 'person-1', items: variant === 'inactive-id' ? [old, card()] : [card()],
       grant_options: [{ grant: 'named_services:use' }, { grant: 'slides:read' }, { grant: 'slides:write' }], resources } as never
   }
   if (operation === 'delegated_to_kdcube_catalog') {
@@ -87,6 +100,11 @@ const link: Record<string, string> = { agent_card_consent: '1', pending_agent_gr
 if (variant === 'operation' || variant === 'refused') Object.assign(link, { namespace: 'slides', operation: 'object.upsert', account_claim: 'slides:write' })
 if (variant === 'outside') Object.assign(link, { namespace: 'slides', operation: 'provider.capabilities' })
 if (variant === 'mismatch') link.access_id = 'agent-someone-else'
+if (variant === 'inactive-id') link.access_id = 'agent-old-revoked'
+if (variant === 'claims-only') Object.assign(link, { resource: MEMORIES, claims: 'memories:read', account_claim: '' })
+if (variant === 'named-unavailable') Object.assign(link, { account_id: 'google_acct_9', account_provider_id: 'google' })
+if (variant === 'named-incapable-bound') Object.assign(link, { account_id: 'google_acct_ro', account_provider_id: 'google' })
+if (variant === 'two-claims') Object.assign(link, { account_claim: '', namespace: 'sheets', operation: 'values.update' })
 // The old pending pane (no Card-review marker) for an operation outside the agent's Control.
 if (variant === 'pending-outside') { delete link.agent_card_consent; Object.assign(link, { namespace: 'slides', operation: 'provider.capabilities' }) }
 if (variant === 'provider') link.account_provider_id = 'google'
