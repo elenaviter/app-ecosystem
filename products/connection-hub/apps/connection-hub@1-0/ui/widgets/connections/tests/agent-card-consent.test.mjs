@@ -145,6 +145,10 @@ test('a refusal names what was outside the Control only through bounded identifi
     "Not allowed by this agent's Control: slides.provider.capabilities on Named services.",
   )
   assert.equal(outsideControlText({ outside: [{ grant: 'slides:write' }] }, label), "Not allowed by this agent's Control: slides:write.")
+  assert.equal(
+    outsideControlText({ outside: [{ resource: NAMED, namespace: 'slides', operation: 'object.upsert' }], outside_count: 40, outside_truncated: true }, label),
+    "Not allowed by this agent's Control: slides.object.upsert on Named services, and more.",
+  )
   assert.equal(outsideControlText({ outside: [{ operation: 'x y <script>' }] }, label), '', 'unbounded text is never shown')
   assert.equal(outsideControlText(undefined, label), '')
 })

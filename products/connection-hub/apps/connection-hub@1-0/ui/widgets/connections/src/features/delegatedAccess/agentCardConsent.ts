@@ -305,7 +305,9 @@ export function outsideControlText(
     if (!what) return [];
     return [safe(resource) ? `${what} on ${resourceLabel(safe(resource))}` : what];
   });
-  return names.length ? `Not allowed by this agent's Control: ${names.join(', ')}.` : '';
+  if (!names.length) return '';
+  const truncated = (details as { outside_truncated?: unknown })?.outside_truncated === true;
+  return `Not allowed by this agent's Control: ${names.join(', ')}${truncated ? ', and more' : ''}.`;
 }
 
 /** Whether an outer (MCP/REST) operation is inside the agent's Control: none

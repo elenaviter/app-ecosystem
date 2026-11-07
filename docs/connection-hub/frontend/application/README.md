@@ -211,10 +211,23 @@ The review shows the Card's id, revision, Control and what it holds. One
 **Approve on this Card** sends one `delegated_agent_grant_create` on that Card
 at the shown revision, with the requested operation and the exact
 `account_scope`, in the existing Card transaction. There is no second Save.
-The `connections.consent.granted` event it authors carries the resulting
-Card's account scope (`granted_account_scope`), so the SDK closes an
+
+A request that names an outer (MCP/REST) operation keeps the pending page's
+contract inside that one approval: the owner chooses **Once** or **Always**
+beside the operation (or the request's `invocation_policy` presets it), and the
+mode, `invocation_change_id` and any request-bound proof
+(`request_bound`, `request_digest`, `request_approval_ticket`,
+`request_card_revision`, `request_authority_revision`,
+`approval_application_id`) travel unchanged in the same focused grant. A
+policy asked without a change id cannot be approved here.
+
+The `connections.consent.granted` event the grant authors carries the
+resulting Card's account scope (`granted_account_scope`), so the SDK closes an
 account-binding demand only when the account is covered; the Card's own id is
-never passed as an account.
+never passed as an account. When the installed SDK's matcher cannot take that
+scope, no event is authored (logged as
+`sdk_completion_without_account_scope`): a scope-blind match would close a
+demand whose account is still unbound. The approval itself still commits.
 
 ## Delegated automation and provider-backed named services
 
