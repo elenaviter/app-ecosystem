@@ -81,15 +81,18 @@ SET = (
     Package("project-board", "products/project-board/packages/project-board", "project_board", True),
 )
 
-# Where the set's version lives. connection-hub-cli moves with the set (the
-# product release record names it), and is published on its own when it is
-# releasable.
+# Where the set's version lives. connection-hub-cli is versioned on its own
+# (W972 C, W1016): the set moves only its first-party dependency floors, in its
+# pyproject.toml, so the CLI built from this snapshot needs the set it was
+# gated with. Its own version, its README (which describes the published CLI)
+# and the record's `cli_package` stay until a CLI release moves them.
+CLI_PYPROJECT = "products/connection-hub/packages/connection-hub-cli/pyproject.toml"
 VERSION_ROOTS = (
     "packages/app-foundation",
     "packages/service-foundation",
     "products/connection-hub/release.yaml",
     "products/connection-hub/packages/connection-hub",
-    "products/connection-hub/packages/connection-hub-cli",
+    CLI_PYPROJECT,
     "products/project-board/packages/project-board",
 )
 
@@ -281,6 +284,14 @@ def read_version(root: Path) -> str:
     return match.group(1)
 
 
+def read_cli_version(root: Path) -> str:
+    text = (root / CLI_PYPROJECT).read_text(encoding="utf-8")
+    match = re.search(r'^version = "([^"]+)"$', text, flags=re.M)
+    if not match:
+        raise ReleaseError("connection-hub-cli's pyproject.toml has no version")
+    return match.group(1)
+
+
 def check_new_version(current: str, new: str) -> None:
     if not VERSION_RE.match(new):
         raise ReleaseError(f"version must be YYYY.MM.DD.HHMM (Berlin time), got {new!r}")
@@ -340,6 +351,7 @@ def set_record_ref(text: str, new: str) -> str:
 def apply_version(root: Path, current: str, new: str, notes: str) -> list[Path]:
     """Set `new` everywhere the set names `current`, and the notes in each record."""
 
+    cli_before = read_cli_version(root)
     changed = version_files(root, current)
     if not changed:
         raise ReleaseError(f"no file of the set names the current version {current}")
@@ -359,6 +371,8 @@ def apply_version(root: Path, current: str, new: str, notes: str) -> list[Path]:
         pyproject = (root / package.path / "pyproject.toml").read_text(encoding="utf-8")
         if f'version = "{new}"' not in pyproject:
             raise ReleaseError(f"{package.name} does not carry {new}")
+    if read_cli_version(root) != cli_before:
+        raise ReleaseError(f"connection-hub-cli's own version {cli_before} moved; a CLI release sets it")
     return sorted(changed)
 
 
@@ -444,6 +458,17 @@ def tag_exists(version: str) -> bool:
     return bool(git("ls-remote", "--tags", "origin", f"refs/tags/{version}"))
 
 
+def cli_boundary(version: str, cli_version: str) -> str:
+    """The release opening's line on connection-hub-cli, which this release does not publish."""
+
+    return (
+        f"connection-hub-cli is not released here: it keeps its own version {cli_version}. "
+        f"In this snapshot only its first-party dependency floors move to `>={version}`; "
+        f"the published {cli_version} keeps its own metadata, so a later CLI release from "
+        f"this source needs a new version."
+    )
+
+
 def open_release_pull_request(github: GitHubRoute, version: str, body: str, *, root: Path = REPOSITORY) -> str:
     """Open the release pull request and check GitHub holds the commit that was gated."""
 
@@ -493,7 +518,9 @@ def prepare(args: argparse.Namespace) -> int:
         subprocess.run(["git", "commit", "--quiet", "-F", "-"], cwd=REPOSITORY, input=message, text=True, check=True)
         github.push("origin", [f"release/{args.version}"], cwd=root)
         body = "\n".join([
-            f"Releases app-foundation, service-foundation, connection-hub and project-board {args.version} (connection-hub-cli carries the version).",
+            f"Releases app-foundation, service-foundation, connection-hub and project-board {args.version}.",
+            "",
+            cli_boundary(args.version, read_cli_version(root)),
             "",
             notes,
             "",

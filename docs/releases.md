@@ -9,9 +9,13 @@ release.
 
 The Project Board client installs from PyPI as four packages at one version:
 `app-foundation`, `service-foundation`, `connection-hub` and `project-board`.
-`scripts/release-pb` releases them together. `connection-hub-cli` carries the
-same version in the snapshot and is published on its own when it is
-releasable.
+`scripts/release-pb` releases them together. `connection-hub-cli` is not part
+of the set: it has its own version and is published on its own when it is
+releasable. A set release moves only the CLI's first-party dependency floors
+in its `pyproject.toml`, so the CLI built from that snapshot needs the set it
+was gated with. Its own version, its README (which describes the published
+CLI) and the product record's `cli_package` stay. A CLI release whose
+dependency metadata differs from a published CLI gets a new version.
 
 1. **Write the release notes.** *The maintainer who cuts the release.* One short file saying
    what changed since the last release. It becomes the description in each
@@ -76,8 +80,10 @@ releasable.
    through the same fail-closed route, and dispatches
    `publish-python-package.yml` once with `package=pb-set`. It waits only on
    the run whose tag, commit and dispatch time match. The workflow
-   publishes the four packages one after another in dependency order. Each
-   waits until the index serves the ones before it, and the first failure
+   publishes the four packages one after another in dependency order. Before
+   its tests, each runs its own install as a dry run until it resolves the
+   ones before it three times in a row: a file the index already serves can
+   still be missing from the next request (W1016). The first failure
    cancels the rest, so project-board is never published against a
    foundation that failed. The command waits for the run and then verifies.
 5. **Verify.** *Done by `publish`; run it again at any time.*
