@@ -622,3 +622,28 @@ async def test_ambiguous_legacy_provider_vocabulary_does_not_prove_account_compl
         requirements_loader=requirements, source_factory=lambda _entry: source,
         property_store=store) == 0
     assert source.published == []
+
+
+@pytest.mark.asyncio
+async def test_operation_account_requirements_need_all_claims_on_one_account():
+    store, source = MemoryPropertyStore(), LaneSource()
+    client = "kdcube-agent:workspace@1-0:main"
+    await record_consent_demand(**demand(provider_id="kdcube", connector_app_id=client,
+        claims=[], resource=_NAMED_SERVICES_RESOURCE, namespace="sheets", operation="object.update"),
+        property_store=store)
+
+    async def requirements(**_kwargs):
+        return [{"provider_id": "google", "claims_by_operation": {
+            "object.update": ["sheets:read", "sheets:write"]}}]
+
+    arguments = dict(redis=None, user_id="user-1", provider_id="kdcube", connector_app_id=client,
+        granted_claims=[], granted_resource=_NAMED_SERVICES_RESOURCE,
+        granted_named_service_operations={"sheets": ["object.update"]},
+        requirements_loader=requirements, source_factory=lambda _entry: source, property_store=store)
+    # The operation uses one account; claims split across two bindings do not
+    # make either account capable of this request.
+    assert await _author_consent_granted_events(**arguments,
+        granted_account_scope={"google": {"work": ["sheets:read"], "personal": ["sheets:write"]}}) == 0
+    assert source.published == []
+    assert await _author_consent_granted_events(**arguments,
+        granted_account_scope={"google": {"work": ["sheets:read", "sheets:write"]}}) == 1
