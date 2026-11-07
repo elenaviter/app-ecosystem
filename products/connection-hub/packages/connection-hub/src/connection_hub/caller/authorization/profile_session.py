@@ -173,10 +173,16 @@ async def _abandonable_read(call: Callable[..., _T], /, *args: Any) -> _T:
     try:
         return await asyncio.wait_for(asyncio.shield(future), timeout=CUSTODY_DEADLINE_SECONDS)
     except asyncio.TimeoutError:
+        # Abandoned: the future is cancelled, so a late outcome is dropped
+        # silently by settle and never logged as an unretrieved exception.
+        future.cancel()
         raise AuthorizationError(
             "oauth_credential_custody_timeout",
             "The credential store did not answer in time (a locked store waiting for a prompt?).",
         ) from None
+    except asyncio.CancelledError:
+        future.cancel()
+        raise
 
 
 class _CancelledAfterFailure(asyncio.CancelledError):

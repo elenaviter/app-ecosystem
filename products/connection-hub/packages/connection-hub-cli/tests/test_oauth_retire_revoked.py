@@ -296,3 +296,56 @@ def test_a_store_that_never_answers_refuses_and_the_process_still_exits(tmp_path
         "exited-cleanly",
     ]
     assert elapsed < 30, elapsed
+
+
+class _LateFailingStore:
+    """A get that fails with a canary only after the caller has given up."""
+
+    def __init__(self, inner, gate: threading.Event):
+        self.inner, self.gate = inner, gate
+
+    def get(self, credential_ref):
+        self.gate.wait(5)
+        raise RuntimeError("CANARY-late-backend-text")
+
+    def put(self, credential_ref, token):
+        return self.inner.put(credential_ref, token)
+
+    def remove(self, credential_ref):
+        return self.inner.remove(credential_ref)
+
+
+async def _late_outcome_is_silent(service, call, *, cancel: bool):
+    import gc
+
+    reported = []
+    loop = asyncio.get_running_loop()
+    loop.set_exception_handler(lambda _loop, context: reported.append(context))
+    try:
+        task = asyncio.create_task(call())
+        if cancel:
+            await asyncio.sleep(0.05)
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+        else:
+            with pytest.raises(AuthorizationError) as refused:
+                await task
+            assert refused.value.code == "oauth_credential_custody_timeout"
+        service._credentials.gate.set()
+        await asyncio.sleep(0.3)
+        gc.collect()
+        await asyncio.sleep(0.05)
+    finally:
+        loop.set_exception_handler(None)
+    assert reported == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("cancel", [False, True])
+async def test_a_read_failing_after_it_was_abandoned_reports_nothing(tmp_path, monkeypatch, cancel):
+    service, profiles, credentials, profile, _ = await _reset_store(tmp_path)
+    monkeypatch.setattr(profile_session, "CUSTODY_DEADLINE_SECONDS", 0.2 if not cancel else 5)
+    service._credentials = _LateFailingStore(credentials, threading.Event())
+    await _late_outcome_is_silent(service, lambda: service.credential_present_bounded(profile), cancel=cancel)
+    assert profiles.get("agent-a") == profile

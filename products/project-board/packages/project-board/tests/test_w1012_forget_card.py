@@ -326,3 +326,46 @@ def test_a_store_that_never_answers_refuses_and_the_whole_command_exits(tmp_path
     assert result.returncode == 0, result.stderr[-2000:]
     assert result.stdout.split() == ["credential_store_unreadable", "exited-cleanly"]
     assert time.monotonic() - started < 30
+
+
+def _cli_args(**overrides):
+    values = {"worker_command": "forget-card", "profile": "problem-board-codex-2", "access_id": "", "config": None,
+              "runtime_kind": "", "runtime_session_id": ""}
+    values.update(overrides)
+    return SimpleNamespace(**values)
+
+
+def test_an_explicit_but_invalid_identity_refuses_instead_of_acting_as_a_host_terminal(monkeypatch):
+    from project_board.client import cli
+
+    called = []
+    monkeypatch.setattr(module, "forget_card", lambda *a, **k: called.append(k))
+    for overrides in ({"runtime_kind": "claude-code", "runtime_session_id": "not a valid id"},
+                      {"runtime_kind": "claude-code"}):
+        for name in ("CLAUDE_CODE_SESSION_ID", "CLAUDE_SESSION_ID", "PROBLEM_BOARD_CLAUDE_SESSION_ID",
+                     "CODEX_SESSION_ID", "CODEX_THREAD_ID"):
+            monkeypatch.delenv(name, raising=False)
+        with pytest.raises(DomainError):
+            cli._worker_command(_cli_args(**overrides))
+    assert called == []
+
+
+def test_no_identity_at_all_with_a_named_profile_is_a_host_terminal(monkeypatch, tmp_path):
+    from project_board.client import cli
+
+    seen = []
+
+    async def fake(path, **kwargs):
+        seen.append(kwargs)
+        return {"state": "read_only"}
+
+    monkeypatch.setattr(module, "forget_card", fake)
+    monkeypatch.setattr(cli, "resolve_host_config_path", lambda _value: tmp_path / "relay.json")
+    for name in ("CLAUDE_CODE_SESSION_ID", "CLAUDE_SESSION_ID", "PROBLEM_BOARD_CLAUDE_SESSION_ID",
+                 "CODEX_SESSION_ID", "CODEX_THREAD_ID"):
+        monkeypatch.delenv(name, raising=False)
+    assert cli._worker_command(_cli_args()) == {"state": "read_only"}
+    assert seen[0]["identity"] is None and seen[0]["profile"] == "problem-board-codex-2"
+    # Without a profile, the absent identity still refuses.
+    with pytest.raises(DomainError):
+        cli._worker_command(_cli_args(profile=""))

@@ -6078,10 +6078,21 @@ def _worker_command(args: Any) -> dict[str, Any]:
         # The session's identity whenever one resolves, profile or not: an
         # agent acts on its own channel only (review P2). Without one, this is
         # a person's host terminal, and the named profile is used.
+        # As _reference_migration_lease_owner: only an absent identity, with no
+        # runtime identity named, is a host terminal; an invalid or incomplete
+        # identity refuses (review of AE #947).
+        explicit_identity = bool(
+            str(getattr(args, "runtime_kind", "") or "").strip()
+            or str(getattr(args, "runtime_session_id", "") or "").strip()
+        )
         try:
             identity = _identity(args)
-        except (DomainError, ValueError):
-            if not str(args.profile or "").strip():
+        except DomainError as exc:
+            if (
+                explicit_identity
+                or exc.code != "field_agent_session_identity_required"
+                or not str(args.profile or "").strip()
+            ):
                 raise
             identity = None
         return asyncio.run(
