@@ -64,7 +64,7 @@ def _usable(usable=True):
         system=lambda: "Linux",
         which=lambda _name: "/usr/bin/x",
         run=lambda _command: None,
-        user=lambda: "lena",
+        user=lambda: "worker",
         os_release=lambda: "ID=ubuntu",
         keyring_state=lambda: (usable, "secretstorage" if usable else "the login keyring is locked"),
         hashlib_state=lambda: (True, "ok"),

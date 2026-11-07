@@ -52,7 +52,7 @@ def _probes(sessions, *, keyring=(False, "the login keyring is locked"), uid=100
         system=lambda: "Linux",
         which=lambda _name: "/usr/bin/x",
         run=run,
-        user=lambda: "lena",
+        user=lambda: "worker",
         os_release=lambda: "ID=ubuntu\n",
         keyring_state=lambda: keyring,
         uid=lambda: uid,
@@ -103,7 +103,7 @@ def test_loginctl_reads_are_bounded_in_sessions_and_use_the_uid_not_user():
     shown = [call for call in calls if call[:2] == ["loginctl", "show-session"]]
     assert len(shown) == prerequisites.LOGINCTL_SESSION_LIMIT
     assert ["loginctl", "show-user", "1000", "-p", "Sessions", "--value"] in calls
-    assert not any("lena" in call for call in calls if call[:1] == ["loginctl"] and call[1] != "enable-linger")
+    assert not any("worker" in call for call in calls if call[:1] == ["loginctl"] and call[1] != "enable-linger")
 
 
 def test_a_usable_store_runs_no_session_probe():
