@@ -916,6 +916,27 @@ def build_parser() -> argparse.ArgumentParser:
     )
 
     command = worker_commands.add_parser(
+        "forget-card",
+        help=(
+            "Forget a revoked Card's local record after a password store reset. "
+            "Without --access-id it only reads and names the access_id to revoke in Connection Hub."
+        ),
+    )
+    _host_config(command)
+    _agent_identity(command)
+    command.add_argument(
+        "profile",
+        nargs="?",
+        default="",
+        help="The agent's Card profile, from a host terminal; in the agent's own session it is found.",
+    )
+    command.add_argument(
+        "--access-id",
+        default="",
+        help="The access_id you revoked in Connection Hub; the exact one this machine recorded.",
+    )
+
+    command = worker_commands.add_parser(
         "receive", help="Receive and lease this worker's available direct and project mail."
     )
     _host_config(command)
@@ -6049,6 +6070,37 @@ def _worker_command(args: Any) -> dict[str, Any]:
                 device=args.device,
                 replace_card=args.replace_card,
                 coordinator=args.coordinator,
+            )
+        )
+    if args.worker_command == "forget-card":
+        from .forget_card import forget_card
+
+        # The session's identity whenever one resolves, profile or not: an
+        # agent acts on its own channel only (review P2). Without one, this is
+        # a person's host terminal, and the named profile is used.
+        # As _reference_migration_lease_owner: only an absent identity, with no
+        # runtime identity named, is a host terminal; an invalid or incomplete
+        # identity refuses (review of AE #947).
+        explicit_identity = bool(
+            str(getattr(args, "runtime_kind", "") or "").strip()
+            or str(getattr(args, "runtime_session_id", "") or "").strip()
+        )
+        try:
+            identity = _identity(args)
+        except DomainError as exc:
+            if (
+                explicit_identity
+                or exc.code != "field_agent_session_identity_required"
+                or not str(args.profile or "").strip()
+            ):
+                raise
+            identity = None
+        return asyncio.run(
+            forget_card(
+                resolve_host_config_path(getattr(args, "config", None)),
+                profile=args.profile,
+                identity=identity,
+                access_id=args.access_id,
             )
         )
     if args.worker_command == "list":

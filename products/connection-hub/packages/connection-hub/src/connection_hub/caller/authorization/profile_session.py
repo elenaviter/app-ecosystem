@@ -7,6 +7,7 @@ import contextvars
 import hashlib
 import os
 import secrets
+import threading
 import time
 from collections.abc import Awaitable, Callable, Mapping
 from concurrent.futures import ThreadPoolExecutor
@@ -139,6 +140,49 @@ def _replace_stuck_custody_executor(stuck: ThreadPoolExecutor) -> None:
         )
         stuck.shutdown(wait=False)
 _T = TypeVar("_T")
+
+
+async def _abandonable_read(call: Callable[..., _T], /, *args: Any) -> _T:
+    """A custody READ on its own daemon thread, given up after CUSTODY_DEADLINE_SECONDS (W1012).
+
+    For a one-shot command: a native store that never answers must not keep
+    the process alive after the refusal. An executor thread is joined at
+    interpreter exit, so a stuck one holds the process; a daemon thread does
+    not. Reads only: an abandoned read changes nothing.
+    """
+
+    loop = asyncio.get_running_loop()
+    future: asyncio.Future = loop.create_future()
+
+    def settle(outcome: tuple[bool, Any]) -> None:
+        if not future.done():
+            ok, value = outcome
+            future.set_result(value) if ok else future.set_exception(value)
+
+    def run() -> None:
+        try:
+            outcome = (True, call(*args))
+        except BaseException as exc:  # noqa: BLE001 - delivered to the waiting caller
+            outcome = (False, exc)
+        try:
+            loop.call_soon_threadsafe(settle, outcome)
+        except RuntimeError:
+            pass  # the caller's loop is gone: nobody waits for this read
+
+    threading.Thread(target=run, name="connection-hub-custody-read", daemon=True).start()
+    try:
+        return await asyncio.wait_for(asyncio.shield(future), timeout=CUSTODY_DEADLINE_SECONDS)
+    except asyncio.TimeoutError:
+        # Abandoned: the future is cancelled, so a late outcome is dropped
+        # silently by settle and never logged as an unretrieved exception.
+        future.cancel()
+        raise AuthorizationError(
+            "oauth_credential_custody_timeout",
+            "The credential store did not answer in time (a locked store waiting for a prompt?).",
+        ) from None
+    except asyncio.CancelledError:
+        future.cancel()
+        raise
 
 
 class _CancelledAfterFailure(asyncio.CancelledError):
@@ -903,6 +947,18 @@ class OAuthProfileSessionService:
         self._require_oauth(profile)
         return self._credentials.get(profile.credential_ref) is not None
 
+    async def credential_present_bounded(self, profile: CallerProfile) -> bool:
+        """Whether this profile's credential is in custody, as a boolean, within CUSTODY_DEADLINE_SECONDS.
+
+        W1012: a one-shot command's check. The read runs on a daemon thread
+        and is abandoned at the deadline with oauth_credential_custody_timeout,
+        so a store that never answers neither hangs nor keeps the process
+        alive. The value read is never returned.
+        """
+
+        self._require_oauth(profile)
+        return await _abandonable_read(self._credentials.get, profile.credential_ref) is not None
+
     def credential_status(self, profile: CallerProfile) -> dict[str, object]:
         self._require_oauth(profile)
         token = self._credentials.get(profile.credential_ref)
@@ -985,6 +1041,42 @@ class OAuthProfileSessionService:
             raise AuthorizationError(
                 "oauth_profile_lock_timeout", "Timed out waiting for the OAuth profile lock."
             ) from None
+
+    async def retire_revoked_without_custody(
+        self, profile_name: str, *, access_id: str
+    ) -> CallerProfile:
+        """Forget a local record whose Card the person revoked, when this machine holds no credential for it.
+
+        W1012: after a password store reset the credential is gone, so the Card
+        cannot be revoked from here; the person revokes it in Connection Hub and
+        gives its access_id. Under the profile's credential lock, the one a
+        refresh or reconnect takes, with the record read again under it: the
+        exact recorded access_id, no credential in custody (a bounded read whose
+        failure refuses), and the record still exactly the one read when it is
+        removed. It removes the metadata only, never a credential, and never
+        claims a server revocation: the access_id is the person's assertion.
+        """
+
+        async with self._custody_section(
+            profile_name, operation="retire_revoked"
+        ) as current:
+            if not current.access_id or access_id != current.access_id:
+                raise ProfileError(
+                    "oauth_profile_access_id_confirmation_required",
+                    "Local OAuth profile removal requires its exact recorded access_id.",
+                )
+            held = await _abandonable_read(
+                self._credentials.get, current.credential_ref
+            )
+            if held is not None:
+                raise ProfileError(
+                    "oauth_profile_credential_present",
+                    "This machine still holds this profile's credential: revoke and retire it with that "
+                    "credential ('profile disconnect') instead of forgetting it.",
+                )
+            # The state-lock wait runs off the event loop and is never abandoned,
+            # so a cancel cannot release custody while the removal continues.
+            return await self._in_custody(self._profiles.remove_matching, profile_name, current)
 
     async def revoke_and_retire(self, profile: CallerProfile) -> CallerProfile:
         """Revoke the Card at its server, then remove it locally, as one credential-lock operation.

@@ -16,6 +16,7 @@ tests run on any machine.
 from __future__ import annotations
 
 import getpass
+import os
 import platform
 import shutil
 import subprocess
@@ -47,6 +48,23 @@ KEYRING_UNLOCK_LINE = (
     "else echo \"the password is empty; nothing changed\"; fi; unset P"
 )
 
+# W1012 point 1, at the agent level: on a desktop the unlock line's pkill and
+# --replace stop the desktop session's own keyring, and the worker skill hands
+# out the fix pb status prints. The desktop text is given only when an active
+# graphical session of this user is proven; otherwise both cases are named, so
+# a probe failure never yields the server line alone (codex-infra review, 7 Nov).
+KEYRING_DESKTOP_FIX = (
+    "this machine has an active desktop session: do not run an unlock line here. With the standard login "
+    "keyring, log out and log in again with your password; if the store stays locked (automatic login can "
+    "leave it so), unlock Login in Passwords and Keys"
+)
+KEYRING_EITHER_FIX = (
+    "on a desktop you use on its own screen, do not run an unlock line: log in there with your password, or "
+    "unlock Login in Passwords and Keys. Only on a machine you reach over ssh, run: " + KEYRING_UNLOCK_LINE
+)
+LOGINCTL_OUTPUT_LIMIT = 4096
+LOGINCTL_SESSION_LIMIT = 8
+
 Runner = Callable[[Sequence[str]], "subprocess.CompletedProcess[str] | None"]
 
 
@@ -74,6 +92,7 @@ class Probes:
     user: Callable[[], str] = getpass.getuser
     os_release: Callable[[], str] = lambda: _read(Path("/etc/os-release"))
     keyring_state: Callable[[], tuple[bool, str]] = lambda: _keyring_state()
+    uid: Callable[[], int] = lambda: os.getuid()
     hashlib_state: Callable[[], tuple[bool, str]] = lambda: hashlib_state()
 
 
@@ -335,13 +354,47 @@ def _systemd_user(probes: Probes) -> dict[str, Any]:
     )
 
 
+def graphical_session_active(probes: Probes) -> bool:
+    """True only when loginctl proves an active x11 or wayland session of this user's UID.
+
+    Every loginctl call is the bounded probe runner; output and the number of
+    sessions read are capped. Anything missing, failing or unclear is False:
+    not proven, which is not a claim that the machine is headless.
+    """
+
+    try:
+        uid = int(probes.uid())
+    except (AttributeError, OSError, TypeError, ValueError):
+        return False
+    answer = probes.run(["loginctl", "show-user", str(uid), "-p", "Sessions", "--value"])
+    if answer is None or answer.returncode != 0:
+        return False
+    sessions = [item for item in str(answer.stdout or "")[:LOGINCTL_OUTPUT_LIMIT].split() if item.isalnum()]
+    for session in sessions[:LOGINCTL_SESSION_LIMIT]:
+        shown = probes.run(["loginctl", "show-session", session, "-p", "Type", "-p", "Active", "-p", "User"])
+        if shown is None or shown.returncode != 0:
+            continue
+        fields = dict(
+            line.split("=", 1)
+            for line in str(shown.stdout or "")[:LOGINCTL_OUTPUT_LIMIT].splitlines()
+            if "=" in line
+        )
+        if (
+            fields.get("Type", "").strip() in {"x11", "wayland"}
+            and fields.get("Active", "").strip() == "yes"
+            and fields.get("User", "").strip() == str(uid)
+        ):
+            return True
+    return False
+
+
 def _keyring(probes: Probes, family: str, *, mac: bool) -> dict[str, Any]:
     usable, detail = probes.keyring_state()
     if mac:
         fix = "unlock the login keychain (open Keychain Access, or sign in to this account on the Mac once)"
         admin = False
     elif "locked" in detail or "does not answer" in detail or "no default store" in detail:
-        fix = KEYRING_UNLOCK_LINE
+        fix = KEYRING_DESKTOP_FIX if not usable and graphical_session_active(probes) else KEYRING_EITHER_FIX
         admin = False
     else:
         fix = _package_line(family, "gnome-keyring libsecret-1-0") if family == "debian" else _package_line(family, "gnome-keyring")
