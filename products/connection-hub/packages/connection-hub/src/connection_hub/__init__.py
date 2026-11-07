@@ -13,7 +13,7 @@ See the repository for status: https://github.com/elenaviter/app-ecosystem
 from importlib import import_module
 from typing import Any
 
-__version__ = "2026.11.06.1119"
+__version__ = "2026.11.07.0535"
 
 _EXPORTS: dict[str, str] = {}
 for name in (
