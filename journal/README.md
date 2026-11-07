@@ -7,6 +7,7 @@ that concern this repository so the history is discoverable from here.
 
 | Date | Entry | What it holds for this repository |
 | --- | --- | --- |
+| 2026-11-07 | Missing deployment signers are created before Connection Hub starts | Provider-owned create-only bootstrap preserves existing refresh, management, and grantor signers; templates follow configured references. Local lifecycle source qualification is separate from cloud launcher integration and live OAuth acceptance. |
 | 2026-10-30 | A consent delta must become complete authority before resolution | External OAuth consent accumulates held named-service operations per resource and namespace, freezes the stored wildcard boundary before union, and leaves explicit replacement semantics intact. |
 | 2026-10-12 | A known render pin is not Save authority | — |
 | 2026-10-11 | A fallback service registration is a lock-composition boundary | Refusing a different Card service on the same store preserves the original fallback lock; fixtures must reuse their composed service or model another worker with a separate store object over the same durable root. |
