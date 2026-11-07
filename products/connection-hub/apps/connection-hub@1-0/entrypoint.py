@@ -555,6 +555,18 @@ def _named_service_operations_for(payload: Mapping[str, Any], resource: str) -> 
     return None
 
 
+def _accepts_keyword(function: Any, name: str) -> bool:
+    """Whether ``function`` takes keyword ``name`` (or any keyword)."""
+    try:
+        parameters = inspect.signature(function).parameters.values()
+    except (TypeError, ValueError):
+        return False
+    return any(
+        parameter.name == name or parameter.kind is inspect.Parameter.VAR_KEYWORD
+        for parameter in parameters
+    )
+
+
 def _named_service_operations_for_resource(value: Any, resource: str) -> Any:
     """Return one resource's persisted namespace/operation coverage."""
     if isinstance(value, str):
@@ -7945,6 +7957,31 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
             ) or _resource_operations_for_resource(
                 fallback_resource_operations, resource
             )
+            # W1018 A: the account binding the grant left on the Card. A demand for a
+            # per-account claim closes only when that account is covered; the matcher
+            # decides from this scope. `account_id` names a provider account only:
+            # the Card's own id is not one (it closed account-binding demands that
+            # were still unbound). An SDK whose matcher cannot take the scope is
+            # not called at all: its scope-blind match is the false completion
+            # W1018 closes. The approval itself has already committed.
+            if not _accepts_keyword(author_consent_granted_events, "granted_account_scope"):
+                LOGGER.warning(
+                    "[connection-hub.agent_grant] granted event not authored: "
+                    "sdk_completion_without_account_scope client=%s resource=%s",
+                    client_id,
+                    resource,
+                )
+                return
+            raw_scope = record.get("account_scope")
+            granted_account_scope = {
+                str(provider): {
+                    str(account): [str(claim) for claim in (claims or []) if str(claim)]
+                    for account, claims in dict(accounts or {}).items()
+                    if isinstance(claims, (list, tuple))
+                }
+                for provider, accounts in dict(raw_scope or {}).items()
+                if isinstance(accounts, Mapping)
+            } if isinstance(raw_scope, Mapping) else {}
             await author_consent_granted_events(
                 redis=redis,
                 user_id=user_id,
@@ -7956,7 +7993,8 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
                     resource: granted_resource_operations
                 } if granted_resource_operations else {},
                 granted_resource=resource,
-                account_id=str(record.get("access_id") or ""),
+                account_id="",
+                granted_account_scope=granted_account_scope,
                 invocation_policy_mode=str(
                     (invocation_policy or {}).get("mode")
                     if isinstance(invocation_policy, Mapping)
