@@ -1053,7 +1053,11 @@ async def claim_coverage_for_policies(
 
 
 def pending_consent_delta(previous: list, current: list) -> list:
-    """Provider groups whose tools left the pending set (consent satisfied)."""
+    """Provider groups whose tools left the pending set (consent satisfied).
+
+    Provider preflight cannot prove an Agent Card's capability or account
+    binding. Those demands complete only through the scope-aware Card event.
+    """
     pending_now: dict = {}
     for group in current or []:
         if isinstance(group, dict):
@@ -1066,6 +1070,8 @@ def pending_consent_delta(previous: list, current: list) -> list:
         if not isinstance(group, dict):
             continue
         key = str(group.get("provider_id") or "")
+        if key == "kdcube":
+            continue
         freed = [
             str(t) for t in (group.get("tools") or [])
             if str(t or "").strip() and str(t) not in pending_now.get(key, set())
