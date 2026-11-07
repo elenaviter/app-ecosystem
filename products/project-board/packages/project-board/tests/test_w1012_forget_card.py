@@ -320,6 +320,12 @@ def test_a_store_that_never_answers_refuses_and_the_whole_command_exits(tmp_path
     hub_tests = pathlib.Path(__file__).resolve().parents[4] / "connection-hub" / "packages" / "connection-hub-cli" / "tests"
     if not (hub_tests / "test_oauth_credential_lock.py").is_file():
         pytest.skip("Connection Hub CLI tests are not beside this package")
+    # The release gate installs each package of the pb set in its own venv;
+    # connection-hub-cli is not in the set, and its tests import it.
+    import importlib.util
+
+    if importlib.util.find_spec("connection_hub_cli") is None:
+        pytest.skip("connection_hub_cli is not importable (release gate venv); the source overlay runs this test")
     started = time.monotonic()
     result = subprocess.run([sys.executable, "-c", _STUCK_CLI, str(hub_tests), str(tmp_path)],
                             capture_output=True, text=True, timeout=60)
