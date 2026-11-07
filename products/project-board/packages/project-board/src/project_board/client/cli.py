@@ -916,6 +916,27 @@ def build_parser() -> argparse.ArgumentParser:
     )
 
     command = worker_commands.add_parser(
+        "forget-card",
+        help=(
+            "Forget a revoked Card's local record after a password store reset (W1012). "
+            "Without --access-id it only reads and names the access_id to revoke in Connection Hub."
+        ),
+    )
+    _host_config(command)
+    _agent_identity(command)
+    command.add_argument(
+        "profile",
+        nargs="?",
+        default="",
+        help="The agent's Card profile, from a host terminal; in the agent's own session it is found.",
+    )
+    command.add_argument(
+        "--access-id",
+        default="",
+        help="The access_id you revoked in Connection Hub; the exact one this machine recorded.",
+    )
+
+    command = worker_commands.add_parser(
         "receive", help="Receive and lease this worker's available direct and project mail."
     )
     _host_config(command)
@@ -6049,6 +6070,20 @@ def _worker_command(args: Any) -> dict[str, Any]:
                 device=args.device,
                 replace_card=args.replace_card,
                 coordinator=args.coordinator,
+            )
+        )
+    if args.worker_command == "forget-card":
+        from .forget_card import forget_card
+
+        identity = None
+        if not str(args.profile or "").strip():
+            identity = _identity(args)
+        return asyncio.run(
+            forget_card(
+                resolve_host_config_path(getattr(args, "config", None)),
+                profile=args.profile,
+                identity=identity,
+                access_id=args.access_id,
             )
         )
     if args.worker_command == "list":

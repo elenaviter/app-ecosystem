@@ -125,7 +125,9 @@ def test_a_missing_store_is_reported_without_creating_one(monkeypatch):
     assert (usable, detail) == (False, "the Secret Service has no default store")
     assert calls["create"] == 0
     item = prerequisites._keyring(prerequisites.Probes(keyring_state=lambda: (usable, detail)), "debian", mac=False)
-    assert item["fix"] == KEYRING_UNLOCK_LINE
+    # W1012: no desktop session is proven here, so both cases are named and the
+    # server line stays the ssh case's own.
+    assert item["fix"] == prerequisites.KEYRING_EITHER_FIX and item["fix"].endswith(KEYRING_UNLOCK_LINE)
 
 
 def test_a_store_that_never_answers_ends_in_time_instead_of_hanging(monkeypatch):

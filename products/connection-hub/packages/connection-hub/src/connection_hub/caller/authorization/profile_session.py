@@ -986,6 +986,40 @@ class OAuthProfileSessionService:
                 "oauth_profile_lock_timeout", "Timed out waiting for the OAuth profile lock."
             ) from None
 
+    async def retire_revoked_without_custody(
+        self, profile_name: str, *, access_id: str
+    ) -> CallerProfile:
+        """Forget a local record whose Card the person revoked, when this machine holds no credential for it.
+
+        W1012: after a password store reset the credential is gone, so the Card
+        cannot be revoked from here; the person revokes it in Connection Hub and
+        gives its access_id. Under the profile's credential lock, the one a
+        refresh or reconnect takes, with the record read again under it: the
+        exact recorded access_id, no credential in custody (a bounded read whose
+        failure refuses), and the record still exactly the one read when it is
+        removed. It removes the metadata only, never a credential, and never
+        claims a server revocation: the access_id is the person's assertion.
+        """
+
+        async with self._custody_section(
+            profile_name, operation="retire_revoked"
+        ) as current:
+            if not current.access_id or access_id != current.access_id:
+                raise ProfileError(
+                    "oauth_profile_access_id_confirmation_required",
+                    "Local OAuth profile removal requires its exact recorded access_id.",
+                )
+            held = await self._in_custody_read(
+                self._credentials.get, current.credential_ref
+            )
+            if held is not None:
+                raise ProfileError(
+                    "oauth_profile_credential_present",
+                    "This machine still holds this profile's credential: revoke and retire it with that "
+                    "credential ('profile disconnect') instead of forgetting it.",
+                )
+            return self._profiles.remove_matching(profile_name, current)
+
     async def revoke_and_retire(self, profile: CallerProfile) -> CallerProfile:
         """Revoke the Card at its server, then remove it locally, as one credential-lock operation.
 
