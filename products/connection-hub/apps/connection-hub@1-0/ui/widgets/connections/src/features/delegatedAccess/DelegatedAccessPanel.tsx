@@ -11,6 +11,7 @@ import {
   agentCardConsentRequest,
   agentCardResolutionMessage,
   controlNamedOperations,
+  isHostedAgentClient,
   operationInControl,
   resolveAgentCard,
 } from './agentCardConsent';
@@ -361,9 +362,11 @@ function invocationPolicyRows(item: DelegatedAccessRecord): string[] {
 
 function pendingAgentGrantFromParams(get: (key: string) => string): PendingAgentGrant | null {
   if (get('pending_agent_grant') !== '1') return null;
-  // W1018 A: a request marked for the agent's own Card opens Card consent review
-  // instead; the pending pane and a normal Card Save are never both shown.
+  // W1018 A: a request marked for the agent's own Card, or any hosted agent's
+  // request (operator: "all must go via card"), opens Card consent review
+  // instead; the pending pane never renders or commits for a hosted caller.
   if (['1', 'true'].includes(get('agent_card_consent').trim().toLowerCase())) return null;
+  if (isHostedAgentClient(get('agent_client_id'))) return null;
   const clientId = get('agent_client_id').trim();
   const accessId = get('access_id').trim();
   const resource = get('resource').trim();

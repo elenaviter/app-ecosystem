@@ -142,16 +142,40 @@ test('W1018 A: the agent Card consent review', async (t) => {
       await page.close()
     })
 
-    await t.test('the old pending pane does not preselect an operation outside the agent\'s Control either', async () => {
-      const { page, errors } = await open(browser, origin, 'pending-outside')
-      await page.getByText('An agent is asking for your permission', { exact: true }).waitFor({ timeout: 15000 })
+    await t.test('a hosted link without the marker opens Card review, never the old pending page', async () => {
+      const { page, errors } = await open(browser, origin, 'markerless')
+      await page.getByTestId('agent-card-consent').waitFor({ timeout: 15000 })
       await page.waitForTimeout(500)
-      const label = page.locator('label.namespace-operation').filter({ hasText: 'provider.capabilities' }).first()
-      assert.match(await label.innerText(), /not in this agent's Control/i)
-      const box = label.locator('input[type=checkbox]')
-      assert.equal(await box.isChecked(), false)
-      assert.equal(await box.isEnabled(), false)
-      if (SHOTS) await page.screenshot({ path: `${SHOTS}/w1018a-pending-outside-desktop.png`, fullPage: false })
+      assert.equal(await page.getByText('An agent is asking for your permission', { exact: true }).count(), 0, 'the old pending page is absent')
+      assert.equal(await page.getByTestId('agent-card-consent-accounts').locator('input[type=radio]').isChecked(), true)
+      await shot(page, 'markerless-desktop')
+      await page.getByRole('button', { name: 'Approve on this Card' }).click()
+      await page.getByText('Approved. The agent').waitFor({ timeout: 10000 })
+      const sent = await grants(page)
+      assert.equal(sent.length, 1)
+      assert.equal(sent[0].access_id, 'agent-0e150a469bf4edbd')
+      assert.deepEqual(sent[0].account_scope, { google: { google_acct_1: ['slides:read'] } })
+      assert.deepEqual(errors, [])
+      await page.close()
+    })
+
+    await t.test('a markerless hosted link naming an operation outside the Control shows it unavailable on the Card', async () => {
+      const { page, errors } = await open(browser, origin, 'pending-outside')
+      const section = page.getByTestId('agent-card-consent-operation')
+      await section.waitFor({ timeout: 15000 })
+      assert.equal(await page.getByText('An agent is asking for your permission', { exact: true }).count(), 0)
+      assert.match(await section.innerText(), /not in this agent's Control/i)
+      assert.equal(await section.locator('input[type=checkbox]').isChecked(), false)
+      assert.equal(await section.locator('input[type=checkbox]').isEnabled(), false)
+      assert.deepEqual(errors, [])
+      await page.close()
+    })
+
+    await t.test('an external client keeps the legacy pending page (contract control)', async () => {
+      const { page, errors } = await open(browser, origin, 'external')
+      await page.getByText('An agent is asking for your permission', { exact: true }).waitFor({ timeout: 15000 })
+      assert.equal(await page.getByTestId('agent-card-consent').count(), 0, 'no Card review for an external client')
+      assert.match(await page.locator('body').innerText(), /dcr-cli/)
       assert.deepEqual(errors, [])
       await page.close()
     })
@@ -318,7 +342,7 @@ test('W1018 A: the agent Card consent review', async (t) => {
     })
 
     await t.test('phone width: the review fits without page-wide horizontal scroll', async () => {
-      for (const variant of ['account-only', 'choose', 'outside']) {
+      for (const variant of ['account-only', 'choose', 'outside', 'markerless']) {
         const { page, errors } = await open(browser, origin, variant, 390)
         await page.getByTestId('agent-card-consent').waitFor({ timeout: 15000 })
         const width = await page.evaluate(() => ({ sw: document.documentElement.scrollWidth, cw: document.documentElement.clientWidth }))

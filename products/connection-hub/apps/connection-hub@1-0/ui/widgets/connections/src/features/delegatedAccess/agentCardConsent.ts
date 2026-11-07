@@ -42,8 +42,21 @@ export interface AgentCardConsentRequest {
   approvalContext?: Record<string, string>;
 }
 
+/** A hosted KDCube agent's client id. Operator, 2026-11-07: "W1018 i am sure
+ *  all must go via card": every hosted agent's consent opens its Card review. */
+export const HOSTED_AGENT_CLIENT_PREFIX = 'kdcube-agent:';
+
+export function isHostedAgentClient(clientId: string): boolean {
+  return clientId.trim().startsWith(HOSTED_AGENT_CLIENT_PREFIX);
+}
+
+/** Card consent review is selected by the marker, or by the caller: a pending
+ *  request from a hosted agent opens it even when an older link carries no
+ *  marker. An external client's pending request keeps its pending page. */
 export function agentCardConsentFromParams(get: (key: string) => string): AgentCardConsentRequest | null {
-  if (!['1', 'true'].includes(get('agent_card_consent').trim().toLowerCase())) return null;
+  const marked = ['1', 'true'].includes(get('agent_card_consent').trim().toLowerCase());
+  const hostedPending = get('pending_agent_grant').trim() === '1' && isHostedAgentClient(get('agent_client_id'));
+  if (!marked && !hostedPending) return null;
   const clientId = get('agent_client_id').trim();
   const resource = get('resource').trim();
   if (!clientId || !resource) return null;

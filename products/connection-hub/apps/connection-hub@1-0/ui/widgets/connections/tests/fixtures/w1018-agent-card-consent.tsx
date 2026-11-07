@@ -105,8 +105,12 @@ if (variant === 'claims-only') Object.assign(link, { resource: MEMORIES, claims:
 if (variant === 'named-unavailable') Object.assign(link, { account_id: 'google_acct_9', account_provider_id: 'google' })
 if (variant === 'named-incapable-bound') Object.assign(link, { account_id: 'google_acct_ro', account_provider_id: 'google' })
 if (variant === 'two-claims') Object.assign(link, { account_claim: '', namespace: 'sheets', operation: 'values.update' })
-// The old pending pane (no Card-review marker) for an operation outside the agent's Control.
-if (variant === 'pending-outside') { delete link.agent_card_consent; Object.assign(link, { namespace: 'slides', operation: 'provider.capabilities' }) }
+// An older hosted link without the Card-review marker, for an operation outside the agent's Control:
+// a hosted caller always gets Card review (operator: "W1018 i am sure all must go via card").
+if (variant === 'pending-outside' || variant === 'markerless') delete link.agent_card_consent
+if (variant === 'pending-outside') Object.assign(link, { namespace: 'slides', operation: 'provider.capabilities' })
+// An external client's pending request keeps the legacy pending page.
+if (variant === 'external') { delete link.agent_card_consent; Object.assign(link, { agent_client_id: 'dcr-cli', resource: SERVICE, claims: 'records:read', account_claim: '' }) }
 if (variant === 'provider') link.account_provider_id = 'google'
 // Outer (MCP/REST) operations keep the pending page's once/always contract inside the Card approval.
 if (variant === 'outer-choose') Object.assign(link, { resource: SERVICE, account_claim: '', outer_operation: 'records_export', invocation_policy: 'choose', invocation_change_id: 'consent-9' })
