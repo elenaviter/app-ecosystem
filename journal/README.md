@@ -7,6 +7,7 @@ that concern this repository so the history is discoverable from here.
 
 | Date | Entry | What it holds for this repository |
 | --- | --- | --- |
+| 2026-11-07 | A hosted agent's consent opens its own Agent Card (W1018 A) | Operator: "W1018 - A"; the pending-page account section (B) deferred: "this woyld be cleaner but this is one extra hop and can wait". Card resolved from the agent's client_id, account proposed only when capable, operations only inside the Control, one Approve in the existing Card transaction, granted events carry the resulting account scope. |
 | 2026-10-30 | A consent delta must become complete authority before resolution | External OAuth consent accumulates held named-service operations per resource and namespace, freezes the stored wildcard boundary before union, and leaves explicit replacement semantics intact. |
 | 2026-10-12 | A known render pin is not Save authority | — |
 | 2026-10-11 | A fallback service registration is a lock-composition boundary | Refusing a different Card service on the same store preserves the original fallback lock; fixtures must reuse their composed service or model another worker with a separate store object over the same durable root. |

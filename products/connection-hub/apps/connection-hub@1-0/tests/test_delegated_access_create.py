@@ -1067,3 +1067,114 @@ async def test_the_screens_update_hands_the_project_policy_to_update_access(entr
     authorize = entrypoint.service.calls[-1]["_authorize_agent_card"]
     assert await authorize("aut_1", "work:project:synthetic") == {"ok": False, "error": "denied"}
     assert asked == [("google:1", "aut_1", "work:project:synthetic")]
+
+
+@pytest.mark.asyncio
+async def test_w1018_agent_grant_event_carries_the_resulting_account_scope(entrypoint, monkeypatch):
+    """W1018 A (operator, 2026-11-07: "W1018 - A"): a consent that binds the account
+    hands the matcher the Card's resulting account scope, and never the Card id as
+    an account; an account-binding demand must not close while the account is unbound."""
+    from kdcube_ai_app.apps.chat.sdk.integrations.connection_hub.delegated_to_kdcube import (
+        consent_demand,
+    )
+
+    calls: list[dict] = []
+
+    async def author(**kwargs):
+        calls.append(kwargs)
+        return 1
+
+    monkeypatch.setattr(consent_demand, "author_consent_granted_events", author)
+    monkeypatch.setattr(
+        entrypoint.module,
+        "_platform_user_payload",
+        lambda *args, **kwargs: {"sub": "user-1", "user_id": "user-1"},
+    )
+    entrypoint.instance.redis = object()
+    resource = "*/kdcube-services@1-0/public/mcp/named_services*"
+    scope = {"google": {"google_acct_1": ["slides:read"]}}
+    # The Card after the merge: an earlier binding kept beside the new one. A malformed
+    # entry (claims not a list) is not passed on as coverage.
+    resulting = {"google": {"google_acct_0": ["drive:read"], "google_acct_1": ["slides:read"], "bad": "slides:read"}}
+    service_create = entrypoint.service.create_access
+
+    async def create_access(user, **kwargs):
+        await service_create(user, **kwargs)
+        return {"ok": True, "access_id": "agent-1", "access": {
+            "access_id": "agent-1", "resource_grants": {resource: ["named_services:use", "slides:read"]},
+            "account_scope": resulting,
+        }}
+
+    entrypoint.service.create_access = create_access
+
+    result = await entrypoint.module.ConnectionHubEntrypoint.delegated_agent_grant_create(
+        entrypoint.instance,
+        data={
+            "client_id": "kdcube-agent:workspace@1-0:main",
+            "resource": resource,
+            "claims": ["named_services:use", "slides:read"],
+            "account_scope": scope,
+        },
+    )
+
+    assert result["ok"] is True
+    assert entrypoint.service.calls[-1]["account_scope"] == scope
+    assert calls and calls[0]["account_id"] == "", "the Card id is not a provider account"
+    assert calls[0]["granted_account_scope"] == {
+        "google": {"google_acct_0": ["drive:read"], "google_acct_1": ["slides:read"]},
+    }
+    assert calls[0]["granted_claims"] == ["named_services:use", "slides:read"]
+
+
+@pytest.mark.asyncio
+async def test_w1018_agent_grant_event_keeps_the_old_call_for_an_sdk_without_scope(entrypoint, monkeypatch):
+    """The app and the SDK ship together, but an SDK whose author function does not
+    take the scope still gets its event (no TypeError swallowed as a lost event)."""
+    from kdcube_ai_app.apps.chat.sdk.integrations.connection_hub.delegated_to_kdcube import (
+        consent_demand,
+    )
+
+    calls: list[dict] = []
+
+    async def author(*, redis, user_id, provider_id, granted_claims, granted_named_service_operations=None,
+                     granted_resource_operations=None, granted_resource="", connector_app_id="", account_id="",
+                     invocation_policy_mode="", invocation_policy_revision=0, invocation_change_id="",
+                     connection_hub_bundle_id="", source_factory=None):
+        calls.append({"account_id": account_id, "granted_claims": list(granted_claims)})
+        return 1
+
+    monkeypatch.setattr(consent_demand, "author_consent_granted_events", author)
+    monkeypatch.setattr(
+        entrypoint.module,
+        "_platform_user_payload",
+        lambda *args, **kwargs: {"sub": "user-1", "user_id": "user-1"},
+    )
+    entrypoint.instance.redis = object()
+
+    result = await entrypoint.module.ConnectionHubEntrypoint.delegated_agent_grant_create(
+        entrypoint.instance,
+        data={
+            "client_id": "kdcube-agent:workspace@1-0:main",
+            "resource": "*/kdcube-services@1-0/public/mcp/named_services*",
+            "claims": ["named_services:use"],
+            "account_scope": {"google": {"google_acct_1": ["slides:read"]}},
+        },
+    )
+
+    assert result["ok"] is True
+    assert calls == [{"account_id": "", "granted_claims": ["named_services:use"]}]
+
+
+def test_w1018_accepts_keyword_reads_the_signature(entrypoint):
+    accepts = entrypoint.module._accepts_keyword
+
+    def explicit(*, a, b=None):
+        return a, b
+
+    def open_ended(*, a, **rest):
+        return a, rest
+
+    assert accepts(explicit, "b") is True
+    assert accepts(explicit, "granted_account_scope") is False
+    assert accepts(open_ended, "granted_account_scope") is True
+    assert accepts(object(), "x") is False
