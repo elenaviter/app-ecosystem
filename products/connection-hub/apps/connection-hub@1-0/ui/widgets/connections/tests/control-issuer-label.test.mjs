@@ -47,7 +47,8 @@ test('every place that names a Control Card by its issuer uses controlIssuerLabe
   const panel = readFileSync(new URL('../src/features/delegatedAccess/DelegatedAccessPanel.tsx', import.meta.url), 'utf8')
   assert.doesNotMatch(panel, /issuer_label \|\| binding\.issuer_ref/)
   assert.doesNotMatch(panel, /binding\?\.issuer_label\s*\|\|\s*linkedControl\?\.binding\?\.issuer_ref/)
-  assert.equal(panel.match(/controlIssuerLabel\(/g)?.length, 4)
+  // W1018 A adds the fifth: the agent Card consent review names the agent's Control.
+  assert.equal(panel.match(/controlIssuerLabel\(/g)?.length, 5)
   assert.match(panel, /record\.issuer_ref && !isPersonIssuer\(record\) \?/)
 })
 
