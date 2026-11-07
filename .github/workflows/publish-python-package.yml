@@ -143,56 +143,20 @@ jobs:
 
       - name: Wait for first-party dependencies of this version on the index
         env:
+          PACKAGE_NAME: ${{ matrix.package }}
           PACKAGE_PATH: ${{ steps.package.outputs.path }}
           EXPECTED_VERSION: ${{ steps.package.outputs.version }}
         run: |
           # A package of the set depends on the others at this exact version.
-          # The previous job published them; PyPI's simple index serves a new
-          # version some minutes after upload, so wait until pip can fetch it.
-          python - <<'PY'
-          import os
-          import subprocess
-          import sys
-          import tempfile
-          import time
-          import tomllib
-          from pathlib import Path
-
-          from packaging.requirements import Requirement
-          from packaging.version import Version
-
-          first_party = {
-              "app-foundation", "service-foundation", "harness-foundation",
-              "capabilities-foundation", "economics-foundation",
-              "connection-hub", "connection-hub-cli", "project-board",
-          }
-          expected = Version(os.environ["EXPECTED_VERSION"])
-          project = tomllib.loads((Path(os.environ["PACKAGE_PATH"]) / "pyproject.toml").read_text())["project"]
-          declared = list(project.get("dependencies", []))
-          for extra in project.get("optional-dependencies", {}).values():
-              declared.extend(extra)
-          waiting = sorted({
-              Requirement(value).name
-              for value in declared
-              if Requirement(value).name in first_party
-              and any(spec.operator == ">=" and Version(spec.version) == expected for spec in Requirement(value).specifier)
-          })
-          deadline = time.monotonic() + 20 * 60
-          for name in waiting:
-              while True:
-                  with tempfile.TemporaryDirectory() as target:
-                      found = subprocess.run(
-                          [sys.executable, "-m", "pip", "download", "--no-deps", "--no-cache-dir",
-                           "--dest", target, f"{name}=={expected}"],
-                          capture_output=True,
-                      ).returncode == 0
-                  if found:
-                      print(f"{name}=={expected} is on the index")
-                      break
-                  if time.monotonic() > deadline:
-                      raise SystemExit(f"{name}=={expected} is not on the index after 20 minutes")
-                  time.sleep(20)
-          PY
+          # The previous job published them; PyPI serves a new version on every
+          # edge some minutes after upload. The file being downloadable is not
+          # enough (run 42207266620, W1016): wait until the install the next
+          # step runs resolves, several times in a row.
+          tested=""
+          if [ "$PACKAGE_NAME" = "connection-hub" ] || [ "$PACKAGE_NAME" = "connection-hub-cli" ] || [ "$PACKAGE_NAME" = "project-board" ]; then
+            tested="--tested"
+          fi
+          python scripts/publish_wait.py --package-path "$PACKAGE_PATH" --expected-version "$EXPECTED_VERSION" $tested
 
       - name: Test package
         env:

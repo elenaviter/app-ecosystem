@@ -307,11 +307,6 @@ def test_the_publish_wait_names_the_set_floors_and_installs_what_the_tests_insta
     assert publish_wait.wait("p", [], probe=lambda _target, _timeout: pytest.fail("no probe"), say=lambda _: None) == 0
 
 
-# PENDING (W1016): the board's GitHub App cannot push workflow files, so the
-# workflow change waits on the operator's choice (grant the permission, or
-# apply the patch herself). strict=True turns this into a failure the moment
-# the workflow calls the script, so the marker cannot outlive the change.
-@pytest.mark.xfail(strict=True, reason="PENDING W1016: workflow change awaits the operator (workflows permission)")
 def test_the_publish_workflow_waits_with_the_install_the_tests_run() -> None:
     workflow = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
     steps = {step.get("name"): step for step in workflow["jobs"]["build-and-publish"]["steps"]}
