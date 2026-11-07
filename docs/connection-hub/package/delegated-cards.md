@@ -1145,6 +1145,48 @@ edit was initiated from. A caller authenticated as the delegate
 (`integration:<client>:<grantor>`) is refused with
 `delegated_access_requires_grantor`.
 
+### Hosted Agent Card consent review
+
+A hosted demand opens the requesting Agent Card with
+`tab=delegated_by_kdcube&pending_agent_grant=1&agent_card_consent=1`.
+The request names `agent_client_id`, `resource`, the missing door `claims`,
+and, when known, `namespace`, `operation` and `outer_operation`. An SDK
+account-binding demand can instead name `account_provider_id`,
+`account_claim` and an optional proposed `account_id`, with no door claims.
+These are review inputs. The app resolves the owner's current single Card;
+an optional `access_id` must match it. An absent, ambiguous or mismatched
+Card refuses the request.
+
+The review highlights the requested capability and provider permission at
+the Card's account picker. A sole capable account can be proposed; several
+eligible accounts require the owner to choose. The current Control ceiling
+limits selectable operations. One **Approve** sends the current Card revision,
+capability selection and `account_scope` through
+`delegated_agent_grant_create` together. There is no second normal Card Save.
+An omitted account scope preserves the stored binding; an explicit empty
+scope binds no accounts. Current provider capability and Control checks
+remain authoritative at commit and use time.
+
+Hosted chat demands carry `agent_card_consent: true` and omit the direct
+resource-only `grant` shortcut. The served URL and structured scene-open
+parameters preserve the same account-only request, including empty door
+claims. Provider claims never become door grants merely because they appear
+in the banner.
+
+Consent completion uses the resulting Card's `granted_account_scope`, not its
+Card id as a provider account id. It publishes `connections.consent.granted`
+only when the requested capability and account claim are covered. A named
+operation resolves current connected-account requirements; unavailable or
+ambiguous requirements leave the demand pending. Explicit account requests
+match that exact account. An approval for another account cannot close them.
+The event remains passive conversation context and starts no turn.
+
+An outside-Control refusal keeps code
+`agent_capability_selection_outside_control` and adds bounded
+`details.outside` catalog coordinates (`resource`, optional `namespace`,
+`operation`, `grant`), a total count and truncation flag. The warning log uses
+the same coordinates, with no account bodies or credential material.
+
 ### Any card: `delegated_access_update`
 
 One source-neutral edit serves all three families. The card keeps its

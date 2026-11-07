@@ -6975,9 +6975,12 @@ class AutomationAccessService:
                     if requested_raw is not None
                     else current
                 )
-                if descriptor_control_record is not None and any(
-                        requested.subtract(current).subtract(authority).capabilities.values()):
-                    return DescriptorAgentCardRefused("agent_capability_selection_outside_control", status=403).to_dict()
+                outside_selection = requested.subtract(current).subtract(authority)
+                if descriptor_control_record is not None and any(outside_selection.capabilities.values()):
+                    from .descriptor_agent_card import descriptor_policy_additions_refusal
+                    return descriptor_policy_additions_refusal(
+                        outside_selection, selected_named_service_operations if isinstance(
+                            selected_named_service_operations, Mapping) else {}).to_dict()
                 aligned = align_resident_selection_to_card_authority(
                     current=current,
                     requested=requested,
