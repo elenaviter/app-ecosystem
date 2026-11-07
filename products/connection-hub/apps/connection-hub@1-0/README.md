@@ -24,7 +24,7 @@ links:
   design: ../../../../docs/connection-hub/frontend/application/README.md
   architecture: ../../../../docs/connection-hub/connection-hub-architecture.md
   journal: ../../../../journal/README.md
-updated_at: 2026-09-11
+updated_at: 2026-11-07
 ---
 
 # Connection Hub App
