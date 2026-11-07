@@ -25,7 +25,9 @@ test('only an explicit agent_card_consent marker selects Card consent review', (
   assert.deepEqual(consent, {
     clientId: CLIENT, accessId: undefined, resource: NAMED, claims: [], namespace: undefined,
     operation: undefined, outerOperation: undefined, accountId: undefined, accountClaim: 'slides:read',
-    accountProviderId: undefined,
+    accountProviderId: undefined, invocationPolicy: undefined, invocationChangeId: undefined, requestBound: undefined,
+    requestDigest: undefined, requestApprovalTicket: undefined, requestCardRevision: undefined,
+    requestAuthorityRevision: undefined, approvalContext: undefined,
   })
   assert.equal(request({ agent_card_consent: '1', agent_client_id: CLIENT, resource: NAMED, account_claim: 'slides:read', account_provider_id: 'google' }).accountProviderId, 'google')
   // The same link without the marker stays a plain pending grant (older links keep their page).
@@ -145,4 +147,64 @@ test('a refusal names what was outside the Control only through bounded identifi
   assert.equal(outsideControlText({ outside: [{ grant: 'slides:write' }] }, label), "Not allowed by this agent's Control: slides:write.")
   assert.equal(outsideControlText({ outside: [{ operation: 'x y <script>' }] }, label), '', 'unbounded text is never shown')
   assert.equal(outsideControlText(undefined, label), '')
+})
+
+test('an outer operation keeps its once/always choice and request-bound proof in the one Card approval', async () => {
+  const { agentCardOuterGrant, outerPolicyState, outerOperationInControl } = await import('../src/features/delegatedAccess/agentCardConsent.ts')
+  const RESOURCE = 'https://service.example/mcp'
+  const card = {
+    access_id: 'agent-1', client_id: CLIENT, card_revision: 4,
+    resource_grants: { [RESOURCE]: ['records:read'] }, resource_operations: { [RESOURCE]: ['records_list'] },
+    account_scope: {},
+  }
+  const base = { agent_card_consent: '1', agent_client_id: CLIENT, resource: RESOURCE, outer_operation: 'records_export' }
+  const scope = { google: { g1: ['drive:read'] } }
+
+  // No policy asked: the operation joins the held ones.
+  const plain = request(base)
+  assert.equal(outerPolicyState(plain), 'none')
+  assert.deepEqual(agentCardOuterGrant({ card, request: plain, requiredDoorGrants: [], operationSelected: true, accountScope: scope, mode: null }), {
+    clientId: CLIENT, accessId: 'agent-1', resource: RESOURCE, claims: ['records:read'], accountScope: scope,
+    expectedCardRevision: 4, resourceOperations: ['records_list', 'records_export'],
+  })
+
+  // The owner chooses: the existing focused grant, exactly that operation, its mode and change id, on the resolved Card.
+  const choose = request({ ...base, invocation_policy: 'choose', invocation_change_id: 'consent-1' })
+  assert.equal(outerPolicyState(choose), 'choose')
+  const once = agentCardOuterGrant({ card, request: choose, requiredDoorGrants: [], operationSelected: true, accountScope: scope, mode: 'once' })
+  assert.equal(once.accessId, 'agent-1')
+  assert.equal(once.invocationMode, 'once')
+  assert.equal(once.invocationChangeId, 'consent-1')
+  assert.deepEqual(once.resourceOperations, ['records_export'], 'exactly one operation carries the policy')
+  assert.deepEqual(once.accountScope, scope)
+  assert.equal(once.expectedCardRevision, 4)
+  assert.equal(agentCardOuterGrant({ card, request: choose, requiredDoorGrants: [], operationSelected: true, accountScope: scope, mode: 'always' }).invocationMode, 'always')
+
+  // Request-bound: the signed ticket and its revisions travel unchanged; nothing is inferred from banner fields.
+  const bound = request({ ...base, invocation_policy: 'once', invocation_change_id: 'consent-2', request_bound: '1',
+    request_digest: 'abc', request_approval_ticket: 'ticket-1', request_card_revision: '4', request_authority_revision: 'r9',
+    approval_application_id: 'app-1' })
+  assert.equal(outerPolicyState(bound), 'preset')
+  const sent = agentCardOuterGrant({ card, request: bound, requiredDoorGrants: [], operationSelected: true, accountScope: scope, mode: 'once' })
+  assert.equal(sent.requestBound, true)
+  assert.equal(sent.requestApprovalTicket, 'ticket-1')
+  assert.equal(sent.requestDigest, 'abc')
+  assert.equal(sent.requestCardRevision, 4)
+  assert.equal(sent.requestAuthorityRevision, 'r9')
+  assert.deepEqual(sent.approvalContext, { application_id: 'app-1' })
+
+  // A policy asked without a change id cannot be committed: Approve stays disabled.
+  assert.equal(outerPolicyState(request({ ...base, invocation_policy: 'choose' })), 'missing')
+
+  // Ceiling for outer operations: none bound allows, unavailable allows nothing, an active Control decides.
+  assert.equal(outerOperationInControl(undefined, RESOURCE, 'records_export'), true)
+  assert.equal(outerOperationInControl({ state: 'unavailable' }, RESOURCE, 'records_export'), false)
+  // An exact Control snapshot, as the runtime requires before it composes (a non-exact one allows no outer operation).
+  const control = { state: 'active', control_authority: {
+    resource_operations: { [RESOURCE]: ['records_list'] }, resource_grants: { [RESOURCE]: ['records:read'] },
+    named_service_operations: {}, account_scope: {},
+    properties: { 'connection_hub.control_snapshot': { schema: 'connection_hub.control_snapshot.v1', mode: 'exact', state: 'exact', basis_catalog_version: 'cat-1' } },
+  } }
+  assert.equal(outerOperationInControl(control, RESOURCE, 'records_list'), true)
+  assert.equal(outerOperationInControl(control, RESOURCE, 'records_export'), false)
 })
