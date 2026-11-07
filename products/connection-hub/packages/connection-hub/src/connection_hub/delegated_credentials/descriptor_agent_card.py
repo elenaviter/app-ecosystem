@@ -10,8 +10,9 @@ until the transaction is decided.
 
 from __future__ import annotations
 
+import logging
 import re
-from typing import Any
+from typing import Any, Iterable, Mapping
 
 from .agent_capability_control import AGENT_DESCRIPTOR_ACCEPTANCE_KIND, AGENT_DESCRIPTOR_ISSUER_KIND
 from .agent_capability_policy import (
@@ -26,16 +27,64 @@ from .controls.snapshot import control_snapshot_is_exact
 from .controls.effective import ControlCardMismatch, effective_card_authority
 from .oauth.grants import integration_subject
 
+LOGGER = logging.getLogger(__name__)
+MAX_OUTSIDE_ENTRIES = 32
+_CATALOG_IDENTIFIER = re.compile(r"[A-Za-z0-9_.*:/@%+?=&~#\-]{1,2048}")
+
 
 class DescriptorAgentCardRefused(ValueError):
     """A bounded, non-secret reason a descriptor Card cannot be written."""
 
-    def __init__(self, reason: str, *, retryable: bool = False, status: int = 409) -> None:
+    def __init__(self, reason: str, *, retryable: bool = False, status: int = 409,
+                 outside: Iterable[Mapping[str, str]] = ()) -> None:
         super().__init__(reason)
         self.reason, self.retryable, self.status = reason, retryable, status
+        # Only catalog coordinates, never Card/account bodies or free exception text.
+        rows: list[dict[str, str]] = []
+        self.outside_count = 0
+        for row in outside:
+            self.outside_count += 1
+            if len(rows) < MAX_OUTSIDE_ENTRIES:
+                rows.append(dict(row))
+        self.outside = [
+            {key: value for key, value in row.items()
+             if key in {"resource", "namespace", "operation", "grant"}
+             and isinstance(value, str) and _CATALOG_IDENTIFIER.fullmatch(value)}
+            for row in rows[:MAX_OUTSIDE_ENTRIES]
+        ]
+        self.outside = [row for row in self.outside if row.get("resource")]
+        if reason == "agent_capability_selection_outside_control" and self.outside:
+            LOGGER.warning("descriptor agent selection refused reason=%s outside=%s outside_count=%s",
+                           reason, self.outside, self.outside_count)
 
     def to_dict(self) -> dict[str, Any]:
-        return {"ok": False, "error": self.reason, "retryable": self.retryable, "status": self.status}
+        result: dict[str, Any] = {"ok": False, "error": self.reason, "retryable": self.retryable, "status": self.status}
+        if self.outside:
+            result["details"] = {"outside": self.outside, "outside_count": self.outside_count,
+                                 "outside_truncated": self.outside_count > MAX_OUTSIDE_ENTRIES}
+        return result
+
+
+def descriptor_policy_additions_refusal(
+    outside: AgentCapabilityPolicy, named_operations: Mapping[str, Any],
+) -> DescriptorAgentCardRefused:
+    """Name descriptor-selection coordinates at the early consent fence too."""
+    rows = []
+    named = set(outside.capabilities.get("named_service_operations", ()))
+    for resource, namespaces in named_operations.items():
+        if not isinstance(namespaces, Mapping):
+            continue
+        for namespace, operations in namespaces.items():
+            for operation in operations:
+                if f"{namespace}/{operation}" in named:
+                    rows.append({"resource": resource, "namespace": namespace, "operation": operation})
+    represented = {f"{row['namespace']}/{row['operation']}" for row in rows}
+    for category, entries in outside.capabilities.items():
+        for entry in entries:
+            if category == "named_service_operations" and entry in represented:
+                continue
+            rows.append({"resource": outside.resource, "namespace": category, "operation": entry})
+    return DescriptorAgentCardRefused("agent_capability_selection_outside_control", status=403, outside=rows)
 
 
 def descriptor_agent_resource(
@@ -126,19 +175,22 @@ def validate_descriptor_agent_additions(
         effective = effective_card_authority(candidate, control)
     except (ControlCardMismatch, AgentCapabilityPolicyError) as exc:
         raise DescriptorAgentCardRefused("agent_capability_control_mismatch") from exc
+    outside = []
     for name in ("resource_grants", "resource_operations"):
         before, after, bounded = (getattr(card, name) for card in (original, candidate, effective))
         for resource, selected in after.items():
-            if not set(selected).difference(before.get(resource, ())) <= set(bounded.get(resource, ())):
-                raise DescriptorAgentCardRefused("agent_capability_selection_outside_control", status=403)
+            for entry in sorted(set(selected).difference(before.get(resource, ()), bounded.get(resource, ()))):
+                outside.append({"resource": resource, "grant" if name == "resource_grants" else "operation": entry})
     before, after, bounded = (card.named_service_operations for card in (original, candidate, effective))
     if after.is_all or after.is_unknown:
         if after != before:
-            raise DescriptorAgentCardRefused("agent_capability_selection_outside_control", status=403)
-        return
-    for resource, namespaces in after.operations.items():
-        for namespace, operations in namespaces.items():
-            prior = before.operations.get(resource, {}).get(namespace, ())
-            allowed = bounded.operations.get(resource, {}).get(namespace, ())
-            if not set(operations).difference(prior) <= set(allowed):
-                raise DescriptorAgentCardRefused("agent_capability_selection_outside_control", status=403)
+            outside.append({"resource": "*", "namespace": "*", "operation": "*"})
+    else:
+        for resource, namespaces in after.operations.items():
+            for namespace, operations in namespaces.items():
+                prior = before.operations.get(resource, {}).get(namespace, ())
+                allowed = bounded.operations.get(resource, {}).get(namespace, ())
+                for operation in sorted(set(operations).difference(prior, allowed)):
+                    outside.append({"resource": resource, "namespace": namespace, "operation": operation})
+    if outside:
+        raise DescriptorAgentCardRefused("agent_capability_selection_outside_control", status=403, outside=outside)

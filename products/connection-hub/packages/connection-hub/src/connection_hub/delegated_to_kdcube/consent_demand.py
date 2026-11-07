@@ -37,6 +37,58 @@ class UserPropertyStore(Protocol):
 
 EventSourceFactory = Callable[[Mapping[str, Any]], Any]
 StoreFactory = Callable[..., Any]
+RequirementsLoader = Callable[..., Any]
+
+
+async def _account_scope_covers_demand(
+    entry: Mapping[str, Any], scope: Mapping[str, Any] | None,
+    requirements_loader: RequirementsLoader | None,
+) -> bool:
+    """A granted capability alone never proves a required account binding."""
+    from connection_hub.agent_account_scope import normalize_account_scope
+
+    granted = normalize_account_scope(scope)
+
+    def covers(provider: str, claims: Sequence[str], account: str = "") -> bool:
+        accounts = granted.get(provider, {})
+        choices = [accounts.get(account, accounts.get("*", ()))] if account else accounts.values()
+        return any("*" in held or set(claims) <= set(held) for held in choices)
+
+    provider = str(entry.get("account_provider_id") or "").strip()
+    claim = str(entry.get("account_claim") or "").strip()
+    if provider and claim and not covers(provider, [claim], str(entry.get("account_id") or "")):
+        return False
+    namespace, operation = _namespace(entry.get("namespace")), _operation(entry.get("operation"))
+    if entry.get("provider_id") != "kdcube" or not namespace or not operation:
+        return True
+    # A hosted named-service demand needs current provider requirements. An
+    # unavailable discovery port leaves the demand pending, never completed.
+    if requirements_loader is None:
+        return False
+    try:
+        requirements = await requirements_loader(namespace=namespace,
+            tenant=str(entry.get("tenant") or ""), project=str(entry.get("project") or ""))
+    except Exception:
+        return False
+    if not isinstance(requirements, (list, tuple)):
+        return False
+    for requirement in requirements:
+        if not isinstance(requirement, Mapping):
+            return False
+        by_operation = requirement.get("claims_by_operation")
+        if isinstance(by_operation, Mapping) and by_operation:
+            claims = list(by_operation.get(operation) or [])
+        else:
+            claims = [value for value in (requirement.get("claims") or [])
+                      if value in (entry.get("claims") or [])]
+            # Legacy flat vocabularies cannot prove that a door-only request
+            # needs no account. Keep an ambiguous demand pending; the next
+            # actual attempt can supply its precise provider claim.
+            if requirement.get("claims") and not claims:
+                return False
+        if claims and not covers(str(requirement.get("provider_id") or ""), claims):
+            return False
+    return True
 
 # One record per user+bundle: {"conversation_id": …, "providers": [group…]}
 # where a group is {provider_id, provider_label?, connector_app_id?, resource?,
@@ -49,7 +101,7 @@ PENDING_CONSENT_KEY = "delegated_to_kdcube.blocked_snapshot"
 # hub can author the granted event back into the right conversation lane.
 # Value: {"demands": [{conversation_id, tenant, project, bundle_id, agent_id,
 # provider_id, connector_app_id, resource, claims, tool_name, namespace,
-# operation, outer_operation,
+# operation, outer_operation, account_provider_id?, account_claim?, account_id?,
 # recorded_at}]}.
 PENDING_DEMANDS_REGISTRY_KEY = "delegated_to_kdcube.consent_demands"
 
@@ -172,6 +224,9 @@ async def record_consent_demand(
     namespace: str = "",
     operation: str = "",
     outer_operation: str = "",
+    account_provider_id: str = "",
+    account_claim: str = "",
+    account_id: str = "",
     tenant: str = "",
     project: str = "",
     agent_id: str = "",
@@ -198,6 +253,9 @@ async def record_consent_demand(
     namespace_key = _namespace(namespace)
     operation_key = _operation(operation) if namespace_key else ""
     outer_operation_key = _operation(outer_operation)
+    account_request = {"account_provider_id": str(account_provider_id or "").strip(),
+                       "account_claim": str(account_claim or "").strip(),
+                       "account_id": str(account_id or "").strip()}
     if not provider_key or not tool_key:
         return False
     if not str(user_id or "").strip() or not str(bundle_id or "").strip() or not str(conversation_id or "").strip():
@@ -212,6 +270,8 @@ async def record_consent_demand(
         if str(group.get("provider_id") or "") != provider_key:
             continue
         if normalize_resource(group.get("resource")) != resource_key:
+            continue
+        if any(str(group.get(key) or "") != value for key, value in account_request.items()):
             continue
         known_tools = {str(t) for t in (group.get("tools") or [])}
         known_claims = {str(c) for c in (group.get("claims") or [])}
@@ -268,6 +328,7 @@ async def record_consent_demand(
             agent_id=agent_id,
             connection_hub_bundle_id=connection_hub_bundle_id,
             property_store=property_store,
+            account_request=account_request,
         )
         return True
     group = {
@@ -276,6 +337,7 @@ async def record_consent_demand(
         "connector_app_id": str(connector_app_id or "").strip(),
         "claims": sorted(set(claim_list)),
         "tools": [tool_key],
+        **account_request,
     }
     if resource_key:
         group["resource"] = resource_key
@@ -308,6 +370,7 @@ async def record_consent_demand(
         agent_id=agent_id,
         connection_hub_bundle_id=connection_hub_bundle_id,
         property_store=property_store,
+        account_request=account_request,
     )
     return True
 
@@ -340,6 +403,7 @@ async def _register_demand_address(
     agent_id: str,
     connection_hub_bundle_id: str,
     property_store: UserPropertyStore | None = None,
+    account_request: Mapping[str, str] | None = None,
 ) -> None:
     """Append this demand (with its full conversation address) to the
     hub-addressed registry, so consent completion can author the granted
@@ -371,6 +435,7 @@ async def _register_demand_address(
                 and _namespace(entry.get("namespace")) == namespace
                 and _operation(entry.get("operation")) == operation
                 and _operation(entry.get("outer_operation")) == outer_operation
+                and all(str(entry.get(key) or "") == value for key, value in (account_request or {}).items())
             ):
                 entry["claims"] = sorted({*(entry.get("claims") or []), *claims})
                 break
@@ -390,6 +455,7 @@ async def _register_demand_address(
                 "operation": operation,
                 "outer_operation": outer_operation,
                 "recorded_at": time.time(),
+                **dict(account_request or {}),
             })
         await property_store.set_user_prop(
             PENDING_DEMANDS_REGISTRY_KEY,
@@ -463,6 +529,8 @@ async def author_consent_granted_events(
     user_id: str,
     provider_id: str,
     granted_claims: list | tuple,
+    granted_account_scope: Mapping[str, Any] | None = None,
+    requirements_loader: RequirementsLoader | None = None,
     granted_named_service_operations: Mapping[str, Sequence[str]] | str | None = None,
     granted_resource_operations: Mapping[str, Sequence[str]] | None = None,
     granted_resource: str = "",
@@ -520,6 +588,7 @@ async def author_consent_granted_events(
             and not all_operations_granted
             and not granted_operations
             and not granted_outer_operations
+            and not granted_account_scope
         )
     ):
         return 0
@@ -550,12 +619,16 @@ async def author_consent_granted_events(
             entry_namespace = _namespace(entry.get("namespace"))
             entry_operation = _operation(entry.get("operation"))
             entry_outer_operation = _operation(entry.get("outer_operation"))
+            account_claim = str(entry.get("account_claim") or "").strip()
+            account_requirement = bool(entry.get("account_provider_id") and account_claim)
+            door_claims = entry_claims - {account_claim} if account_requirement else entry_claims
             has_requirement = bool(
                 entry_claims
                 or (entry_namespace and entry_operation)
                 or entry_outer_operation
+                or account_requirement
             )
-            claims_match = not entry_claims or entry_claims <= granted
+            claims_match = not door_claims or door_claims <= granted
             operation_match = (
                 not entry_operation
                 or (
@@ -604,6 +677,8 @@ async def author_consent_granted_events(
                     or entry_connector == caller_connector
                 )
             )
+            if matches and not await _account_scope_covers_demand(entry, granted_account_scope, requirements_loader):
+                matches = False
             if not matches:
                 remaining.append(entry)
                 continue
@@ -864,6 +939,9 @@ async def announce_consent_demand(
             namespace=_namespace(namespace),
             operation=_operation(operation),
             outer_operation=_operation(outer_operation),
+            account_provider_id=str(((payload or {}).get("consent") or {}).get("account_provider_id") or ""),
+            account_claim=str(((payload or {}).get("consent") or {}).get("account_claim") or ""),
+            account_id=str(((payload or {}).get("consent") or {}).get("account_id") or ""),
             tenant=str(identity.get("tenant_id") or "").strip(),
             project=str(identity.get("project_id") or "").strip(),
             agent_id=agent_id,
