@@ -194,7 +194,7 @@ async def test_new_descriptor_default_stays_unselected_and_withdrawn_choice_rest
 
 
 @pytest.mark.asyncio
-async def test_consent_outside_descriptor_control_refuses_before_mint_or_commit(tmp_path, monkeypatch):
+async def test_consent_outside_descriptor_control_refuses_before_mint_or_commit(tmp_path, monkeypatch, caplog):
     service, store, decisions, resident, _, _, _ = await _consent_world(tmp_path, allow_post=False)
 
     async def mint(*args, **kwargs):
@@ -203,5 +203,26 @@ async def test_consent_outside_descriptor_control_refuses_before_mint_or_commit(
     monkeypatch.setattr(service, "_mint_card_credential", mint)
     answer = await _consent(service, resident)
     assert answer["ok"] is False and answer["error"] == "agent_capability_selection_outside_control"
+    assert {"resource": NAMED_RESOURCE, "namespace": "slack", "operation": POST} in answer["details"]["outside"]
+    assert any("agent_capability_selection_outside_control" in record.getMessage()
+               and POST in record.getMessage() for record in caplog.records)
     assert await _current(store, resident) == resident
     assert decisions.decisions == [] and service._persistence.direct == []
+
+
+def test_control_refusal_details_are_bounded_catalog_coordinates_only(caplog):
+    from connection_hub.delegated_credentials.descriptor_agent_card import DescriptorAgentCardRefused
+
+    refusal = DescriptorAgentCardRefused("agent_capability_selection_outside_control", status=403, outside=[
+        {"resource": NAMED_RESOURCE, "namespace": "slack", "operation": POST,
+         "account_id": "private-account", "message": "private free text"},
+        {"resource": NAMED_RESOURCE, "operation": "credential=secret with whitespace"},
+        *({"resource": NAMED_RESOURCE, "operation": f"operation.{i}"} for i in range(40)),
+    ])
+    details = refusal.to_dict()["details"]
+    assert len(details["outside"]) == 32
+    assert details["outside_count"] == 42 and details["outside_truncated"] is True
+    assert set(details["outside"][0]) == {"resource", "namespace", "operation"}
+    rendered = repr(details) + " ".join(record.getMessage() for record in caplog.records)
+    assert "private-account" not in rendered and "private free text" not in rendered
+    assert "secret with whitespace" not in rendered

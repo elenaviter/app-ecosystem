@@ -4,13 +4,35 @@ import pytest
 
 from connection_hub.delegated_to_kdcube.consent_demand import (
     PENDING_DEMANDS_REGISTRY_KEY,
-    author_consent_granted_events,
+    author_consent_granted_events as _author_consent_granted_events,
+    pending_consent_delta,
     read_pending_consent,
     record_consent_demand,
 )
 
 
 _NAMED_SERVICES_RESOURCE = "*/kdcube-services@1-0/public/mcp/named_services*"
+
+
+async def _no_account_requirements(**_kwargs):
+    return []
+
+
+async def author_consent_granted_events(**kwargs):
+    # Existing event-routing cases use a service with no provider account.
+    kwargs.setdefault("requirements_loader", _no_account_requirements)
+    return await _author_consent_granted_events(**kwargs)
+
+
+def test_provider_preflight_cannot_announce_an_unverified_agent_card_binding():
+    provider = {"provider_id": "google", "claims": ["slides:read"], "tools": ["slides.list"]}
+    agent = {**provider, "provider_id": "kdcube", "account_provider_id": "google",
+             "account_claim": "slides:read", "account_id": "work"}
+    assert pending_consent_delta([agent], []) == []
+    # Even a failed provider preflight uses the provider id, not the agent
+    # grant's kdcube key; their difference cannot prove Card consent.
+    assert pending_consent_delta([agent], [provider]) == []
+    assert pending_consent_delta([provider], []) == [provider]
 
 
 class MemoryPropertyStore:
@@ -518,3 +540,110 @@ async def test_failed_event_publish_keeps_the_demand_for_retry() -> None:
         ("user-1", "connection-hub@1-0", PENDING_DEMANDS_REGISTRY_KEY)
     ]
     assert len(registry["demands"]) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("account_only", [False, True])
+async def test_hosted_consent_completes_only_after_requested_account_is_bound(account_only):
+    store, source = MemoryPropertyStore(), LaneSource()
+    client = "kdcube-agent:workspace@1-0:main"
+    await record_consent_demand(**demand(provider_id="kdcube", connector_app_id=client,
+        claims=["slides:read"], resource=_NAMED_SERVICES_RESOURCE, tool_name="slides.list",
+        namespace="" if account_only else "slides", operation="" if account_only else "object.list",
+        **({"account_provider_id": "google", "account_claim": "slides:read", "account_id": "work"}
+           if account_only else {})), property_store=store)
+
+    async def requirements(**_kwargs):
+        return [{"provider_id": "google", "claims_by_operation": {"object.list": ["slides:read"]}}]
+
+    arguments = dict(redis=None, user_id="user-1", provider_id="kdcube", connector_app_id=client,
+        granted_claims=[] if account_only else ["slides:read"], granted_resource=_NAMED_SERVICES_RESOURCE,
+        granted_named_service_operations={} if account_only else {"slides": ["object.list"]}, requirements_loader=requirements,
+        connection_hub_bundle_id="connection-hub@1-0", source_factory=lambda _entry: source,
+        property_store=store)
+    # Resource/operation approval, another account's unrelated claim, and an
+    # absent binding cannot announce success for this provider requirement.
+    for scope in ({}, {"google": {"work": ["slides:write"]}}):
+        assert await _author_consent_granted_events(**arguments, granted_account_scope=scope) == 0
+        assert source.published == []
+        assert len(store.values[("user-1", "connection-hub@1-0", PENDING_DEMANDS_REGISTRY_KEY)]["demands"]) == 1
+    assert await _author_consent_granted_events(**arguments,
+        granted_account_scope={"google": {"work": ["slides:read"]}}) == 1
+    assert len(source.published) == 1
+
+
+@pytest.mark.asyncio
+async def test_hosted_operation_demand_stays_pending_when_requirements_cannot_be_read():
+    store, source = MemoryPropertyStore(), LaneSource()
+    client = "kdcube-agent:workspace@1-0:main"
+    await record_consent_demand(**demand(provider_id="kdcube", connector_app_id=client,
+        claims=[], resource=_NAMED_SERVICES_RESOURCE, namespace="slides", operation="object.list"),
+        property_store=store)
+    assert await _author_consent_granted_events(redis=None, user_id="user-1", provider_id="kdcube",
+        connector_app_id=client, granted_claims=[], granted_resource=_NAMED_SERVICES_RESOURCE,
+        granted_named_service_operations={"slides": ["object.list"]}, source_factory=lambda _entry: source,
+        property_store=store) == 0
+    assert source.published == []
+
+
+@pytest.mark.asyncio
+async def test_account_approval_closes_only_the_requested_account_for_the_same_tool():
+    store, source = MemoryPropertyStore(), LaneSource()
+    client = "kdcube-agent:workspace@1-0:main"
+    for account in ("work", "personal"):
+        assert await record_consent_demand(**demand(provider_id="kdcube", connector_app_id=client,
+            claims=["slides:read"], resource=_NAMED_SERVICES_RESOURCE, tool_name="slides.list",
+            account_provider_id="google", account_claim="slides:read", account_id=account),
+            property_store=store)
+    assert await _author_consent_granted_events(redis=None, user_id="user-1", provider_id="kdcube",
+        connector_app_id=client, granted_claims=[], granted_resource=_NAMED_SERVICES_RESOURCE,
+        granted_account_scope={"google": {"work": ["slides:read"]}},
+        source_factory=lambda _entry: source, property_store=store) == 1
+    pending = store.values[("user-1", "connection-hub@1-0", PENDING_DEMANDS_REGISTRY_KEY)]["demands"]
+    assert [entry["account_id"] for entry in pending] == ["personal"]
+    assert len(source.published) == 1
+
+
+@pytest.mark.asyncio
+async def test_ambiguous_legacy_provider_vocabulary_does_not_prove_account_completion():
+    store, source = MemoryPropertyStore(), LaneSource()
+    client = "kdcube-agent:workspace@1-0:main"
+    await record_consent_demand(**demand(provider_id="kdcube", connector_app_id=client,
+        claims=["named_services:use"], resource=_NAMED_SERVICES_RESOURCE,
+        namespace="slides", operation="object.list"), property_store=store)
+
+    async def requirements(**_kwargs):
+        return [{"provider_id": "google", "claims": ["slides:read", "slides:write"]}]
+
+    assert await _author_consent_granted_events(redis=None, user_id="user-1", provider_id="kdcube",
+        connector_app_id=client, granted_claims=["named_services:use"],
+        granted_resource=_NAMED_SERVICES_RESOURCE,
+        granted_named_service_operations={"slides": ["object.list"]},
+        requirements_loader=requirements, source_factory=lambda _entry: source,
+        property_store=store) == 0
+    assert source.published == []
+
+
+@pytest.mark.asyncio
+async def test_operation_account_requirements_need_all_claims_on_one_account():
+    store, source = MemoryPropertyStore(), LaneSource()
+    client = "kdcube-agent:workspace@1-0:main"
+    await record_consent_demand(**demand(provider_id="kdcube", connector_app_id=client,
+        claims=[], resource=_NAMED_SERVICES_RESOURCE, namespace="sheets", operation="object.update"),
+        property_store=store)
+
+    async def requirements(**_kwargs):
+        return [{"provider_id": "google", "claims_by_operation": {
+            "object.update": ["sheets:read", "sheets:write"]}}]
+
+    arguments = dict(redis=None, user_id="user-1", provider_id="kdcube", connector_app_id=client,
+        granted_claims=[], granted_resource=_NAMED_SERVICES_RESOURCE,
+        granted_named_service_operations={"sheets": ["object.update"]},
+        requirements_loader=requirements, source_factory=lambda _entry: source, property_store=store)
+    # The operation uses one account; claims split across two bindings do not
+    # make either account capable of this request.
+    assert await _author_consent_granted_events(**arguments,
+        granted_account_scope={"google": {"work": ["sheets:read"], "personal": ["sheets:write"]}}) == 0
+    assert source.published == []
+    assert await _author_consent_granted_events(**arguments,
+        granted_account_scope={"google": {"work": ["sheets:read", "sheets:write"]}}) == 1

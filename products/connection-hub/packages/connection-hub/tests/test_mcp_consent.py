@@ -40,7 +40,7 @@ def test_consent_payload_carries_the_chat_contract_and_claims():
     assert exc.consent["connection_hub_url"] == "https://h/hub"
 
 
-def test_agent_client_id_adds_a_one_click_grant_action():
+def test_hosted_agent_requires_card_review_before_grant():
     exc = mcp_consent_from_denial(
         {"status": 403, "reason": "authority_mismatch"},
         resource=_RES, claims=["memories:read"], tool_name="memory_search",
@@ -48,16 +48,11 @@ def test_agent_client_id_adds_a_one_click_grant_action():
     )
     assert exc.consent["kind"] == "delegated_agent_grant"
     assert exc.consent["agent_client_id"] == "kdcube-agent:app@v1:lg-react"
-    grant = exc.consent["grant"]
-    assert grant["operation"] == "delegated_agent_grant_create"
-    assert grant["payload"] == {
-        "client_id": "kdcube-agent:app@v1:lg-react",
-        "resource": _RES,
-        "claims": ["memories:read"],
-    }
+    assert exc.consent["agent_card_consent"] is True
+    assert "grant" not in exc.consent
 
 
-def test_chat_event_payload_is_the_nested_banner_shape_with_grant():
+def test_chat_event_payload_is_the_nested_banner_shape_with_card_review():
     exc = mcp_consent_from_denial(
         {"status": 403, "reason": "authority_mismatch"},
         resource=_RES, claims=["memories:read"], tool_name="memory_search",
@@ -72,9 +67,9 @@ def test_chat_event_payload_is_the_nested_banner_shape_with_grant():
     assert block["claims"] == ["memories:read"]
     assert block["resource"] == _RES
     assert block["url"] == "https://h/hub"
-    assert block["action_label"] == "Grant access"          # a grant, not connect
+    assert block["action_label"] == "Review agent access"
     assert block["agent_client_id"] == "kdcube-agent:app@v1:lg-react"
-    assert block["grant"]["operation"] == "delegated_agent_grant_create"
+    assert block["agent_card_consent"] is True and "grant" not in block
     assert ev["tools"] == ["memory_search"]
 
 
@@ -164,9 +159,8 @@ async def test_agent_consent_records_an_outer_operation_without_claims():
 
     await announce_agent_consent(consent, demand_announcer=announce)
 
-    assert consent.consent["grant"]["payload"]["resource_operations"] == {
-        _RES: ["memory_delete"]
-    }
+    assert consent.consent["agent_card_consent"] is True
+    assert "grant" not in consent.consent
     assert consent.chat_event_payload()["consent"]["outer_operation"] == "memory_delete"
     assert demands[0]["claims"] == []
     assert demands[0]["outer_operation"] == "memory_delete"

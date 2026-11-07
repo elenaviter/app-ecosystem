@@ -170,6 +170,69 @@ Connection Hub may scan tool declarations for admin visibility, but the
 application bundle/tool definition remains the source of truth for which
 provider claims a tool needs.
 
+### A hosted agent's consent opens its own Agent Card
+
+When a hosted agent is refused because its Card does not allow a provider
+account permission (`agent_account_binding_required`) or a named-service
+operation, the consent opens on **that agent's Card**, not on a separate
+pending page. Operator, 2026-11-07 (W1018): "W1018 - A". The alternative of an
+account section in the pending page was deferred: "this woyld be cleaner but
+this is one extra hop and can wait".
+
+Both entrances carry the same request: the chat's one-click Grant (as
+`connections.hub.open` params) and the SDK's account-binding link (as URL
+params). The marker `agent_card_consent=1` selects Card consent review. A
+hosted agent's pending request (`agent_client_id` starting `kdcube-agent:`)
+opens Card review even from an older link without the marker, and the pending
+page never renders or commits for a hosted caller. Operator, 2026-11-07: "W1018
+i am sure all must go via card". An external client's pending request keeps
+the pending page and its grant contract.
+
+| Field | Meaning |
+| --- | --- |
+| `agent_card_consent=1` | Review on the agent's Card. The pending page and a normal Card Save are not both shown. |
+| `agent_client_id`, `resource` | The agent and the resource the refusal named. |
+| `account_claim`, `account_provider_id` | The per-account permission the agent lacks, and its provider when the request names no operation (an account-only demand). |
+| `account_id` | The account the refusal saw, when it saw one. |
+| `namespace`, `operation`, `claims` | The named-service operation and claims the refusal named, when it named them. |
+| `access_id` | Optional. It must be the Card resolved for the agent, or nothing opens. |
+
+Every field is a proposal, never authority:
+
+- The Card is the viewer's one active Card whose `client_id` is the agent's.
+  None, several, or a named `access_id` of another agent opens nothing and says
+  why.
+- The account is the named one if it can do the claim, else the only
+  connected account of that provider that can. When several can, none is
+  preselected and the owner chooses.
+- An operation is offered only inside the agent's Control (its Card's linked
+  Control). Outside it, the operation is shown "not in this agent's Control",
+  unticked and disabled, and is never sent; the same holds on the older
+  pending page. A refusal that still names entries outside the Control
+  (`details.outside`) is shown by those bounded identifiers only.
+
+The review shows the Card's id, revision, Control and what it holds. One
+**Approve on this Card** sends one `delegated_agent_grant_create` on that Card
+at the shown revision, with the requested operation and the exact
+`account_scope`, in the existing Card transaction. There is no second Save.
+
+A request that names an outer (MCP/REST) operation keeps the pending page's
+contract inside that one approval: the owner chooses **Once** or **Always**
+beside the operation (or the request's `invocation_policy` presets it), and the
+mode, `invocation_change_id` and any request-bound proof
+(`request_bound`, `request_digest`, `request_approval_ticket`,
+`request_card_revision`, `request_authority_revision`,
+`approval_application_id`) travel unchanged in the same focused grant. A
+policy asked without a change id cannot be approved here.
+
+The `connections.consent.granted` event the grant authors carries the
+resulting Card's account scope (`granted_account_scope`), so the SDK closes an
+account-binding demand only when the account is covered; the Card's own id is
+never passed as an account. When the installed SDK's matcher cannot take that
+scope, no event is authored (logged as
+`sdk_completion_without_account_scope`): a scope-blind match would close a
+demand whose account is still unbound. The approval itself still commits.
+
 ## Delegated automation and provider-backed named services
 
 The generic named-services MCP resource has two authorization layers and may
