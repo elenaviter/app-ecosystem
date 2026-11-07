@@ -39,7 +39,10 @@ class _Services:
         self.record = record
         self.removed = []
         self.profiles = SimpleNamespace(get=lambda name: record if record and name == record.name else None)
-        self.oauth_profile_sessions = SimpleNamespace(credential_present=lambda _profile: holds)
+        async def present(_profile):
+            return holds
+
+        self.oauth_profile_sessions = SimpleNamespace(credential_present_bounded=present)
         outer = self
 
         class _ProfileService:
@@ -68,9 +71,17 @@ def _usable(usable=True):
     )
 
 
-def _run(tmp_path, monkeypatch, services, *, workers=None, profile="", identity=None, access_id="", probes=None):
+SELECTION = ["--config", "/srv/pb targets/second/relay.json"]
+
+
+def _run(tmp_path, monkeypatch, services, *, workers=None, profile="", identity=None, access_id="", probes=None,
+         selection=None, root=True):
     workers = workers if workers is not None else [_channel()]
-    monkeypatch.setattr(module.HostRelayConfig, "load", lambda _path: _config(tmp_path, workers))
+    config = _config(tmp_path, workers)
+    if not root:
+        config.connection_hub_state_root = None
+    monkeypatch.setattr(module.HostRelayConfig, "load", lambda _path: config)
+    monkeypatch.setattr(module, "selection_arguments", lambda _path, *, target_id: list(selection if selection is not None else []))
     return asyncio.run(
         module.forget_card(
             tmp_path / "relay.json",
@@ -78,7 +89,7 @@ def _run(tmp_path, monkeypatch, services, *, workers=None, profile="", identity=
             identity=identity,
             access_id=access_id,
             probes=probes or _usable(),
-            build_services=lambda _config: services,
+            build_services=lambda _paths: services,
         )
     )
 
@@ -92,6 +103,7 @@ def test_without_an_access_id_it_only_reads_and_names_the_access_id_to_revoke(tm
     assert result["credential_on_this_machine"] is False
     assert result["state_root"].endswith("connection-hub")
     assert result["next_command"] == "pb worker forget-card problem-board-claude-1 --access-id aut_old"
+    assert result["state_root"] == str(tmp_path / "connection-hub")
     assert "Revoke access_id aut_old in Connection Hub" in result["next"]
     assert services.removed == []
 
@@ -176,6 +188,71 @@ def test_a_disabled_channel_is_refused(tmp_path, monkeypatch):
     assert refused.value.code == "work_relay_worker_disabled"
 
 
+def test_the_receipt_names_the_default_store_when_none_is_configured(tmp_path, monkeypatch):
+    from connection_hub.caller.paths import StatePaths
+
+    result = _run(tmp_path, monkeypatch, _Services(_record()), profile="problem-board-claude-1", root=False)
+    assert result["state_root"] == str(StatePaths.default().root) and result["state_root"]
+
+
+def test_every_printed_line_keeps_the_selected_target_quoted(tmp_path, monkeypatch):
+    # Two targets with the same Card profile name: the printed lines must reach this one.
+    read = _run(tmp_path, monkeypatch, _Services(_record()), profile="problem-board-claude-1", selection=SELECTION)
+    assert read["next_command"] == (
+        "pb worker forget-card problem-board-claude-1 --access-id aut_old --config '/srv/pb targets/second/relay.json'"
+    )
+    done = _run(tmp_path, monkeypatch, _Services(_record()), profile="problem-board-claude-1", access_id="aut_old",
+                selection=SELECTION)
+    assert done["next_command"] == (
+        "pb worker authorize problem-board-claude-1 --device --config '/srv/pb targets/second/relay.json'"
+    )
+    with pytest.raises(DomainError) as present:
+        _run(tmp_path, monkeypatch, _Services(_record(), holds=True), profile="problem-board-claude-1", selection=SELECTION)
+    assert present.value.details["next"] == (
+        "pb worker authorize problem-board-claude-1 --device --config '/srv/pb targets/second/relay.json' --replace-card"
+    )
+    racing = Exception("present")
+    racing.code = "oauth_profile_credential_present"
+    with pytest.raises(DomainError) as raced:
+        _run(tmp_path, monkeypatch, _Services(_record(), retire=racing), profile="problem-board-claude-1",
+             access_id="aut_old", selection=SELECTION)
+    assert raced.value.details["next"] == present.value.details["next"]
+    # The default target adds nothing.
+    plain = _run(tmp_path, monkeypatch, _Services(_record()), profile="problem-board-claude-1")
+    assert plain["next_command"] == "pb worker forget-card problem-board-claude-1 --access-id aut_old"
+
+
+def test_an_agent_never_acts_on_another_agents_profile(tmp_path, monkeypatch):
+    workers = [_channel(), _channel(profile="problem-board-codex-2", name="codex-bbb", alias="beta@host")]
+    services = _Services(_record(name="problem-board-codex-2"))
+    with pytest.raises(DomainError) as refused:
+        _run(tmp_path, monkeypatch, services, workers=workers, identity=SimpleNamespace(worker_name="claude-code-aaa"),
+             profile="problem-board-codex-2", access_id="aut_old")
+    assert refused.value.code == "work_relay_card_profile_not_own"
+    assert services.removed == []
+    # Its own profile, named or not, is fine; a person's host terminal may name any.
+    own = _run(tmp_path, monkeypatch, _Services(_record()), workers=workers,
+               identity=SimpleNamespace(worker_name="claude-code-aaa"), profile="problem-board-claude-1")
+    assert own["profile"] == "problem-board-claude-1"
+    host = _run(tmp_path, monkeypatch, services, workers=workers, identity=None, profile="problem-board-codex-2")
+    assert host["profile"] == "problem-board-codex-2"
+    # An agent session with no channel on this target is refused too.
+    with pytest.raises(DomainError) as stranger:
+        _run(tmp_path, monkeypatch, services, workers=workers, identity=SimpleNamespace(worker_name="other"),
+             profile="problem-board-codex-2")
+    assert stranger.value.code == "work_relay_card_profile_required"
+
+
+def test_an_unexpected_failure_never_echoes_its_text(tmp_path, monkeypatch):
+    canary = RuntimeError("CANARY-token-value-must-not-print")
+    services = _Services(_record(), retire=canary)
+    with pytest.raises(DomainError) as refused:
+        _run(tmp_path, monkeypatch, services, profile="problem-board-claude-1", access_id="aut_old")
+    assert refused.value.code == "work_relay_card_forget_refused"
+    assert "CANARY" not in str(refused.value) and "CANARY" not in repr(refused.value.details)
+    assert refused.value.details["cause"] == "RuntimeError"
+
+
 def test_the_cli_parses_forget_card_with_and_without_a_profile():
     from project_board.client import cli
 
@@ -184,3 +261,68 @@ def test_the_cli_parses_forget_card_with_and_without_a_profile():
     assert (args.worker_command, args.profile, args.access_id) == ("forget-card", "problem-board-claude-1", "aut_old")
     args = parser.parse_args(["worker", "forget-card", "--runtime-kind", "claude-code", "--runtime-session-id", "s1"])
     assert args.profile == "" and args.access_id == ""
+
+
+_STUCK_CLI = r"""
+import asyncio, pathlib, sys, threading
+from types import SimpleNamespace
+sys.path.insert(0, sys.argv[1])
+from connection_hub.caller.authorization import profile_session
+from test_oauth_credential_lock import _authorized
+from project_board.client import forget_card as module
+from project_board.client import prerequisites
+from project_board.contract.errors import DomainError
+
+profile_session.CUSTODY_DEADLINE_SECONDS = 0.5
+tmp = pathlib.Path(sys.argv[2])
+
+class Stuck:
+    def __init__(self, inner):
+        self.inner = inner
+    def get(self, ref):
+        threading.Event().wait()  # a native store that never answers
+    def put(self, ref, token):
+        return self.inner.put(ref, token)
+    def remove(self, ref):
+        return self.inner.remove(ref)
+
+async def main():
+    service, profiles, credentials = await _authorized(tmp, ["agent-a"])
+    record = profiles.require("agent-a")
+    service._credentials = Stuck(credentials)
+    channel = SimpleNamespace(profile="agent-a", worker_name="w", worker_alias="a@h", state="active")
+    config = SimpleNamespace(endpoint=record.endpoint, target_id="t", connection_hub_state_root=tmp / "hub", workers=[channel])
+    module.HostRelayConfig.load = staticmethod(lambda _path: config)
+    module.selection_arguments = lambda _path, *, target_id: []
+    probes = prerequisites.Probes(system=lambda: "Linux", which=lambda _n: "/usr/bin/x", run=lambda _c: None,
+                                  user=lambda: "u", os_release=lambda: "ID=ubuntu", keyring_state=lambda: (True, "ok"),
+                                  hashlib_state=lambda: (True, "ok"))
+    services = SimpleNamespace(profiles=profiles, oauth_profile_sessions=service, profile_service=None)
+    try:
+        await module.forget_card(tmp / "relay.json", profile="agent-a", access_id=record.access_id,
+                                 probes=probes, build_services=lambda _paths: services)
+    except DomainError as exc:
+        print(exc.code, flush=True)
+    assert profiles.get("agent-a") == record
+
+asyncio.run(main())
+print("exited-cleanly", flush=True)
+"""
+
+
+def test_a_store_that_never_answers_refuses_and_the_whole_command_exits(tmp_path):
+    import os
+    import pathlib
+    import subprocess
+    import sys
+    import time
+
+    hub_tests = pathlib.Path(__file__).resolve().parents[4] / "connection-hub" / "packages" / "connection-hub-cli" / "tests"
+    if not (hub_tests / "test_oauth_credential_lock.py").is_file():
+        pytest.skip("Connection Hub CLI tests are not beside this package")
+    started = time.monotonic()
+    result = subprocess.run([sys.executable, "-c", _STUCK_CLI, str(hub_tests), str(tmp_path)],
+                            capture_output=True, text=True, timeout=60)
+    assert result.returncode == 0, result.stderr[-2000:]
+    assert result.stdout.split() == ["credential_store_unreadable", "exited-cleanly"]
+    assert time.monotonic() - started < 30

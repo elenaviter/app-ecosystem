@@ -918,7 +918,7 @@ def build_parser() -> argparse.ArgumentParser:
     command = worker_commands.add_parser(
         "forget-card",
         help=(
-            "Forget a revoked Card's local record after a password store reset (W1012). "
+            "Forget a revoked Card's local record after a password store reset. "
             "Without --access-id it only reads and names the access_id to revoke in Connection Hub."
         ),
     )
@@ -6075,9 +6075,15 @@ def _worker_command(args: Any) -> dict[str, Any]:
     if args.worker_command == "forget-card":
         from .forget_card import forget_card
 
-        identity = None
-        if not str(args.profile or "").strip():
+        # The session's identity whenever one resolves, profile or not: an
+        # agent acts on its own channel only (review P2). Without one, this is
+        # a person's host terminal, and the named profile is used.
+        try:
             identity = _identity(args)
+        except (DomainError, ValueError):
+            if not str(args.profile or "").strip():
+                raise
+            identity = None
         return asyncio.run(
             forget_card(
                 resolve_host_config_path(getattr(args, "config", None)),

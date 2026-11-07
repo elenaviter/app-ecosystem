@@ -208,3 +208,91 @@ async def test_the_profile_service_refuses_a_non_oauth_profile(tmp_path):
         await service.retire_revoked("bearer-a", access_id=profile.access_id)
     assert refused.value.code == "profile_not_oauth"
     assert profiles.get("bearer-a") == bearer
+
+
+# Review of AE #947 (codex-infra), findings 1 and 4.
+
+
+@pytest.mark.asyncio
+async def test_an_older_valid_record_without_record_version_is_still_forgotten(tmp_path):
+    import json
+
+    service, profiles, _, profile, _ = await _reset_store(tmp_path)
+    document = json.loads(profiles.path.read_text())
+    document["profiles"]["agent-a"].pop("record_version", None)
+    profiles.path.write_text(json.dumps(document))
+    older = profiles.require("agent-a")
+    assert older == profile
+    removed = await service.retire_revoked_without_custody("agent-a", access_id=profile.access_id)
+    assert removed == profile and profiles.get("agent-a") is None
+
+
+@pytest.mark.asyncio
+async def test_the_bounded_presence_read_answers_yes_and_no(tmp_path):
+    service, profiles, credentials = await _authorized(tmp_path, ["agent-a"])
+    profile = profiles.require("agent-a")
+    assert await service.credential_present_bounded(profile) is True
+    credentials.remove(profile.credential_ref)
+    assert await service.credential_present_bounded(profile) is False
+
+
+_STUCK_SCRIPT = r"""
+import asyncio, sys, threading, time
+sys.path.insert(0, sys.argv[1])
+from connection_hub.caller.authorization import profile_session
+from test_oauth_credential_lock import _authorized
+
+profile_session.CUSTODY_DEADLINE_SECONDS = 0.5
+
+class Stuck:
+    def __init__(self, inner):
+        self.inner = inner
+    def get(self, ref):
+        threading.Event().wait()  # a native store that never answers
+    def put(self, ref, token):
+        return self.inner.put(ref, token)
+    def remove(self, ref):
+        return self.inner.remove(ref)
+
+async def main(tmp):
+    import pathlib
+    service, profiles, credentials = await _authorized(pathlib.Path(tmp), ["agent-a"])
+    profile = profiles.require("agent-a")
+    service._credentials = Stuck(credentials)
+    for call in (
+        lambda: service.credential_present_bounded(profile),
+        lambda: service.retire_revoked_without_custody("agent-a", access_id=profile.access_id),
+    ):
+        try:
+            await call()
+        except Exception as exc:
+            print(getattr(exc, "code", type(exc).__name__), flush=True)
+    assert profiles.get("agent-a") == profile
+
+asyncio.run(main(sys.argv[2]))
+print("exited-cleanly", flush=True)
+"""
+
+
+def test_a_store_that_never_answers_refuses_and_the_process_still_exits(tmp_path):
+    import os
+    import subprocess
+    import sys
+    import time
+
+    started = time.monotonic()
+    result = subprocess.run(
+        [sys.executable, "-c", _STUCK_SCRIPT, os.path.dirname(__file__), str(tmp_path)],
+        capture_output=True,
+        text=True,
+        timeout=60,
+        env={**os.environ},
+    )
+    elapsed = time.monotonic() - started
+    assert result.returncode == 0, result.stderr[-2000:]
+    assert result.stdout.split() == [
+        "oauth_credential_custody_timeout",
+        "oauth_credential_custody_timeout",
+        "exited-cleanly",
+    ]
+    assert elapsed < 30, elapsed

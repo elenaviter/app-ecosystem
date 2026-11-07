@@ -18,24 +18,48 @@ metadata only. It never revokes, resets or authorizes anything.
 
 from __future__ import annotations
 
-import asyncio
+import shlex
 from pathlib import Path
 from typing import Any
 
 from ..contract.errors import DomainError
-from .host_config import HostRelayConfig, WorkerChannelConfig
+from .authorization import authorization_command
+from .host_config import HostRelayConfig, WorkerChannelConfig, selection_arguments
 from .prerequisites import Probes
-
-CREDENTIAL_READ_SECONDS = 10.0
 
 
 def _channel(config: HostRelayConfig, *, profile: str, identity: Any) -> WorkerChannelConfig:
-    """The agent's own channel from its session, or the profile a person named on a host terminal."""
+    """The agent's own channel in an agent session; a named profile only from a person's host terminal.
 
-    if profile:
+    Design review (codex-infra): an agent acts on its own selected runtime
+    channel and never on another one, even when it names a profile.
+    """
+
+    enrolled = [
+        {"alias": channel.worker_alias or channel.worker_name, "profile": channel.profile}
+        for channel in config.workers
+    ]
+    if identity is not None:
+        own = [channel for channel in config.workers if channel.worker_name == identity.worker_name]
+        if len(own) != 1:
+            raise DomainError(
+                "work_relay_card_profile_required",
+                "This agent session has no channel on the selected target, so it cannot change a Card here. "
+                "A person names the profile from a host terminal.",
+                status=404,
+                details={"worker_name": identity.worker_name, "enrolled": enrolled},
+            )
+        if profile and profile != own[0].profile:
+            raise DomainError(
+                "work_relay_card_profile_not_own",
+                "An agent forgets only its own Card's record; another agent's Card is the person's to handle "
+                "from a host terminal. Nothing was read or changed.",
+                status=403,
+                details={"profile": profile, "own_profile": own[0].profile},
+            )
+        matches = own
+    elif profile:
         matches = [channel for channel in config.workers if channel.profile == profile]
-    elif identity is not None:
-        matches = [channel for channel in config.workers if channel.worker_name == identity.worker_name]
     else:
         matches = []
     if len(matches) != 1:
@@ -44,13 +68,7 @@ def _channel(config: HostRelayConfig, *, profile: str, identity: Any) -> WorkerC
             "Name the agent's Card profile (pb status in that agent's session prints it), or run this in the "
             "agent's own session.",
             status=404,
-            details={
-                "profile": profile,
-                "enrolled": [
-                    {"alias": channel.worker_alias or channel.worker_name, "profile": channel.profile}
-                    for channel in config.workers
-                ],
-            },
+            details={"profile": profile, "enrolled": enrolled},
         )
     channel = matches[0]
     if channel.state == "disabled":
@@ -93,25 +111,23 @@ async def forget_card(
     config = HostRelayConfig.load(path)
     channel = _channel(config, profile=str(profile or "").strip(), identity=identity)
     _store_usable(probes or Probes())
-    if build_services is None:
-        try:
-            from connection_hub.caller.paths import StatePaths
-            from connection_hub.caller.services import build_caller_services
-        except ImportError as exc:
-            raise DomainError(
-                "connection_hub_client_not_installed",
-                "The Project Board host command requires the connection-hub[client] package.",
-                status=500,
-            ) from exc
-        paths = (
-            StatePaths(config.connection_hub_state_root)
-            if config.connection_hub_state_root is not None
-            else StatePaths.default()
-        )
-        services = build_caller_services(paths=paths)
-    else:
-        services = build_services(config)
-    state_root = str(config.connection_hub_state_root or "")
+    try:
+        from connection_hub.caller.paths import StatePaths
+        from connection_hub.caller.services import build_caller_services
+    except ImportError as exc:
+        raise DomainError(
+            "connection_hub_client_not_installed",
+            "The Project Board host command requires the connection-hub[client] package.",
+            status=500,
+        ) from exc
+    paths = (
+        StatePaths(config.connection_hub_state_root)
+        if config.connection_hub_state_root is not None
+        else StatePaths.default()
+    )
+    services = (build_services or (lambda resolved: build_caller_services(paths=resolved)))(paths)
+    # The store actually used, the default included (review finding 5).
+    state_root = str(paths.root)
     record = services.profiles.get(channel.profile)
     if record is None:
         raise DomainError(
@@ -135,20 +151,17 @@ async def forget_card(
             details={"profile": channel.profile},
         )
     # A yes or no only; the credential value is never returned or printed.
-    # Off the event loop and bounded: a store that stops answering refuses.
+    # The library's bounded read: a daemon thread abandoned at its deadline, so
+    # a store that never answers neither hangs the command nor keeps the
+    # process alive after the refusal (review P1).
     try:
-        holds_credential = bool(
-            await asyncio.wait_for(
-                asyncio.to_thread(services.oauth_profile_sessions.credential_present, record),
-                timeout=CREDENTIAL_READ_SECONDS,
-            )
-        )
+        holds_credential = bool(await services.oauth_profile_sessions.credential_present_bounded(record))
     except Exception as exc:  # noqa: BLE001 - fail closed: nothing is changed
         raise DomainError(
             "credential_store_unreadable",
             "This machine's password store did not answer for that Card, so nothing was changed.",
             status=409,
-            details={"profile": channel.profile, "cause": str(getattr(exc, "code", "") or type(exc).__name__)},
+            details={"profile": channel.profile, "cause": str(getattr(exc, "code", "") or type(exc).__name__)[:80]},
         ) from exc
     base = {
         "profile": channel.profile,
@@ -158,7 +171,12 @@ async def forget_card(
         "recorded_access_id": record.access_id or "",
         "credential_on_this_machine": holds_credential,
     }
-    replace_line = f"pb worker authorize {channel.profile} --device --replace-card"
+    # Every printed line keeps the selected target, so a line pasted in another
+    # terminal reaches this target's profile, never a same-named one on the
+    # default target (review P1).
+    selection = selection_arguments(path, target_id=config.target_id)
+    replace_line = shlex.join([*authorization_command(channel.profile, selection=selection), "--replace-card"])
+    authorize = shlex.join(authorization_command(channel.profile, selection=selection))
     if holds_credential:
         # Absolute (design review): a Card whose credential is here is revoked
         # properly with that credential, never forgotten.
@@ -171,7 +189,9 @@ async def forget_card(
         )
     given = str(access_id or "").strip()
     if not given:
-        following = f"pb worker forget-card {channel.profile} --access-id {record.access_id}"
+        following = shlex.join(
+            ["pb", "worker", "forget-card", channel.profile, "--access-id", str(record.access_id or ""), *selection]
+        )
         return {
             **base,
             "state": "read_only",
@@ -185,6 +205,8 @@ async def forget_card(
     try:
         removed = await services.profile_service.retire_revoked(channel.profile, access_id=given)
     except Exception as exc:  # noqa: BLE001 - every refusal is reported by its code, nothing changed
+        # Codes and catalog messages only: an exception's own text can carry
+        # anything, so it is never echoed (review).
         code = str(getattr(exc, "code", "") or type(exc).__name__)
         details = {**base, "cause": code}
         if code == "oauth_profile_access_id_confirmation_required":
@@ -203,13 +225,20 @@ async def forget_card(
                 status=409,
                 details={**details, "next": replace_line},
             ) from exc
+        known = {
+            "oauth_credential_custody_timeout": "This machine's password store did not answer in time.",
+            "oauth_profile_lock_timeout": "Another operation holds this Card's lock; try again in a moment.",
+            "profile_changed": "The Card's record changed meanwhile; read it again with pb worker forget-card.",
+            "profile_not_found": "This machine has no local record of that Card any more.",
+            "profile_in_use": "The profile is installed for an MCP client; remove that client entry first.",
+            "oauth_profile_credential_changed": "The Card's credential changed meanwhile; read it again.",
+        }
         raise DomainError(
-            code,
-            str(getattr(exc, "message", "") or exc) or "The local record was not forgotten.",
+            "work_relay_card_forget_refused" if code not in known else code,
+            f"{known.get(code, 'The local record was not forgotten.')} Nothing was changed.",
             status=409,
             details=details,
         ) from exc
-    authorize = f"pb worker authorize {channel.profile} --device"
     return {
         **base,
         "state": "forgotten",

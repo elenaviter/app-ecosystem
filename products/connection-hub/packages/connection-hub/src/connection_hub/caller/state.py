@@ -232,7 +232,10 @@ class ProfileStore:
                 raise ProfileError(
                     "profile_not_found", f"Caller profile '{name}' does not exist."
                 )
-            if raw != expected.to_dict():
+            # The parsed record, not the stored shape: an older valid record
+            # (record_version absent or older) parses to the same profile and
+            # is still the one read (review of AE #947, finding 4).
+            if CallerProfile.from_dict(raw) != expected:
                 raise ProfileError(
                     "profile_changed",
                     f"Caller profile '{name}' changed while it was being removed; nothing was removed.",
