@@ -52,6 +52,9 @@ class MCPConsentRequired(Exception):
         self.resource = resource
         self.claims = list(claims)
         self.consent = dict(consent)
+        if str(self.consent.get("agent_client_id") or "").startswith("kdcube-agent:"):
+            self.consent["agent_card_consent"] = True
+            self.consent.pop("grant", None)
         self.agent_message = agent_message
 
     def to_tool_result(self) -> Dict[str, Any]:
@@ -228,9 +231,6 @@ def mcp_consent_from_denial(
             "operation": AGENT_GRANT_CREATE_OPERATION,
             "payload": grant_payload,
         }
-        if agent_client_id.startswith("kdcube-agent:"):
-            consent["agent_card_consent"] = True
-            consent.pop("grant", None)
     return MCPConsentRequired(
         resource=resource, claims=claim_list, consent=consent, agent_message=agent_message,
     )

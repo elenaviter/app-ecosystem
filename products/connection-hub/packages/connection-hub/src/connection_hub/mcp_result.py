@@ -273,7 +273,14 @@ async def announce_result_consent(
             namespace=namespace,
             operation=operation,
             outer_operation=outer_operation,
+            connection_hub_url=str(block.get("connection_hub_url") or block.get("url") or ""),
         )
+        # The surface's complete review context survives result translation.
+        # These remain proposals checked against the current owner Card; a
+        # provider claim displayed by the tool never becomes a door grant.
+        for key in ("access_id", "account_provider_id", "account_id", "account_claim", "retry_hint"):
+            if key in block:
+                consent.consent[key] = block[key]
         if agent_consent_announcer is not None:
             await agent_consent_announcer(consent)
         else:
