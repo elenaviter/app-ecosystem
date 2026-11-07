@@ -1180,6 +1180,8 @@ operation resolves current connected-account requirements; unavailable or
 ambiguous requirements leave the demand pending. Explicit account requests
 match that exact account. An approval for another account cannot close them.
 The event remains passive conversation context and starts no turn.
+The turn-start provider-preflight fallback cannot announce Agent Card
+completion: provider availability alone proves neither capability nor binding.
 
 An outside-Control refusal keeps code
 `agent_capability_selection_outside_control` and adds bounded

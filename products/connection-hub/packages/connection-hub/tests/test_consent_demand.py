@@ -5,6 +5,7 @@ import pytest
 from connection_hub.delegated_to_kdcube.consent_demand import (
     PENDING_DEMANDS_REGISTRY_KEY,
     author_consent_granted_events as _author_consent_granted_events,
+    pending_consent_delta,
     read_pending_consent,
     record_consent_demand,
 )
@@ -21,6 +22,17 @@ async def author_consent_granted_events(**kwargs):
     # Existing event-routing cases use a service with no provider account.
     kwargs.setdefault("requirements_loader", _no_account_requirements)
     return await _author_consent_granted_events(**kwargs)
+
+
+def test_provider_preflight_cannot_announce_an_unverified_agent_card_binding():
+    provider = {"provider_id": "google", "claims": ["slides:read"], "tools": ["slides.list"]}
+    agent = {**provider, "provider_id": "kdcube", "account_provider_id": "google",
+             "account_claim": "slides:read", "account_id": "work"}
+    assert pending_consent_delta([agent], []) == []
+    # Even a failed provider preflight uses the provider id, not the agent
+    # grant's kdcube key; their difference cannot prove Card consent.
+    assert pending_consent_delta([agent], [provider]) == []
+    assert pending_consent_delta([provider], []) == [provider]
 
 
 class MemoryPropertyStore:
