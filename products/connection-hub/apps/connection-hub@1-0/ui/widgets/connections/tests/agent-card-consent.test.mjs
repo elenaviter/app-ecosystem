@@ -23,7 +23,7 @@ function request(values) {
   return agentCardConsentFromParams((key) => String(values[key] ?? ''))
 }
 
-test('only an explicit agent_card_consent marker selects Card consent review', () => {
+test('the agent_card_consent marker selects Card consent review', () => {
   // The SDK account-binding link as the W1018 retest received it (rows 3 and 4), with the marker.
   const consent = request({ agent_card_consent: '1', agent_client_id: CLIENT, resource: NAMED, claims: '', account_claim: 'slides:read' })
   assert.deepEqual(consent, {
@@ -34,10 +34,19 @@ test('only an explicit agent_card_consent marker selects Card consent review', (
     requestAuthorityRevision: undefined, approvalContext: undefined,
   })
   assert.equal(request({ agent_card_consent: '1', agent_client_id: CLIENT, resource: NAMED, account_claim: 'slides:read', account_provider_id: 'google' }).accountProviderId, 'google')
-  // The same link without the marker stays a plain pending grant (older links keep their page).
-  assert.equal(request({ pending_agent_grant: '1', agent_client_id: CLIENT, resource: NAMED }), null)
+  // The same link without the marker is still Card review for a hosted caller (see the caller test below).
+  assert.equal(request({ pending_agent_grant: '1', agent_client_id: CLIENT, resource: NAMED }).clientId, CLIENT)
   assert.equal(request({ agent_card_consent: '1', resource: NAMED }), null, 'the agent is required')
   assert.equal(request({ agent_card_consent: '1', agent_client_id: CLIENT }), null, 'the resource is required')
+})
+
+test('a hosted caller selects Card review even without the marker; an external client never does', () => {
+  // An older hosted link: pending_agent_grant only, no agent_card_consent.
+  const markerless = request({ pending_agent_grant: '1', agent_client_id: CLIENT, resource: NAMED, claims: '', account_claim: 'slides:read' })
+  assert.equal(markerless.clientId, CLIENT)
+  assert.equal(markerless.accountClaim, 'slides:read')
+  assert.equal(request({ pending_agent_grant: '1', agent_client_id: 'dcr-cli', resource: NAMED, claims: 'x' }), null, 'external clients keep the pending page')
+  assert.equal(request({ agent_client_id: CLIENT, resource: NAMED }), null, 'no request at all without pending_agent_grant or the marker')
 })
 
 test('the Card is the viewer\'s single active Card for the agent; a named access_id must be that Card', () => {

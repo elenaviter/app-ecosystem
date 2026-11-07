@@ -181,8 +181,12 @@ this is one extra hop and can wait".
 
 Both entrances carry the same request: the chat's one-click Grant (as
 `connections.hub.open` params) and the SDK's account-binding link (as URL
-params). The marker `agent_card_consent=1` selects Card consent review; a
-widget that does not know it shows the older pending page.
+params). The marker `agent_card_consent=1` selects Card consent review. A
+hosted agent's pending request (`agent_client_id` starting `kdcube-agent:`)
+opens Card review even from an older link without the marker, and the pending
+page never renders or commits for a hosted caller. Operator, 2026-11-07: "W1018
+i am sure all must go via card". An external client's pending request keeps
+the pending page and its grant contract.
 
 | Field | Meaning |
 | --- | --- |
