@@ -1,3 +1,7 @@
+import type { DelegatedControlCardAuthority } from '../../api/types';
+import { controlKeepsCallerOperation } from './controlCardPreview.ts';
+import { focusedGrantArgs, type InvocationMode } from './invocationChoice.ts';
+
 /**
  * W1018 A: a hosted agent's consent opens its own Agent Card.
  *
@@ -26,6 +30,16 @@ export interface AgentCardConsentRequest {
   accountClaim?: string;
   /** The provider of an account-only demand (no namespace/operation to read it from). */
   accountProviderId?: string;
+  /** The once/always choice of an outer operation, as the pending page reads it:
+   *  `choose`, or a preset `once`/`always`. */
+  invocationPolicy?: string;
+  invocationChangeId?: string;
+  requestBound?: boolean;
+  requestDigest?: string;
+  requestApprovalTicket?: string;
+  requestCardRevision?: number;
+  requestAuthorityRevision?: string;
+  approvalContext?: Record<string, string>;
 }
 
 export function agentCardConsentFromParams(get: (key: string) => string): AgentCardConsentRequest | null {
@@ -45,6 +59,19 @@ export function agentCardConsentFromParams(get: (key: string) => string): AgentC
     accountId: optional('account_id'),
     accountClaim: optional('account_claim'),
     accountProviderId: optional('account_provider_id'),
+    invocationPolicy: optional('invocation_policy'),
+    invocationChangeId: optional('invocation_change_id'),
+    requestBound: get('request_bound').trim() === '1' || undefined,
+    requestDigest: optional('request_digest'),
+    requestApprovalTicket: optional('request_approval_ticket'),
+    requestCardRevision: (() => {
+      const value = Number.parseInt(get('request_card_revision').trim(), 10);
+      return Number.isFinite(value) ? value : undefined;
+    })(),
+    requestAuthorityRevision: optional('request_authority_revision'),
+    approvalContext: optional('approval_application_id')
+      ? { application_id: get('approval_application_id').trim() }
+      : undefined,
   };
 }
 
@@ -279,4 +306,63 @@ export function outsideControlText(
     return [safe(resource) ? `${what} on ${resourceLabel(safe(resource))}` : what];
   });
   return names.length ? `Not allowed by this agent's Control: ${names.join(', ')}.` : '';
+}
+
+/** Whether an outer (MCP/REST) operation is inside the agent's Control: none
+ *  bound allows it, an unavailable Control allows nothing. */
+export function outerOperationInControl(
+  control: { state?: string; control_authority?: DelegatedControlCardAuthority; external_mcp_family?: string } | null | undefined,
+  resource: string,
+  operation?: string,
+): boolean {
+  if (!operation) return true;
+  if (!control || control.state === 'not_controlled') return true;
+  if (control.state !== 'active' || !control.control_authority) return false;
+  return controlKeepsCallerOperation(control.control_authority, resource, operation, control.external_mcp_family);
+}
+
+/** What the outer operation's once/always choice needs before Approve:
+ *  `none` (no policy asked), `choose` (the owner picks), `preset` (the link
+ *  fixed it), or `missing` (a policy was asked but the denial gave no change
+ *  id, so no policy can be committed and Approve stays disabled). */
+export function outerPolicyState(request: AgentCardConsentRequest): 'none' | 'choose' | 'preset' | 'missing' {
+  if (!request.outerOperation || !request.invocationPolicy) return 'none';
+  if (!request.invocationChangeId) return 'missing';
+  return request.invocationPolicy === 'choose' ? 'choose' : 'preset';
+}
+
+/** The one grant for a request that names an outer operation. With a policy,
+ *  it is the existing focused grant (exactly that operation, its mode, change id
+ *  and any request-bound proof) on the resolved Card, with the account scope
+ *  in the same transaction; without one, the operation joins the Card's held
+ *  operations. */
+export function agentCardOuterGrant(
+  input: AgentCardConsentGrantInput & {
+    card: AgentCardConsentGrantInput['card'] & { resource_operations?: Record<string, string[]> };
+    mode: InvocationMode | null;
+  },
+) {
+  const { card, request, accountScope, mode, operationSelected } = input;
+  const base = agentCardConsentGrant({ ...input, operationSelected: false });
+  if (!request.outerOperation || !operationSelected) return base;
+  if (request.invocationPolicy && request.invocationChangeId && mode) {
+    return focusedGrantArgs({
+      clientId: request.clientId,
+      accessId: card.access_id,
+      resource: request.resource,
+      operation: request.outerOperation,
+      changeId: request.invocationChangeId,
+      requestBound: request.requestBound,
+      requestDigest: request.requestDigest,
+      requestApprovalTicket: request.requestApprovalTicket,
+      requestCardRevision: request.requestCardRevision,
+      requestAuthorityRevision: request.requestAuthorityRevision,
+      approvalContext: request.approvalContext,
+    }, mode, base.claims, {
+      accountScope,
+      ...(typeof card.card_revision === 'number' ? { expectedCardRevision: card.card_revision } : {}),
+    });
+  }
+  const held = card.resource_operations?.[request.resource] || [];
+  return { ...base, resourceOperations: Array.from(new Set([...held, request.outerOperation])) };
 }

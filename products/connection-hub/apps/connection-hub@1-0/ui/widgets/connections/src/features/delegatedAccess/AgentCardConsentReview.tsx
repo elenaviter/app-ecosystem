@@ -20,9 +20,12 @@ import type {
 import { agentGrantWirePayload } from './agentGrantPayload';
 import {
   agentCardConsentGrant,
+  agentCardOuterGrant,
   consentProviderFor,
   controlNamedOperations,
   operationInControl,
+  outerOperationInControl,
+  outerPolicyState,
   outsideControlText,
   proposeConsentAccount,
   withProposedAccountClaim,
@@ -31,6 +34,8 @@ import {
 } from './agentCardConsent';
 import { resolvePendingServiceCapability } from './pendingGrantProjection';
 import { operationRows } from './DelegatedResourceCatalog';
+import { OperationInvocationChoice } from './InvocationControls';
+import { INVOCATION_MODE_TEXT, type InvocationMode } from './invocationChoice';
 
 type Scope = Record<string, Record<string, string[]>>;
 
@@ -83,6 +88,17 @@ export function AgentCardConsentReview({
       : heldScope
   ));
   const [operationSelected, setOperationSelected] = useState(operationAllowed && Boolean(request.operation));
+  // An outer (MCP/REST) operation keeps the pending page's once/always contract:
+  // chosen beside that one operation, or fixed by the request, and sent in the
+  // same approval with its change id and any request-bound proof.
+  const outerAllowed = outerOperationInControl(control, request.resource, request.outerOperation);
+  const policy = outerPolicyState(request);
+  const [outerSelected, setOuterSelected] = useState(outerAllowed && Boolean(request.outerOperation));
+  const [mode, setMode] = useState<InvocationMode | null>(() => (
+    policy === 'preset' && (request.invocationPolicy === 'once' || request.invocationPolicy === 'always')
+      ? request.invocationPolicy
+      : null
+  ));
   const [busy, setBusy] = useState(false);
   const [done, setDone] = useState(false);
   const [error, setError] = useState('');
@@ -101,17 +117,23 @@ export function AgentCardConsentReview({
   const bound = (accountId: string) => (scope[providerId]?.[accountId] || []).includes(claim);
   const heldBound = (accountId: string) => (heldScope[providerId]?.[accountId] || []).includes(claim);
   const accountChosen = !claim || capable.some((account) => bound(account.account_id));
-  const addsSomething = JSON.stringify(scope) !== JSON.stringify(heldScope) || operationSelected;
-  const canApprove = !busy && !done && accountChosen && addsSomething;
+  const addsSomething = JSON.stringify(scope) !== JSON.stringify(heldScope) || operationSelected || outerSelected;
+  const outerReady = !outerSelected || policy === 'none' || (policy !== 'missing' && Boolean(mode));
+  const canApprove = !busy && !done && accountChosen && addsSomething && outerReady;
 
   const approve = async () => {
     setBusy(true);
     setError('');
     try {
-      const args = agentCardConsentGrant({
-        card, request, requiredDoorGrants: capability?.requiredDoorGrants || [],
-        operationSelected, accountScope: scope,
-      });
+      const args = request.outerOperation
+        ? agentCardOuterGrant({
+          card: card as Parameters<typeof agentCardOuterGrant>[0]['card'],
+          request, requiredDoorGrants: [], operationSelected: outerSelected, accountScope: scope, mode,
+        })
+        : agentCardConsentGrant({
+          card, request, requiredDoorGrants: capability?.requiredDoorGrants || [],
+          operationSelected, accountScope: scope,
+        });
       const answer = await postOp<Record<string, unknown>>('delegated_agent_grant_create', agentGrantWirePayload(args));
       if (answer?.ok === false) {
         const outside = answer.error === 'agent_capability_selection_outside_control'
@@ -165,6 +187,46 @@ export function AgentCardConsentReview({
           {operationAllowed ? null : (
             <small className="muted">The agent&apos;s Control does not allow this operation, so it cannot be granted here.</small>
           )}
+        </div>
+      ) : null}
+      {request.outerOperation ? (
+        <div className="request-review-section" data-testid="agent-card-consent-outer">
+          <div className="account-title">Tool</div>
+          <label className={`namespace-operation${outerAllowed ? '' : ' namespace-operation-unavailable'}`}>
+            <input
+              type="checkbox"
+              checked={outerSelected}
+              disabled={!outerAllowed || done}
+              onChange={(event) => setOuterSelected(event.target.checked)}
+            />
+            <span>
+              <code>{request.outerOperation}</code>
+              {outerAllowed ? null : (
+                <span className="badge badge-error" style={{ marginLeft: 8 }}>not in this agent&apos;s Control</span>
+              )}
+            </span>
+          </label>
+          {outerAllowed && policy === 'choose' ? (
+            <div className="pending-operation-policy">
+              <OperationInvocationChoice
+                operation={request.outerOperation}
+                mode={mode}
+                busy={busy || done || !outerSelected}
+                onChoose={setMode}
+              />
+            </div>
+          ) : null}
+          {outerAllowed && policy === 'preset' && mode ? (
+            <small className="muted">Allowed for {INVOCATION_MODE_TEXT[mode]}, as the request asks.</small>
+          ) : null}
+          {policy === 'missing' ? (
+            <div className="notice" style={{ marginTop: 6 }}>
+              This request asks for a once/always choice but carries no change to commit it with, so it cannot be approved here.
+            </div>
+          ) : null}
+          {request.requestBound ? (
+            <small className="muted">This approval applies to the exact request the agent made.</small>
+          ) : null}
         </div>
       ) : null}
       {claim ? (

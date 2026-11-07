@@ -12,6 +12,7 @@ import { loadDelegatedToKdcube } from '../../src/features/delegatedToKdcube/dele
 import '../../src/styles.css'
 
 const NAMED = '*/api/integrations/bundles/*/*/kdcube-services@1-0/public/mcp/named_services*'
+const SERVICE = 'https://service.example/mcp'
 const CLIENT = 'kdcube-agent:workspace@2026-03-31-13-36:main'
 const OPS = ['provider.about', 'provider.capabilities', 'object.list', 'object.upsert']
 const grantOf = (op: string) => (op === 'object.upsert' ? 'slides:write' : 'slides:read')
@@ -22,16 +23,27 @@ const card = () => ({
   access_id: 'agent-0e150a469bf4edbd', source: 'agent', card_kind: 'agent', state: 'active', label: 'workspace agent',
   client_id: CLIENT, grantor_subject: 'person-1', delegate_subject: '', card_revision: revision, catalog_version: 'cat-1',
   created_at: 1_760_000_000, expires_at: 1_960_000_000,
-  resource_grants: { [NAMED]: ['named_services:use', 'slides:read'] }, resource_operations: { [NAMED]: ['named_services_call'] },
+  resource_grants: { [NAMED]: ['named_services:use', 'slides:read'], [SERVICE]: ['records:read'] },
+  resource_operations: { [NAMED]: ['named_services_call'], [SERVICE]: ['records_list'] },
   named_service_operations: { [NAMED]: { slides: ['object.list'] } },
   catalog_row_by_resource: { [NAMED]: NAMED }, account_scope: bound, properties: {}, composition_mode: '',
   control_card: {
     state: 'active', binding: { issuer_kind: 'agent_descriptor', issuer_ref: 'workspace', label: 'Descriptor ceiling' },
-    control_authority: { named_service_operations: { [NAMED]: { slides: ['provider.about', 'object.list', 'object.upsert'] } }, resource_grants: { [NAMED]: ['named_services:use', 'slides:read', 'slides:write'] } },
+    // An exact Control snapshot, as the runtime composes it: records_export is inside, records_purge is not.
+    control_authority: {
+      named_service_operations: { [NAMED]: { slides: ['provider.about', 'object.list', 'object.upsert'] } },
+      resource_grants: { [NAMED]: ['named_services:use', 'slides:read', 'slides:write'], [SERVICE]: ['records:read'] },
+      resource_operations: { [NAMED]: ['named_services_call'], [SERVICE]: ['records_list', 'records_export'] },
+      account_scope: {},
+      properties: { 'connection_hub.control_snapshot': { schema: 'connection_hub.control_snapshot.v1', mode: 'exact', state: 'exact', basis_catalog_version: 'cat-1' } },
+    },
   },
 })
 let bound: Record<string, Record<string, string[]>> = {}
 const resources = [{
+  resource: SERVICE, label: 'Records service', grants: ['records:read'],
+  operations: [{ name: 'records_list', grants: ['records:read'] }, { name: 'records_export', grants: ['records:read'] }, { name: 'records_purge', grants: ['records:read'] }],
+}, {
   resource: NAMED, label: 'Named services', grants: ['named_services:use', 'slides:read', 'slides:write'], operations: [],
   named_services: [{
     namespace: 'slides', label: 'Presentations',
@@ -78,6 +90,11 @@ if (variant === 'mismatch') link.access_id = 'agent-someone-else'
 // The old pending pane (no Card-review marker) for an operation outside the agent's Control.
 if (variant === 'pending-outside') { delete link.agent_card_consent; Object.assign(link, { namespace: 'slides', operation: 'provider.capabilities' }) }
 if (variant === 'provider') link.account_provider_id = 'google'
+// Outer (MCP/REST) operations keep the pending page's once/always contract inside the Card approval.
+if (variant === 'outer-choose') Object.assign(link, { resource: SERVICE, account_claim: '', outer_operation: 'records_export', invocation_policy: 'choose', invocation_change_id: 'consent-9' })
+if (variant === 'outer-bound') Object.assign(link, { resource: SERVICE, account_claim: '', outer_operation: 'records_export', invocation_policy: 'once', invocation_change_id: 'consent-10',
+  request_bound: '1', request_digest: 'd1', request_approval_ticket: 'ticket-1', request_card_revision: '7', request_authority_revision: 'r3', approval_application_id: 'app-1' })
+if (variant === 'outer-outside') Object.assign(link, { resource: SERVICE, account_claim: '', outer_operation: 'records_purge', invocation_policy: 'choose', invocation_change_id: 'consent-11' })
 // variant=url: the SDK account-binding link opens the page itself; the request is in the URL, not in props.
 createRoot(document.getElementById('root')!).render(
   <Provider store={store}><DelegatedAccessPanel openParams={variant === 'url' ? undefined : link} /></Provider>,

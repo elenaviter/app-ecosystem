@@ -1127,9 +1127,10 @@ async def test_w1018_agent_grant_event_carries_the_resulting_account_scope(entry
 
 
 @pytest.mark.asyncio
-async def test_w1018_agent_grant_event_keeps_the_old_call_for_an_sdk_without_scope(entrypoint, monkeypatch):
-    """The app and the SDK ship together, but an SDK whose author function does not
-    take the scope still gets its event (no TypeError swallowed as a lost event)."""
+async def test_w1018_agent_grant_event_is_not_authored_through_a_scope_blind_sdk(entrypoint, monkeypatch, caplog):
+    """An SDK whose completion matcher cannot take the account scope is never
+    called: its resource-only match is the false completion W1018 closes. The
+    approval still succeeds, and a bounded diagnostic names why no event was sent."""
     from kdcube_ai_app.apps.chat.sdk.integrations.connection_hub.delegated_to_kdcube import (
         consent_demand,
     )
@@ -1162,7 +1163,8 @@ async def test_w1018_agent_grant_event_keeps_the_old_call_for_an_sdk_without_sco
     )
 
     assert result["ok"] is True
-    assert calls == [{"account_id": "", "granted_claims": ["named_services:use"]}]
+    assert calls == [], "the scope-blind matcher is not called"
+    assert "sdk_completion_without_account_scope" in caplog.text
 
 
 def test_w1018_accepts_keyword_reads_the_signature(entrypoint):
