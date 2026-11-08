@@ -991,7 +991,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     command = worker_commands.add_parser(
         "inbox",
-        help="List pending mail headers, action first and newest first; no bodies, no leases.",
+        help="Page pending headers, or inspect one exact message without leasing it.",
     )
     _host_config(command)
     _agent_identity(command)
@@ -999,6 +999,15 @@ def build_parser() -> argparse.ArgumentParser:
     command.add_argument("--kind", action="append", default=[])
     command.add_argument("--sender", default="")
     command.add_argument("--since", default="", help="Only mail created at or after this UTC time.")
+    command.add_argument("--cursor", default="")
+    command.add_argument("--message-ref", default="", help="Inspection only: read one addressed message without a lease.")
+
+    command = worker_commands.add_parser("return-confirm", help="Explicitly checkpoint a current coordinator return-reconciliation decision after recording item dispositions.")
+    _host_config(command)
+    _agent_identity(command)
+    command.add_argument("--project-ref", required=True)
+    command.add_argument("--episode-id", required=True)
+    command.add_argument("--decision-message-ref", required=True)
 
     command = worker_commands.add_parser(
         "inbox-retire",
@@ -1613,7 +1622,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
 
     command = worker_commands.add_parser(
-        "settle", help="Acknowledge or refuse one message leased by this session."
+        "settle", help="Acknowledge, refuse or mark obsolete one leased message."
     )
     _host_config(command)
     _agent_identity(command)
@@ -1624,7 +1633,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     command.add_argument("--message-ref", required=True)
     command.add_argument("--lease-id", required=True)
-    command.add_argument("--outcome", choices=("acknowledged", "refused"), required=True)
+    command.add_argument("--outcome", choices=("acknowledged", "refused", "obsolete"), required=True)
     command.add_argument("--summary", default="")
 
     command = worker_commands.add_parser(
@@ -2024,7 +2033,7 @@ def build_parser() -> argparse.ArgumentParser:
     command.add_argument("--message-ref", required=True)
     command.add_argument("--lease-id", required=True)
     command.add_argument("--lease-owner", required=True)
-    command.add_argument("--outcome", choices=("acknowledged", "refused"), required=True)
+    command.add_argument("--outcome", choices=("acknowledged", "refused", "obsolete"), required=True)
     command.add_argument("--summary", default="")
 
     command = sub.add_parser(
@@ -4277,28 +4286,49 @@ def _worker_inbox(field: Any, identity: Any, args: Any) -> dict[str, Any]:
     flagged and received with `--backlog`.
     """
 
+    if getattr(args, "message_ref", ""):
+        if getattr(args, "cursor", "") or args.kind or args.sender or args.since:
+            raise DomainError("field_inbox_selection_invalid", "An exact inspection takes no paging or filters.")
+        return {"schema": "problem-board.worker-mail-preview.v1",
+                "message": field.preview_worker_mail(identity.worker_name, args.message_ref),
+                "inspection_only": True}
     if not 1 <= args.limit <= _INBOX_MAXIMUM:
         raise DomainError("field_inbox_limit_invalid", f"--limit must be between 1 and {_INBOX_MAXIMUM}.")
     from .io import parse_utc
 
     since = parse_utc(args.since).isoformat() if args.since else ""
     headers = field.pending_mail_headers(identity.worker_name)
+    from .return_reconciliation import ReturnReconciliation
+    census = ReturnReconciliation(field, identity.worker_name).census_headers()
+    all_headers = {h["message_ref"]: h for h in headers}
+    all_headers.update({h["message_ref"]: h for h in census})
     by_kind: dict[str, int] = {}
     for header in headers:
         by_kind[header["kind"] or "-"] = by_kind.get(header["kind"] or "-", 0) + 1
     selected = [
-        header for header in headers
+        header for header in all_headers.values()
         if (not args.kind or header["kind"] in args.kind)
         and (not args.sender or header["sender"] == args.sender)
         and (not since or (header["created_at"] and parse_utc(header["created_at"]).isoformat() >= since))
     ]
-    selected.sort(key=lambda header: header["created_at"], reverse=True)
-    selected.sort(key=_inbox_class)
-    page = selected[: args.limit]
+    from ..contract.scoped_collection import ScopedKeysetCursor, CollectionError
+    def key(header):
+        return (_inbox_class(header), -parse_utc(header["created_at"]).timestamp(), header["message_ref"])
+    selected.sort(key=key)
+    cursor = ScopedKeysetCursor(scope={"worker": identity.worker_name, "session": getattr(identity, "runtime_session_id", "")},
+                               query={"kind": sorted(args.kind or []), "sender": args.sender or "", "since": since},
+                               key_fields=("priority", "created_at_descending", "message_ref"))
+    try:
+        after = cursor.decode(args.cursor) if getattr(args, "cursor", "") else None
+    except CollectionError as exc:
+        raise DomainError("field_inbox_cursor_invalid", str(exc)) from exc
+    remaining = [h for h in selected if after is None or key(h) > after]
+    page = remaining[:args.limit]
     return {
         "schema": "problem-board.worker-inbox.v1",
         "worker": identity.worker_name,
         "pending": len(headers),
+        "census_count": len(census),
         "backlog": sum(1 for header in headers if header.get("backlog")),
         "pending_by_kind": dict(sorted(by_kind.items())),
         "matched": len(selected),
@@ -4309,7 +4339,22 @@ def _worker_inbox(field: Any, identity: Any, args: Any) -> dict[str, Any]:
             "information": sum(1 for header in selected if _inbox_class(header) == 2),
         },
         "headers": page,
+        "next_cursor": cursor.encode(key(page[-1])) if len(remaining) > len(page) and page else None,
     }
+
+
+def _fresh_return_coordinator(args, field):
+    """Use this session's governed read; stale local presence is not authority."""
+    request = argparse.Namespace(**vars(args))
+    request.action = "project.coordinator.get"
+    request.object_ref = args.project_ref
+    request.payload_json = "{}"
+    request.payload_file = ""
+    request.route = "relay"
+    result = _coordinate_command(request)
+    coordinator = result["object"]
+    field.sync_project_coordinator(parse_ref(args.project_ref).object_id, coordinator)
+    return coordinator
 
 
 
@@ -6368,7 +6413,9 @@ def _worker_command(args: Any) -> dict[str, Any]:
     if args.worker_command == "inbox":
         return _worker_inbox(field, identity, args)
     if args.worker_command == "wake-ack":
-        return field.acknowledge_worker_wake(identity.worker_name, wake_id=args.wake_id)
+        from .return_reconciliation import ReturnReconciliation
+        signals = ReturnReconciliation(field, identity.worker_name).model_entry("wake-ack")
+        return {**field.acknowledge_worker_wake(identity.worker_name, wake_id=args.wake_id), "signals": signals}
     if args.worker_command == "inbox-retire":
         return _worker_inbox_retire(field, identity, args)
     if args.worker_command == "leases":
@@ -6637,6 +6684,11 @@ def _worker_command(args: Any) -> dict[str, Any]:
             "field_project_ref_invalid", "Expected a work:project reference."
         )
     project_id = parsed_project.object_id if parsed_project is not None else ""
+    if args.worker_command == "return-confirm":
+        from .return_reconciliation import ReturnReconciliation
+        coordinator = _fresh_return_coordinator(args, field)
+        decision = field.preview_worker_mail(identity.worker_name, args.decision_message_ref)
+        return ReturnReconciliation(field, identity.worker_name).confirm(project_ref, args.episode_id, decision, coordinator)
     if args.worker_command == "deliveries":
         return field.list_mail_deliveries(
             worker_name=identity.worker_name,
@@ -6658,6 +6710,8 @@ def _worker_command(args: Any) -> dict[str, Any]:
             kind=args.kind,
         )
     if args.worker_command == "lease-read":
+        from .return_reconciliation import ReturnReconciliation
+        return_signals = ReturnReconciliation(field, identity.worker_name).model_entry("lease-read")
         message = field.read_worker_mail_lease(
             project_id,
             worker_name=identity.worker_name,
@@ -6679,9 +6733,10 @@ def _worker_command(args: Any) -> dict[str, Any]:
             "project_ref": project_ref,
             "message": projected_message,
             "replayed": True,
+            "signals": return_signals,
             "settlement": {
                 "required": True,
-                "outcomes": ["acknowledged", "refused"],
+                "outcomes": ["acknowledged", "refused", "obsolete"],
             },
         }
     if args.worker_command == "attachment-read":
@@ -6817,8 +6872,15 @@ def _worker_command(args: Any) -> dict[str, Any]:
             worker_name=identity.worker_name,
             work_ref=args.work_ref,
         )
+        from .return_reconciliation import PREFIX, ReturnReconciliation
+        reconciliation = ReturnReconciliation(field, identity.worker_name)
+        return_context = None
+        if str(correlation_id).startswith(PREFIX):
+            coordinator = _fresh_return_coordinator(args, field)
+            return_context = reconciliation.request_context(project_ref, correlation_id, recipient, coordinator)
+            payload["return_reconciliation"] = return_context
         if route == "local":
-            return field.send_mail(
+            result = field.send_mail(
                 project_id,
                 sender=identity.worker_name,
                 recipient=recipient,
@@ -6831,24 +6893,30 @@ def _worker_command(args: Any) -> dict[str, Any]:
                 reply_to=args.reply_to,
                 idempotency_key=args.idempotency_key,
             )
-        _raise_if_send_channel_reconnecting(
-            path, identity.worker_name, idempotency_key=args.idempotency_key
-        )
-        return field.enqueue_remote_mail(
-            project_id,
-            sender=identity.worker_name,
-            recipient=recipient,
-            kind=args.kind,
-            subject=args.subject,
-            body=body,
-            payload=payload,
-            work_ref=args.work_ref,
-            correlation_id=correlation_id,
-            reply_to=args.reply_to,
-            idempotency_key=args.idempotency_key,
-            attachments=attachments,
-        )
+        else:
+            _raise_if_send_channel_reconnecting(
+                path, identity.worker_name, idempotency_key=args.idempotency_key
+            )
+            result = field.enqueue_remote_mail(
+                project_id,
+                sender=identity.worker_name,
+                recipient=recipient,
+                kind=args.kind,
+                subject=args.subject,
+                body=body,
+                payload=payload,
+                work_ref=args.work_ref,
+                correlation_id=correlation_id,
+                reply_to=args.reply_to,
+                idempotency_key=args.idempotency_key,
+                attachments=attachments,
+            )
+        if return_context is not None:
+            reconciliation.record_request(project_ref, return_context, result)
+        return result
     if args.worker_command == "settle":
+        from .return_reconciliation import ReturnReconciliation
+        return_signals = ReturnReconciliation(field, identity.worker_name).model_entry("settle")
         settled = field.settle_mail(
             project_id,
             worker_name=identity.worker_name,
@@ -6861,7 +6929,7 @@ def _worker_command(args: Any) -> dict[str, Any]:
         field.record_worker_mail_settlement(
             identity.worker_name, message_ref=args.message_ref
         )
-        return settled
+        return {**settled, "signals": return_signals}
     if args.worker_command == "report":
         if parsed_project is None:
             raise DomainError(

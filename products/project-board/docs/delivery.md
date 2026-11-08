@@ -621,3 +621,57 @@ The relay writes nothing else to files.
 A polling handshake that answers quickly proves that the ingress accepts new
 sessions. It does not prove that an existing WebSocket, its acknowledgements
 or its receipts are healthy (W448, 2026-10-01).
+
+## Reconcile queued work after a return
+
+A model-facing receive, wake acknowledgement, lease read or settlement records
+an explicit native-session entry watermark. Background inbox probes, relay
+heartbeats, quota reads and native queue admission do not advance it. A known
+quota hold can latch a return episode. Elapsed-gap policy is currently
+unconfigured; no numeric inactivity default is inferred from heartbeat age.
+A scheduling gap is not evidence of operating-system sleep. Native sleep and
+session suspension without a persisted cause remain unknown.
+
+When `worker.return.reconciliation_required` appears, inspect and reconcile
+before executing queued actions. `pb worker inbox --cursor <cursor>` traverses
+the pending headers and the original request cohort retained by each pending
+return episode. `pb worker inbox --message-ref <ref>` reads one addressed
+message without acquiring a lease. A preview grants no execution authority;
+attachments still use the normal leased read. Original creation time,
+transport expiry and lease expiry are different facts. A task deadline not
+supplied structurally is unknown until the worker reads its prose.
+
+Read current work items and assignments. Send the current coordinator one
+consolidated census with correlation `return-reconciliation:<episode_id>`.
+The client binds the request to the exact project, inventory and fresh
+coordinator identity/revision through the governed `project.coordinator.get`
+read. A Card whose consent predates that operation needs its administrator to
+apply the documented Fit to role update; an unavailable authority read leaves
+the episode pending. The current episode's coordinator replies have a separate
+bounded control-selection budget, preserving ordinary window-control access.
+
+The coordinator supplies one explicit current resume list, including per-item
+still-needed, completed, superseded and reassigned decisions; an explicit empty
+list is valid. Record those decisions on relevant items, then run:
+
+```sh
+pb worker return-confirm --project-ref <project-ref> \
+  --episode-id <episode-id> --decision-message-ref <exact-reply-ref>
+```
+
+This explicit checkpoint checks the original inventory, project, current
+coordinator binding, correlation, reply-to and decision time. It never parses
+prose into actions. Ordinary receive, acknowledgement, lease expiry and silence
+do not clear reconciliation. A changed inventory or coordinator requires a
+fresh request and reply. Confirming one project does not clear another.
+
+Use `pb worker settle --outcome obsolete` for obsolete mail under a current
+lease. It records local and canonical remote `obsolete`, separately from relay
+transport acknowledgement, assignment status and implementation completion.
+An identical obsolete retry replays the original terminal receipt and repairs
+an interrupted history-to-outbox handoff with one stable settlement identity;
+changed lease, owner, outcome or summary conflicts. Lease limits and the
+operator-visible correlated reply requirement still apply. Already-settled
+mail receives a decision annotation, never another settlement. Do not hold an
+entire backlog while waiting for the coordinator: use inspection, retain a
+durable checkpoint and recover expired leases through ordinary receive.
