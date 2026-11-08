@@ -91,3 +91,27 @@ def test_start_assignment_and_coordinator_paths_point_to_one_owning_rule() -> No
     assert "one current list of work to resume" in coordinator
     assert "record the decision on the relevant items" in coordinator
     assert "Silence never counts as confirmation" in coordinator
+
+
+def test_return_commands_bind_the_current_project_episode_without_claiming_unknown_causes() -> None:
+    rule = return_rule()
+    for interface in (
+        "worker.return.reconciliation_required",
+        "inventory_hash",
+        "pb worker inbox --cursor",
+        "pb worker inbox --message-ref",
+        "project.coordinator.get",
+        "Fit to role",
+        "--correlation-id return-reconciliation:<episode-id>",
+        "pb worker return-confirm",
+        "--decision-message-ref <exact-coordinator-reply-ref>",
+        "--outcome obsolete",
+    ):
+        assert interface in rule
+    assert "local mirror" in rule
+    assert "unavailable or refused" in rule
+    assert "one project never clears another" in rule
+    assert "A scheduling gap does not prove host sleep" in rule
+    assert "without a signal" in rule
+    assert "no episode command is invented" in rule
+    assert "reply settlement or lease expiry is not confirmation" in rule

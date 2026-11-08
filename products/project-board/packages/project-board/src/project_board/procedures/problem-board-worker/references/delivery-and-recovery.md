@@ -419,6 +419,19 @@ and time evidence; a relay heartbeat is not proof of model handling. Do not
 invent a cause or numeric inactivity cutoff when it is unknown. An ordinary
 short idle wake during continuous work does not restart this workflow.
 
+PB's `worker.return.reconciliation_required` signal names the `episode_id`,
+`project_ref`, prior model entry and `handled_via`, cause evidence,
+`inventory_count`, `inventory_hash` and exact
+`correlation_id=return-reconciliation:<episode_id>`. Model-facing receive,
+wake acknowledgement, lease read and settlement record entry evidence;
+notification probes, relay heartbeat and provider reads do not. Entry is not
+proof that a particular request was executed. The episode survives receive,
+ordinary acknowledgement and lease expiry. Elapsed-gap policy has no numeric
+default until explicitly decided. A scheduling gap does not prove host sleep;
+native sleep or suspension without persisted evidence stays unknown. A known
+return still requires this workflow even without a signal; do not invent an
+episode ID or claim a checkpoint for one PB did not provide.
+
 Queued delivery is historical input, not a fresh execution instruction.
 Receiving it, a passed quota reset, the old assignment's `begin_work`, or a
 remembered resume plan never renews its authority by itself. Before queued
@@ -426,26 +439,53 @@ actions, perform these steps:
 
 1. **Inventory the queue.** Summarize each actionable message ref, what was
    requested, its original creation time and which deadlines have passed.
-   Use `pb worker inbox`, supported receive/lease reads where the body is
-   needed, and `pb worker leases` for messages already held. A missing
+   Use `pb worker inbox --cursor <cursor>` for bounded pages and
+   `pb worker inbox --message-ref <ref>` for inspection-only body, metadata
+   and current state, without acquiring a lease or acknowledging mail. Pending
+   episodes retain the original cohort's exact refs after first receive.
+   Read attachment bytes through the normal leased attachment API, not a
+   preview claim, and use `pb worker leases` for messages already held. A missing
    deadline is **unknown**; never infer a deadline from age. Distinguish
    pending mail from held and previously settled mail. For a large backlog,
    use bounded pages and an attached inventory with a progress checkpoint;
    report what remains unread rather than presenting a partial census as
    complete. Read-only inspection is not handling the requested action.
-2. **Read current authority.** Read `pb worker context` for the current
-   coordinator, `assignment.list` for this worker, and an assignee-filtered
-   `project.plan.index`. Read the authoritative work items the requests
-   concern, including their present route, status, assignment and ownership
+   Original creation, transport expiry, task deadline and lease expiry are
+   different facts; an unstructured task deadline remains unknown until its
+   prose is read. Do not acquire the whole backlog just to make a census.
+2. **Read current authority.** Use `pb worker context` for routing discovery,
+   not as fresh authority: it is a local mirror. Read the current holder with
+   governed `project.coordinator.get`, then `assignment.list` for this worker
+   and an assignee-filtered `project.plan.index`. Read the authoritative work
+   items the requests concern, including their present route, status, assignment and ownership
    version. This is a targeted reconciliation, not a whole-plan export.
    Old sender identity, delivery time and remembered ownership cannot replace
    those current records.
-3. **Ask once, together.** Send the consolidated inventory to the current
-   coordinator, not a previous coordinator, naming the worker and return
+   A worker Card whose operation consent predates `project.coordinator.get`
+   needs an authorized project administrator's **Fit to role** in Team > Agents.
+   If the fresh read is unavailable or refused, report it to the coordinator
+   and leave reconciliation pending. Do not self-grant permissions, rewrite a
+   Card, or substitute mirrored context for current authority.
+3. **Ask once per current inventory, together.** Send the consolidated inventory
+   to the current coordinator, not a previous coordinator, naming the worker and return
    evidence. Ask which requests are **still needed**, **already completed**,
    **superseded** or **reassigned**, with current work refs and next actors.
    If the coordinator changed or the response refers to a different inventory,
    reconcile with the current holder instead of treating that reply as GO.
+   For a PB episode, use its exact project and correlation:
+
+   ```bash
+   pb worker send --project-ref <project-ref> --recipient <current-coordinator> \
+     --kind request --correlation-id return-reconciliation:<episode-id> \
+     --subject <subject> --body-file <inventory-file> --idempotency-key <stable-key> --format brief
+   ```
+
+   The client freshly reads `project.coordinator.get` and durably binds the
+   request to the inventory and coordinator identity/revision. A changed
+   inventory or coordinator needs a fresh request, reply and key, not a retry
+   reinterpreted as new approval. Without a PB episode, send an ordinary
+   correlated reconciliation request and record its decision on the items;
+   the same execution gate applies, but no episode command is invented.
 4. **Wait for explicit reconciliation.** The coordinator must return **one
    current list of work to resume**, with a disposition for the other queued
    requests; an explicitly empty resume list is valid. Silence never counts
@@ -456,12 +496,31 @@ actions, perform these steps:
    Claude Code maintains its session-owned watch. Preserve an existing
    runtime hold until its matching ALL CLEAR or cancellation; an old READY
    request or expired window does not establish a new hold or approval.
+   Current episode replies have their own bounded selection path:
+
+   ```bash
+   pb worker receive --project-ref <project-ref> --sender <current-coordinator> \
+     --correlation-id return-reconciliation:<episode-id> --format brief
+   ```
+
+   Receiving or acknowledging that reply never clears the episode. Read its
+   one current resume list and record the decisions first. The coordinator's
+   response is `--kind reply`, preserves the exact episode correlation and
+   names the original reconciliation request in `--reply-to`; an informational
+   reply without a current resume list is not permission to checkpoint.
 5. **Record, dispose, then resume.** Record the coordinator's decision on the
    relevant items, with the decision ref, current owner and authorized next
    action. Confirm that any needed reassignment actually applied before
    execution. Explicitly record obsolete mail as **obsolete**, with the
    superseding decision and why it is not completed work; settle the exact
-   lease once through the installed command's supported disposition contract.
+   lease once through `pb worker settle --project-ref <project-ref>
+   --message-ref <ref> --lease-id <current-lease> --outcome obsolete
+   --summary <decision-evidence> --format brief`. Local and canonical remote
+   `obsolete` are separate from delivery acknowledgement, assignment/item
+   status and implementation completion. An identical retry preserves the
+   first receipt and stable outbox identity; a changed lease, owner, outcome
+   or summary conflicts rather than creating another settlement.
+   Omit `--project-ref` for projectless mail rather than inventing a project.
    Never report implementation `completed`, reopen a finished item, or claim
    that the old request was executed just to drain mail. Preserve the
    one-hour lease limit: checkpoint a pending reconciliation rather than
@@ -469,6 +528,20 @@ actions, perform these steps:
    settle it a second time; preserve its receipt and record the subsequent
    coordinator disposition without replaying work. A redelivery uses its own
    exact lease and the recorded disposition, not a repeated side effect.
+   After recording the single current list and per-item decisions for a PB
+   episode, explicitly checkpoint before executing its queued actions:
+
+   ```bash
+   pb worker return-confirm --project-ref <project-ref> --episode-id <episode-id> \
+     --decision-message-ref <exact-coordinator-reply-ref> --format brief
+   ```
+
+   This repeats the governed current-holder read and validates the episode,
+   project, original inventory, current binding, exact correlation/reply-to
+   and decision time. Unavailable authority leaves it pending. It does not
+   parse prose into actions or supply a missing resume list. A decision for
+   one project never clears another project's episode. Silence, an ordinary
+   receive, reply settlement or lease expiry is not confirmation.
 
 Do not bulk acknowledge unread requests or infer that old means obsolete.
 Existing typed-notice retirement still requires its own reviewed selection
