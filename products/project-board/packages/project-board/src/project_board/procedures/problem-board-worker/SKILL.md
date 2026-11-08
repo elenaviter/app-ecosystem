@@ -84,6 +84,18 @@ exec pb worker watch --runtime-kind claude-code --runtime-session-id <id> 2>&1
 Read [identity and authorization](references/identity-and-authorization.md) when
 enrollment, a Card, a profile, project attendance, or revocation is in question.
 
+## Return From Prolonged Absence
+
+After prolonged inactivity, a quota hold, host sleep or session suspension,
+reconcile with the current coordinator **before executing queued actions**:
+follow [delivery and recovery](references/delivery-and-recovery.md),
+"Return from prolonged absence".
+Inventory the dated requests and expired deadlines, check current ownership
+and items, and wait for one explicit current resume list. Read-only inspection
+may continue. Silence never counts as confirmation; delivery after a wake does
+not make an old instruction current. This gate does not replay enrollment or
+reload an unchanged skill.
+
 ## Always-On Rules
 
 These rules must survive a compaction or a restart, and how they do depends on the runtime. Operator, 2026-10-13 (W804): "A. although codexes have no memories. but then codexes simply in the skill". A runtime with a persistent memory facility (Claude Code's memory directory) saves each rule below as one memory entry, tagged `source: problem-board-worker <installed revision>`, when it loads a revision of this skill, and replaces the whole set when the installed revision changes. A runtime with none (Codex) keeps them through this skill itself, which it loads in full once per installed-revision change; it writes no substitute file and claims no memory entries. Adoption is `pb procedure verify` plus, by runtime, the tagged entries or the agent's confirmation that it loaded that revision. In every runtime, do not save your own versions of Project Board workflow rules; a rule you find missing or wrong goes to the coordinator as a procedure change (collaboration Rule 14), never into private memory, because a memory you wrote yourself cannot show that you follow this procedure (operator, 2026-10-03). pb copies them nowhere: no workspace file carries them. The workspace `AGENTS.md` (and for Claude Code a `CLAUDE.md` whose managed block imports it) holds only the project's own files: `pb worker context` writes it from the project's files list, importing the instructions, facts and environment files present in your clones and listing the further files with their descriptions, and removes it when the project lists none. Operator, 2026-10-13: "CLAUDE.md / AGENTS.md made from project file (which we have multiple of them).", "and in case of new project even NONE"; nothing is written or promised at enrollment ("not sure actually why we promise the CLAUDE.md and AGENTS.md will be written. that is wrong."), and an agent's workspace folder is always its alias ("the folders must be aliases").
@@ -185,7 +197,8 @@ For every returned item:
    attachment from payload metadata or mailbox files.
 3. When `operator_response` is present, send a visible correlated reply before
    settlement; [delivery and recovery](references/delivery-and-recovery.md) explains channel origin and delivery outcomes. A settlement summary is evidence, not a conversation turn.
-4. Handle the request within repository and operator authority, keeping the
+4. Apply the return-reconciliation gate above before queued execution. Handle
+   a confirmed current request within repository and operator authority, keeping the
    journal current while decisions and failures are fresh.
 5. When the sender needs an answer, reply with the stable `sender`, the
    original `message_ref` as `--reply-to`, the original correlation ID, and a
@@ -213,7 +226,11 @@ correlated conversation first. Old input is answered with the current state ([de
 Assignments arrive as one notice from `control-plane`: kind `assign` when an item
 is assigned to you, or a `request` titled `Review W…` to review one. The reaction
 to an `assign` notice follows its `payload.expected_reaction` (W406). A review request,
-and an `assign` notice whose reaction is `begin_work`, is work to begin now, not a notification to acknowledge: no other message or permission is needed, and settling it is not progress.
+and an `assign` notice whose reaction is `begin_work`, is work to begin now
+once any return-reconciliation gate is cleared, not a notification to
+acknowledge: no other message or permission is needed during continuous
+current work, and settling it is not progress. A delayed `begin_work` notice
+does not bypass the return-reconciliation gate.
 `acknowledge_only` (Done, Cancelled) and `await_review` (Review) are information to read and settle, never a reason to report `working`, reopen or change status.
 The assignment row gives `payload.work_ref`, `payload.assignment_ref` and `payload.ownership_version`; the committed item gives `payload.item_status`. Ordinary assignment reactions are derived from that status.
 A trusted assignment with validated `payload.reopen_evidence` asks for `begin_work` while the item still shows Review, Done or Cancelled until the first `working` report. Field edits and mail prose do not manufacture reopen evidence.
