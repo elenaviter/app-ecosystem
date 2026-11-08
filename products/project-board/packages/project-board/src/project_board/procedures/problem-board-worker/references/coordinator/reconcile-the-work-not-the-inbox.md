@@ -21,6 +21,17 @@ noticed, while the coordinator answered other mail (W466).
 Not at every tool step, and not as a loop of status polls. Between these
 points, end the turn and let the next wake bring the next event.
 
+**A returning worker's queue.** For
+[Return from prolonged absence](../delivery-and-recovery.md#return-from-prolonged-absence),
+read its consolidated dated inventory against current assignments and items.
+Reply with **one current list of work to resume**, and classify the other
+requests as already completed, superseded, reassigned or obsolete, with their
+current refs and next actors. Make any required ownership change through its
+governed operation, record the decision on the relevant items, and name that
+decision in the reply. Silence never counts as confirmation, and an old
+coordinator's reply or a queue-drain receipt is not current authorization.
+An explicitly empty list releases no queued work to execute.
+
 **What to read.** The plan first: `project.plan.index` with `status` `todo`,
 `working` and `review`, narrowed to the batch's items or a small `limit`. It
 names each item's current assignee and reviewer, including a review or merge

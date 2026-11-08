@@ -42,6 +42,11 @@ long idle period, before it gets substantive work the coordinator:
    revision differs from the installed one, and the worker confirms the
    revision before it begins.
 
+Source and procedure freshness do not confirm queued work is still wanted.
+The returning worker and current coordinator also perform
+[Return from prolonged absence](../delivery-and-recovery.md#return-from-prolonged-absence)
+before any queued implementation, review or runtime action.
+
 A worker whose info line says paused, restricted or do not use is left
 asleep until it is legitimately resumed: waking it only to update spends its
 budget for nothing. A project that consumes Project Board follows its

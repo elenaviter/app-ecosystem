@@ -150,7 +150,10 @@ Deferring a step and pausing an agent are different. A step that neither fits be
 1. writes the resume plan on the items: who resumes what, from which note, and the reset time. Work another owner waits on is not parked behind the pause: it is reassigned from its checkpoint unless the reset comes before that work's next decision time ([collaboration Rule 8](../collaboration/rule-8-handoff-is-an-ownership-decision-not-a-note.md)).
 2. checks that every paused session has its wake: a Claude Code watch with its guard prompt, or a Codex relay subscription. The session then wakes after the reset without anyone prompting it.
 
-After the reset, it reads usage again before it resumes, then resumes by the plan.
+After the reset, it reads usage again before it resumes. A returning worker
+clears [Return from prolonged absence](../delivery-and-recovery.md#return-from-prolonged-absence)
+with the current coordinator before executing queued work; the earlier resume
+plan and a passed reset are evidence to reconcile, not automatic permission.
 
 **A paused agent says so on its card.** An agent that consciously decides not to work, because of quota, waiting for a person, or a block, sets `pb worker info write "Paused by choice: <reason>, resumes <time>"` and clears it with `pb worker info clear` when it resumes. The coordinator checks that every paused agent shows the line.
 
