@@ -3762,7 +3762,14 @@ class SharedFieldStore:
                 heartbeat_at=now,
                 revision=int(listener.get("revision") or 0) + 1,
             )
-            if selective_receive and control_selection:
+            if selective_receive and control_selection.startswith("return|"):
+                current = str(listener.get("return_control_selection_key") or "")
+                listener["return_control_selections_used"] = (
+                    int(listener.get("return_control_selections_used") or 0) + 1
+                    if current == control_selection else 1
+                )
+                listener["return_control_selection_key"] = control_selection
+            elif selective_receive and control_selection:
                 # Window control on its own budget (CONTROL_SELECTION_BUDGET);
                 # the general selective budget is untouched.
                 listener["control_selection_key"] = control_selection
@@ -3779,6 +3786,8 @@ class SharedFieldStore:
                 listener["selective_receives_since_general"] = 0
                 listener["control_selection_key"] = ""
                 listener["control_selections_used"] = 0
+                listener["return_control_selection_key"] = ""
+                listener["return_control_selections_used"] = 0
                 observed_message_refs = _bounded_message_refs(message_refs)
                 listener.update(
                     last_inbox_check_at=now,
@@ -4736,7 +4745,7 @@ class SharedFieldStore:
     # process, so a restart keeps it and every project heartbeat reads it.
 
     def record_wake_hold(self, worker_name: str, *, until: str, pending: int) -> dict[str, Any]:
-        """Hold (or keep holding) the wake: ``since`` stays when the hold began."""
+        """Hold (or keep holding) the wake; its occurrence ID and start stay fixed."""
 
         clean_name = str(self.read_worker(worker_name).get("worker_name") or "")
         path = self._worker_path(clean_name)
@@ -4746,7 +4755,9 @@ class SharedFieldStore:
             current = dict(current) if isinstance(current, Mapping) else {}
             since = str(current.get("since") or "") or utc_now()
             # The board accepts at most a million; the count is a summary.
-            hold = {"since": since, "until": str(until or current.get("until") or ""), "pending": min(max(0, int(pending)), MAX_WAKE_HOLD_PENDING)}
+            hold = {"hold_id": str(current.get("hold_id") or new_id("hold")),
+                    "since": since, "until": str(until or current.get("until") or ""),
+                    "pending": min(max(0, int(pending)), MAX_WAKE_HOLD_PENDING)}
             if hold == current:
                 return current
             row["wake_hold"] = hold
@@ -5959,6 +5970,59 @@ class SharedFieldStore:
                     "backlog": path.stem in backlog and not operator,
                 })
         return headers
+
+    def preview_worker_mail(self, worker_name: str, message_ref: str) -> dict[str, Any]:
+        """Read one addressed message without acquiring or extending a lease."""
+        worker = self.read_worker(worker_name)
+        scopes = ["", *(worker.get("attended_project_refs") or [])]
+        for project_ref in scopes:
+            project_id = parse_ref(project_ref).object_id if project_ref else ""
+            with exclusive_lock(self._mail_lock(project_id, worker_name)):
+                row = self._mail_record_unlocked(project_id, worker_name, message_ref)
+            if row:
+                # Never expose a stored attachment path or a private operator
+                # routing payload. File contents still use the leased API.
+                keys = ("message_ref", "kind", "sender", "subject", "body", "created_at",
+                        "expires_at", "correlation_id", "reply_to", "work_ref", "state",
+                        "settled_at", "settlement_summary")
+                return {**{k: row[k] for k in keys if k in row}, "project_ref": project_ref,
+                        "inspection_only": True, "task_deadline": "unknown; inspect the request prose",
+                        "attachments": [{k: a[k] for k in ("file_ref", "filename", "size", "sha256", "mime") if k in a}
+                                        for a in stored_attachment_manifest(row)]}
+        raise DomainError("field_mail_preview_not_found", "No addressed mail with this ref is readable in the current attendance.", status=404)
+
+    def reconciliation_reply_to(self, project_id, *, worker_name, message_ref, recipient, correlation_id):
+        """Resolve a delivered census alias only from admitted route evidence.
+
+        A remote sender owns ref S; materialization creates recipient-local C.
+        The normal reply command names C, while the requester's checkpoint
+        must still match S. Caller-supplied payload is not route admission.
+        """
+        worker = self.read_worker(worker_name)
+        project_ref = make_ref("project", project_id)
+        if project_ref not in (worker.get("attended_project_refs") or []):
+            raise DomainError("field_return_reply_binding_mismatch", "The reply project is not currently attended.", status=409)
+        with exclusive_lock(self._mail_lock(project_id, worker_name)):
+            row = self._mail_record_unlocked(project_id, worker_name, message_ref)
+        if (not row or row.get("message_ref") != message_ref or row.get("recipient") != worker_name
+                or row.get("project_ref") != project_ref or row.get("sender") != recipient
+                or row.get("kind") != "request" or row.get("correlation_id") != correlation_id):
+            raise DomainError("field_return_reply_binding_mismatch", "Reply to the exact addressed census in its original project and correlation.", status=409)
+        payload = row.get("payload") or {}
+        admitted = row.get("admitted_mail_route") or {}
+        if not admitted:
+            if payload.get("source_message_ref"):
+                raise DomainError("field_return_reply_binding_missing", "This remote request lacks admitted source-ref evidence; obtain a fresh census request.", status=409)
+            return message_ref
+        if (admitted.get("command_ref") != payload.get("command_ref")
+                or admitted.get("payload_hash") != payload.get("payload_hash")
+                or admitted.get("source_message_ref") != payload.get("source_message_ref")
+                or any(admitted.get(k) != row.get(k) for k in ("project_ref", "sender", "recipient", "correlation_id"))):
+            raise DomainError("field_return_reply_binding_mismatch", "The admitted remote census binding does not match its local message.", status=409)
+        source_ref = str(admitted.get("source_message_ref") or "")
+        if not source_ref or parse_ref(source_ref).kind != "mail":
+            raise DomainError("field_return_reply_binding_missing", "The admitted census has no valid sender source ref.", status=409)
+        return source_ref
 
     def _backlog_path(self, clean_name: str) -> Path:
         return self.control / "backlog" / f"{component(clean_name, field='worker_name')}.json"
@@ -7365,6 +7429,7 @@ class SharedFieldStore:
         sender_identity: Mapping[str, Any] | None = None,
         admitted_operator_control: bool = False,
         board_routed: bool = False,
+        admitted_mail_route: Mapping[str, Any] | None = None,
         idempotency_identity: Mapping[str, Any] | None = None,
         idempotency_alias_keys: Sequence[str] = (),
         idempotency_identity_aliases: Sequence[Mapping[str, Any]] = (),
@@ -7439,6 +7504,18 @@ class SharedFieldStore:
             correlation_id, field="correlation_id", maximum=512
         )
         clean_reply_to = bounded_text(reply_to, field="reply_to", maximum=512)
+        route_evidence = dict(admitted_mail_route or {})
+        if route_evidence and (not board_routed or any(
+            route_evidence.get(key) != value for key, value in {
+                "project_ref": make_ref("project", clean_project) if clean_project else "",
+                "sender": clean_sender, "recipient": clean_recipient, "correlation_id": clean_correlation_id,
+                "command_ref": clean_payload.get("command_ref"), "payload_hash": clean_payload.get("payload_hash"),
+                "source_message_ref": clean_payload.get("source_message_ref"),
+            }.items()
+        )):
+            raise DomainError("field_mail_source_binding_invalid", "Only matching admitted route evidence may bind a sender source ref.", status=409)
+        # Admission repeats fields already hashed below. Keep that hash stable
+        # so a pre-upgrade routed delivery can replay its original receipt.
         request_hash = content_hash(
             {
                 "route": "local",
@@ -7591,6 +7668,8 @@ class SharedFieldStore:
                 # Only materialize_control passes this for a board-admitted
                 # person; peer display labels and public payloads cannot.
                 envelope["admitted_operator_control"] = True
+            if route_evidence:
+                envelope["admitted_mail_route"] = route_evidence
             envelope["message_ref"] = reference_for_record("mail", envelope)
             envelope["content_hash"] = content_hash(envelope)
             if status == "pending":
@@ -9215,8 +9294,8 @@ class SharedFieldStore:
         outcome: str,
         summary: str = "",
     ) -> dict[str, Any]:
-        if outcome not in {"acknowledged", "refused"}:
-            raise DomainError("field_mail_outcome_invalid", "Mail outcome must be acknowledged or refused.")
+        if outcome not in {"acknowledged", "refused", "obsolete"}:
+            raise DomainError("field_mail_outcome_invalid", "Mail outcome must be acknowledged, refused or obsolete.")
         parsed = parse_ref(message_ref)
         if parsed.kind != "mail":
             raise DomainError("field_mail_ref_invalid", "Expected a work:mail reference.")
@@ -9245,11 +9324,30 @@ class SharedFieldStore:
         root = self._mail_root(clean_project, clean_worker)
         if clean_project and not (root / "leased" / name).exists():
             worker_root = self._mail_root("", clean_worker)
-            if (worker_root / "leased" / name).exists():
+            if (worker_root / "leased" / name).exists() or self._mail_history().read(
+                project_id="", family="mail-processed", agent=clean_worker,
+                record_id=parsed.object_id,
+            ):
                 root = worker_root
                 mail_project = ""
         source = root / "leased" / name
         with exclusive_lock(root / ".mail.lock"):
+            # The terminal row is committed before publishing the outbox. Retry
+            # that handoff even if a crash left the original lease file present.
+            previous = self._mail_history().read(
+                project_id=mail_project, family="mail-processed", agent=clean_worker,
+                record_id=parsed.object_id,
+            )
+            if previous and previous.get("state") == "obsolete":
+                lease = previous.get("lease") or {}
+                if (outcome != "obsolete" or lease.get("lease_id") != lease_id
+                        or lease.get("owner") != lease_owner
+                        or previous.get("settlement_summary") != summary):
+                    raise DomainError("field_mail_settlement_conflict",
+                                      "The terminal settlement has a different lease, outcome or summary.", status=409)
+                self._ensure_obsolete_settlement(previous, mail_project, clean_worker, lease_owner)
+                source.unlink(missing_ok=True)
+                return {**previous, "replayed": True}
             row = read_json(source, required=False)
             if not row:
                 # The leased file is gone, which almost always means the lease
@@ -9348,6 +9446,8 @@ class SharedFieldStore:
                 row=row,
                 slug=outcome,
             )
+            if outcome == "obsolete":
+                self._ensure_obsolete_settlement(row, mail_project, clean_worker, lease_owner)
             source.unlink(missing_ok=True)
         self.record_handling(
             worker_name=clean_worker,
@@ -9357,7 +9457,7 @@ class SharedFieldStore:
         )
         payload = row.get("payload") if isinstance(row.get("payload"), Mapping) else {}
         command_ref = str(payload.get("command_ref") or "")
-        if command_ref:
+        if command_ref and outcome != "obsolete":
             settlement = self.enqueue_control_settlement(
                 clean_project,
                 worker_name=clean_worker,
@@ -9369,6 +9469,22 @@ class SharedFieldStore:
             )
             row["remote_settlement_outbox_id"] = settlement["outbox_id"]
         return row
+
+    def _ensure_obsolete_settlement(self, row, project_id, worker_name, lease_owner):
+        """Repair a committed obsolete disposition without minting another effect."""
+        command_ref = str((row.get("payload") or {}).get("command_ref") or "")
+        if not command_ref:
+            return
+        lease_id = str((row.get("lease") or {}).get("lease_id") or "")
+        identity = content_hash([worker_name, row["message_ref"], lease_id])
+        outbox_id = "outbox_" + identity[:32]
+        self.enqueue_control_settlement(
+            project_id, worker_name=worker_name, command_ref=command_ref,
+            message_ref=row["message_ref"], session_id=lease_owner,
+            outcome="obsolete", summary=row["settlement_summary"],
+            outbox_id=outbox_id, created_at=row["settled_at"],
+        )
+        row["remote_settlement_outbox_id"] = outbox_id
 
     def discard_control_messages(
         self,
@@ -9913,6 +10029,13 @@ class SharedFieldStore:
                 and str(sender_identity.get("kind") or "") == "user"
             ),
             board_routed=control_kind == "mail",
+            admitted_mail_route=(
+                {"source_message_ref": message_payload["source_message_ref"],
+                 "command_ref": command_ref, "payload_hash": expected_hash,
+                 "project_ref": project_ref, "sender": sender, "recipient": recipient,
+                 "correlation_id": correlation_id}
+                if control_kind == "mail" else None
+            ),
         )
         if control_kind == "mail" and kind == "delivery_failed":
             failure = dict(message_payload.get("payload") or {}).get("delivery_failure")
@@ -12118,6 +12241,8 @@ class SharedFieldStore:
         session_id: str,
         outcome: str,
         summary: str,
+        outbox_id: str = "",
+        created_at: str = "",
     ) -> dict[str, Any]:
         parsed = parse_ref(command_ref)
         if parsed.kind != "control":
@@ -12142,7 +12267,8 @@ class SharedFieldStore:
             ),
             "summary": bounded_text(summary, field="summary", maximum=8000),
         }
-        outbox_id = new_id("outbox")
+        stable_id = bool(outbox_id)
+        outbox_id = outbox_id or new_id("outbox")
         row = {
             "schema": OUTBOX_SCHEMA,
             "outbox_id": outbox_id,
@@ -12156,9 +12282,15 @@ class SharedFieldStore:
             "content_hash": content_hash(payload),
             "payload": payload,
             "state": "pending",
-            "created_at": utc_now(),
+            "created_at": created_at or utc_now(),
         }
-        self._outbox.write_pending(row)
+        with exclusive_lock(self._outbox.lock):
+            existing = self._outbox.read(outbox_id, worker_name=worker_name) if stable_id else None
+            if existing:
+                if existing.get("content_hash") != row["content_hash"]:
+                    raise DomainError("field_mail_settlement_conflict", "Settlement outbox identity conflicts.", status=409)
+                return existing
+            self._outbox.write_pending(row)
         return row
 
     def _assignment_report_receipt_paths(

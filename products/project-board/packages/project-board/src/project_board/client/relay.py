@@ -6352,6 +6352,12 @@ class ProblemBoardRelaySupervisor:
         wake_provenance = dict(
             prepared_subscription.get("wake_provenance") or {}
         )
+        from .return_reconciliation import ReturnReconciliation
+        return_signals = await self._channel_off_loop(
+            channel, ReturnReconciliation(field, channel.worker_name).prepare,
+        )
+        if return_signals:
+            wake_provenance["return_reconciliation"] = return_signals
         result = dict(
             await asyncio.to_thread(
                 self.session_notifier,
@@ -6768,10 +6774,18 @@ class ProblemBoardRelaySupervisor:
                 await self._channel_off_loop(channel, field.clear_wake_hold, channel.worker_name)
                 return queue_reconciliation
             retry_at = (datetime.now(timezone.utc) + timedelta(seconds=QUOTA_REFRESH_SECONDS)).strftime("%Y-%m-%dT%H:%M:%SZ")
-            await self._channel_off_loop(
+            hold = await self._channel_off_loop(
                 channel, field.record_wake_hold, channel.worker_name,
                 until=retry_at, pending=len(pending_refs),
             )
+            if not quota_error:
+                from .return_reconciliation import ReturnReconciliation
+                await self._channel_off_loop(
+                    channel, ReturnReconciliation(field, channel.worker_name).record_cause,
+                    "quota_hold", {"hold_id": hold["hold_id"], "since": hold["since"],
+                                   "kind": str((limit_state or {}).get("kind") or ""),
+                                   "source": str((limit_state or {}).get("source") or "unknown")},
+                )
             return {"wake_deferred": True, "wake_deferred_until": retry_at,
                     "reason": quota_error or "agent_rate_limited"}
         deferred_until = wake_deferred_until(limit_state, now=now)
@@ -6780,11 +6794,17 @@ class ProblemBoardRelaySupervisor:
                 await self._channel_off_loop(channel, field.clear_wake_hold, channel.worker_name)
                 return queue_reconciliation
             # W334: the card shows the hold from this same decision.
-            await self._channel_off_loop(channel,
+            hold = await self._channel_off_loop(channel,
                 field.record_wake_hold,
                 channel.worker_name,
                 until=deferred_until,
                 pending=len(pending_refs),
+            )
+            from .return_reconciliation import ReturnReconciliation
+            await self._channel_off_loop(
+                channel, ReturnReconciliation(field, channel.worker_name).record_cause,
+                "quota_hold", {"hold_id": hold["hold_id"], "since": hold["since"],
+                               "until": deferred_until, "source": str((limit_state or {}).get("source") or "unknown")},
             )
             if self._limit_wake_deferrals.get(channel.worker_name) != deferred_until:
                 self._limit_wake_deferrals[channel.worker_name] = deferred_until

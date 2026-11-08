@@ -990,7 +990,7 @@ PROBLEM_BOARD_OPERATION_SHAPES: dict[str, dict[str, Any]] = {   'project.registe
                                                 'inbox.',
                                  'object_ref': 'work:control:<created-at>:<command-id>:<semantic-name>',
                                  'payload': {   'session_id': 'string',
-                                                'outcome': 'acknowledged|refused',
+                                                'outcome': 'acknowledged|refused|obsolete',
                                                 'result_summary': 'string',
                                                 'result_ref': 'local message ref'}},
     'plan.nodes.publish': {   'description': 'Atomically publish the supplied plan nodes as '
