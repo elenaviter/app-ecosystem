@@ -409,9 +409,79 @@ observed stage separately: remote acceptance, local materialization, outstanding
 wake, receive evidence, visible response, and settlement. "Online" is not an
 end-to-end delivery claim.
 
+## Return from prolonged absence
+
+This is the common return gate for Codex and Claude Code after prolonged
+inactivity, a quota hold, host sleep or session suspension. Follow it when PB
+supplies an automatic return prompt, or when the session knows it has returned
+from one of those absences. The prompt identifies the observed return cause
+and time evidence; a relay heartbeat is not proof of model handling. Do not
+invent a cause or numeric inactivity cutoff when it is unknown. An ordinary
+short idle wake during continuous work does not restart this workflow.
+
+Queued delivery is historical input, not a fresh execution instruction.
+Receiving it, a passed quota reset, the old assignment's `begin_work`, or a
+remembered resume plan never renews its authority by itself. Before queued
+actions, perform these steps:
+
+1. **Inventory the queue.** Summarize each actionable message ref, what was
+   requested, its original creation time and which deadlines have passed.
+   Use `pb worker inbox`, supported receive/lease reads where the body is
+   needed, and `pb worker leases` for messages already held. A missing
+   deadline is **unknown**; never infer a deadline from age. Distinguish
+   pending mail from held and previously settled mail. For a large backlog,
+   use bounded pages and an attached inventory with a progress checkpoint;
+   report what remains unread rather than presenting a partial census as
+   complete. Read-only inspection is not handling the requested action.
+2. **Read current authority.** Read `pb worker context` for the current
+   coordinator, `assignment.list` for this worker, and an assignee-filtered
+   `project.plan.index`. Read the authoritative work items the requests
+   concern, including their present route, status, assignment and ownership
+   version. This is a targeted reconciliation, not a whole-plan export.
+   Old sender identity, delivery time and remembered ownership cannot replace
+   those current records.
+3. **Ask once, together.** Send the consolidated inventory to the current
+   coordinator, not a previous coordinator, naming the worker and return
+   evidence. Ask which requests are **still needed**, **already completed**,
+   **superseded** or **reassigned**, with current work refs and next actors.
+   If the coordinator changed or the response refers to a different inventory,
+   reconcile with the current holder instead of treating that reply as GO.
+4. **Wait for explicit reconciliation.** The coordinator must return **one
+   current list of work to resume**, with a disposition for the other queued
+   requests; an explicitly empty resume list is valid. Silence never counts
+   as confirmation. Read-only inspection may continue, and so may the
+   reconciliation and current window-control exchange, but not queued
+   implementation, tests, reviews, runtime changes or work-completion reports.
+   Keep the native notification path live: Codex ends the turn with no polling;
+   Claude Code maintains its session-owned watch. Preserve an existing
+   runtime hold until its matching ALL CLEAR or cancellation; an old READY
+   request or expired window does not establish a new hold or approval.
+5. **Record, dispose, then resume.** Record the coordinator's decision on the
+   relevant items, with the decision ref, current owner and authorized next
+   action. Confirm that any needed reassignment actually applied before
+   execution. Explicitly record obsolete mail as **obsolete**, with the
+   superseding decision and why it is not completed work; settle the exact
+   lease once through the installed command's supported disposition contract.
+   Never report implementation `completed`, reopen a finished item, or claim
+   that the old request was executed just to drain mail. Preserve the
+   one-hour lease limit: checkpoint a pending reconciliation rather than
+   retaining leases indefinitely. If a prior lease is already settled, never
+   settle it a second time; preserve its receipt and record the subsequent
+   coordinator disposition without replaying work. A redelivery uses its own
+   exact lease and the recorded disposition, not a repeated side effect.
+
+Do not bulk acknowledge unread requests or infer that old means obsolete.
+Existing typed-notice retirement still requires its own reviewed selection
+and current-state proof; it is not a way to discard arbitrary human or agent
+requests. If an installed client cannot express the required disposition,
+report that limit to the coordinator rather than inventing a flag or claiming
+the work completed. The gate's reason is simple: absence can change who owns
+the work and whether it is wanted before transport finally delivers it.
+
 ## Old input
 
-Old input is answered with the current state. Compare each item's creation time
+After an absence, apply [Return from prolonged absence](#return-from-prolonged-absence)
+before acting on this section. Old input is answered with the current state. Compare each item's creation time
 with now. When the item, its assignment or an operator ruling has moved on
 since it was written, act on the current state, read against the item's
 current route and description and the exact evidence, settle the old item

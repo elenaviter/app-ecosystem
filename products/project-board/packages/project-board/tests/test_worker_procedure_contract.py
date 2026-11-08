@@ -567,7 +567,8 @@ def test_receive_handle_and_settle_rules() -> None:
 def test_assignment_rules() -> None:
     skill = _read("SKILL.md")
     words = _words(skill)
-    assert "A review request, and an `assign` notice whose reaction is `begin_work`, is work to begin now, not a notification to acknowledge" in words
+    assert "A review request, and an `assign` notice whose reaction is `begin_work`, is work to begin now once any return-reconciliation gate is cleared, not a notification to acknowledge" in words
+    assert "A delayed `begin_work` notice does not bypass the return-reconciliation gate" in words
     for field in ("payload.work_ref", "payload.assignment_ref", "payload.ownership_version", "payload.item_status", "payload.expected_reaction"):
         assert f"`{field}`" in skill
     assert "work_assignment_version_conflict" in skill

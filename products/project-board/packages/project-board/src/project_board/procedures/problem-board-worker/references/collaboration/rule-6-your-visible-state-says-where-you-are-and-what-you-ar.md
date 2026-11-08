@@ -146,6 +146,9 @@ it, what you touched (Rule 3), and what you are waiting on.
   status-and-owner save was refused because the project Control Card lacked
   `work.assignee.set`, while the deployed profiles had it (W455).
 - **Reconcile your assignments, act on each, and ask when one is unclear.**
+  After an absence, the targeted reads below feed
+  [Return from prolonged absence](../delivery-and-recovery.md#return-from-prolonged-absence);
+  they do not replace the current coordinator's explicit resume list.
   At session start or resume and after a compaction, read your assignments
   fresh (`project.plan.index` with your stable worker name as assignee, by
   status, and `assignment.list`) and compare them with the work you remember,
