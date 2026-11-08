@@ -6875,6 +6875,12 @@ def _worker_command(args: Any) -> dict[str, Any]:
         from .return_reconciliation import PREFIX, ReturnReconciliation
         reconciliation = ReturnReconciliation(field, identity.worker_name)
         return_context = None
+        reply_to = args.reply_to
+        if args.kind == "reply" and str(correlation_id).startswith(PREFIX) and reply_to:
+            reply_to = field.reconciliation_reply_to(
+                project_id, worker_name=identity.worker_name, message_ref=reply_to,
+                recipient=recipient, correlation_id=correlation_id,
+            )
         # Only the returning worker's explicit census request binds its
         # episode. The coordinator must reply on the same correlation without
         # being required to own that requester's return episode itself.
@@ -6893,7 +6899,7 @@ def _worker_command(args: Any) -> dict[str, Any]:
                 payload=payload,
                 work_ref=args.work_ref,
                 correlation_id=correlation_id,
-                reply_to=args.reply_to,
+                reply_to=reply_to,
                 idempotency_key=args.idempotency_key,
             )
         else:
@@ -6910,7 +6916,7 @@ def _worker_command(args: Any) -> dict[str, Any]:
                 payload=payload,
                 work_ref=args.work_ref,
                 correlation_id=correlation_id,
-                reply_to=args.reply_to,
+                reply_to=reply_to,
                 idempotency_key=args.idempotency_key,
                 attachments=attachments,
             )

@@ -647,8 +647,11 @@ The client binds the request to the exact project, inventory and fresh
 coordinator identity/revision through the governed `project.coordinator.get`
 read. This binding applies to the returning worker's `send --kind request`;
 the coordinator sends an ordinary `--kind reply` with the same correlation and
-the census request's exact `--reply-to`. It does not need the requester's local
-episode in its own session. A Card whose consent predates the governed read needs its administrator to
+the census request's exact local `--reply-to`. For a request routed from another
+host, the client resolves that local ref to the sender's source ref using the
+admitted routing record; caller-supplied payload cannot assert this binding.
+The requester's exact-reply check remains in force. The coordinator does not
+need the requester's local episode in its own session. A Card whose consent predates the governed read needs its administrator to
 apply the documented Fit to role update; an unavailable authority read leaves
 the episode pending. The current episode's coordinator replies have a separate
 bounded control-selection budget, preserving ordinary window-control access.
@@ -667,6 +670,12 @@ coordinator binding, correlation, reply-to and decision time. It never parses
 prose into actions. Ordinary receive, acknowledgement, lease expiry and silence
 do not clear reconciliation. A changed inventory or coordinator requires a
 fresh request and reply. Confirming one project does not clear another.
+
+Each native quota hold has a durable occurrence ID. Repeated observations of
+one hold retain that ID, even when its retry time changes. After capacity
+recovery makes the wake eligible and clears the hold, a later hold gets a new
+ID and can require a new reconciliation episode even with identical kind and
+source evidence. A heartbeat does not establish capacity recovery.
 
 Use `pb worker settle --outcome obsolete` for obsolete mail under a current
 lease. It records local and canonical remote `obsolete`, separately from relay

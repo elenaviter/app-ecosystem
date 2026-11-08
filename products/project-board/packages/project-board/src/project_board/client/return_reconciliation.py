@@ -50,7 +50,8 @@ class ReturnReconciliation:
         with exclusive_lock(self.lock):
             row = self._read()
             # Repeated observations of one hold retain one cause identity.
-            token = content_hash([cause, dict(evidence)])
+            occurrence = str(evidence.get("hold_id") or "")
+            token = content_hash([cause, occurrence]) if occurrence else content_hash([cause, dict(evidence)])
             row["cause"] = {"kind": cause, "evidence": dict(evidence), "token": token, "at": utc_now()}
             atomic_write_json(self.path, row)
 

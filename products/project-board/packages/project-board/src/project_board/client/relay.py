@@ -6774,7 +6774,7 @@ class ProblemBoardRelaySupervisor:
                 await self._channel_off_loop(channel, field.clear_wake_hold, channel.worker_name)
                 return queue_reconciliation
             retry_at = (datetime.now(timezone.utc) + timedelta(seconds=QUOTA_REFRESH_SECONDS)).strftime("%Y-%m-%dT%H:%M:%SZ")
-            await self._channel_off_loop(
+            hold = await self._channel_off_loop(
                 channel, field.record_wake_hold, channel.worker_name,
                 until=retry_at, pending=len(pending_refs),
             )
@@ -6782,7 +6782,8 @@ class ProblemBoardRelaySupervisor:
                 from .return_reconciliation import ReturnReconciliation
                 await self._channel_off_loop(
                     channel, ReturnReconciliation(field, channel.worker_name).record_cause,
-                    "quota_hold", {"kind": str((limit_state or {}).get("kind") or ""),
+                    "quota_hold", {"hold_id": hold["hold_id"], "since": hold["since"],
+                                   "kind": str((limit_state or {}).get("kind") or ""),
                                    "source": str((limit_state or {}).get("source") or "unknown")},
                 )
             return {"wake_deferred": True, "wake_deferred_until": retry_at,
@@ -6793,7 +6794,7 @@ class ProblemBoardRelaySupervisor:
                 await self._channel_off_loop(channel, field.clear_wake_hold, channel.worker_name)
                 return queue_reconciliation
             # W334: the card shows the hold from this same decision.
-            await self._channel_off_loop(channel,
+            hold = await self._channel_off_loop(channel,
                 field.record_wake_hold,
                 channel.worker_name,
                 until=deferred_until,
@@ -6802,7 +6803,8 @@ class ProblemBoardRelaySupervisor:
             from .return_reconciliation import ReturnReconciliation
             await self._channel_off_loop(
                 channel, ReturnReconciliation(field, channel.worker_name).record_cause,
-                "quota_hold", {"until": deferred_until, "source": str((limit_state or {}).get("source") or "unknown")},
+                "quota_hold", {"hold_id": hold["hold_id"], "since": hold["since"],
+                               "until": deferred_until, "source": str((limit_state or {}).get("source") or "unknown")},
             )
             if self._limit_wake_deferrals.get(channel.worker_name) != deferred_until:
                 self._limit_wake_deferrals[channel.worker_name] = deferred_until

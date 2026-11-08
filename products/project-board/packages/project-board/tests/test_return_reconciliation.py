@@ -163,3 +163,106 @@ def test_notifier_or_heartbeat_cannot_advance_a_model_entry(world):
     assert read_json(state.path)["model_entry"]["at"] == "2026-11-08T09:00:00Z"
     with pytest.raises(ValueError):
         state.model_entry("heartbeat")
+
+
+@pytest.mark.parametrize("resets_at", ["", "2999-01-01T00:00:00Z"])
+def test_distinct_native_quota_holds_open_new_return_episodes(tmp_path, monkeypatch, resets_at):
+    """Exercise actual relay hold creation, repeated reads, and capacity recovery."""
+    import asyncio
+
+    from project_board.client import relay, store as store_module
+    from project_board.client.store import SharedFieldStore
+    from relay_helpers import make_host, make_supervisor
+
+    # Even identical clock values must not merge two different occurrences.
+    monkeypatch.setattr(store_module, "utc_now", lambda: NOW)
+    monkeypatch.setattr(relay, "utc_now", lambda: NOW)
+    monkeypatch.setattr("project_board.client.return_reconciliation.utc_now", lambda: NOW)
+    host, identity, channel = make_host(tmp_path)
+    field = SharedFieldStore(host.field_root)
+    field.initialize(field_id="two-quota-holds")
+    field.create_project(project_id="project-one", title="Return", goal="Current work", owner="operator")
+    field.register_worker(
+        worker_name=identity.worker_name, worker_identity=identity.worker_identity,
+        runtime_kind=identity.runtime_kind, runtime_session_id=identity.runtime_session_id,
+        capabilities=[], authority_label="connection-hub:fixture-card", control_plane_state="published",
+        attended_project_refs=[PROJECT],
+    )
+    field.listen_worker(identity.worker_name)
+    coordinator = {"state": "held", "holder": {"worker_name": "coordinator-one", "attending": True},
+                   "revision": 1, "since": "2026-11-08T08:00:00Z"}
+    field.sync_project_coordinator("project-one", coordinator)
+    state = ReturnReconciliation(field, identity.worker_name)
+    supervisor = make_supervisor(host)
+    quota = {"kind": "rate_limited", "source": "codex-app-server", "resets_at": resets_at}
+    pushes = []
+
+    # Native provider reads and the external queue are boundaries. The relay,
+    # listener, mailbox, hold store and reconciliation state stay real.
+    monkeypatch.setattr(relay, "session_with_limit_state", lambda listener, **_: dict(listener))
+    async def read_quota(*_args, **_kwargs):
+        return dict(quota), ""
+    async def reconcile(*_args, **_kwargs):
+        return None
+    async def notify(*_args, **kwargs):
+        pushes.append(kwargs)
+        return {"delivered": True}
+    monkeypatch.setattr(supervisor, "_refresh_codex_quota", read_quota)
+    monkeypatch.setattr(supervisor, "_reconcile_session_queue", reconcile)
+    monkeypatch.setattr(supervisor, "_notify_session", notify)
+
+    def enqueue(key):
+        return field.send_mail(
+            "project-one", sender="control-plane", recipient=identity.worker_name,
+            kind="request", subject=key, body="Ask current authority before resuming.", idempotency_key=key,
+        )
+    def observe():
+        return asyncio.run(supervisor._notify_available_input(host, channel))
+
+    enqueue("old-task-A")
+    assert observe()["wake_deferred"] is True
+    hold_a = field.wake_hold(identity.worker_name)
+    [first] = state.model_entry("receive")
+    assert first["cause"]["kind"] == "quota_hold"
+    assert observe()["wake_deferred"] is True
+    assert state.prepare()[0]["episode_id"] == first["episode_id"]
+    assert field.wake_hold(identity.worker_name).get("hold_id") == hold_a.get("hold_id")
+
+    context = state.request_context(PROJECT, first["correlation_id"], "coordinator-one", coordinator)
+    request = {"message_ref": "work:mail:census-A", "created_at": NOW}
+    state.record_request(PROJECT, context, request)
+    state.confirm(PROJECT, first["episode_id"], {
+        "message_ref": "work:mail:decision-A", "project_ref": PROJECT, "sender": "coordinator-one",
+        "kind": "reply", "correlation_id": first["correlation_id"], "reply_to": request["message_ref"],
+        "created_at": NOW,
+    }, coordinator)
+    # Repeated exhaustion after confirmation is still the same hold. Neither
+    # a repeated observation nor a heartbeat constitutes capacity recovery.
+    assert observe()["wake_deferred"] is True
+    assert state.prepare() == []
+    [old] = field.pull_mail("project-one", worker_name=identity.worker_name, lease_owner=identity.runtime_session_id)
+    field.settle_mail(
+        "project-one", worker_name=identity.worker_name, message_ref=old["message_ref"],
+        lease_id=old["lease"]["lease_id"], lease_owner=identity.runtime_session_id,
+        outcome="obsolete", summary="Current coordinator recorded an empty resume list.",
+    )
+    enqueue("fresh-task-B")
+    quota.update(kind="ok", resets_at="")
+    assert observe()["delivered"] is True
+    assert len(pushes) == 1
+    assert field.wake_hold(identity.worker_name) == {}
+    assert state.prepare() == []
+
+    quota.update(kind="rate_limited", resets_at=resets_at)
+    assert observe()["wake_deferred"] is True
+    # d65992a2 has consumed the same kind/source token for A and yields no
+    # pending episode here. This assertion precedes access to the new ID.
+    [second] = state.prepare()
+    assert second["episode_id"] != first["episode_id"]
+    assert second["inventory_count"] == 1
+    hold_b = field.wake_hold(identity.worker_name)
+    assert hold_b["hold_id"] != hold_a["hold_id"]
+    assert hold_b["since"] == hold_a["since"] == NOW
+    assert observe()["wake_deferred"] is True
+    assert state.prepare()[0]["episode_id"] == second["episode_id"]
+    assert field.wake_hold(identity.worker_name)["hold_id"] == hold_b["hold_id"]

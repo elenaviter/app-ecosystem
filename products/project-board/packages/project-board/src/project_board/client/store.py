@@ -4745,7 +4745,7 @@ class SharedFieldStore:
     # process, so a restart keeps it and every project heartbeat reads it.
 
     def record_wake_hold(self, worker_name: str, *, until: str, pending: int) -> dict[str, Any]:
-        """Hold (or keep holding) the wake: ``since`` stays when the hold began."""
+        """Hold (or keep holding) the wake; its occurrence ID and start stay fixed."""
 
         clean_name = str(self.read_worker(worker_name).get("worker_name") or "")
         path = self._worker_path(clean_name)
@@ -4755,7 +4755,9 @@ class SharedFieldStore:
             current = dict(current) if isinstance(current, Mapping) else {}
             since = str(current.get("since") or "") or utc_now()
             # The board accepts at most a million; the count is a summary.
-            hold = {"since": since, "until": str(until or current.get("until") or ""), "pending": min(max(0, int(pending)), MAX_WAKE_HOLD_PENDING)}
+            hold = {"hold_id": str(current.get("hold_id") or new_id("hold")),
+                    "since": since, "until": str(until or current.get("until") or ""),
+                    "pending": min(max(0, int(pending)), MAX_WAKE_HOLD_PENDING)}
             if hold == current:
                 return current
             row["wake_hold"] = hold
@@ -5988,6 +5990,39 @@ class SharedFieldStore:
                         "attachments": [{k: a[k] for k in ("file_ref", "filename", "size", "sha256", "mime") if k in a}
                                         for a in stored_attachment_manifest(row)]}
         raise DomainError("field_mail_preview_not_found", "No addressed mail with this ref is readable in the current attendance.", status=404)
+
+    def reconciliation_reply_to(self, project_id, *, worker_name, message_ref, recipient, correlation_id):
+        """Resolve a delivered census alias only from admitted route evidence.
+
+        A remote sender owns ref S; materialization creates recipient-local C.
+        The normal reply command names C, while the requester's checkpoint
+        must still match S. Caller-supplied payload is not route admission.
+        """
+        worker = self.read_worker(worker_name)
+        project_ref = make_ref("project", project_id)
+        if project_ref not in (worker.get("attended_project_refs") or []):
+            raise DomainError("field_return_reply_binding_mismatch", "The reply project is not currently attended.", status=409)
+        with exclusive_lock(self._mail_lock(project_id, worker_name)):
+            row = self._mail_record_unlocked(project_id, worker_name, message_ref)
+        if (not row or row.get("message_ref") != message_ref or row.get("recipient") != worker_name
+                or row.get("project_ref") != project_ref or row.get("sender") != recipient
+                or row.get("kind") != "request" or row.get("correlation_id") != correlation_id):
+            raise DomainError("field_return_reply_binding_mismatch", "Reply to the exact addressed census in its original project and correlation.", status=409)
+        payload = row.get("payload") or {}
+        admitted = row.get("admitted_mail_route") or {}
+        if not admitted:
+            if payload.get("source_message_ref"):
+                raise DomainError("field_return_reply_binding_missing", "This remote request lacks admitted source-ref evidence; obtain a fresh census request.", status=409)
+            return message_ref
+        if (admitted.get("command_ref") != payload.get("command_ref")
+                or admitted.get("payload_hash") != payload.get("payload_hash")
+                or admitted.get("source_message_ref") != payload.get("source_message_ref")
+                or any(admitted.get(k) != row.get(k) for k in ("project_ref", "sender", "recipient", "correlation_id"))):
+            raise DomainError("field_return_reply_binding_mismatch", "The admitted remote census binding does not match its local message.", status=409)
+        source_ref = str(admitted.get("source_message_ref") or "")
+        if not source_ref or parse_ref(source_ref).kind != "mail":
+            raise DomainError("field_return_reply_binding_missing", "The admitted census has no valid sender source ref.", status=409)
+        return source_ref
 
     def _backlog_path(self, clean_name: str) -> Path:
         return self.control / "backlog" / f"{component(clean_name, field='worker_name')}.json"
@@ -7394,6 +7429,7 @@ class SharedFieldStore:
         sender_identity: Mapping[str, Any] | None = None,
         admitted_operator_control: bool = False,
         board_routed: bool = False,
+        admitted_mail_route: Mapping[str, Any] | None = None,
         idempotency_identity: Mapping[str, Any] | None = None,
         idempotency_alias_keys: Sequence[str] = (),
         idempotency_identity_aliases: Sequence[Mapping[str, Any]] = (),
@@ -7468,6 +7504,18 @@ class SharedFieldStore:
             correlation_id, field="correlation_id", maximum=512
         )
         clean_reply_to = bounded_text(reply_to, field="reply_to", maximum=512)
+        route_evidence = dict(admitted_mail_route or {})
+        if route_evidence and (not board_routed or any(
+            route_evidence.get(key) != value for key, value in {
+                "project_ref": make_ref("project", clean_project) if clean_project else "",
+                "sender": clean_sender, "recipient": clean_recipient, "correlation_id": clean_correlation_id,
+                "command_ref": clean_payload.get("command_ref"), "payload_hash": clean_payload.get("payload_hash"),
+                "source_message_ref": clean_payload.get("source_message_ref"),
+            }.items()
+        )):
+            raise DomainError("field_mail_source_binding_invalid", "Only matching admitted route evidence may bind a sender source ref.", status=409)
+        # Admission repeats fields already hashed below. Keep that hash stable
+        # so a pre-upgrade routed delivery can replay its original receipt.
         request_hash = content_hash(
             {
                 "route": "local",
@@ -7620,6 +7668,8 @@ class SharedFieldStore:
                 # Only materialize_control passes this for a board-admitted
                 # person; peer display labels and public payloads cannot.
                 envelope["admitted_operator_control"] = True
+            if route_evidence:
+                envelope["admitted_mail_route"] = route_evidence
             envelope["message_ref"] = reference_for_record("mail", envelope)
             envelope["content_hash"] = content_hash(envelope)
             if status == "pending":
@@ -9979,6 +10029,13 @@ class SharedFieldStore:
                 and str(sender_identity.get("kind") or "") == "user"
             ),
             board_routed=control_kind == "mail",
+            admitted_mail_route=(
+                {"source_message_ref": message_payload["source_message_ref"],
+                 "command_ref": command_ref, "payload_hash": expected_hash,
+                 "project_ref": project_ref, "sender": sender, "recipient": recipient,
+                 "correlation_id": correlation_id}
+                if control_kind == "mail" else None
+            ),
         )
         if control_kind == "mail" and kind == "delivery_failed":
             failure = dict(message_payload.get("payload") or {}).get("delivery_failure")
