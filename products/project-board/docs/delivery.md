@@ -645,7 +645,10 @@ Read current work items and assignments. Send the current coordinator one
 consolidated census with correlation `return-reconciliation:<episode_id>`.
 The client binds the request to the exact project, inventory and fresh
 coordinator identity/revision through the governed `project.coordinator.get`
-read. A Card whose consent predates that operation needs its administrator to
+read. This binding applies to the returning worker's `send --kind request`;
+the coordinator sends an ordinary `--kind reply` with the same correlation and
+the census request's exact `--reply-to`. It does not need the requester's local
+episode in its own session. A Card whose consent predates the governed read needs its administrator to
 apply the documented Fit to role update; an unavailable authority read leaves
 the episode pending. The current episode's coordinator replies have a separate
 bounded control-selection budget, preserving ordinary window-control access.

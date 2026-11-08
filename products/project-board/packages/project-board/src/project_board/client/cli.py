@@ -6875,7 +6875,10 @@ def _worker_command(args: Any) -> dict[str, Any]:
         from .return_reconciliation import PREFIX, ReturnReconciliation
         reconciliation = ReturnReconciliation(field, identity.worker_name)
         return_context = None
-        if str(correlation_id).startswith(PREFIX):
+        # Only the returning worker's explicit census request binds its
+        # episode. The coordinator must reply on the same correlation without
+        # being required to own that requester's return episode itself.
+        if args.kind == "request" and str(correlation_id).startswith(PREFIX):
             coordinator = _fresh_return_coordinator(args, field)
             return_context = reconciliation.request_context(project_ref, correlation_id, recipient, coordinator)
             payload["return_reconciliation"] = return_context
