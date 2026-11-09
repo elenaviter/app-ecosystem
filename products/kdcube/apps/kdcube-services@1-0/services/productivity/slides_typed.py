@@ -52,7 +52,7 @@ async def execute_typed(service, *, operation, tool_name, presentation_ref, payl
     )
     body = {**payload, "account_id": account_id}
     if operation == "search":
-        request = NamedServiceRequest(operation="object.search", namespace="slides", query=payload.get("query", ""), limit=payload.get("limit", 20), cursor=payload.get("cursor", ""), filters={"account_id": account_id})
+        request = NamedServiceRequest(operation="object.search", namespace="slides", query=payload.get("query", ""), limit=payload.get("limit", 20), cursor=payload.get("cursor", ""), filters={"account_id": account_id, **{key: payload[key] for key in ("url", "presentation_id") if key in payload}})
     elif operation == "get":
         request = NamedServiceRequest(operation="object.get", namespace="slides", object_ref=presentation_ref, filters=body)
     elif operation in ("create", "rename"):

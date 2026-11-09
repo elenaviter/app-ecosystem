@@ -107,6 +107,15 @@ async def test_real_mcp_discovery_exposes_structured_payloads_and_safe_raw_schem
     batch = tools["productivity_slides_batch_update"].input_schema
     assert "requiredRevisionId" in batch["required"]
     assert batch["properties"]["requests"]["maxItems"] == 50
+    raw = tools["productivity_slides_get_structure"].input_schema
+    assert raw["properties"]["slide_limit"]["default"] == 10
+    assert {"slide_selector", "start_slide", "slide_limit", "include"} <= raw["properties"].keys()
+    for name in ("search", "get"):
+        natural = tools[f"productivity_slides_{name}"].input_schema
+        Draft202012Validator(natural).validate({"payload": {"url": "https://docs.google.com/presentation/d/deck/edit"}})
+        assert {"url", "presentation_id"} <= natural["properties"]["payload"]["properties"].keys()
+    for name in ("style_text", "replace_text", "create_comment"):
+        assert tools[f"productivity_slides_{name}"].input_schema["properties"]["payload"]["properties"]["occurrence"]["minimum"] == 1
     assert all(tool.title and tool.description for tool in tools.values())
 
 
@@ -154,3 +163,35 @@ async def test_sdk_action_pipeline_retains_the_typed_tool_name_and_request_ident
     assert seen[0]["account_id"] == "account"
     assert seen[0]["payload"]["presentation_ref"] == "deck"
     assert (contexts[0].tenant, contexts[0].project, contexts[0].user_id, contexts[0].conversation_id) == ("tenant", "project", "user", "conversation")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("operation", ["search", "get"])
+async def test_typed_natural_lookup_reaches_the_sdk_and_returns_a_bound_ref(monkeypatch, operation):
+    m = module("services/productivity/slides_typed.py")
+    seen = []
+    async def execute(**kwargs):
+        seen.append(kwargs)
+        row = {"presentation_id": "deck", "account_id": "chosen", "title": "Deck", "snapshot": {"slides": [], "range": {"next_slide": None}}}
+        return {"ok": True, "ret": {**row, "items": [row]}}
+    monkeypatch.setattr(m, "get_current_user_identity", lambda: {})
+    result = await m.execute_typed(SimpleNamespace(host=None, execute=execute), operation=operation, tool_name=f"productivity_slides_{operation}", presentation_ref="", payload={"url": "https://docs.google.com/presentation/d/deck/edit?slide=id.s1"}, account_id="chosen")
+    assert result["ok"], result
+    row = result["ret"]["items"][0] if operation == "search" else result["ret"]["object"]
+    assert row["ref"] == "slides:google:chosen:presentation:deck"
+    assert seen[0]["tool_name"] == f"productivity_slides_{operation}" and seen[0]["account_id"] == "chosen"
+    assert seen[0]["payload"].get("presentation_id", seen[0]["payload"].get("presentation_ref")) == "deck"
+
+
+@pytest.mark.asyncio
+async def test_raw_read_options_survive_the_tool_dispatch():
+    m = module()
+    tools, seen = Tools(), []
+    async def gate(*args, **kwargs):
+        return None
+    async def execute(**kwargs):
+        seen.append(kwargs)
+        return {"ok": True}
+    m.register_google_slides_tools(tools, service=SimpleNamespace(execute_typed=execute), enforce_tool=gate)
+    await tools.tools["productivity_slides_get_structure"]("deck", slide_selector={"position": 13}, include=["layouts"])
+    assert seen[0]["payload"] == {"slide_selector": {"position": 13}, "start_slide": 1, "slide_limit": 10, "include": ["layouts"]}

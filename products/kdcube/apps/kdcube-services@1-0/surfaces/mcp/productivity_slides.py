@@ -13,8 +13,8 @@ from ...services.productivity.slides_typed import bound_account
 
 EnforceTool = Callable[..., Awaitable[dict[str, Any] | None]]
 _BASIC = {
-    "search": ("Find presentations", "Search presentation titles; an empty query lists recent decks."),
-    "get": ("Read a presentation", "Read a bounded snapshot and revision before editing."),
+    "search": ("Find presentations", "Search presentation titles; an empty query lists recent decks. For exact lookup, pass url or presentation_id in payload; invalid shapes match nothing. Choose account_id when multiple accounts are connected."),
+    "get": ("Read a presentation", "Read a bounded snapshot and revision before editing. Supply presentation_ref or exactly one payload selector url or presentation_id. Optional include requests relations or layouts."),
     "create": ("Create a presentation", "Create an empty presentation with a title."),
     "rename": ("Rename a presentation", "Change a presentation title."),
     "get_structure": ("Read native presentation structure", "Read up to 10 slides by default, or choose a slide/range. Returns native object IDs, EMU geometry and revision_id for a raw batch; request layouts or masters explicitly with include."),
