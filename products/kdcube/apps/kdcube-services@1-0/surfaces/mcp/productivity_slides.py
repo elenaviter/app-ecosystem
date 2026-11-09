@@ -1,5 +1,5 @@
 """Typed Slides tools, with exact claims and shared SDK action payloads."""
-from typing import Annotated, Any, Awaitable, Callable
+from typing import Annotated, Any, Awaitable, Callable, Literal
 
 from jsonschema import Draft202012Validator
 from pydantic import Field
@@ -17,7 +17,7 @@ _BASIC = {
     "get": ("Read a presentation", "Read a bounded snapshot and revision before editing."),
     "create": ("Create a presentation", "Create an empty presentation with a title."),
     "rename": ("Rename a presentation", "Change a presentation title."),
-    "get_structure": ("Read native presentation structure", "Read masked native JSON with object IDs, EMU geometry and revision_id for a raw batch."),
+    "get_structure": ("Read native presentation structure", "Read up to 10 slides by default, or choose a slide/range. Returns native object IDs, EMU geometry and revision_id for a raw batch; request layouts or masters explicitly with include."),
     "batch_update": ("Batch-edit a presentation", "Apply 1–50 allowlisted native requests with mandatory requiredRevisionId from get_structure. Slide deletion and comments use dedicated tools. Deleting an element may detach comment anchors. Raw media URLs are fetched by Google; use ordinary media actions for URL validation and staged-file delivery. On an uncertain result, read the presentation before retrying."),
 }
 
@@ -76,8 +76,8 @@ def register_google_slides_tools(mcp: Any, *, service: Any, enforce_tool: Enforc
         register_action(operation)
 
     @mcp.tool(name="productivity_slides_get_structure", title=_BASIC["get_structure"][0], description=_BASIC["get_structure"][1], annotations=read_only_annotations(ToolAnnotations, title=_BASIC["get_structure"][0]), structured_output=False)
-    async def get_structure(presentation_ref: Annotated[str, Field(description="Presentation ID, link or bound presentation ref.")], account_id: str = ""):
-        return await dispatch("get_structure", {}, presentation_ref, account_id)
+    async def get_structure(presentation_ref: Annotated[str, Field(description="Presentation ID, link or bound presentation ref.")], account_id: str = "", slide_selector: dict[str, Any] | str | None = None, start_slide: Annotated[int, Field(ge=1)] = 1, slide_limit: Annotated[int, Field(ge=1, le=50)] = 10, include: list[Literal["layouts", "masters"]] | None = None):
+        return await dispatch("get_structure", {"slide_selector": slide_selector, "start_slide": start_slide, "slide_limit": slide_limit, "include": include or []}, presentation_ref, account_id)
 
     @mcp.tool(name="productivity_slides_batch_update", title=_BASIC["batch_update"][0], description=_BASIC["batch_update"][1] + " Allowed: " + ", ".join(sorted(ALLOWED_REQUEST_KINDS)), annotations=destructive_annotations(ToolAnnotations, title=_BASIC["batch_update"][0]), structured_output=False)
     async def batch_update(presentation_ref: Annotated[str, Field(description="Presentation ID, link or bound presentation ref.")], requests: Annotated[list[dict[str, Any]], Field(min_length=1, max_length=50, description="Single-kind native requests from the published allowlist; batch at most 1 MB and 100000 text characters.")], requiredRevisionId: Annotated[str, Field(min_length=1, max_length=1024, description="Exact revision_id from a fresh get_structure; mandatory, never an implicit overwrite.")], preview: bool = False, account_id: str = ""):
