@@ -130,6 +130,13 @@ def render_envelope(envelope: Mapping[str, Any], *, worker_flags: Sequence[str] 
         )
     result = envelope.get("result")
     lines: list[str] = prefix + ["OK"]
+    if isinstance(result, Mapping) and not str(result.get("schema") or "").startswith("problem-board.worker-input."):
+        for signal in result.get("signals") or []:
+            if isinstance(signal, Mapping):
+                lines.append(f"SIGNAL {signal.get('kind') or 'unknown'}:")
+                lines.extend(_flatten({k: v for k, v in signal.items() if k != "kind"}, prefix="  "))
+        if "signals" in result:
+            result = {k: v for k, v in result.items() if k != "signals"}
     lines.extend(_render_result(result, list(worker_flags)))
     return _withhold_signed_urls("\n".join(lines) + "\n")
 
@@ -287,6 +294,14 @@ def _render_result(result: Any, flags: list[str]) -> list[str]:
         return _render_agent_services(result)
     if schema == "problem-board.worker-inbox.v1":
         return _render_worker_inbox(result, flags)
+    if schema == "problem-board.worker-mail-preview.v1":
+        message = result.get("message") or {}
+        lines = ["inspection only: no lease, settlement or execution authority"]
+        lines.extend(_flatten({k: v for k, v in message.items() if k not in {"body", "attachments"}}))
+        lines.append("body:")
+        lines.extend(_BODY_INDENT + line for line in str(message.get("body") or "").splitlines())
+        lines.extend(_flatten({"attachments": message.get("attachments") or []}))
+        return lines
     if schema == "problem-board.first-run-status.v1":
         return _render_first_run_status(result)
     if _is_procedure_verify(result) and not result.get("detail"):
@@ -473,10 +488,12 @@ def _render_first_run_status(result: Mapping[str, Any]) -> list[str]:
     if refusal:
         lines.append(
             "refusal: {} · permanent {} · credential refused {}".format(
-                refusal.get("code") or refusal.get("error_code") or "-",
+                refusal.get("code") or refusal.get("error_code") or refusal.get("reason") or "-",
                 refusal.get("permanent", "?"), refusal.get("credential", "?"),
             )
         )
+        if refusal.get("connection_hub_error"):
+            lines.append(f"Connection Hub cause: {refusal['connection_hub_error']}")
     relay_commit = str(relay_source.get("commit") or "")
     client_commit = str(client_source.get("commit") or "")
     lines.append(
@@ -545,6 +562,8 @@ def _render_worker_inbox(result: Mapping[str, Any], flags: list[str]) -> list[st
             f"backlog: {result['backlog']} of the pending are set aside by a backlog mark "
             "(received only with pb worker receive --backlog)"
         )
+    if result.get("census_count"):
+        lines.append(f"return census: {result['census_count']} original request headers; inspect current state before receiving or acting")
     headers = [header for header in result.get("headers") or [] if isinstance(header, Mapping)]
     if not headers:
         lines.append("headers: none")
@@ -569,8 +588,11 @@ def _render_worker_inbox(result: Mapping[str, Any], flags: list[str]) -> list[st
         lines.append(f"message_ref: {header.get('message_ref')}")
     if headers:
         lines.append(
-            "receive one: " + _cmd(["pb", "worker", "receive", "--message-ref", "<message_ref>"], flags)
+            ("inspect one: " if result.get("census_count") else "receive one: ")
+            + _cmd(["pb", "worker", "inbox" if result.get("census_count") else "receive", "--message-ref", "<message_ref>"], flags)
         )
+    if result.get("next_cursor"):
+        lines.append("next_cursor: " + str(result["next_cursor"]))
     return lines
 
 

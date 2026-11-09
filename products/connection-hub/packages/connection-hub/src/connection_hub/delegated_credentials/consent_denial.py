@@ -8,8 +8,8 @@ A surface guarded by the delegated-client boundary denies an operation whose
 grants the caller's bearer lacks. The denial is a CONTRACT, uniform across
 surfaces: it names the exact missing grants, and for a hosted-agent caller
 (`kdcube-agent:<app>:<agent>`) it carries the full consent block — agent
-identity, the granted resource, the claims, and the one-click
-`delegated_agent_grant_create` action — so the caller's chat surface raises
+identity, the granted resource, the claims, and the Card consent review
+marker — so the caller's chat surface raises
 the scoped demand without knowing anything about the specific service. The
 agent identity and resource come from the REQUEST's own bound credential
 (the grant record's client id, or the delegate subject; the credential's
@@ -68,6 +68,8 @@ def connection_hub_grant_url(
     hub_bundle_id: str = "connection-hub@1-0",
     account_id: str = "",
     account_claim: str = "",
+    account_provider_id: str = "",
+    agent_card_consent: bool = False,
     namespace: str = "",
     operation: str = "",
     outer_operation: str = "",
@@ -83,7 +85,7 @@ def connection_hub_grant_url(
 ) -> str:
     """An absolute Connection Hub deep link that lands on the Delegated by
     KDCube tab with THIS client's access request focused (the pending pane:
-    missing claims pre-checked, one-click grant).
+    missing claims pre-checked and, for hosted requests, Card consent review).
 
     ``account_id`` / ``account_claim`` focus a PER-ACCOUNT ask (the connected
     account can do it, the agent is not bound): the card explains why the user
@@ -160,6 +162,10 @@ def connection_hub_grant_url(
         "resource": resource,
         "claims": ",".join(str(c) for c in claims if str(c or "").strip()),
     }
+    if agent_card_consent:
+        query["agent_card_consent"] = "1"
+    if str(account_provider_id or "").strip():
+        query["account_provider_id"] = str(account_provider_id).strip()
     if str(namespace or "").strip():
         query["namespace"] = str(namespace).strip()
     if str(operation or "").strip():
@@ -299,6 +305,7 @@ def agent_grant_consent_denial(
         # The card this caller was denied on: an OAuth card id is derived from
         # the concrete URL the client consented at, which ``resource`` is not.
         access_id=view.registry_access_id,
+        agent_card_consent=bool(client_id),
     )
     if not client_id and not external_client_id:
         LOGGER.info(
@@ -324,24 +331,13 @@ def agent_grant_consent_denial(
         consent["connection_hub_url"] = hub_url
         denial["connection_hub_url"] = hub_url
     if client_id:
-        # The one-click grant action rides only for hosted agents today; an
-        # external client's approval flows through the hub link (its record
-        # extension is the hub's own operation).
-        grant_payload: dict[str, Any] = {
-            "client_id": client_id,
-            "resource": resource,
-            "claims": missing_list,
-        }
-        if namespace and operation:
-            grant_payload["named_service_operations"] = {namespace: [operation]}
-        consent["grant"] = {
-            "operation": "delegated_agent_grant_create",
-            "payload": grant_payload,
-        }
+        # A hosted request is reviewed on its current Agent Card before a
+        # grant is committed: a resource-only shortcut cannot bind an account.
+        consent["agent_card_consent"] = True
+        consent["access_id"] = view.registry_access_id
         denial["next_step"] = (
-            "The user extends this agent's grant with the missing access in "
-            "Connection Hub (Delegated by KDCube); the chat consent card carries "
-            "the one-click grant."
+            "Open the requesting Agent Card in Connection Hub, review its "
+            "requested capability and account permissions, then approve once."
         )
     else:
         approval = ", ".join(missing_list)

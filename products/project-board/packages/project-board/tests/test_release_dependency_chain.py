@@ -13,7 +13,7 @@ PROJECT_BOARD_ROOT = REPOSITORY_ROOT / "products/project-board/packages/project-
 CONNECTION_HUB_PRODUCT = REPOSITORY_ROOT / "products/connection-hub"
 CONNECTION_HUB_ROOT = CONNECTION_HUB_PRODUCT / "packages/connection-hub"
 CONNECTION_HUB_CLI_ROOT = CONNECTION_HUB_PRODUCT / "packages/connection-hub-cli"
-RELEASE_VERSION = "2026.10.25.0100"
+RELEASE_VERSION = "2026.11.07.0535"
 # connection-hub-cli is released on its own (W972 C, 25 Oct): a CLI release
 # sets CLI_RELEASE_VERSION; `release-pb prepare` moves only RELEASE_VERSION.
 CLI_RELEASE_VERSION = "2026.10.25.0200"

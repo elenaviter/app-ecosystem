@@ -199,9 +199,20 @@ never on the machine and never in an agent's history.
   on the machine can remind you of it.
 - **You will be asked again after the machine reboots**, and only then. Network
   drops and agent restarts do not need it.
-- **If it is lost, or you mistyped it the first time**, reset: it asks the new password twice and, only when both match, sets
-  the old store aside and creates a new one. Then repeat
-  steps 5 and 6 for each agent. Nothing else is lost.
+- **If the check fails, it is not always a lost password.** The first two lines
+  show which keyring process the agents talk to, not why the store is locked.
+  Several numbers from `pgrep`, or `PID=` none of them: the machine may still use
+  an old daemon, so run the unlock line again and do not reset. `command not found`
+  before `done`: the line broke when pasted, so copy it again as one line. One
+  number, the same as `PID=`: type the password again carefully; if it still
+  fails, do not reset, keep the store and ask for help with what the lines printed.
+- **Only if you know it is lost, or you mistyped it the first time**, you reset; an agent
+  never proposes or runs the reset. It asks the new password twice and, only when both match, sets
+  the old store aside and creates a new one. Every agent on the machine then needs
+  a new Card: follow "I forgot the store (vault) password" in the board's Connect
+  a machine dialog. On a desktop, try your login password first: a desktop's
+  store also holds its saved passwords, Wi-Fi and application tokens, and a reset
+  erases them all.
 
   ```bash
   printf 'New password: '; read -rs P; echo; printf 'Again: '; read -rs Q; echo; if [ -n "$P" ] && [ "$P" = "$Q" ]; then systemctl --user stop gnome-keyring-daemon.socket gnome-keyring-daemon.service 2>/dev/null; pkill -u "$USER" -x gnome-keyring-d; mv ~/.local/share/keyrings/login.keyring ~/.local/share/keyrings/login.keyring.old-$(date +%Y%m%d-%H%M) 2>/dev/null; printf %s "$P" | gnome-keyring-daemon --replace --unlock --components=secrets >/dev/null; echo "store created"; else echo "the two entries are empty or differ; nothing changed"; fi; unset P Q

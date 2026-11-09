@@ -175,6 +175,11 @@ explicit-reopen exception:
 The assignee is who the item is with, in every status (operator ruling,
 2026-09-30). Follow the notice's validated reaction, not status alone:
 
+After an absence, first clear
+[Return from prolonged absence](delivery-and-recovery.md#return-from-prolonged-absence).
+An ownership version or delayed `begin_work` notice does not replace the
+current coordinator's explicit reconciliation of queued requests.
+
 - `begin_work` (Todo or Working, or a board that sends no status) is the work
   in the skill's Receive Assigned Work.
 - A trusted assignment with validated `payload.reopen_evidence` also asks for

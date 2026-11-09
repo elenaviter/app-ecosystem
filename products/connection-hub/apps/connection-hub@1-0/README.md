@@ -24,7 +24,7 @@ links:
   design: ../../../../docs/connection-hub/frontend/application/README.md
   architecture: ../../../../docs/connection-hub/connection-hub-architecture.md
   journal: ../../../../journal/README.md
-updated_at: 2026-09-11
+updated_at: 2026-11-07
 ---
 
 # Connection Hub App
@@ -33,6 +33,16 @@ Connection Hub is the product; `connection-hub@1-0` is its current technical
 KDCube app id. Its portable contracts come from the `connection-hub` Python
 distribution. It is the user-scoped hub for connection edges, connected
 accounts, delegated cards, and current operation admission.
+
+The KDCube local installer creates missing deployment signers through the
+selected secret provider before application startup: the original OAuth refresh
+signer at `connections.delegated_credentials.oauth.original_exchange.refresh_signing_secret_ref`,
+the management admission service's `secret_ref`, and the Hub-only
+`connections.delegated_credentials.grantor_authority_secret`. The templates
+declare matching slots. Existing values remain stable across refresh; no value
+is printed. Cloud and custom launchers must explicitly run the SDK deployment
+bootstrap before starting this app. This provisioning step does not enable Card
+transactions or bypass their authority and storage gates.
 
 It answers eight related questions:
 

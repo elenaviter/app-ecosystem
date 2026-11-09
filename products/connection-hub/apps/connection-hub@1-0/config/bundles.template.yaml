@@ -255,6 +255,10 @@ bundles:
           oauth:
             enabled: false
             brand: "KDCube"
+            original_exchange:
+              # Created once by the KDCube local installer in its selected
+              # secret provider; preserve while refresh credentials remain valid.
+              refresh_signing_secret_ref: "oauth_original.refresh_signing_secret"
               # Optional: render delegated credential consent in a bundle-hosted
               # UI declared on an authority provider. Connection Hub still owns
               # approve/deny validation and token issuance.

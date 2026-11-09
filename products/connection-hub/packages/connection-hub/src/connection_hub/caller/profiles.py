@@ -162,6 +162,25 @@ class ProfileService:
             raise
         return ProfileRemoval(profile=removed, dangling_installations=len(installed))
 
+    async def retire_revoked(self, name: str, *, access_id: str) -> ProfileRemoval:
+        """W1012: forget an OAuth profile whose Card was revoked in Connection Hub and whose credential is gone.
+
+        No force: a profile still installed for a client is refused. The
+        credential-lock section in the OAuth service decides the rest.
+        """
+
+        profile = self.profiles.require(name)
+        if profile.auth_type != "oauth":
+            raise ProfileError(
+                "profile_not_oauth",
+                f"Caller profile '{name}' is not an OAuth profile; remove it with 'profile remove'.",
+            )
+        installed = self._installations_for_removal(profile, force=False)
+        removed = await self._oauth_service().retire_revoked_without_custody(
+            name, access_id=access_id
+        )
+        return ProfileRemoval(profile=removed, dangling_installations=len(installed))
+
     async def disconnect(self, name: str, *, force: bool = False) -> ProfileRemoval:
         profile = self.profiles.require(name)
         installed = self._installations_for_removal(profile, force=force)

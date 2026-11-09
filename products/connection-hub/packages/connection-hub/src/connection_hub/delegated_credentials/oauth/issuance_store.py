@@ -177,6 +177,68 @@ class IssuanceReservationStore:
             )
         return None if row is None else self._plan_row(row)
 
+    async def latest_resident_issuance(self, logical_request: str) -> dict[str, Any] | None:
+        """The latest immutable attempt of one resident operation, from the existing plan table.
+
+        The caller serializes planning under the existing request section.
+        Only a terminal ABORT permits a later attempt; an uncertain original
+        keeps its same plan, fixed claims and decision.
+        """
+        if type(logical_request) is not str or not _HEX64.fullmatch(logical_request):
+            raise IssuanceStoreRefused("issuance_request_invalid")
+        async with self._pool.acquire() as connection:
+            row = await connection.fetchrow(
+                f"""SELECT transaction_id, plan
+                    FROM {self.schema}.{TABLE_ISSUANCE_PLANS}
+                    WHERE tenant=$1 AND project=$2
+                      AND plan->>'issuance_kind'='descriptor-resident'
+                      AND plan->>'resident_request'=$3
+                    ORDER BY (plan->>'resident_attempt')::bigint DESC
+                    LIMIT 1""", self.tenant, self.project, logical_request)
+        return None if row is None else self._plan_row(row)
+
+    async def resident_issuance_cleanup_page(self, *, after: str = "", limit: int = 50) -> dict[str, Any]:
+        """Bounded stored-plan references for terminal original cleanup after recovery.
+
+        No candidate or bearer is returned. The host re-reads each actual
+        decision; a deadline alone never authorizes retirement as an ABORT.
+        The cursor wraps over pending work. Acknowledged cleanup is excluded.
+        """
+        if type(after) is not str or (after and not _HEX64.fullmatch(after)):
+            raise IssuanceStoreRefused("issuance_request_invalid")
+        count = max(1, min(int(limit), 100))
+        async with self._pool.acquire() as connection:
+            rows = await connection.fetch(
+                f"""SELECT decision_request_id, transaction_id
+                    FROM {self.schema}.{TABLE_ISSUANCE_PLANS}
+                    WHERE tenant=$1 AND project=$2 AND decision_request_id > $3
+                      AND transaction_id IS NOT NULL AND reserved_until <= clock_timestamp()
+                      AND resident_cleanup_completed_at IS NULL
+                      AND plan->>'issuance_kind'='descriptor-resident'
+                    ORDER BY decision_request_id LIMIT $4""",
+                self.tenant, self.project, after, count + 1)
+        more = len(rows) > count
+        page = rows[:count]
+        return {"items": [{"decision_request_id": str(row["decision_request_id"]),
+                           "transaction_id": str(row["transaction_id"])} for row in page],
+                "next_after": str(page[-1]["decision_request_id"]) if more and page else ""}
+
+    async def complete_resident_original_cleanup(self, *, transaction_id: str) -> None:
+        """Host acknowledgement after authenticated SDK retirement or complete COMMIT FINISH.
+
+        This only bounds cleanup work; it never authorizes a Card or credential.
+        It does not change the plan bytes, reservation or real decision.
+        """
+        if type(transaction_id) is not str or not _HEX64.fullmatch(transaction_id):
+            raise IssuanceStoreRefused("issuance_transaction_invalid")
+        async with self._pool.acquire() as connection:
+            await connection.execute(
+                f"""UPDATE {self.schema}.{TABLE_ISSUANCE_PLANS}
+                    SET resident_cleanup_completed_at=COALESCE(resident_cleanup_completed_at, clock_timestamp())
+                    WHERE tenant=$1 AND project=$2 AND transaction_id=$3
+                      AND plan->>'issuance_kind'='descriptor-resident'""",
+                self.tenant, self.project, transaction_id)
+
     @asynccontextmanager
     async def issuance_completion_section(self, transaction_id: str, *,
                                           claim_seconds: int = COMPLETION_CLAIM_SECONDS) -> AsyncIterator[Any]:

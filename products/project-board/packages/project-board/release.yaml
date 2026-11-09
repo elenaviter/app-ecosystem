@@ -1,36 +1,19 @@
 package:
   id: project-board
-  ref: "2026.10.25.0100"
+  ref: "2026.11.07.0535"
   description: |
-    Requested coverage since 2026.10.18.1804.
+    Changes since the previous pb release (#940). Source: App Ecosystem main ce5c51a8.
 
-    New changes since the PB set published on 19 October at 22:00 Berlin time:
-
-    - Project Board workers can discover and call the services allowed by their Cards. The client validates service arguments before sending them and preserves the project's permissions for each worker.
-    - Repeating an identical setup reuses the existing host record. Procedure installation and verification name every covered directory.
-    - Procedure installation and verification cover `~/.claude` and the current session's own configuration directory by default. Other directories are covered only when explicitly named; multiple named directories are supported, and hooks and settings stay within that selection.
-    - Repeating a single-value command option with conflicting values now fails before any operation, with a clear error; one send has one recipient.
-    - The relay recovers from lost outbox leases without stopping unrelated mail, settles an in-flight outbox row in its own copy, and avoids repeating mailbox reconciliation for an unchanged owner view. Project syncs compare before locking and write only when data changes. Retention holds the writer lock one day at a time. Slow-turn diagnostics name the longest store call and outbox send time.
-    - Retirement reconciliation keeps one routed publication per host, groups host-local originals by their required sender, and adopts overdue routed batches. Outbox claiming checks only due rows and expired leases.
-    - Connection Hub's secret flow asks for consent in the CLI, keeps the exact door and resource binding, carries that resource through token refreshes, and explains refused token exchanges. A Card entered through a secret door can add only reachable, exact secrets. A used one-time permission asks again, and its consent label reflects the committed result.
-    - Delegated catalog rows and Card editors stay bound to the entry that granted access. Editing a project's Control Card goes through that project, where its permissions are checked. Project Control account policies govern linked services and resources, and a save is bounded by the saver's typed permission proof.
-    - A project bounds an agent Card save only for the resources it governs. Grants for other resources are bounded by the owner's proven authority.
-    - A Card save refused for permissions beyond the saver's authority names those permissions in its signed answer.
-    - Long-lived Cards retain the revision links needed to settle earlier policy changes after token renewal or issuer updates.
-    - Tools listed and called through the delegated MCP gateway follow the agent's Card combined with any linked Control, including its AND/OR rule and External MCP/A2A switches. An unresolvable or invalid linked Control is refused; an agent without a Control keeps its Card's permissions.
-    - App Foundation adds A2A 1.0 client and server building blocks. Connection Hub can store an explicitly enabled A2A connection. Platform installation and activation of inbound A2A routes remain separate release work.
-    - Test collection identifiers are stable across workers, and dated recovery fixtures no longer depend on expired test dates. The client diagnoses broken hashlib BLAKE2 support and refuses to select an affected release.
-
-    Previously shipped within the requested coverage, by the 19 October evening release:
-
-    - Project exports can be imported through the supported client flow, with browser import documentation. Resume and authorization commands identify the selected profile.
-    - The Redis lock policy check can read INFO memory when CONFIG is restricted; an unknown policy is still refused.
-    - The client, procedures and documentation use the Project Board name.
-
-    Connection Hub CLI carries the PB snapshot version at preparation, and its separate release is qualified after its required kdcube-cli version is available. If its dependency metadata changes after the PB tag, that CLI release receives a distinct later version and tag.
+    - pb worker forget-card retires the local record of a Card that was revoked in Connection Hub and whose credential is gone, in one guarded command. pb status keeps working on a desktop whose keyring is locked or unavailable (W1012 point 6, #947).
+    - Worker procedure revision 2026.11.07.1, covering #942 and #947 (#948). The Connect a machine steps check the store before any reset, and say that agents never reset it (W1012, #942).
+    - Connection Hub: a hosted agent's consent is written on the agent's own Card, and the consent binds the provider account it may use (W1018, #945).
+    - Connection Hub names its signing-secret slots, so an installer can create and verify them (W1019, #944).
+    - Release tooling: after a publish, the release workflow waits until the new versions actually install. The Connection Hub CLI is versioned separately from the pb set (W1016, #941).
+    - Tests: the forget-card stuck-store case skips when connection_hub_cli is not importable, which is the case in the release gate's per-package venv (#950).
+    - Tests: the paired issuance expiry test uses a controlled database clock instead of a 1-second intent TTL and a sleep (W1023, #949).
 
 components:
   python_package:
     id: project-board
     path: products/project-board/packages/project-board
-    version: "2026.10.25.0100"
+    version: "2026.11.07.0535"

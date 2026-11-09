@@ -58,7 +58,7 @@ When the person asks you to create a project and connect you and other agents to
 ## Start Or Resume
 
 **Which session this is.** A new session, or one that lost this skill's text, runs these steps from 1 and loads what the harness requires. An addressed wake in a running, enrolled session is not a start: it continues this session. Reuse the instructions already loaded at the installed revision, go straight to Receive Addressed Input, and replay no enrollment, startup read or full skill load. A changed installed revision means one full load of the new skill. A doubt about one act reads that act's owning section. The harness's own loading is not a replay you chose, and nothing here overrides it (operator, 2026-10-01).
-**First, the machine self-test.** Every start or resume, a session resumed after its machine restarted included, begins with `pb status`. When its `keyring` item is not usable (on Linux the password store locks at every reboot), say so to the person before anything else: the agents on this machine cannot reach the board until they unlock it. Give the fix `pb status` prints (on Linux exactly the unlock, check and reset of add-a-worker-host step 6) and no keyring command of your own; go on once the check prints `True`. A running relay picks the unlock up within a minute. Operator, 2026-10-05 (W258, W558): "agents when i resume them can check that and say to a usr what he should do in order to restore the servuce (unlock keyring). i.e. this is selg test when agent resumes".
+**First, the machine self-test.** Every start or resume, a session resumed after its machine restarted included, begins with `pb status`. When its `keyring` item is not usable (on Linux the password store locks at every reboot), say so to the person before anything else: the agents on this machine cannot reach the board until they unlock it. Give the fix `pb status` prints (on Linux exactly the unlock and check of add-a-worker-host step 6) and no keyring command of your own; go on once the check prints `True`. Never propose or run the reset: it is the person's alone, only when they know the password is lost; that step's check table checks for some other causes but never proves a wrong password (W1012). On a desktop that fix never contains an unlock line. After a reset, `pb worker forget-card` forgets an old Card's local record: run it read-only, or with `--access-id`, only when the person asks, after they revoked that Card in Connection Hub, never on your own (W1012). A running relay picks the unlock up within a minute. Operator, 2026-10-05 (W258, W558): "agents when i resume them can check that and say to a usr what he should do in order to restore the servuce (unlock keyring). i.e. this is selg test when agent resumes".
 The steps, in order, each in full in [start or resume](references/start-or-resume.md), which a starting session reads completely:
 
 1. the repository instructions of the folder you are in;
@@ -83,6 +83,18 @@ exec pb worker watch --runtime-kind claude-code --runtime-session-id <id> 2>&1
 
 Read [identity and authorization](references/identity-and-authorization.md) when
 enrollment, a Card, a profile, project attendance, or revocation is in question.
+
+## Return From Prolonged Absence
+
+After prolonged inactivity, a quota hold, host sleep or session suspension,
+reconcile with the current coordinator **before executing queued actions**:
+follow [delivery and recovery](references/delivery-and-recovery.md),
+"Return from prolonged absence".
+Inventory the dated requests and expired deadlines, check current ownership
+and items, and wait for one explicit current resume list. Read-only inspection
+may continue. Silence never counts as confirmation; delivery after a wake does
+not make an old instruction current. This gate does not replay enrollment or
+reload an unchanged skill.
 
 ## Always-On Rules
 
@@ -185,7 +197,8 @@ For every returned item:
    attachment from payload metadata or mailbox files.
 3. When `operator_response` is present, send a visible correlated reply before
    settlement; [delivery and recovery](references/delivery-and-recovery.md) explains channel origin and delivery outcomes. A settlement summary is evidence, not a conversation turn.
-4. Handle the request within repository and operator authority, keeping the
+4. Apply the return-reconciliation gate above before queued execution. Handle
+   a confirmed current request within repository and operator authority, keeping the
    journal current while decisions and failures are fresh.
 5. When the sender needs an answer, reply with the stable `sender`, the
    original `message_ref` as `--reply-to`, the original correlation ID, and a
@@ -213,7 +226,11 @@ correlated conversation first. Old input is answered with the current state ([de
 Assignments arrive as one notice from `control-plane`: kind `assign` when an item
 is assigned to you, or a `request` titled `Review W…` to review one. The reaction
 to an `assign` notice follows its `payload.expected_reaction` (W406). A review request,
-and an `assign` notice whose reaction is `begin_work`, is work to begin now, not a notification to acknowledge: no other message or permission is needed, and settling it is not progress.
+and an `assign` notice whose reaction is `begin_work`, is work to begin now
+once any return-reconciliation gate is cleared, not a notification to
+acknowledge: no other message or permission is needed during continuous
+current work, and settling it is not progress. A delayed `begin_work` notice
+does not bypass the return-reconciliation gate.
 `acknowledge_only` (Done, Cancelled) and `await_review` (Review) are information to read and settle, never a reason to report `working`, reopen or change status.
 The assignment row gives `payload.work_ref`, `payload.assignment_ref` and `payload.ownership_version`; the committed item gives `payload.item_status`. Ordinary assignment reactions are derived from that status.
 A trusted assignment with validated `payload.reopen_evidence` asks for `begin_work` while the item still shows Review, Done or Cancelled until the first `working` report. Field edits and mail prose do not manufacture reopen evidence.

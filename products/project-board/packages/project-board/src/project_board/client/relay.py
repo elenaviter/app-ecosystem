@@ -88,7 +88,7 @@ from .runtime_account import read_host_login, read_runtime_account
 from .claude_profile import SessionAccount, read_session_account, resume_profile
 from .coordinate_queue import COORDINATE_LEASE_LOST, CoordinateQueue
 from .credential_refusal import credential_refused
-from .relay_pacing import HANDSHAKE_TIMEOUT_REASON, PACING_FILENAME, RelayPacing
+from .relay_pacing import HANDSHAKE_TIMEOUT_REASON, PACING_FILENAME, RelayPacing, connection_hub_failure_code
 from .relay_logging import relay_log_owner
 from .relay_trace import DiagnosticWriter, RelayActivityTrace, record_outbox_send
 from .relay_admission import is_namespace_handshake_timeout, is_runtime_unavailable
@@ -97,7 +97,7 @@ from .session_delivery import (
     notify_agent_session,
     reconcile_agent_session_queue,
 )
-from .resume_command import build_session_resume_command
+from .resume_command import build_session_resume_command, resume_details
 from .relay_faults import consume_relay_fault, pending_relay_faults
 from .off_loop import ChannelExecutors, run_off_loop
 from .local_work_scanner import LocalWorkScanner
@@ -2539,6 +2539,21 @@ class ProblemBoardHostRelayAdapter:
         ][-20:]
         if completed:
             payload["relay_degraded_intervals"] = completed
+        # W1014: the board builds the last known resume line from these while this relay is offline.
+        # Review P2: a host that refuses the live Resume view (receiver_policy.
+        # allow_session_resume_view false) sends none of it either; the marker
+        # replaces any line an earlier, allowed publish stored.
+        details = {"unavailable": "receiver_policy_session_resume_view_denied"} if not self.config.allow_session_resume_view else resume_details(
+            runtime_kind=self.config.runtime_kind,
+            runtime_session_id=self.config.runtime_session_id,
+            working_directory=self.config.workspace or self.config.working_directory,
+            launch=self.config.runtime_launch,
+            profile=resume_profile(self.config.claude_profile),
+            kdcube_profile=self.config.kdcube_profile,
+        )
+        # Always sent by this client: {"unavailable": code} replaces an earlier line
+        # (review P2); only a client older than W1014 omits the field.
+        payload["resume_details"] = details
         response = await self._account_action(
             payload,
             lambda: self.client.action(object_ref="work:worker:self", action="worker.publish", payload=payload),
@@ -6337,6 +6352,12 @@ class ProblemBoardRelaySupervisor:
         wake_provenance = dict(
             prepared_subscription.get("wake_provenance") or {}
         )
+        from .return_reconciliation import ReturnReconciliation
+        return_signals = await self._channel_off_loop(
+            channel, ReturnReconciliation(field, channel.worker_name).prepare,
+        )
+        if return_signals:
+            wake_provenance["return_reconciliation"] = return_signals
         result = dict(
             await asyncio.to_thread(
                 self.session_notifier,
@@ -6753,10 +6774,18 @@ class ProblemBoardRelaySupervisor:
                 await self._channel_off_loop(channel, field.clear_wake_hold, channel.worker_name)
                 return queue_reconciliation
             retry_at = (datetime.now(timezone.utc) + timedelta(seconds=QUOTA_REFRESH_SECONDS)).strftime("%Y-%m-%dT%H:%M:%SZ")
-            await self._channel_off_loop(
+            hold = await self._channel_off_loop(
                 channel, field.record_wake_hold, channel.worker_name,
                 until=retry_at, pending=len(pending_refs),
             )
+            if not quota_error:
+                from .return_reconciliation import ReturnReconciliation
+                await self._channel_off_loop(
+                    channel, ReturnReconciliation(field, channel.worker_name).record_cause,
+                    "quota_hold", {"hold_id": hold["hold_id"], "since": hold["since"],
+                                   "kind": str((limit_state or {}).get("kind") or ""),
+                                   "source": str((limit_state or {}).get("source") or "unknown")},
+                )
             return {"wake_deferred": True, "wake_deferred_until": retry_at,
                     "reason": quota_error or "agent_rate_limited"}
         deferred_until = wake_deferred_until(limit_state, now=now)
@@ -6765,11 +6794,17 @@ class ProblemBoardRelaySupervisor:
                 await self._channel_off_loop(channel, field.clear_wake_hold, channel.worker_name)
                 return queue_reconciliation
             # W334: the card shows the hold from this same decision.
-            await self._channel_off_loop(channel,
+            hold = await self._channel_off_loop(channel,
                 field.record_wake_hold,
                 channel.worker_name,
                 until=deferred_until,
                 pending=len(pending_refs),
+            )
+            from .return_reconciliation import ReturnReconciliation
+            await self._channel_off_loop(
+                channel, ReturnReconciliation(field, channel.worker_name).record_cause,
+                "quota_hold", {"hold_id": hold["hold_id"], "since": hold["since"],
+                               "until": deferred_until, "source": str((limit_state or {}).get("source") or "unknown")},
             )
             if self._limit_wake_deferrals.get(channel.worker_name) != deferred_until:
                 self._limit_wake_deferrals[channel.worker_name] = deferred_until
@@ -9520,6 +9555,7 @@ class ProblemBoardRelaySupervisor:
                     permanent=True,
                     reason=self._failure_code(result),
                     credential=credential_refused(result),
+                    connection_hub_error=connection_hub_failure_code(result),
                 )
                 identity = WorkerSessionIdentity.create(
                     channel.runtime_kind, channel.runtime_session_id
@@ -9648,6 +9684,7 @@ class ProblemBoardRelaySupervisor:
                 permanent=permanent,
                 reason=self._failure_code(result),
                 credential=permanent and credential_refused(result),
+                connection_hub_error=connection_hub_failure_code(result),
             )
             if not permanent:
                 self._record_channel_failure(pacing, channel.worker_name, result)

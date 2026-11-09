@@ -47,8 +47,9 @@ async def test_agent_denial_uses_the_self_describing_consent_block() -> None:
     assert artifact == {"artifact": None}
     assert len(announced) == 1
     result = json.loads(content)
-    grant = result["consent"]["grant"]["payload"]
-    assert grant["named_service_operations"] == {"mail": ["object.search"]}
+    review = result["consent"]
+    assert review["agent_card_consent"] is True and "grant" not in review
+    assert review["namespace"] == "mail" and review["operation"] == "object.search"
 
 
 @pytest.mark.asyncio
@@ -87,9 +88,10 @@ async def test_outer_operation_card_denial_becomes_an_exact_consent_demand() -> 
     result = json.loads(await tool.coroutine())
 
     assert len(announced) == 1
-    assert result["consent"]["grant"]["payload"]["resource_operations"] == {
-        resource: ["records_export"]
-    }
+    assert result["consent"]["agent_card_consent"] is True
+    assert "grant" not in result["consent"]
+    assert result["consent"]["resource"] == resource
+    assert result["consent"]["outer_operation"] == "records_export"
 
 
 @pytest.mark.asyncio
@@ -393,6 +395,30 @@ async def test_card_denial_for_an_operation_only_becomes_a_banner() -> None:
     await tool.coroutine()
 
     assert len(announced) == 1
-    grant = announced[0].consent["grant"]["payload"]
-    assert grant["claims"] == []
-    assert grant["named_service_operations"] == {"conv": ["object.search"]}
+    review = announced[0].consent
+    assert review["claims"] == []
+    assert review["namespace"] == "conv" and review["operation"] == "object.search"
+    assert review["agent_card_consent"] is True and "grant" not in review
+
+
+@pytest.mark.asyncio
+async def test_account_only_hosted_denial_preserves_the_complete_review_context():
+    url = "https://hub.example/review?agent_card_consent=1&claims=&account_provider_id=google&account_claim=slides%3Aread"
+    block = {"agent_client_id": "kdcube-agent:app@v1:main", "resource": "urn:named-services",
+             "claims": ["slides:read"], "tool_name": "slides.list", "access_id": "agent-card",
+             "connection_hub_url": url, "account_provider_id": "google",
+             "account_claim": "slides:read", "account_id": "work", "retry_hint": True}
+    tool = tool_for({"ok": False, "error": "delegated_consent_required", "consent": block})
+    announced = []
+
+    async def announce(consent):
+        announced.append(consent)
+
+    bind_chat_result_handling([tool], agent_consent_announcer=announce)
+    result = await tool.coroutine()
+    review = result["consent"]
+    for key in ("connection_hub_url", "access_id", "account_provider_id", "account_claim", "account_id", "retry_hint"):
+        assert review[key] == block[key]
+    assert review["agent_card_consent"] is True and "grant" not in review
+    event = announced[0].chat_event_payload()["consent"]
+    assert event["url"] == url and event["account_provider_id"] == "google"

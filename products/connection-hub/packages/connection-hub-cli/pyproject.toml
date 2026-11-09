@@ -20,8 +20,8 @@ classifiers = [
     "Topic :: Security",
 ]
 dependencies = [
-    "app-foundation[mcp,native-secrets]>=2026.10.25.0100,<2027",
-    "connection-hub[client]>=2026.10.25.0100,<2027",
+    "app-foundation[mcp,native-secrets]>=2026.11.07.0535,<2027",
+    "connection-hub[client]>=2026.11.07.0535,<2027",
     "filelock>=3.16,<4",
     "httpx2>=2.5,<3",
     "json5>=0.12,<1",

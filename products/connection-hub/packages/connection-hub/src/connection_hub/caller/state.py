@@ -219,6 +219,32 @@ class ProfileStore:
 
         return self.document.mutate(remove_from)
 
+    def remove_matching(self, name: str, expected: CallerProfile) -> CallerProfile:
+        """Remove the record only while it is exactly ``expected``, in one state-lock section.
+
+        W1012: a caller that checked a record under another lock removes that
+        record and never a replacement written meanwhile.
+        """
+
+        def remove_from(value: dict[str, Any]) -> CallerProfile:
+            raw = value["profiles"].get(name)
+            if not isinstance(raw, dict):
+                raise ProfileError(
+                    "profile_not_found", f"Caller profile '{name}' does not exist."
+                )
+            # The parsed record, not the stored shape: an older valid record
+            # (record_version absent or older) parses to the same profile and
+            # is still the one read (review of AE #947, finding 4).
+            if CallerProfile.from_dict(raw) != expected:
+                raise ProfileError(
+                    "profile_changed",
+                    f"Caller profile '{name}' changed while it was being removed; nothing was removed.",
+                )
+            del value["profiles"][name]
+            return CallerProfile.from_dict(raw)
+
+        return self.document.mutate(remove_from)
+
 
 class InstallationStore:
     SCHEMA = "connection_hub_cli.client_installations.v1"

@@ -171,6 +171,123 @@ receipt, matches all sealed immutable fields, and checks its committed state.
 Without the coordinator, a changed Save refuses
 `whole_card_save_transaction_unavailable` and keeps the draft.
 
+A descriptor-issued hosted Agent Card's owner edit is decided in the Hub.
+The Hub verifies the resident id and client, grantor partition, deployment,
+application and agent against the canonical stored descriptor Control. The
+Control must be active, credentialless, carry descriptor evidence and an exact
+snapshot, and match the resident binding's revision. A stale binding refuses;
+Save does not silently adopt a newer Control. The local participant reserves
+that Control revision and the active catalog's version plus content hash until
+the decision, and includes any invocation-policy effects in the same commit.
+New selections outside the current Control refuse by name. Stored Control
+administrator edits and configured issuer/caller policies keep their gates.
+Project-managed Cards retain their configured project route; an unknown issuer
+is refused. A known application binding without a project route keeps its
+ordinary writer rules. Recognizing a descriptor binding does not exempt other
+writers from the direct-write guard.
+
+An edit that keeps a live resident bearer uses unchanged credential handles. A descriptor
+sync that keeps the existing live bearer reserves the unchanged Control, or
+writes a changed Control and the resident under one group decision. Sync may
+advance the resident's binding to that exact current Control; owner Save stays
+strict about a stale binding. Configured Control issuer and resident writer
+policies are revalidated before the decision. The administrator edit marker
+and label survive a descriptor refresh.
+An issuance policy refusal keeps its non-retryable code after an actual ABORT;
+it is not reported as a retryable service outage. The lifecycle still finishes
+that ABORT before it may commit an independent Control narrowing.
+
+Passive sync preserves the owner's stored standard restrictions, including a
+removed outer named-service bridge even when an inner choice remains selected.
+It does not add claims or operations from the descriptor ceiling. Creation and
+an explicit selection save may add authority through the normal owner and
+Control checks. Unchanged sets retain their stored order so a refresh does not
+commit a new Card revision just to reorder consent.
+Control withdrawal still closes effective access immediately. A previously
+selected hidden choice stays stored and can become effective when restored;
+that is different from granting a new descriptor default to an existing Card.
+
+First creation and credential rotation use an immutable resident-original
+plan in the existing issuance table. Each member carries linked original and
+candidate versions; a changed Control is a member and an unchanged Control is
+a held read. The planner pins the PostgreSQL planning clock, Card expiry,
+catalog digest and ordered effects, and begins and binds the one decision
+before the SDK prepares an inactive original. A retry reuses that original
+while the outcome is uncertain. The SDK access-only delivery deadline is the
+Card lease, rather than the shorter external OAuth delivery interval.
+An existing resident member uses `renew` at planning, policy and Hub STAGE;
+its Control member remains `update`. The generic action shape checks still
+pin identity and reject an expiry change presented as an ordinary update.
+Group `renew` requires a descriptor resident and its matching original-issuance
+credential effect. A Control member or an owner-edit group without that effect
+cannot use it.
+
+After COMMIT, the credential effect activates and installs that same original
+through resident custody. Only after installation does the following effect
+retire the pinned previous session and grant. A custody cut keeps the Card
+fenced; FINISH recovers the same bearer. Fixed Card expiry never creates a
+replacement credential. If the Card lease ends after SQL activation but before
+custody completes, FINISH records `superseded` without installing the expired
+original. Recovery reports that recorded effect outcome even though the SQL
+slot retains its earlier activated state. A prepared original left before STAGE is retired only
+after an actual ABORT. The bounded cleanup page acknowledges completed work
+in the existing plan row, leaving its immutable plan and real decision intact.
+
+A changed Control can still commit with the existing resident when issuance
+fails, if the plan never began or its actual ABORT has finished. An uncertain
+or committed issuance stays fenced. This fallback advances the binding while
+retaining the resident's prior positive authority; the response identifies
+the Cards actually committed and the pending issuance code. New positive
+standard grants still require the owner's delegability, independently of
+the Control ceiling. With no dedicated descriptor issuer registration, a fresh
+Control is issued locally under the group's absence fence; configured update/revoke issuer policies continue to
+govern changes to an existing Control.
+Only this descriptor lifecycle's fallback policy reads the durable current
+resident when its lease has ended; other enlisted writers keep their existing
+serving read. It does not prepare a credential re-wrap for an ended candidate;
+the old expired metadata remains unusable, and later renewal uses the ordinary
+resident issuance path.
+
+Project ports `authorities.control_card` and `authorities.agent_card` do not
+govern descriptor creation. A separate explicit registration at
+`connections.delegated_credentials.issuer_authorities.kdcube_agent_descriptor`
+does govern that issuer. Its current update/revoke contract has no create
+action, so that exceptional first-create case refuses by name as
+`agent_descriptor_control_creation_authority_unsupported`, including an
+unavailable registered adapter, until a create contract is supplied.
+
+Focused consent on a live descriptor resident uses the same local edit path
+and keeps its existing bearer. The merged standard grants and the aligned
+capability selection are persisted in one Card revision, so a subsequent sync
+reads the consented selection. An explicit replacement can remove a selection;
+sync does not union removed choices back into it.
+
+Consent and selection on a missing or expired credential use the enlisted
+resident issuance path. Consent before descriptor sync refuses
+`agent_descriptor_resident_sync_required`; it cannot invent the Control or
+fall through to an active minter.
+
+The explicit capability-selection endpoint uses the same held-Control and
+catalog decision for a live resident, with a named refusal for additions
+above the ceiling. Explicit named-service and resource selections align their
+standard grants and operations in that same revision, using the current
+stored Control and active provider catalog. Hidden preferences and unrelated
+resources are preserved. MCP routing comes from the Control's stored metadata;
+an old missing mapping refuses `agent_capability_standard_mapping_refresh_required`
+until a paired descriptor sync refreshes it. Owner Save does not use the raw
+consumer descriptor as another ACL.
+An unknown legacy named-service selection remains unchanged on ordinary sync.
+A checkbox edit refuses `agent_capability_named_selection_review_required`
+until an explicit reviewed Card edit resolves the ambiguous boundary.
+
+Transaction refusals carry bounded error/reason codes and explicit retryability
+through the SDK provider, typed runtime exception, app response and workspace
+state/logs. Payloads, exception text and consent URLs are excluded from that
+error boundary. These draft implementations require exact paired-head review
+and the full qualified off-host gate before merge or deployment. The paired
+resident fixture file must execute with zero skips, including real PostgreSQL
+decision/session/handle stores, file custody, Redis, expiry and recovery cuts.
+
 Implementation checkpoint: managed preflight, wire, candidate composition and
 real filesystem policy/coordinator failure-cut checks exist. Productive
 PB/database and browser qualification is still required; these local checks

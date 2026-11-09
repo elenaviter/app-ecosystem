@@ -494,19 +494,28 @@ pgrep -u "$USER" gnome-keyring-d
 timeout 15 "$HOME/.kdcube/client-runtime/tools/problem-board/releases/current/venv/bin/python" -c 'import keyring as k; k.set_password("pb-probe","p","x"); print(k.get_password("pb-probe","p")=="x"); k.delete_password("pb-probe","p")'; echo "exit $?"   # True, exit 0
 ```
 
-Two different PIDs, or no `True` within 15 s (`exit 124`), means the password did not open the existing store: run the unlock again with the right password, or reset.
+`True`, exit 0, means the store is usable: stop here, nothing needs a reset. No `True` within 15 s (`exit 124`) means the store is still not usable. A failed unlock is not always a lost password. The first two lines show which keyring process pb and the relay talk to, not why the store is locked: a wrong password, a missing default store, a service that does not answer and a failed keyring backend all look the same to them (W1012 user review and its review, 6 Nov 2026). Read their output in this table; no row leads to a reset:
 
-**Only these lines.** The host agent gives the operator exactly the unlock, check and reset above, never another keyring command of its own: on mint (2026-10-05) an improvised `gnome-keyring-daemon --unlock` left a stray daemon that broke the store further, and a restart of the keyring unit without asking added another (W558). If the check fails twice, stop, change nothing more, and report what each line printed to the coordinator.
+| You see | It means | Do |
+| --- | --- | --- |
+| one number from `pgrep`, the same as `PID=` | one keyring daemon, and pb talks to it; this does not say why the store is still not usable | type the password again, carefully; if the check still fails, do not reset: keep the store and report what each line printed |
+| several numbers from `pgrep`, or `PID=` is none of them | pb may be talking to an old daemon, not the one just unlocked | run the unlock line again (it stops the old daemons first); no reset |
+| nothing or an error from either line | no keyring service answers, or the line could not run | no reset; report what the lines printed |
+| `command not found` before `done` | the line broke when it was pasted | copy the whole line again, as one line |
 
-**Reset** (the password is lost, or the first one was mistyped). It asks the new password twice and changes nothing unless both entries match; then it sets the old store aside and creates a new, empty one:
+Two cases looked exactly like a lost password on a real host, an old daemon and a pasted line that broke: on 5 October the unit's daemon kept the bus name, so pb and the relay stayed on the old, locked store, and on 12 October a pasted line broke at a newline, printed `--replace: command not found` and then `done` (W558's recovery record, lessons 4 and 5).
+
+**Only these lines.** The host agent gives the operator exactly the unlock and check above, never another keyring command of its own. **The reset is the person's alone:** it is run only by the person, only when the person knows the password is lost and the store is still not usable after the check table; the table never proves a wrong password. An agent never proposes or runs the reset itself (W1012 user review: "the last resort, only when the unlock fails" read as permission). On mint (2026-10-05) an improvised `gnome-keyring-daemon --unlock` left a stray daemon that broke the store further, and a restart of the keyring unit without asking added another (W558). If the check fails twice, stop, change nothing more, and report what each line printed to the coordinator.
+
+**Reset** (the password is lost, or the first one was mistyped; the person runs it, never an agent). **On a desktop with a graphical login**, try the login password first: there the store is normally opened with it. The desktop's store also holds every other secret of that session (saved passwords, Wi-Fi, application tokens), and a reset erases all of them, not only the agents' Cards. It asks the new password twice and changes nothing unless both entries match; then it sets the old store aside and creates a new, empty one:
 
 ```bash
 printf 'New password: '; read -rs P; echo; printf 'Again: '; read -rs Q; echo; if [ -n "$P" ] && [ "$P" = "$Q" ]; then systemctl --user stop gnome-keyring-daemon.socket gnome-keyring-daemon.service 2>/dev/null; pkill -u "$USER" -x gnome-keyring-d; mv ~/.local/share/keyrings/login.keyring ~/.local/share/keyrings/login.keyring.old-$(date +%Y%m%d-%H%M) 2>/dev/null; printf %s "$P" | gnome-keyring-daemon --replace --unlock --components=secrets >/dev/null; echo "store created"; else echo "the two entries are empty or differ; nothing changed"; fi; unset P Q
 ```
 
-Then run the check. A reset loses only what the old store held: each agent on this host authorizes again (step 11).
+Then run the check. **A reset is a last resort: it loses every agent's Card credential on this host**, and the agents do not simply authorize again (W1012): continue with "I forgot the store (vault) password" at the end of this step.
 
-**A relay that was already running** (a reboot, or a store unlocked after the relay started) picks the unlock up on its next attempt, within about a minute, with no restart: while the store is locked it refuses by name (`credential_store_locked`) instead of waiting for a prompt, and retries (W558). A client older than this change needs the relay restarted once after the unlock (`systemctl --user restart kdcube-problem-board-relay-*.service`, the operator approves).
+**A relay that was already running** (a reboot, or a store unlocked after the relay started) picks the unlock up on its next attempt, with no restart: while the store is locked it refuses by name (`credential_store_locked`) instead of waiting for a prompt, and retries on a schedule (W558). After repeated refusals the wait between attempts grows to several minutes, so after a reboot the operator restarts it once to reconnect without waiting (below). A client older than this change needs the relay restarted once after the unlock (`systemctl --user restart kdcube-problem-board-relay-*.service`, the operator approves).
 
 **The alternative W258 has to choose between** is in that item's note: the person
 types it (nothing stored, a person needed after every reboot), or the machine
@@ -530,6 +539,37 @@ step 13 first.
 
 An existing host keeps its former `/opt` or `problem-board-venv` install until
 the complete step 13 migration proof has passed for every configured target.
+
+### After the machine restarted
+
+The relay service starts again by itself, but the password store is locked. Until it is unlocked, no agent on the host can reach the board, and the board's Resume dialog waits for this host's relay. The **operator**, in an SSH session as the agents' user, in this order:
+
+1. **Unlock the store** with the store password from their password manager: the unlock line above. Nothing is shown while typing.
+2. **Check:** `pb status --format brief`: its `prerequisites:` line must end with `keyring usable`; a locked store shows `keyring NOT usable, fix:` followed by what to do: the desktop text when an active desktop session is proven, otherwise both cases, with the unlock line for a machine reached over ssh only. If it still says `NOT usable`, do not reset: the check table in step 6 shows which keyring process pb talks to, and what to do or report.
+3. **Reconnect the relay now:** `systemctl --user restart 'kdcube-problem-board-relay-*.service'`.
+4. **Resume each agent:** open it on the board and press Resume; the dialog gives that agent's line for this host. Run it on the host, then type `resume` in the session.
+
+The board's Connect a machine dialog (Part 1) shows the same steps, and the last resort for a lost store password, with the lines to copy.
+
+**An agent that got a new Card** (after "I forgot the store (vault) password" below) starts without its project grants: after approving it, the operator presses Team, the agent, Fit to role, and the agent then connects by itself; a host on an older pb client may still suggest `authorize` in `pb status`, which is only its wording. **On a board older than the W1013 fix** (merged 6 Nov 2026), a replacement Card does not activate: Connection Hub refuses its Card attach (`card_transactions_direct_write_refused`), which the board reports as `work_project_control_connection_hub_refused`. Fit to role does not clear that, and no operator action does; the board needs the fix. Report it to the coordinator.
+
+### I forgot the store (vault) password
+
+The last resort, only when the store password is really lost. **The person runs the reset, never an agent**, and only when they know the password is lost and the check table in step 6 did not make the store usable (no check proves a password wrong), after trying the login password on a desktop (whose store a reset erases with every other saved secret; see Reset above). Reset the store with the reset line above, then follow these steps in order. The old store is kept as `~/.local/share/keyrings/login.keyring.old-<date>`; if the old password turns up **before** you revoke the old Cards (step 3 below), moving that file back and unlocking it restores those Cards' credentials. After a Card is revoked, the old file cannot bring it back, and moving it over the new store also drops any new Card already approved.
+
+1. Run the check (`pb status --format brief`: its `prerequisites:` line must end with `keyring usable`; a locked store shows `keyring NOT usable, fix:` followed by what to do: the desktop text when an active desktop session is proven, otherwise both cases, with the unlock line for a machine reached over ssh only), then reconnect the relay: `systemctl --user restart 'kdcube-problem-board-relay-*.service'`.
+2. **Read each agent's recorded Card.** In each agent's session it runs `pb worker forget-card`, with no arguments: it only reads. It prints the profile, the `recorded_access_id` of this host's record of the Card, and whether this host still holds that Card's credential (yes or no; the value is never printed). If it still holds it, the Card was not lost and the command refuses: that Card is revoked properly with `pb worker authorize <its profile> --device --replace-card`. From a host terminal, name the profile: `pb worker forget-card <its profile>`.
+3. **Revoke that Card in Connection Hub.** Open **Access cards** and find the agent's card: its title starts with the worker alias. To confirm it is that agent on this host, open its **Client metadata**: `kdcube_worker_alias`, `kdcube_machine_id` and `kdcube_target_id`. The card's ⓘ button opens **Manage this caller from a script**, whose Revoke command (and **Prolong the credential**, where shown) carries `"access_id": "aut_..."`: it must be the one step 2 printed. Then revoke the card. Connection Hub accepts a reconnect to an existing Card only with proof the machine held it, and refuses with `work_relay_card_continuity_required`. Do not use `pb worker authorize --replace-card` here: it first disconnects the old Card with the local credential the reset lost, so it always stops with `work_relay_profile_disconnect_required`, even after the Card is revoked.
+4. **Forget the stale local record** (W1012). The person tells the agent to run `pb worker forget-card --access-id <access_id>` (from a host terminal, `pb worker forget-card <its profile> --access-id <access_id>`). It finds the state root and the profile itself, checks again under Connection Hub's credential lock that the access_id is exactly the recorded one and that no credential has arrived, and removes this host's record only: it never revokes, resets or authorizes anything. It refuses, changing nothing, when the store is not usable, when the credential is on this host, or when the access_id differs. The access_id is the person's statement that they revoked that exact Card; pb cannot check the revocation without the lost credential. An agent runs it only when the person asks, after the revocation, never on its own. On a pb client older than the release that adds `forget-card`, run the same Connection Hub call in pb's own Python instead, with `<state root>` from `connection_hub.state_root` in this host's `relay.json`, `<its profile>` as `pb status` prints it in that agent's session, and `<access_id>` from step 3:
+
+   ```bash
+   "$HOME/.kdcube/client-runtime/tools/problem-board/releases/current/venv/bin/python" -c 'from pathlib import Path; from connection_hub.caller.paths import StatePaths; from connection_hub.caller.services import build_caller_services; build_caller_services(paths=StatePaths(Path("<state root>").expanduser())).profile_service.remove("<its profile>", server_card_revoked=True, access_id="<access_id>")'
+   ```
+
+5. **Give each agent a new Card.** In each agent's session it runs plain `pb worker authorize <its profile> --device` (without `--replace-card`). The operator opens the link on their own device, checks the request names that agent, and approves (step 11).
+6. **Put each agent back on its project.** A new Card starts without the project grants: the operator checks the agent is still on the project's Team, then presses Team, the agent, Fit to role (step 12). On a board older than the W1013 fix, the replacement Card does not activate (see "After the machine restarted" above).
+
+This order ran on spark1 on 5 Nov 2026 (profile `problem-board-claude-557121e82850`) up to the new Card's approval; the revoke-then-`--replace-card` order did not. On that day the agent's channel did not activate, because of the board defect W1013 fixed; after that board fix (6 Nov 2026) the same agent activated on its new Card with no further operator step.
 
 ## 7. Give the host access to exactly the project's repositories
 

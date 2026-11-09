@@ -52,6 +52,9 @@ class MCPConsentRequired(Exception):
         self.resource = resource
         self.claims = list(claims)
         self.consent = dict(consent)
+        if str(self.consent.get("agent_client_id") or "").startswith("kdcube-agent:"):
+            self.consent["agent_card_consent"] = True
+            self.consent.pop("grant", None)
         self.agent_message = agent_message
 
     def to_tool_result(self) -> Dict[str, Any]:
@@ -67,8 +70,8 @@ class MCPConsentRequired(Exception):
         """The consent event the chat renders — the SAME nested shape the
         connected-account (Slack) consent uses (`{error:{code}, consent:{…}}`), so
         one banner path serves both. The consent block carries the claims, the
-        Connection Hub deep link, and (for a per-agent grant) the one-click `grant`
-        action + the agent identity."""
+        Connection Hub deep link and agent identity. Hosted requests select
+        Card review; other explicit grant contracts retain their action."""
         c = self.consent
         consent_block: Dict[str, Any] = {
             "kind": c.get("kind") or "delegated_to_kdcube.mcp",
@@ -98,6 +101,12 @@ class MCPConsentRequired(Exception):
             consent_block["invocation_policy"] = c["invocation_policy"]
         if c.get("invocation_change_id"):
             consent_block["invocation_change_id"] = c["invocation_change_id"]
+        for key in ("agent_card_consent", "account_provider_id", "account_id", "account_claim", "retry_hint"):
+            if c.get(key):
+                consent_block[key] = c[key]
+        if c.get("agent_card_consent"):
+            consent_block.pop("grant", None)
+            consent_block["action_label"] = "Review agent access"
         return {
             "ok": False,
             "error": {"code": CONSENT_NEEDED_CODE, "message": self.agent_message},
@@ -165,9 +174,10 @@ def mcp_consent_from_denial(
     `scopes`); the surface's 403 doesn't enumerate them.
 
     ``agent_client_id`` (the calling agent's ``kdcube-agent:<app>:<agent>``
-    identity) makes the demand actionable: the payload carries a ``grant`` block —
-    the Connection Hub operation + args — a consent surface POSTs to grant THIS
-    agent the claims, distinct from a connect-an-account flow.
+    identity) makes the demand actionable: hosted agents carry
+    ``agent_card_consent`` and open their Card for one reviewed approval of
+    capability and account binding. Other clients may carry the existing
+    explicit ``grant`` operation contract.
 
     ``namespace`` / ``operation`` name the inner capability the call wanted.
     ``outer_operation`` names the MCP or REST operation on the protected

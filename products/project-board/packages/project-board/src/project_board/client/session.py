@@ -515,6 +515,9 @@ def _pull_worker_input(
     worker = field.read_worker(worker_name)
     stable_name = str(worker.get("worker_name") or "")
     selective = bool(message_ref or correlation_id)
+    from .return_reconciliation import ReturnReconciliation
+    reconciliation = ReturnReconciliation(field, stable_name)
+    return_signals = reconciliation.model_entry("receive")
     # W563 (coordinator, 2026-10-06 00:35Z): with a backlog mark the ordinary
     # receive and a native wake lease current mail; --backlog leases the
     # marked mail. Both are counted on every receive.
@@ -564,7 +567,21 @@ def _pull_worker_input(
         )
     selective_used = int(listener.get("selective_receives_since_general") or 0)
     control_key = _control_selection_key(listener, correlation_id=correlation_id, sender=sender, message_ref=message_ref)
-    control_used = int(listener.get("control_selections_used") or 0) if control_key else 0
+    from .return_reconciliation import PREFIX
+    if correlation_id.startswith(PREFIX):
+        control_key = ""
+        for signal in return_signals:
+            coordinator = field.read_project_coordinator(parse_ref(signal["project_ref"]).object_id)
+            return_key = "return|" + sender + "|" + correlation_id
+            return_used = (int(listener.get("return_control_selections_used") or 0)
+                           if listener.get("return_control_selection_key") == return_key else 0)
+            if (not message_ref and signal["correlation_id"] == correlation_id
+                    and (not project_ref or project_ref == signal["project_ref"])
+                    and sender == str((coordinator.get("holder") or {}).get("worker_name") or "")
+                    and return_used < CONTROL_SELECTION_BUDGET):
+                control_key = return_key
+    control_used = (return_used if control_key.startswith("return|")
+                    else int(listener.get("control_selections_used") or 0)) if control_key else 0
     if selective and listener.get("general_receive_due") and not control_key:
         raise DomainError(
             "field_mail_general_receive_due",
@@ -949,7 +966,7 @@ def _pull_worker_input(
             "settlement": {
                 "required": True,
                 "lease_owner": lease_owner,
-                "outcomes": ["acknowledged", "refused"],
+                "outcomes": ["acknowledged", "refused", "obsolete"],
             },
         }
         if selective:
@@ -1278,6 +1295,7 @@ def _pull_worker_input(
             remaining_count=budget.remaining_messages,
             limited_by=budget.limited_by,
         )
+        result["signals"].extend(return_signals)
         if mark:
             result["backlog"] = _backlog_view(
                 mark, backlog_tally, leased_kinds=backlog_leased, backlog=backlog, selected=selective,

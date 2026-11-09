@@ -95,6 +95,7 @@ def card_transaction_coordinator(*, persistence: Any, decisions: Any, grant_stor
                                  authorities: Mapping[str, Any] | None = None, catalog_store: Any = None,
                                  accounts_for: Any = None, issuance_store: Any = None,
                                  credential_handles: Any = None,
+                                 resident_credentials: Any = None,
                                  ) -> tuple[Coordinator, LocalCardIntentSource]:
     """One coordinator, participant, verifier and effect applier over this persistence's Card store.
 
@@ -120,7 +121,8 @@ def card_transaction_coordinator(*, persistence: Any, decisions: Any, grant_stor
         tx.bind_catalog_reservations(card_store, CatalogReservations(catalog_store))
     compose_card_effects(card_service=card_service, card_store=card_store, grant_store=grant_store,
                          policies=policies, accounts_for=accounts_for, issuance_store=issuance_store,
-                         credential_handles=credential_handles)
+                         credential_handles=credential_handles, decisions=decisions,
+                         resident_credentials=resident_credentials)
     intents = LocalCardIntentSource(card_store, service=card_service, decisions=decisions)
     participant = HubCardParticipant(service=card_service, store=card_store, intents=intents, decisions=decisions)
     return Coordinator(decisions, {PARTICIPANT: participant}, HubLocalReceiptVerifier(card_store)), intents
@@ -130,7 +132,7 @@ def bind_card_transactions(service: Any, *, persistence: Any, decisions: Any, gr
                            policies: Any, authorities: Mapping[str, Any] | None = None,
                            catalog_store: Any = None, accounts_for: Any = None,
                            managed_control_scopes: Any = (), issuance_store: Any = None,
-                           credential_handles: Any = None) -> Coordinator:
+                           credential_handles: Any = None, resident_credentials: Any = None) -> Coordinator:
     """Bind one coordinator, participant, verifier and effect applier to this service's Card store.
 
     ``accounts_for(grantor)`` (W578) is the grantor's connected-account store
@@ -145,7 +147,8 @@ def bind_card_transactions(service: Any, *, persistence: Any, decisions: Any, gr
                                                         grant_store=grant_store, policies=policies,
                                                         authorities=authorities, catalog_store=catalog_store,
                                                         accounts_for=accounts_for, issuance_store=issuance_store,
-                                                        credential_handles=credential_handles)
+                                                        credential_handles=credential_handles,
+                                                        resident_credentials=resident_credentials)
     service.bind_card_coordinator(coordinator, intents=intents, decisions=decisions)
     if callable(getattr(service, "bind_managed_control_scopes", None)):
         service.bind_managed_control_scopes(managed_control_scopes)
@@ -156,6 +159,8 @@ def bind_card_transactions(service: Any, *, persistence: Any, decisions: Any, gr
     if credential_handles is not None and callable(getattr(service, "bind_card_credential_handles", None)):
         # W606: the writer pins each edited Card's handle row so its COMMIT moves the binding.
         service.bind_card_credential_handles(credential_handles)
+    if resident_credentials is not None and callable(getattr(service, "bind_resident_credentials", None)):
+        service.bind_resident_credentials(resident_credentials)
     return coordinator
 
 

@@ -147,7 +147,7 @@ def test_an_unrecorded_revision_skips_on_an_author_head_and_fails_for_the_merger
 def test_package_manifest_ships_every_reference_the_skill_opens() -> None:
     package = json.loads(_read("package.json"))
     skill = _read("SKILL.md")
-    assert package["revision"] == "2026.10.26.1"
+    assert package["revision"] == "2026.11.08.1"
     assert package["entrypoint"] == "SKILL.md"
     references = set(package["references"])
     # W563: coordinator.md and collaboration.md are indexes over one module
@@ -567,7 +567,8 @@ def test_receive_handle_and_settle_rules() -> None:
 def test_assignment_rules() -> None:
     skill = _read("SKILL.md")
     words = _words(skill)
-    assert "A review request, and an `assign` notice whose reaction is `begin_work`, is work to begin now, not a notification to acknowledge" in words
+    assert "A review request, and an `assign` notice whose reaction is `begin_work`, is work to begin now once any return-reconciliation gate is cleared, not a notification to acknowledge" in words
+    assert "A delayed `begin_work` notice does not bypass the return-reconciliation gate" in words
     for field in ("payload.work_ref", "payload.assignment_ref", "payload.ownership_version", "payload.item_status", "payload.expected_reaction"):
         assert f"`{field}`" in skill
     assert "work_assignment_version_conflict" in skill

@@ -58,5 +58,11 @@ comes first, as the skill says.
 7. Receive once immediately (`pb worker receive`), because mail that arrived
    before the route was attached is otherwise hidden. Then, and whenever you are added to a project, set up its workspace from its record: [project workspace](project-workspace.md). Your workspace is the `workspace` `pb worker context` names (the host's root, one folder per agent), never the folder this session started in and never a path you choose: create it there and work from it. `pb worker connect-project` clones the project's repositories into it, makes this machine's deploy key for any it cannot reach yet, sets the commit identity and reports it (first-run, Part 2). When it names none, ask the operator for a host root. Then read the project files, before any work: project files are the project's shared, current knowledge, and every agent reads them in its own clone and follows them. `pb worker context` gives the three purpose files, Instructions (`project_instructions_ref`: what the project is, its rules and conventions, how work is done there), Facts (`project_facts_ref`: the decisions and rulings in force now) and Environment (`project_environment_ref`: machines, runtimes, how to test and deploy), each with its path in your clone and whether it is there, and the further files with their one-line descriptions: read a further file when its description fits the task at hand. When `pb worker receive` names a changed project file (`project.files.changed`), reread it before you go on ([project workspace](project-workspace.md), "Project files"). An empty instructions ref means the project has none yet: ask the coordinator. Then read the newest journal entries and those for the work being resumed (`pb worker journal-search`). For the subject of the task, search the plan and the journal (Choose A Relevant Next Action).
 
+After a prolonged absence, the first receive exposes input, not permission to
+execute it. Before queued work, follow
+[Return from prolonged absence](delivery-and-recovery.md#return-from-prolonged-absence).
+Keep that gate separate from enrollment and procedure loading: a returning
+enrolled session reuses its loaded revision until the installed one changes.
+
 Read [identity and authorization](identity-and-authorization.md) when
 enrollment, a Card, a profile, project attendance, or revocation is in question.

@@ -137,6 +137,15 @@ def notify_agent_session(
             else ""
         )
     )
+    return_signals = provenance.get("return_reconciliation") or []
+    if return_signals:
+        message += (
+            " Return reconciliation is required before executing queued actions. "
+            "Read the receive signal, inventory requests and elapsed deadlines, "
+            "check current authority, and ask the current coordinator for one current "
+            "resume list. Wait for its explicit decision; silence never confirms. "
+            "Read-only inspection and current reconciliation/control mail may continue."
+        )
     try:
         completed = subprocess.run(
             [

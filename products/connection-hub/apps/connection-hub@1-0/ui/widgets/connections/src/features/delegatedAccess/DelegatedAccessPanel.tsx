@@ -6,6 +6,15 @@ import { CopyButton, DoorRef } from '../../components/CopyControls';
 import { operationUrl, publicMcpUrl } from '../../api/client';
 import { subscribeConnectionHubEvents } from '../../api/dataBus';
 import { DelegatedResourceCatalog, operationRows } from './DelegatedResourceCatalog';
+import { AgentCardConsentReview } from './AgentCardConsentReview';
+import {
+  agentCardConsentRequest,
+  agentCardResolutionMessage,
+  controlNamedOperations,
+  isHostedAgentClient,
+  operationInControl,
+  resolveAgentCard,
+} from './agentCardConsent';
 import { MANAGED_GRANT_NOTE, MANAGED_OPERATION_NOTE, managedGrantsOf, withManagedGrantsAsHeld } from './managedGrants';
 import {
   ApplicationApiCatalog,
@@ -17,11 +26,8 @@ import {
   withConversationTargets,
 } from './conversationTargets';
 import {
-  AGENT_CAPABILITY_DEFAULTS_PROPERTY,
-  AGENT_CAPABILITY_SELECTION_PROPERTY,
   agentCapabilitySelectionFromMap,
   agentCapabilitySelectionMap,
-  agentCapabilitySelectionProperty,
   cardAgentCapabilityAuthority,
   cardAgentCapabilityDefaults,
   cardAgentDescriptorTarget,
@@ -31,6 +37,7 @@ import {
   type AgentCapabilitySelection,
 } from './agentCapabilitySelection';
 import { AgentCapabilityPolicyView } from './AgentCapabilityPolicyView';
+import { changedEditorCardProperties } from './cardEditorProperties';
 import {
   agentCapabilityCardLifecycle,
   isAgentCapabilityCard,
@@ -41,7 +48,6 @@ import {
   applicationOperationPropertiesForSelection,
   applicationOperationRolePolicy,
   changeApplicationDefaultRole,
-  changedCardProperties,
   changeApplicationOperationRole,
   delegableApplicationRoles,
   removeApplicationOperationRole,
@@ -356,6 +362,11 @@ function invocationPolicyRows(item: DelegatedAccessRecord): string[] {
 
 function pendingAgentGrantFromParams(get: (key: string) => string): PendingAgentGrant | null {
   if (get('pending_agent_grant') !== '1') return null;
+  // W1018 A: a request marked for the agent's own Card, or any hosted agent's
+  // request (operator: "all must go via card"), opens Card consent review
+  // instead; the pending pane never renders or commits for a hosted caller.
+  if (['1', 'true'].includes(get('agent_card_consent').trim().toLowerCase())) return null;
+  if (isHostedAgentClient(get('agent_client_id'))) return null;
   const clientId = get('agent_client_id').trim();
   const accessId = get('access_id').trim();
   const resource = get('resource').trim();
@@ -1160,6 +1171,9 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
   const [pendingInvocationMode, setPendingInvocationMode] =
     useState<InvocationMode | null>(() => pendingPresetMode(pendingAgentGrantRequest(openParams)));
   const accessCardFocus = useMemo(() => accessCardFocusRequest(openParams), [openParams]);
+  // W1018 A: the agent's consent, reviewed on its own Card.
+  const agentCardConsent = useMemo(() => agentCardConsentRequest(openParams), [openParams]);
+  const [agentCardConsentOpen, setAgentCardConsentOpen] = useState(true);
   // Who is looking, and whom a Team > People link opened the Card for: a
   // person's Control Card is named by them, never by raw id (2026-09-26).
   const issuerViewer = useMemo(() => ({
@@ -2099,6 +2113,35 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
     pendingGrant?.outerOperation
       || (pendingGrant?.namespace && pendingGrant.operation),
   );
+  // W1018: a requested operation outside the agent's Control (its Card's linked
+  // Control) is shown unavailable and never preselected; a hosted agent's Card
+  // refuses the whole consent otherwise (row 1, provider.capabilities).
+  const pendingAgentCard = pendingGrant
+    ? items.find((record) => (record.client_id || '') === pendingGrant.clientId
+      && (record.state || 'active') === 'active')
+    : undefined;
+  const pendingOperationOutsideControl = Boolean(
+    pendingGrant?.namespace && pendingGrant.operation && pendingAgentCard
+    && !operationInControl(
+      controlNamedOperations(pendingAgentCard.control_card || pendingAgentCard.project_control, pendingGrant.resource),
+      pendingGrant.namespace,
+      pendingGrant.operation,
+    ),
+  );
+  useEffect(() => {
+    if (!pendingOperationOutsideControl || !pendingGrant?.namespace || !pendingGrant.operation) return;
+    const { resource, namespace, operation } = pendingGrant;
+    setNamedServiceOperations((current) => {
+      const held = current[resource]?.[namespace as string] || [];
+      if (!held.includes(operation as string)) return current;
+      const namespaces = { ...(current[resource] || {}) };
+      const remaining = held.filter((item) => item !== operation);
+      if (remaining.length) namespaces[namespace as string] = remaining; else delete namespaces[namespace as string];
+      const next = { ...current };
+      if (Object.keys(namespaces).length) next[resource] = namespaces; else delete next[resource];
+      return next;
+    });
+  }, [pendingOperationOutsideControl, pendingGrant]);
 
   const setPendingOperationSelected = (checked: boolean) => {
     if (!pendingGrant) return;
@@ -3420,23 +3463,21 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
       && isAgentDescriptorControl(item.properties)
       ? cardAgentCapabilityAuthority(item.properties)
       : null;
-    const selectedProperties = capabilityAuthority
-      ? {
-          ...baseProperties,
-          [AGENT_CAPABILITY_SELECTION_PROPERTY]: agentCapabilitySelectionProperty(
-            capabilityAuthority.resource,
-            editAgentCapabilities,
-          ),
-        }
-      : descriptorAuthority
-        ? {
-            ...baseProperties,
-            [AGENT_CAPABILITY_DEFAULTS_PROPERTY]: agentCapabilitySelectionProperty(
-              descriptorAuthority.resource,
-              editAgentCapabilities,
-            ),
-          }
-        : baseProperties;
+    const editedProperties = changedEditorCardProperties({
+      selected: baseProperties,
+      seeded: propertiesFor(
+        seedApplicationOperationRolePolicy(item.properties, item.resource_grants),
+        cardConversationTargets(item.properties),
+      ),
+      selectedCapabilities: editAgentCapabilities,
+      seededCapabilities: agentCapabilitySelectionMap(
+        descriptorAuthority
+          ? cardAgentCapabilityDefaults(item.properties)
+          : cardAgentCapabilitySelection(item.properties),
+      ),
+      capabilityAuthority,
+      descriptorAuthority,
+    });
     const descriptorTarget = descriptorAuthority
       ? cardAgentDescriptorTarget(item.properties)
       : null;
@@ -3469,14 +3510,9 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
       compositionMode: item.source === 'control'
         ? (projectPersonControl ? 'and' : editCompositionMode)
         : undefined,
-      // W661 save #2: a managed person-Control Save carries the selection only; properties travel
-      // only when the person changed one, and the server then names that refusal.
-      properties: projectPersonControl
-        ? changedCardProperties(selectedProperties, propertiesFor(
-          seedApplicationOperationRolePolicy(item.properties, item.resource_grants),
-          cardConversationTargets(item.properties),
-        ))
-        : selectedProperties,
+      // A permission-only Save carries the selection. Explicit property changes
+      // still travel so the server can validate or name their refusal.
+      properties: editedProperties,
       projectPersonControl: projectPersonControl || undefined,
       projectAgentCard: projectAgentCard || undefined,
       projectControlCard: projectControlCard || undefined,
@@ -3925,6 +3961,41 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
     0,
     pendingReviewTargets.findIndex((item) => item.id === pendingReviewTarget),
   );
+  // W1018 A: the agent's consent on its own Card. The Card is resolved from the
+  // viewer's own Cards by the agent's client_id; the link's fields are proposals.
+  const agentCardResolution = agentCardConsent && agentCardConsentOpen
+    ? resolveAgentCard(items, agentCardConsent, delegatedAccessLoading || delegatedAccountsLoading)
+    : null;
+  const agentCardConsentPane = agentCardConsent && agentCardResolution ? (
+    agentCardResolution.state === 'resolved' ? (
+      <AgentCardConsentReview
+        // One review per Card: an Approve reloads the Card (new revision) without resetting the review.
+        key={agentCardResolution.card.access_id}
+        request={agentCardConsent}
+        card={agentCardResolution.card}
+        resources={resources}
+        accounts={accounts}
+        providerLabel={(provider) => providers[provider]?.label || provider}
+        accountLabel={(accountId) => accountLabelById.get(accountId) || accountId}
+        resourceLabel={(resource) => pendingCatalogResource(resource, resources)?.label || resource}
+        controlLabel={(() => {
+          const card = agentCardResolution.card;
+          const binding = (card.control_card || card.project_control)?.binding;
+          return binding ? controlIssuerLabel(binding, issuerViewer) : 'Control Card';
+        })()}
+        onApproved={() => { void dispatch(loadDelegatedAccess()); }}
+        onDismiss={() => setAgentCardConsentOpen(false)}
+      />
+    ) : agentCardResolution.state === 'refused' ? (
+      <section className="card card-attention" data-testid="agent-card-consent-refused">
+        <div className="error" role="alert">
+          {agentCardResolutionMessage(agentCardResolution.reason, agentCardConsent.clientId)}
+        </div>
+      </section>
+    ) : (
+      <section className="card"><p className="muted">Loading the agent&apos;s Card…</p></section>
+    )
+  ) : null;
   const pendingGrantPane = pendingGrant ? (
     <section className="card card-attention">
       <div className="card-head">
@@ -4039,12 +4110,16 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
             >
               <input
                 type="checkbox"
-                checked={pendingOperationSelected}
+                checked={pendingOperationSelected && !pendingOperationOutsideControl}
+                disabled={pendingOperationOutsideControl}
                 onChange={(event) => setPendingOperationSelected(event.target.checked)}
               />
               <span>
                 <span className="operation-name">
                   <strong>{pendingServiceCapability.operation.label}</strong>
+                  {pendingOperationOutsideControl ? (
+                    <span className="badge badge-error" style={{ marginLeft: 8 }}>not in this agent&apos;s Control</span>
+                  ) : null}
                   {pendingServiceCapability.operation.label !== pendingGrant.operation ? (
                     <code className="operation-id">{pendingGrant.operation}</code>
                   ) : null}
@@ -6427,6 +6502,12 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
       {grantInfoOpen ? <GrantFilterInfo onClose={() => setGrantInfoOpen(false)} /> : null}
       <PaneGroup
         panes={[
+          ...(agentCardConsentPane ? [{
+            id: 'agent-card-consent',
+            title: `Agent Card consent — ${agentCardConsent?.accountClaim || agentCardConsent?.operation || agentCardConsent?.claims.join(', ') || ''}`,
+            content: agentCardConsentPane,
+            lead: true,
+          }] : []),
           ...(pendingGrantPane ? [{
             id: 'pending-grant',
             // The claims ride the pane title so the ask reads from the bar alone.

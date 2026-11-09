@@ -15,7 +15,7 @@ import subprocess
 from pathlib import Path
 
 from project_board.client.first_run import MACHINE_NOT_CONFIGURED, first_run_status
-from project_board.client.prerequisites import ADMIN_NOTE, KEYRING_UNLOCK_LINE, Probes, check_prerequisites
+from project_board.client.prerequisites import ADMIN_NOTE, KEYRING_EITHER_FIX, KEYRING_UNLOCK_LINE, Probes, check_prerequisites
 from project_board.client.procedures import INSTALLED_BY, install_agent_procedure, source_package_path
 
 MINT = 'NAME="Linux Mint"\nID=linuxmint\nID_LIKE="ubuntu debian"\n'
@@ -69,8 +69,11 @@ def test_the_mint_walk_names_each_missing_one_with_its_fix_and_who_can_run_it():
     assert "terminal stays open" in items["tmux"]["without_it"]
     assert items["linger"]["fix"] == "sudo loginctl enable-linger elena"
     assert "relay stops" in items["linger"]["without_it"]
-    # A locked keyring over ssh is unlocked by the person, no admin (W258).
-    assert items["keyring"]["fix"] == KEYRING_UNLOCK_LINE and items["keyring"]["needs_admin"] is False
+    # A locked keyring over ssh is unlocked by the person, no admin (W258). No
+    # desktop session is proven here, so the fix names both cases and keeps
+    # the server line for the ssh case only (W1012).
+    assert items["keyring"]["fix"] == KEYRING_EITHER_FIX and items["keyring"]["needs_admin"] is False
+    assert items["keyring"]["fix"].endswith(KEYRING_UNLOCK_LINE)
 
 
 def test_a_fedora_host_gets_dnf_lines_and_a_mac_its_own_set():
