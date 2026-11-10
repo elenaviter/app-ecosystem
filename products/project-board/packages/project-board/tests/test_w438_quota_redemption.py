@@ -39,6 +39,7 @@ def _held(tmp_path, monkeypatch):
     monkeypatch.setattr(relay, "utc_now", lambda: NOW)
     field.record_worker_board_record(identity.worker_name, {
         "runtime_account": {"email": EMAIL},
+        "worker_settings": {"use_credits": -1, "revision": 0},
     })
     old = {"kind": "rate_limited", "source": "codex-rollout",
            "refusal": "usage_limit_exceeded", "observed_at": REFUSED,

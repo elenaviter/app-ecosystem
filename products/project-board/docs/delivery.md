@@ -361,9 +361,19 @@ An expired positive reading is unknown, not proof of capacity or a return to an
 older exhausted measurement.
 
 An exhausted included-plan window does not imply that purchased Codex credits
-are exhausted. The numeric `use_credits` compatibility policy defaults to `-1`
+are exhausted. The numeric `use_credits` policy defaults to `-1`
 (allow available paid credits); `0`, explicit absence and unsupported values
-disable this path. Positive spending caps are not implemented by this policy.
+disable this path. The worker registry initializes an explicit default for
+existing and new workers. Its owner changes it under Team → Agents → Settings.
+The setting is durable Board metadata alongside the stable worker and its Card
+binding, not a Connection Hub grant or a provider billing setting. Only that
+signed-in owner may edit it, including on a shared project; agents and other
+project admins cannot grant paid spending. A revision fence protects concurrent
+saves. The server returns the policy in the worker's self record; the relay
+applies it after its next authenticated board sync, including when rearming a
+held wake. Publish, heartbeat and a worker restart do not reset the saved value.
+An absent server setting disables paid capacity. Positive spending caps are not
+implemented until their accounting unit and reset period are defined.
 When enabled, the fresh authenticated native bucket must report `hasCredits`
 and either unlimited credits or a finite positive balance. Only a sanitized
 availability flag is retained, never the balance. Earned reset credits are

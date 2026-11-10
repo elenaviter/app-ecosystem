@@ -699,6 +699,7 @@ def session_with_limit_state(
     now: str,
     sessions_root: Path | str | None = None,
     recorded: Mapping[str, Any] | None = None,
+    use_credits: int | None = -1,
 ) -> dict[str, Any]:
     """The listener session row with the runtime's own limit state on it.
 
@@ -718,7 +719,8 @@ def session_with_limit_state(
             state = codex_limit_state(runtime_session_id, sessions_root=sessions_root, now=now)
         except Exception:  # noqa: BLE001 - a rollout that cannot be read is no state, not a failed cycle
             state = None
-        state = merge_codex_quota(state, recorded, runtime_session_id=runtime_session_id, now=now)
+        state = merge_codex_quota(state, recorded, runtime_session_id=runtime_session_id, now=now,
+                                  use_credits=use_credits)
     elif isinstance(recorded, Mapping) and recorded:
         state = recorded
     current = limit_state_at(state, now=now)
