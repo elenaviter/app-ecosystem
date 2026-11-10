@@ -7092,6 +7092,11 @@ class AutomationAccessService:
                     else {}
                 ),
             },
+            # The entry door is part of a connector Card's identity, not an
+            # editable grant: every save carries it (W35). Dropping it emptied
+            # the field on any editor Save, and the next refresh of an
+            # original-exchange family was refused for good.
+            entry_resource=existing.entry_resource,
             client_metadata=copy.deepcopy(dict(existing.client_metadata or {})),
             control_card=existing.control_card,
             issuer_ref=existing.issuer_ref,

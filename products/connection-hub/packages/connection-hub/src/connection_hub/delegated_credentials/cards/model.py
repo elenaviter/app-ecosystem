@@ -725,6 +725,28 @@ def authority_is_usable(authority: "CardAuthority", moment: int) -> bool:
     return authority.expires_at > moment
 
 
+CONNECTOR_ENTRY_RESOURCE_MISSING = "card_identity_entry_resource_missing"
+
+
+def connector_entry_resource_refusal(authority: "CardAuthority") -> str | None:
+    """The refusal for writing a live connector Card without its entry door.
+
+    A connector Card's identity is (owner, client, kind, entry_resource), and
+    a refresh of a family issued by the original exchange (which records only
+    ``resources``) takes its resource from the Card. A revision that empties
+    it is therefore refused when written, not discovered when the next refresh
+    fails (W35). A revoked revision is not live authority and stays writable,
+    so a damaged Card can still be revoked.
+    """
+    if (
+        authority.card_kind == CARD_KIND_CONNECTOR
+        and authority.state == CARD_STATE_ACTIVE
+        and not str(authority.entry_resource or "").strip()
+    ):
+        return CONNECTOR_ENTRY_RESOURCE_MISSING
+    return None
+
+
 def authority_is_credentialless(authority: "CardAuthority") -> bool:
     """Whether this regular Card intentionally carries no credential."""
     return (

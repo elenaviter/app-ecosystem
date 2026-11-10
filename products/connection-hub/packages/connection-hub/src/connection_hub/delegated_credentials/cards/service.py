@@ -46,6 +46,7 @@ from connection_hub.delegated_credentials.cards.model import (
     CardCurrentPointer,
     authority_is_usable,
     authority_projection_ttl,
+    connector_entry_resource_refusal,
 )
 from connection_hub.delegated_credentials.cards.store import (
     BundleStorageDelegatedCardStore,
@@ -650,6 +651,9 @@ class DelegatedCardService:
         before_commit: BeforeCardCommit | None = None,
     ) -> CardCurrentPointer:
         """Commit the next revision and expose it as live authority."""
+        refusal = connector_entry_resource_refusal(authority)
+        if refusal is not None:
+            raise CardConflict(refusal)
         moment = int(now if now is not None else time.time())
         mutation_id = uuid.uuid4().hex
         try:

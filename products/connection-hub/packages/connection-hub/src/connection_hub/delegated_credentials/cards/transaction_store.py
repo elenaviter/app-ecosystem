@@ -39,7 +39,8 @@ from typing import Any, Mapping, Protocol
 
 from ..durable_io import cancellation_safe_await, read_json_or_none, write_json_atomic, unlink_guarded, unlink_guarded_async
 from ..issuer_gate import change_digest
-from .model import CardAuthority, CardCurrentPointer, card_authority_payload_hash, card_revision_name
+from .model import (CardAuthority, CardCurrentPointer, card_authority_payload_hash, card_revision_name,
+                    connector_entry_resource_refusal)
 from .store import VERSION_RECORD_KEY, CardStorageError, predecessor_record
 
 TRANSACTION_POINTER_SCHEMA = "connection_hub.card-current-transaction.v1"
@@ -961,6 +962,9 @@ async def stage(store: Any, *, transaction_id: str, intent_digest: str, particip
         raise CardTransactionRefused("card_transaction_group_invalid")
     if original is None and group is None:
         raise CardTransactionRefused("card_transaction_candidate_invalid")
+    refusal = connector_entry_resource_refusal(candidate)
+    if refusal is not None:
+        raise CardTransactionRefused(refusal)
     access_id = candidate.access_id
     decision_key = {"transaction_id": group["transaction_id"] if group else transaction_id,
                     "intent_digest": intent_digest}
@@ -1926,6 +1930,9 @@ async def card_version_stage(store: Any, *, txn: str, request_digest: str, catal
         await assert_base_available(store, subject_hash=subject_hash, access_id=access_id, own_txn=txn)
         if not isinstance(candidate, CardAuthority) or candidate.access_id != access_id:
             raise CardTransactionRefused("card_version_candidate_invalid")
+        refusal = connector_entry_resource_refusal(candidate)
+        if refusal is not None:
+            raise CardTransactionRefused(refusal)
         if await finalize_current_version(store, subject_hash=subject_hash, access_id=access_id) == txn:
             raise CardTransactionRefused("txn_closed")  # this txn already published (its marker is gone, D2)
         current = await store.read_current(subject_hash=subject_hash, access_id=access_id)
