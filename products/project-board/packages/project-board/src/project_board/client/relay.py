@@ -1828,7 +1828,8 @@ class ProblemBoardHostRelayAdapter:
         payload = item.get("payload") or {}
         mail = payload.get("mail") if isinstance(payload, Mapping) else None
         record_wake(
-            self._trace, "mail_replayed" if receipt.get("replayed") else "mail_materialized",
+            getattr(self, "_trace", None),
+            "mail_replayed" if receipt.get("replayed") else "mail_materialized",
             str(item.get("recipient") or ""),
             reason="replayed_store_returned" if receipt.get("replayed") else "local_store_returned",
             control_ref=item.get("ref") or item.get("command_ref"),
@@ -2777,7 +2778,7 @@ class ProblemBoardHostRelayAdapter:
                 continue
             command_ref = str(item.get("ref") or item.get("command_ref") or "")
             kind = str(item.get("kind") or "")
-            record_wake(self._trace, "control_received", str(item.get("recipient") or ""),
+            record_wake(getattr(self, "_trace", None), "control_received", str(item.get("recipient") or ""),
                         control_ref=command_ref, remote_created_at=item.get("created_at"))
             if not isinstance(item.get("payload"), Mapping):
                 await self._refuse_malformed_control(
