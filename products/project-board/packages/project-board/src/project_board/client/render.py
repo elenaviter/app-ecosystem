@@ -297,10 +297,10 @@ def _render_result(result: Any, flags: list[str]) -> list[str]:
     if schema == "problem-board.worker-mail-preview.v1":
         message = result.get("message") or {}
         lines = ["inspection only: no lease, settlement or execution authority"]
-        lines.extend(_flatten({k: v for k, v in message.items() if k not in {"body", "attachments"}}))
+        lines.extend(_flatten({k: v for k, v in message.items() if k not in {"body", "attachments"}}, prefix=""))
         lines.append("body:")
         lines.extend(_BODY_INDENT + line for line in str(message.get("body") or "").splitlines())
-        lines.extend(_flatten({"attachments": message.get("attachments") or []}))
+        lines.extend(_flatten({"attachments": message.get("attachments") or []}, prefix=""))
         return lines
     if schema == "problem-board.first-run-status.v1":
         return _render_first_run_status(result)

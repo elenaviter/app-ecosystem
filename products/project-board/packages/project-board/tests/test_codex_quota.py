@@ -9,10 +9,10 @@ from pathlib import Path
 
 import pytest
 
-from project_board.client import codex_quota, limit_state as limit_module
+from project_board.client import codex_quota, limit_state as limit_module, relay
 from project_board.client.limit_state import merge_codex_quota, limit_state_line
 from project_board.contract.errors import DomainError
-from test_w438_quota_redemption import _capacity, EMAIL, NOW, REFUSED
+from test_w438_quota_redemption import _capacity, _held, EMAIL, NOW, REFUSED
 
 SESSION = "11111111-1111-4111-8111-111111111111"
 ACCOUNT = {"type": "chatgpt", "email": EMAIL}
@@ -72,6 +72,72 @@ def test_paid_credits_on_another_bucket_do_not_clear_exhaustion():
     observation = codex_quota.quota_state(raw, observed_at=NOW,
         runtime_session_id=SESSION, fingerprint="synthetic")
     assert merge_codex_quota(None, observation, runtime_session_id=SESSION, now=NOW)["kind"] == "rate_limited"
+
+
+def test_fresh_paid_capacity_survives_a_newer_usage_only_ceiling():
+    observation = codex_quota.quota_state(_paid_limits(
+        {"hasCredits": True, "balance": "12.5"}), observed_at=NOW,
+        runtime_session_id=SESSION, fingerprint="synthetic")
+    usage = {"kind": "rate_limited", "source": "codex-rollout",
+        "observed_at": "2026-10-01T00:41:10Z", "limit_id": "codex",
+        "reached": "primary",
+        "windows": [{"name": "primary", "used_percent": 100, "window_minutes": 300},
+                    {"name": "secondary", "used_percent": 27, "window_minutes": 10080}]}
+    state = merge_codex_quota(usage, observation, runtime_session_id=SESSION,
+        now="2026-10-01T00:41:20Z", use_credits=-1)
+    assert state["kind"] == "ok", "new included usage is not a paid-credit refusal"
+    assert state["capacity_source"] == "paid_credits"
+    assert state["windows"] == usage["windows"], "retain the newer included-usage figures"
+
+
+@pytest.mark.parametrize("guard", ["refusal", "stale", "disabled", "absent", "other_bucket",
+                                  "nonfinite", "unmeasured", "credit_refusal"])
+def test_newer_usage_does_not_relax_paid_capacity_fences(guard):
+    observation = codex_quota.quota_state(_paid_limits(
+        {"hasCredits": True, "balance": "12.5"}), observed_at=NOW,
+        runtime_session_id=SESSION, fingerprint="synthetic")
+    usage = {"kind": "rate_limited", "source": "codex-rollout",
+        "observed_at": "2026-10-01T00:41:10Z", "limit_id": "codex",
+        "reached": "primary",
+        "windows": [{"name": "primary", "used_percent": 100, "window_minutes": 300}]}
+    if guard == "refusal":
+        usage["refusal"] = "usage_limit_exceeded"
+    if guard == "other_bucket":
+        usage["limit_id"] = "premium"
+    if guard == "nonfinite":
+        usage["windows"][0]["used_percent"] = float("inf")
+    if guard == "unmeasured":
+        usage["windows"][0]["used_percent"] = None
+    if guard == "credit_refusal":
+        usage["reached"] = "credits"
+    state = merge_codex_quota(usage, observation, runtime_session_id=SESSION,
+        now="2026-10-01T00:44:00Z" if guard == "stale" else "2026-10-01T00:41:20Z",
+        use_credits=0 if guard == "disabled" else None if guard == "absent" else -1)
+    assert state == usage
+
+
+def test_relay_cached_credit_read_covers_newer_usage_without_another_native_read(tmp_path, monkeypatch):
+    _host, identity, channel, field, supervisor, _pushes = _held(tmp_path, monkeypatch)
+    observation = codex_quota.quota_state(_paid_limits(
+        {"hasCredits": True, "balance": "12.5"}), observed_at=NOW,
+        runtime_session_id=identity.runtime_session_id, fingerprint=codex_quota.account_fingerprint(EMAIL))
+    field.record_runtime_limit_state(identity.worker_name, observation)
+    usage = {"kind": "rate_limited", "source": "codex-rollout", "reached": "primary",
+        "observed_at": "2026-10-01T00:41:10Z", "limit_id": "codex",
+        "windows": [{"name": "primary", "used_percent": 100, "window_minutes": 300}]}
+    monkeypatch.setattr(relay, "codex_limit_state", lambda *_, **__: usage)
+    supervisor._codex_quota_refresh_at[identity.worker_name] = float("inf")
+    reads = []
+
+    async def unexpected_read(**kwargs):
+        reads.append(kwargs)
+        raise AssertionError("a still-fresh cached native reading is sufficient")
+
+    supervisor._codex_quota_reader = unexpected_read
+    state, error = asyncio.run(supervisor._refresh_codex_quota(field, channel, usage,
+        now="2026-10-01T00:41:20Z"))
+    assert not error and not reads
+    assert state["kind"] == "ok" and state["capacity_source"] == "paid_credits"
 
 
 class NativeProcess:

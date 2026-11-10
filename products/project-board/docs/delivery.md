@@ -390,6 +390,10 @@ an explicit provider credit/spend-control refusal remains held. The original
 included-usage percentages remain visible; eligibility says `paid credits
 available (included usage exhausted)`. This uses the provider's existing paid
 credit behavior; it does not purchase credits or change native billing settings.
+While that same-bucket credit reading remains fresh, a newer rollout snapshot
+that only reports included usage at 100% does not revoke paid capacity. The
+newer included-usage figures remain visible. A later actual provider turn
+refusal still takes precedence and requires a newer native capacity reading.
 
 Fresh capacity can end the old hold. If the provider refused an outstanding
 consumed wake, its recovery requires the same current session, a later matched

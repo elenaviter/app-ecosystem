@@ -39,6 +39,7 @@ measurement (W403).
 from __future__ import annotations
 
 import json
+import math
 import os
 import re
 from datetime import datetime, timezone
@@ -759,15 +760,36 @@ def merge_codex_quota(
     current_time = _utc(now)
     if (not observation.get("account_bound") or not observation.get("account_email_sha256")
         or observation.get("runtime_session_id") != runtime_session_id or not observed or not current_time
-        or observed > current_time or observed <= _utc((previous or {}).get("observed_at"))):
+        or observed > current_time):
         return previous
     age = (datetime.fromisoformat(current_time.replace("Z", "+00:00"))
            - datetime.fromisoformat(observed.replace("Z", "+00:00"))).total_seconds()
+    candidate = with_credit_policy(observation, use_credits)
+    if previous and observed <= _utc(previous.get("observed_at")):
+        # Included usage and paid-credit availability are different measures.
+        # A newer usage-only 100% snapshot must not revoke still-fresh paid
+        # capacity in this same bucket. A newer actual turn refusal still wins.
+        windows = list(previous.get("windows") or [])
+        if not (
+            age <= QUOTA_FRESH_SECONDS
+            and previous.get("source") == SOURCE_CODEX_ROLLOUT
+            and previous.get("kind") == KIND_RATE_LIMITED
+            and previous.get("reached") in {"primary", "secondary", "rate_limit_reached"}
+            and not previous.get("refusal")
+            and candidate.get("kind") == KIND_OK
+            and candidate.get("capacity_source") == "paid_credits"
+            and str(candidate.get("limit_id") or "codex") == str(previous.get("limit_id") or "codex")
+            and any(isinstance(w, Mapping) and type(w.get("used_percent")) in (int, float)
+                    and math.isfinite(w["used_percent"]) and w["used_percent"] >= 100 for w in windows)
+        ):
+            return previous
+        # Preserve the newer included-usage figures instead of replacing them
+        # with the credit reader's older copy of those windows.
+        candidate["windows"] = windows
     if age > QUOTA_FRESH_SECONDS:
         # Do not resurrect an older exhausted rollout as if it were the latest
         # provider measurement. Stale positive capacity is unknown, not ok.
         return {**observation, "kind": KIND_UNKNOWN, "reached": "quota_read_stale", "resets_at": ""}
-    candidate = with_credit_policy(observation, use_credits)
     if candidate.get("kind") == KIND_OK and previous:
         # The fresh read must actually measure the exhausted bucket/window.
         buckets = candidate.get("buckets") or {}
