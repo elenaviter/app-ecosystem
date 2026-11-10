@@ -104,7 +104,7 @@ def test_the_deadline_covers_the_turns_own_finishing(tmp_path):
         supervisor.CHANNEL_TURN_DEADLINE_SECONDS = 0.05
         hung_wake = asyncio.Event()
 
-        async def notify(_host, channel):
+        async def notify(_host, channel, *, lock_wait=None):
             if channel.worker_name == fast.worker_name:
                 await hung_wake.wait()
             return None

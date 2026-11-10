@@ -53,6 +53,63 @@ No earlier state claims a later one. A relay that is online proves a
 transport process ran, not that a model saw a body. A notification says mail
 exists; receive returns it; settlement records that it was handled.
 
+## Trace the time before a Codex wake
+
+The supervised relay writes `Problem Board wake trace v1` JSON records through
+its existing rotating-log owner. This is observation only: it adds no quota,
+mailbox or native-queue reads and changes no eligibility rule, retry, timer,
+lease or reconciliation decision. A run with no log owner produces no trace;
+it does not open a fallback file or write synchronously to stderr.
+
+The records distinguish these boundaries:
+
+| Event | What it establishes |
+| --- | --- |
+| `control_received` | The relay is handling a control returned by its existing claim. `remote_created_at`, when supplied, is the control's creation time, not a separately measured sender acceptance. |
+| `mail_materialized` | The existing store call returned, on its existing store executor. `delivery_status=pending` says it wrote addressed mail; ignored statuses do not. The timestamp is after the complete store operation, not the exact instant of the inbox file write. |
+| `mail_replayed` | The store returned an existing idempotent receipt. This timestamp must not be counted as the original arrival. |
+| `quota_read_started` / `quota_read_finished` | A read the delivery path already required started/returned. A failure names an allowlisted code, including timeout. `quota_cache` distinguishes a cached error from a new read. Kind/source and the observation timestamp describe the existing decision evidence; no balance or account identifier is retained. |
+| `decision` | The notification pass reached an empty, detached, quiet, quota-error/hold, queue-withheld, eligible or coalesced branch. Eligibility is not native admission. |
+| `notify_lock` | The normal or beside-turn pass acquired its per-worker notification mutex after the recorded wait. Its `check_id` joins it to the check that followed acquisition. |
+| `queue_started` / `queue_finished` | The existing notifier was invoked and returned. `queued` means it reported admission. `admission_seen` is a failure-path marker and may be false on a successful submission. `unconfirmed` retains any such marker and submission tag. Earlier queue reconciliation is outside this interval. A start with no finish has an unknown outcome in this trace. |
+| `ack_observed` | A later notification check observed the existing wake receipt, with its original `recorded_at`. This can come from receive **or** a held window's wake-ack. It is not independent proof of body delivery, model entry or settlement. |
+| `check_finished` | The pass ended, failed or was cancelled. Within a check, `check_id` joins its quota, decision and queue records even across awaits. |
+
+Each record carries process identity, sequence, UTC observation time and a
+stable Codex worker address. References, wake IDs and submission IDs are
+SHA-256 correlation tags, not raw refs with titles. To join a known locator,
+hash its exact UTF-8 string. These tags are diagnostic locators, never
+authority or proof of delivery. At most eight message tags are included, with
+an omitted count. Payloads, bodies, subjects, paths, account emails,
+fingerprints, balances and native exception text are excluded.
+Decision tags describe the refs the check observed. `mailbox_read=false`
+means it used the existing queued-wake view; it did not read the full mailbox.
+
+Bounds are **2 KiB per record** including a formatter-prefix reserve, **64 KiB
+per minute per relay process**, and **256** retained repeat signatures.
+Unchanged decision, cache, receipt and check observations are sampled at most
+once per minute. A changed decision or pending count can be recorded sooner.
+Lock waits sample each role and duration range independently: under 1 second,
+1 to under 5, 5 to under 30, 30 to under 60, and 60 seconds or more. A routine
+acquisition cannot suppress a later sample in a longer range.
+Record construction has fixed field/reference limits and performs no I/O.
+The existing owner receives a non-blocking enqueue outside the observer's
+short state lock. It retains its own queue, rotation and loss limits; the new
+trace adds no thread, pending-write queue, timer, await or retry.
+
+`prior_losses` reports earlier budget, oversize, owner-refusal, construction
+and submission losses. A completion callback counts a failed or cancelled
+write receipt as `write_failed` for subsequent records, without copying the
+exception text or waiting for the writer. Pending writes and a stopped
+process's unwritten tail remain uncertain. Absence of a record never proves
+that a phase did not run. Sampling also means this is not an exhaustive
+per-poll ledger. Local mail sent directly outside the relay's control
+materializer has no new materialization record. For an exchange benchmark,
+correlate these records with the sender's acceptance, native queue/turn
+timestamps, matching receive and exact settlement receipts. Do not infer the
+whole pre-push cause from a slow-channel warning, a remote creation date or a
+missing log line alone.
+
 ## Delivery invariants
 
 **One message cannot block the rest.**
