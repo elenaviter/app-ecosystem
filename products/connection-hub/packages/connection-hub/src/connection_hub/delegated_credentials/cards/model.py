@@ -728,20 +728,26 @@ def authority_is_usable(authority: "CardAuthority", moment: int) -> bool:
 CONNECTOR_ENTRY_RESOURCE_MISSING = "card_identity_entry_resource_missing"
 
 
-def connector_entry_resource_refusal(authority: "CardAuthority") -> str | None:
-    """The refusal for writing a live connector Card without its entry door.
+def connector_entry_resource_refusal(
+    candidate: "CardAuthority", original: "CardAuthority | None"
+) -> str | None:
+    """The refusal for a write that removes a live connector Card's entry door.
 
     A connector Card's identity is (owner, client, kind, entry_resource), and
     a refresh of a family issued by the original exchange (which records only
-    ``resources``) takes its resource from the Card. A revision that empties
-    it is therefore refused when written, not discovered when the next refresh
-    fails (W35). A revoked revision is not live authority and stays writable,
-    so a damaged Card can still be revoked.
+    ``resources``) takes its resource from the Card. A write never removes
+    the door (W35): a candidate without one is refused when the revision it
+    replaces held one. A Card that is already without its door (older
+    connector Cards, Cards an editor Save emptied before this rule) stays
+    writable, so refresh, re-consent and disconnect can repair or remove it.
+    A revoked candidate is not live authority and is never refused.
     """
     if (
-        authority.card_kind == CARD_KIND_CONNECTOR
-        and authority.state == CARD_STATE_ACTIVE
-        and not str(authority.entry_resource or "").strip()
+        candidate.card_kind == CARD_KIND_CONNECTOR
+        and candidate.state == CARD_STATE_ACTIVE
+        and not str(candidate.entry_resource or "").strip()
+        and original is not None
+        and str(original.entry_resource or "").strip()
     ):
         return CONNECTOR_ENTRY_RESOURCE_MISSING
     return None

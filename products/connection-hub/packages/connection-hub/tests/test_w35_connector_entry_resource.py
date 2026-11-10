@@ -11,8 +11,10 @@ takes the resource from the Card, found none, and ``record_oauth_grant`` refused
 oauth-ec4159216b2ff409: rev 2 after a rename, refresh refused at 16:54Z).
 
 Covered here: the editor Save path keeps the door, and the composed issue, Save, refresh sequence
-succeeds; every durable write gate (ordinary commit, staged transaction, Card version) refuses a live
-connector revision without its door, while a revoke stays possible for a Card already damaged.
+succeeds; every durable write gate (ordinary commit, staged transaction, Card version) refuses a write
+that removes a live connector Card's door; a Card already without its door (older connector Cards,
+Cards an editor Save emptied before the fix) stays writable and revocable, and a new authorization at
+its door writes the door back.
 """
 
 from __future__ import annotations
@@ -22,8 +24,6 @@ from dataclasses import replace
 
 import pytest
 
-from connection_hub.delegated_credentials.cards import model as card_model
-from connection_hub.delegated_credentials.cards import service as card_service_module
 from connection_hub.delegated_credentials.cards import transaction_store as tx
 from connection_hub.delegated_credentials.cards.identity import CARD_KIND_CONNECTOR
 from connection_hub.delegated_credentials.cards.model import (
@@ -72,26 +72,35 @@ async def _current(store, card):
 
 
 @pytest.mark.parametrize("entry", ["", "   "])
-def test_a_live_connector_without_its_door_is_refused(entry):
-    assert connector_entry_resource_refusal(_connector(entry_resource=entry)) == CONNECTOR_ENTRY_RESOURCE_MISSING
+def test_a_write_that_removes_a_live_connectors_door_is_refused(entry):
+    assert connector_entry_resource_refusal(_connector(entry_resource=entry), _connector()) == (
+        CONNECTOR_ENTRY_RESOURCE_MISSING)
 
 
-def test_a_door_a_revoked_revision_and_other_kinds_pass():
-    assert connector_entry_resource_refusal(_connector()) is None
-    assert connector_entry_resource_refusal(_connector(entry_resource="", state=CARD_STATE_REVOKED)) is None
-    assert connector_entry_resource_refusal(_authority()) is None  # an automation Card has no door
+def test_keeping_a_door_a_card_already_without_one_a_revoke_and_other_kinds_pass():
+    damaged = _connector(entry_resource="")
+    assert connector_entry_resource_refusal(_connector(), _connector()) is None
+    assert connector_entry_resource_refusal(damaged, damaged) is None  # already empty: stays writable
+    assert connector_entry_resource_refusal(damaged, None) is None  # no revision to remove it from
+    assert connector_entry_resource_refusal(_connector(entry_resource="", state=CARD_STATE_REVOKED),
+                                            _connector()) is None
+    assert connector_entry_resource_refusal(_authority(), _authority()) is None  # automation: no door
 
 
 # --- every durable write gate ---------------------------------------------------------------------
 
 
+def _emptied(before):
+    return replace(before, card_revision=before.card_revision + 1, label="renamed", entry_resource="")
+
+
 @pytest.mark.asyncio
 async def test_commit_refuses_a_connector_revision_that_drops_its_door(tmp_path):
     store, service, before = await _card_service(tmp_path)
-    emptied = replace(before, card_revision=before.card_revision + 1, label="renamed", entry_resource="")
 
     with pytest.raises(CardConflict, match=CONNECTOR_ENTRY_RESOURCE_MISSING):
-        await service.commit(emptied, subject_hash=SUBJECT_HASH, expected_revision=before.card_revision, now=NOW)
+        await service.commit(_emptied(before), subject_hash=SUBJECT_HASH, expected_revision=before.card_revision,
+                             now=NOW)
 
     assert await _current(store, before) == before
     kept = replace(before, card_revision=before.card_revision + 1, label="renamed")
@@ -100,44 +109,65 @@ async def test_commit_refuses_a_connector_revision_that_drops_its_door(tmp_path)
 
 
 @pytest.mark.asyncio
-async def test_a_staged_transaction_refuses_a_connector_candidate_without_its_door(tmp_path):
+async def test_a_staged_transaction_refuses_a_candidate_that_drops_the_door(tmp_path):
     store, _service, before = await _card_service(tmp_path)
-    emptied = replace(before, card_revision=before.card_revision + 1, label="renamed", entry_resource="")
 
     with pytest.raises(tx.CardTransactionRefused, match=CONNECTOR_ENTRY_RESOURCE_MISSING):
         await tx.stage(store, transaction_id=TX, intent_digest=INTENT, participant="project",
-                       subject_hash=SUBJECT_HASH, original=before, candidate=emptied, now=WHEN)
+                       subject_hash=SUBJECT_HASH, original=before, candidate=_emptied(before), now=WHEN)
 
     assert await tx.read_receipt(store, TX) is None
     assert await _current(store, before) == before
 
 
 @pytest.mark.asyncio
-async def test_a_card_version_refuses_a_connector_member_without_its_door(tmp_path):
+async def test_a_card_version_refuses_a_member_that_drops_the_door(tmp_path):
     store, service, before = await _card_service(tmp_path)
-    emptied = replace(before, card_revision=before.card_revision + 1, label="renamed", entry_resource="")
 
     with pytest.raises(tx.CardTransactionRefused, match=CONNECTOR_ENTRY_RESOURCE_MISSING):
         await service.stage_card_version(txn="w35-txn-" + "a" * 32, request_digest=DIGEST, catalog="catalog-1",
-                                         members=[(SUBJECT_HASH, before.access_id, 1, emptied)], now=WHEN)
+                                         members=[(SUBJECT_HASH, before.access_id, 1, _emptied(before))], now=WHEN)
 
     assert await _current(store, before) == before
 
 
+async def _damaged_card_service(tmp_path):
+    """A live connector Card already without its door, as the editor left real Cards before the fix."""
+    store = BundleStorageDelegatedCardStore(tmp_path)
+    tx.bind_transaction_decisions(store, Decisions())
+    service = DelegatedCardService(store=store, cache=_Cache(), mutation_lock=_no_lock)
+    damaged = _connector(entry_resource="")
+    await service.commit(damaged, subject_hash=SUBJECT_HASH, expected_revision=0, now=NOW)
+    return store, service, damaged
+
+
 @pytest.mark.asyncio
-async def test_a_card_already_damaged_can_still_be_revoked(tmp_path, monkeypatch):
-    store, service, before = await _card_service(tmp_path)
-    damaged = replace(before, card_revision=before.card_revision + 1, entry_resource="")
-    # A revision written before this gate existed (the live Cards of 2026-11-05 to 11-10).
-    monkeypatch.setattr(card_service_module, "connector_entry_resource_refusal", lambda authority: None)
-    await service.commit(damaged, subject_hash=SUBJECT_HASH, expected_revision=before.card_revision, now=NOW)
-    monkeypatch.setattr(card_service_module, "connector_entry_resource_refusal",
-                        card_model.connector_entry_resource_refusal)
+async def test_a_card_already_without_its_door_stays_writable_by_every_writer(tmp_path):
+    store, service, damaged = await _damaged_card_service(tmp_path)
 
-    await service.revoke(subject_hash=SUBJECT_HASH, access_id=before.access_id,
-                         expected_revision=damaged.card_revision)
+    edited = replace(damaged, card_revision=2, label="another writer")
+    await service.commit(edited, subject_hash=SUBJECT_HASH, expected_revision=1, now=NOW)
+    staged = replace(edited, card_revision=3, label="staged writer")
+    receipt = await tx.stage(store, transaction_id=TX, intent_digest=INTENT, participant="project",
+                             subject_hash=SUBJECT_HASH, original=edited, candidate=staged, now=WHEN)
+    assert receipt["state"] == "prepared"
+    store._card_transaction_decisions.recorded[TX] = "committed"
+    await tx.decide(store, transaction_id=TX, intent_digest=INTENT, decision="committed")
+    assert await _current(store, damaged) == staged
+    repaired = replace(staged, card_revision=4, entry_resource=ENTRY)
+    await service.stage_card_version(txn="w35-txn-" + "b" * 32, request_digest=DIGEST, catalog="catalog-1",
+                                     members=[(SUBJECT_HASH, damaged.access_id, 3, repaired)], now=WHEN)
+    await service.publish_card_version(txn="w35-txn-" + "b" * 32)
+    assert (await _current(store, damaged)).entry_resource == ENTRY
 
-    found = await store.read_current_authority(subject_hash=SUBJECT_HASH, access_id=before.access_id)
+
+@pytest.mark.asyncio
+async def test_a_card_already_without_its_door_can_still_be_revoked(tmp_path):
+    store, service, damaged = await _damaged_card_service(tmp_path)
+
+    await service.revoke(subject_hash=SUBJECT_HASH, access_id=damaged.access_id, expected_revision=1)
+
+    found = await store.read_current_authority(subject_hash=SUBJECT_HASH, access_id=damaged.access_id)
     assert found is None or found[1].state == CARD_STATE_REVOKED
 
 
@@ -196,3 +226,23 @@ async def test_issue_then_editor_save_then_refresh_succeeds(tmp_path):
     assert refreshed is not None
     assert refreshed.access_id == record.access_id
     assert (await harness.card(record.access_id)).entry_resource == CONCRETE
+
+
+@pytest.mark.asyncio
+async def test_a_new_authorization_at_its_door_repairs_a_damaged_active_card(tmp_path):
+    """F3 of the review: after invalid_grant the client authorizes again at its one door, on the same
+    still-active Card; the grant writes the door back (record_oauth_grant), so no revoke is needed."""
+    harness = _Harness(tmp_path)
+    record, issued = await _issued(harness)
+    handles = harness.persistence.cards[record.access_id][1]
+    harness.persistence.cards[record.access_id] = (replace(issued, entry_resource=""), handles)
+
+    again = await harness.service.record_oauth_grant(
+        grantor_subject=GRANTOR, client_id=CLIENT, client_label="Claude Code",
+        scopes=["memories:read"], resource=CONCRETE, access_token="at-3", refresh_token="rt-3",
+    )
+
+    assert again is not None and again.access_id == record.access_id
+    repaired = await harness.card(record.access_id)
+    assert repaired.state == "active" and repaired.entry_resource == CONCRETE
+    assert repaired.card_revision > issued.card_revision

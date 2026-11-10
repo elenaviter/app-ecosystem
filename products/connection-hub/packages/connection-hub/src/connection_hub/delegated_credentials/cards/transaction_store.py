@@ -962,7 +962,7 @@ async def stage(store: Any, *, transaction_id: str, intent_digest: str, particip
         raise CardTransactionRefused("card_transaction_group_invalid")
     if original is None and group is None:
         raise CardTransactionRefused("card_transaction_candidate_invalid")
-    refusal = connector_entry_resource_refusal(candidate)
+    refusal = connector_entry_resource_refusal(candidate, original)
     if refusal is not None:
         raise CardTransactionRefused(refusal)
     access_id = candidate.access_id
@@ -1930,12 +1930,14 @@ async def card_version_stage(store: Any, *, txn: str, request_digest: str, catal
         await assert_base_available(store, subject_hash=subject_hash, access_id=access_id, own_txn=txn)
         if not isinstance(candidate, CardAuthority) or candidate.access_id != access_id:
             raise CardTransactionRefused("card_version_candidate_invalid")
-        refusal = connector_entry_resource_refusal(candidate)
-        if refusal is not None:
-            raise CardTransactionRefused(refusal)
         if await finalize_current_version(store, subject_hash=subject_hash, access_id=access_id) == txn:
             raise CardTransactionRefused("txn_closed")  # this txn already published (its marker is gone, D2)
         current = await store.read_current(subject_hash=subject_hash, access_id=access_id)
+        if current is not None:
+            held = await store.read_current_authority(subject_hash=subject_hash, access_id=access_id)
+            refusal = connector_entry_resource_refusal(candidate, held[1] if held is not None else None)
+            if refusal is not None:
+                raise CardTransactionRefused(refusal)
         if base_version is None:
             expected = (current.card_revision if current is not None else 0) + 1
         else:

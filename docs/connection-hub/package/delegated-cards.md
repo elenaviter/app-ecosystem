@@ -1371,12 +1371,16 @@ The entry door is part of a connector Card's identity (owner, client, kind,
 a rename or a changed selection in the editor keeps it (W35). A refresh family
 issued by the original exchange records only `resources` and takes its
 resource from the Card, so a Card without its door could never refresh again.
-Every durable write therefore refuses a live connector revision with an empty
-`entry_resource` as `card_identity_entry_resource_missing`: the ordinary
-commit (`DelegatedCardService.commit`), a staged transaction
-(`transaction_store.stage`) and a Card version member. A revoked revision is
-not live authority and stays writable, so a Card damaged before this rule can
-still be revoked.
+A write therefore never removes the door. When the revision a write replaces
+held an `entry_resource`, a live connector candidate without one is refused
+as `card_identity_entry_resource_missing`. This holds at every durable write:
+the ordinary commit (`DelegatedCardService.commit`), a staged transaction
+(`transaction_store.stage`) and a Card version member. A Card that is already
+without its door (older connector Cards, or Cards an editor Save emptied
+before this rule) stays writable by every writer, so refresh, disconnect and
+revoke still work on it. A new authorization at its door writes the door back
+(`record_oauth_grant`), which repairs it. A revoked candidate is never
+refused.
 
 ### Re-apply a profile in place: `delegated_access_apply_profile`
 

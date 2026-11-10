@@ -651,9 +651,6 @@ class DelegatedCardService:
         before_commit: BeforeCardCommit | None = None,
     ) -> CardCurrentPointer:
         """Commit the next revision and expose it as live authority."""
-        refusal = connector_entry_resource_refusal(authority)
-        if refusal is not None:
-            raise CardConflict(refusal)
         moment = int(now if now is not None else time.time())
         mutation_id = uuid.uuid4().hex
         try:
@@ -666,6 +663,11 @@ class DelegatedCardService:
                     access_id=authority.access_id,
                     expected_revision=expected_revision,
                 )
+                refusal = connector_entry_resource_refusal(
+                    authority, current[1] if current is not None else None
+                )
+                if refusal is not None:
+                    raise CardConflict(refusal)
                 # A host-supplied authority gate runs after lock acquisition
                 # and the target CAS check, before projection or durable effects.
                 # It must be bounded and must not mutate this target itself.
