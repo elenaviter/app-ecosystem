@@ -27,6 +27,7 @@ from typing import Any, Callable, Mapping
 from ..contract.errors import DomainError
 from .host_config import HostRelayConfig
 from .io import utc_now
+from .codex_quota import worker_use_credits, account_fingerprint, SOURCE_CODEX_APP_SERVER
 from .limit_state import session_with_limit_state, wake_deferred_until
 from .session_delivery import CODEX_QUEUE_ADAPTER, delivery_adapter, notify_agent_session
 from .store import SharedFieldStore
@@ -73,13 +74,22 @@ def recover_worker_wake(
     # 2026-09-30 the one recovery of a Codex session was spent that way while
     # the relay was already holding its wake until the reset.
     now = utc_now()
+    board_record = field.worker_board_record(worker_name)
+    recorded = field.runtime_limit_state(worker_name)
+    if (recorded.get("source") == SOURCE_CODEX_APP_SERVER
+        and recorded.get("account_email_sha256") != account_fingerprint(
+            (board_record.get("runtime_account") or {}).get("email"))):
+        raise DomainError("field_worker_wake_recovery_quota_account_mismatch",
+            "The recorded native quota belongs to a different registered account; wait for a fresh reading.",
+            status=409)
     held_until = wake_deferred_until(
         session_with_limit_state(
             field.worker_listener_session(worker_name) or {},
             runtime_kind=channel.runtime_kind,
             runtime_session_id=channel.runtime_session_id,
             now=now,
-            recorded=field.runtime_limit_state(worker_name),
+            recorded=recorded,
+            use_credits=worker_use_credits(board_record),
         ).get("limit_state"),
         now=now,
     )
