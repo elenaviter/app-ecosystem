@@ -21,6 +21,59 @@ LIMITS = {"rateLimits": {"limitId": "codex", "primary": WINDOW,
                          "secondary": {**WINDOW, "windowDurationMins": 10080}}}
 
 
+def _paid_limits(credits):
+    return {"rateLimits": {"limitId": "codex", "rateLimitReachedType": "rate_limit_reached",
+        "primary": {**WINDOW, "usedPercent": 100}, "credits": credits}}
+
+
+@pytest.mark.parametrize("credits", [
+    {"hasCredits": True, "unlimited": False, "balance": "12.5"},
+    {"hasCredits": True, "unlimited": True, "balance": None},
+])
+def test_paid_credits_release_an_exhausted_plan_without_rewriting_usage(credits):
+    observation = codex_quota.quota_state(_paid_limits(credits), observed_at=NOW,
+        runtime_session_id=SESSION, fingerprint="synthetic")
+    previous = {"kind": "rate_limited", "source": "codex-rollout", "observed_at": REFUSED,
+        "limit_id": "codex", "refusal": "usage_limit_exceeded",
+        "windows": [{"name": "primary", "used_percent": 100, "window_minutes": 300}]}
+    state = merge_codex_quota(previous, observation, runtime_session_id=SESSION, now=NOW)
+    assert state["kind"] == "ok", "the default -1 permits usable paid credits after included usage"
+    assert state["capacity_source"] == "paid_credits"
+    assert state["windows"][0]["used_percent"] == 100
+    assert "paid credits available" in limit_state_line(state)
+    assert "balance" not in json.dumps(observation), "retain availability, never a monetary balance"
+
+
+@pytest.mark.parametrize("credits", [None, {}, {"hasCredits": False, "unlimited": True},
+    {"hasCredits": True}, {"hasCredits": True, "balance": "0"},
+    {"hasCredits": True, "balance": "-1"}, {"hasCredits": True, "balance": "NaN"},
+    {"hasCredits": True, "balance": "Infinity"}, {"hasCredits": True, "balance": True},
+    {"hasCredits": True, "balance": "invalid"}, {"hasCredits": "true", "balance": "5"}])
+def test_missing_or_unusable_credits_keep_the_exhaustion(credits):
+    observation = codex_quota.quota_state(_paid_limits(credits), observed_at=NOW,
+        runtime_session_id=SESSION, fingerprint="synthetic")
+    state = merge_codex_quota(None, observation, runtime_session_id=SESSION, now=NOW)
+    assert state["kind"] == "rate_limited"
+
+
+@pytest.mark.parametrize("policy", [None, 0, -2, True, "-1"])
+def test_paid_capacity_requires_an_explicit_supported_numeric_policy(policy):
+    observation = codex_quota.quota_state(_paid_limits(
+        {"hasCredits": True, "unlimited": False, "balance": "12.5"}), observed_at=NOW,
+        runtime_session_id=SESSION, fingerprint="synthetic")
+    state = merge_codex_quota(None, observation, runtime_session_id=SESSION, now=NOW,
+        use_credits=policy)
+    assert state["kind"] == "rate_limited"
+
+
+def test_paid_credits_on_another_bucket_do_not_clear_exhaustion():
+    raw = _paid_limits({"hasCredits": True, "unlimited": False, "balance": "12.5"})
+    raw["rateLimitsByLimitId"] = {"premium": {"primary": {**WINDOW, "usedPercent": 100}}}
+    observation = codex_quota.quota_state(raw, observed_at=NOW,
+        runtime_session_id=SESSION, fingerprint="synthetic")
+    assert merge_codex_quota(None, observation, runtime_session_id=SESSION, now=NOW)["kind"] == "rate_limited"
+
+
 class NativeProcess:
     def __init__(self, *, before=ACCOUNT, after=ACCOUNT, hang=False, limits=LIMITS):
         self.stdin = self

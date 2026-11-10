@@ -360,6 +360,19 @@ including a shim that exits before its native child.
 An expired positive reading is unknown, not proof of capacity or a return to an
 older exhausted measurement.
 
+An exhausted included-plan window does not imply that purchased Codex credits
+are exhausted. The numeric `use_credits` compatibility policy defaults to `-1`
+(allow available paid credits); `0`, explicit absence and unsupported values
+disable this path. Positive spending caps are not implemented by this policy.
+When enabled, the fresh authenticated native bucket must report `hasCredits`
+and either unlimited credits or a finite positive balance. Only a sanitized
+availability flag is retained, never the balance. Earned reset credits are
+unrelated. Credits in another bucket cannot release the exhausted bucket, and
+an explicit provider credit/spend-control refusal remains held. The original
+included-usage percentages remain visible; eligibility says `paid credits
+available (included usage exhausted)`. This uses the provider's existing paid
+credit behavior; it does not purchase credits or change native billing settings.
+
 Fresh capacity can end the old hold. If the provider refused an outstanding
 consumed wake, its recovery requires the same current session, a later matched
 reading, pending addressed input and normal queue/authorization fences. One

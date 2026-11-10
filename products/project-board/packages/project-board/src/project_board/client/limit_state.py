@@ -648,6 +648,11 @@ def limit_state_line(state: Mapping[str, Any] | None) -> str:
         detail = " (" + window + ")" if window else ""
         return "rate limited" + detail + when
     if kind == KIND_OK:
+        if state.get("capacity_source") == "paid_credits":
+            suffix = "; same-session receive pending" if reached == "capacity_available_receive_pending" else ""
+            if reached == "capacity_available_receive_observed":
+                suffix = "; receive observed, handling separate"
+            return "paid credits available (included usage exhausted)" + suffix
         if reached == "capacity_available_receive_pending":
             return "capacity available; same-session receive pending"
         if reached == "capacity_available_receive_observed":
@@ -735,7 +740,7 @@ def session_with_limit_state(
 
 def merge_codex_quota(
     rollout: Mapping[str, Any] | None, observation: Mapping[str, Any] | None,
-    *, runtime_session_id: str, now: str,
+    *, runtime_session_id: str, now: str, use_credits: int | None = -1,
 ) -> dict[str, Any] | None:
     """A newer authenticated read may clear old exhaustion, not prove handling.
 
@@ -743,7 +748,7 @@ def merge_codex_quota(
     path does not produce them. Partial, stale or other-session evidence cannot
     erase a known exhausted bucket. A later provider refusal wins again.
     """
-    from .codex_quota import SOURCE_CODEX_APP_SERVER, QUOTA_FRESH_SECONDS
+    from .codex_quota import SOURCE_CODEX_APP_SERVER, QUOTA_FRESH_SECONDS, with_credit_policy
 
     previous = dict(rollout) if isinstance(rollout, Mapping) else None
     if not isinstance(observation, Mapping) or observation.get("source") != SOURCE_CODEX_APP_SERVER:
@@ -760,7 +765,7 @@ def merge_codex_quota(
         # Do not resurrect an older exhausted rollout as if it were the latest
         # provider measurement. Stale positive capacity is unknown, not ok.
         return {**observation, "kind": KIND_UNKNOWN, "reached": "quota_read_stale", "resets_at": ""}
-    candidate = dict(observation)
+    candidate = with_credit_policy(observation, use_credits)
     if candidate.get("kind") == KIND_OK and previous:
         # The fresh read must actually measure the exhausted bucket/window.
         buckets = candidate.get("buckets") or {}
@@ -774,7 +779,7 @@ def merge_codex_quota(
                       if w.get("used_percent") is not None and w["used_percent"] >= 100]
             if not needed:
                 needed = [{"name": "primary"}, {"name": "secondary"}]
-            for exhausted in needed:
+            for exhausted in ([] if measured.get("capacity_source") == "paid_credits" else needed):
                 duration = exhausted.get("window_minutes")
                 covered = [w for w in windows if (
                     w.get("window_minutes") == duration if duration is not None

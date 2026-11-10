@@ -5249,8 +5249,11 @@ class SharedFieldStore:
         with exclusive_lock(self.control / "locks" / f"worker-{clean_name}.lock"):
             row = read_json(path)
             if quota_observed_at:
-                from .codex_quota import SOURCE_CODEX_APP_SERVER, account_fingerprint, QUOTA_FRESH_SECONDS
-                sample = row.get("runtime_limit_state") or {}
+                from .codex_quota import (
+                    SOURCE_CODEX_APP_SERVER, account_fingerprint, QUOTA_FRESH_SECONDS,
+                    DEFAULT_USE_CREDITS, with_credit_policy,
+                )
+                sample = with_credit_policy(row.get("runtime_limit_state") or {}, DEFAULT_USE_CREDITS)
                 account = (row.get("board_record") or {}).get("runtime_account") or {}
                 try:
                     observed_time = parse_utc(quota_observed_at)
