@@ -180,8 +180,11 @@ class OriginalTarget:
                 return False
             if original is None:
                 return current is None
-            return (current is not None and current[1].to_dict() == original.to_dict()
-                    and current[1].state == "active")
+            # The durable current must still be exactly the original this plan was built on. That original may
+            # be revoked: a fresh, approved re-consent continues the same Card's revision chain on top of it
+            # (delegated-cards.md, W571). The candidate is required active by candidate(), and the committed
+            # and delivery fences below still require that exact active candidate.
+            return current is not None and current[1].to_dict() == original.to_dict()
         return (result.state == "committed" and current is not None
                 and current[1].to_dict() == candidate.to_dict()
                 and current[1].state == "active")
