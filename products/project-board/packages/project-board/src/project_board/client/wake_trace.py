@@ -37,7 +37,7 @@ EVENTS = frozenset({
 })
 REASONS = frozenset({
     "empty", "detached", "quiet", "quota_error", "quota_hold", "session_watch",
-    "queue_withheld", "eligible", "coalesced", "queued", "not_queued", "failed",
+    "queue_withheld", "eligible", "coalesced", "queued", "unconfirmed", "failed",
     "read_ok", "read_error", "read_unmeasured", "cache_ok", "cache_error",
     "acknowledged", "already_acknowledged", "stale", "succeeded", "cancelled", "error",
     "no_listener", "after_quota_empty", "wake_still_queued", "wake_consumed_retry_exhausted",
@@ -49,6 +49,7 @@ ERRORS = frozenset({
     "work_codex_quota_timeout", "work_codex_quota_unavailable", "work_codex_quota_unmeasured",
     "field_worker_not_listening", "field_worker_wake_conflict",
     "field_worker_wake_already_acknowledged", "agent_rate_limited",
+    "codex_queue_failed", "codex_command_not_found", "TimeoutExpired", "OSError",
 })
 
 
@@ -89,7 +90,7 @@ def _fields(values: Mapping[str, Any]) -> dict[str, Any]:
         value = values.get(key)
         if type(value) is int:
             clean[key] = max(0, min(value, 1_000_000))
-    for key in ("retried", "mailbox_read"):
+    for key in ("retried", "mailbox_read", "admission_seen"):
         if type(values.get(key)) is bool:
             clean[key] = values[key]
     status = values.get("delivery_status")

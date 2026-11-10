@@ -71,7 +71,7 @@ The records distinguish these boundaries:
 | `quota_read_started` / `quota_read_finished` | A read the delivery path already required started/returned. A failure names an allowlisted code, including timeout. `quota_cache` distinguishes a cached error from a new read. Kind/source and the observation timestamp describe the existing decision evidence; no balance or account identifier is retained. |
 | `decision` | The notification pass reached an empty, detached, quiet, quota-error/hold, queue-withheld, eligible or coalesced branch. Eligibility is not native admission. |
 | `notify_lock` | A normal pass acquired its per-worker notification mutex after the recorded wait, or the beside-turn pass acquired it. The role is named; a native model turn does not own this mutex. |
-| `queue_started` / `queue_finished` | The existing notifier was invoked and returned. `queued` means it reported admission, not that the model started or received mail. A start with no finish has an unknown outcome in this trace. |
+| `queue_started` / `queue_finished` | The existing notifier was invoked and returned. `queued` means it reported admission, not that the model started or received mail. `unconfirmed` retains any observed admission marker and submission tag; a command failure can follow admission. A start with no finish has an unknown outcome in this trace. |
 | `ack_observed` | A later notification check observed the existing wake receipt, with its original `recorded_at`. This can come from receive **or** a held window's wake-ack. It is not independent proof of body delivery, model entry or settlement. |
 | `check_finished` | The pass ended, failed or was cancelled. Within a check, `check_id` joins its quota, decision and queue records even across awaits. |
 
@@ -82,6 +82,8 @@ hash its exact UTF-8 string. These tags are diagnostic locators, never
 authority or proof of delivery. At most eight message tags are included, with
 an omitted count. Payloads, bodies, subjects, paths, account emails,
 fingerprints, balances and native exception text are excluded.
+Decision tags describe the refs the check observed. `mailbox_read=false`
+means it used the existing queued-wake view; it did not read the full mailbox.
 
 Bounds are **2 KiB per record** including a formatter-prefix reserve, **64 KiB
 per minute per relay process**, and **256** retained repeat signatures.

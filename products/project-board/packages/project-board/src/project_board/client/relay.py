@@ -6398,8 +6398,9 @@ class ProblemBoardRelaySupervisor:
         result.setdefault("event_kind", "queue.reconcile")
         result.setdefault("delivered", False)
         record_wake(self._trace, "queue_finished", channel.worker_name,
-                    reason="queued" if result.get("delivered") else "not_queued",
+                    reason="queued" if result.get("delivered") else "unconfirmed",
                     wake_id=delivery_wake_id, submission_id=result.get("queued_submission_id"),
+                    admission_seen=bool(result.get("admission_seen")), error_code=result.get("reason"),
                     retried=retried, seconds=time.monotonic() - queue_started)
         # A pushed wake leaves a line. A Claude Code channel records an attempt
         # every cycle by design (its session-owned watch is the path), so that
@@ -6885,6 +6886,7 @@ class ProblemBoardRelaySupervisor:
                                    "source": str((limit_state or {}).get("source") or "unknown")},
                 )
             decision("quota_error" if quota_error else "quota_hold", pending=len(pending_refs),
+                     message_refs=pending_refs, mailbox_read=mailbox_read,
                      error_code=quota_error, retry_at=retry_at, kind=(limit_state or {}).get("kind"),
                      source=(limit_state or {}).get("source"),
                      quota_observed_at=(limit_state or {}).get("observed_at"))
@@ -6918,6 +6920,7 @@ class ProblemBoardRelaySupervisor:
                     len(pending_refs),
                 )
             decision("quota_hold", pending=len(pending_refs), retry_at=deferred_until,
+                     message_refs=pending_refs, mailbox_read=mailbox_read,
                      kind=(limit_state or {}).get("kind"), source=(limit_state or {}).get("source"),
                      quota_observed_at=(limit_state or {}).get("observed_at"))
             return {
@@ -6956,6 +6959,7 @@ class ProblemBoardRelaySupervisor:
             # sessions sat without a wake for minutes and the log had no line
             # about it, so the cause could only be read from the queue database.
             decision("queue_withheld", pending=len(pending_refs),
+                     message_refs=pending_refs, mailbox_read=mailbox_read,
                      wake_id=subscription.get("outstanding_wake_id"))
             logger.warning(
                 "Problem Board wake withheld worker=%s reason=%s detail=%s "
@@ -7068,7 +7072,7 @@ class ProblemBoardRelaySupervisor:
                 )
             wake_state = str(subscription.get("wake_delivery_state") or "")
             decision("coalesced", pending=len(pending_refs), wake_id=outstanding_wake_id,
-                     retry_at=deadline, mailbox_read=mailbox_read)
+                     message_refs=pending_refs, retry_at=deadline, mailbox_read=mailbox_read)
             logger.info(
                 "Problem Board wake deduplicated worker=%s wake_id=%s state=%s "
                 "retry_at=%s pending=%d mailbox=%s",

@@ -56,6 +56,7 @@ def test_failed_native_read_and_cached_hold_are_named_without_extra_reads(tmp_pa
     assert events(lines, "quota_cache")[0]["reason"] == "cache_error"
     decision = events(lines, "decision")[0]
     assert decision["reason"] == "quota_error" and decision["pending"] > 0
+    assert decision["mailbox_read"] is True and decision["message_refs_sha256"]
     assert decision["check_id"] == completed[0]["check_id"]
     assert "private exception text" not in "\n".join(lines)
 
@@ -106,3 +107,23 @@ def test_materialization_and_replay_keep_the_original_receipt_and_hash_only_loca
     assert row["remote_created_at"] == item["created_at"]
     assert len(events(lines, "mail_replayed")) == 1
     assert "private-title" not in "\n".join(lines)
+
+
+def test_failed_command_with_admission_evidence_is_not_reported_as_rejection(tmp_path, monkeypatch):
+    lines = capture(monkeypatch)
+    host, _field, worker, _peer = _two_codex_channels(tmp_path)
+    supervisor = _with_session_stubs(make_supervisor(host), [])
+    def admitted_then_failed(_channel, **_kwargs):
+        return {"adapter": "codex-queue", "state": "unreachable", "delivered": False,
+                "reason": "codex_queue_failed", "admission_seen": True,
+                "queued_submission_id": "admitted-submission"}
+    supervisor.session_notifier = admitted_then_failed
+    async def scenario():
+        delivery = await supervisor._notify_available_input(host, worker)
+        await supervisor.aclose()
+        return delivery
+    assert asyncio.run(scenario())["delivered"] is False
+    row = events(lines, "queue_finished")[0]
+    assert row["reason"] == "unconfirmed" and row["admission_seen"] is True
+    assert row["submission_id_sha256"] == hashlib.sha256(b"admitted-submission").hexdigest()
+    assert "admitted-submission" not in "\n".join(lines)
