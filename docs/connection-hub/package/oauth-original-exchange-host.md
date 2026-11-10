@@ -44,6 +44,17 @@ the latest Card. The live fence compares the full current original/candidate,
 identity, revision, content and database-clock deadlines. An unavailable or
 corrupt pointer is not absence.
 
+Before the pair is prepared (the plan still pending), the durable current Card
+must be exactly the plan's original, or authoritatively absent for a first
+consent. That original may be revoked: a fresh, approved re-consent after a
+revoke reuses the Card's stable id and commits its next revision (see
+[Delegated Cards](delegated-cards.md) and W571), so requiring the original to be
+active would refuse every such re-consent with `original_exchange_target_moved`.
+A changed or newer current Card, an absent one where the plan has a base, and an
+elapsed reservation or deadline still refuse. The candidate itself must be
+active, and once committed, activation and delivery require that exact active
+candidate.
+
 Consent invocation-policy choices are frozen by the SDK's public
 `oauth_issuance_arguments` normalizer and passed unchanged into the Hub's same
 issuance decision. An absent or `None` selection is omitted; an explicit empty

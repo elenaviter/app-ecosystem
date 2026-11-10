@@ -124,6 +124,72 @@ async def test_pending_fence_checks_exact_original_or_authoritative_absence(host
     assert await scene.target.fence(plan=scene.plan, result=SimpleNamespace(state="pending")) is False
 
 
+def _revoked_original_scene(host, *, linked=False):
+    """A re-consent planned on top of a revoked Card (W33): the plan's original is the revoked revision."""
+    scene = (_linked_scene if linked else _scene)(host)
+    revoked = replace(scene.original, state="revoked")
+    scene.original = revoked
+    if linked:
+        from connection_hub.delegated_credentials.cards.version_link import version_link
+        scene.row["plan"]["intent"]["original"] = version_link(
+            card_revision=revoked.card_revision, revision_name="original.json", content_hash=revoked.content_hash())
+        cards = {"candidate": scene.candidate, "original": revoked}
+
+        async def plan_card(raw, which, transaction_id):
+            return cards[which]
+
+        scene.hub._plan_card.side_effect = plan_card
+    else:
+        scene.row["plan"]["intent"]["original"] = revoked.to_dict()
+    scene.cards.read_current_authority.return_value = (object(), revoked)
+    return scene
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("linked", [False, True])
+async def test_pending_fence_admits_the_exact_revoked_original_of_a_re_consent(host, linked):
+    """W33: re-consent after a revoke continues the Card's revision chain (delegated-cards.md, W571), so the
+    pending fence admits the plan's exact original although it is revoked; the candidate stays active."""
+    scene = _revoked_original_scene(host, linked=linked)
+    original, candidate = await scene.target.candidate(scene.plan)
+    assert original.state == "revoked" and candidate.state == "active"
+    assert await scene.target.fence(plan=scene.plan, result=SimpleNamespace(state="pending")) is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("case", ["absent", "successor", "changed", "reactivated", "reservation", "deadline"])
+async def test_pending_fence_still_refuses_a_moved_target_after_a_revoke(host, case):
+    """Admitting a revoked original is not admitting anything else: absence, a successor, a changed or
+    differently stated Card and an elapsed reservation or deadline still refuse."""
+    scene = _revoked_original_scene(host)
+    revoked = scene.original
+    if case == "absent":
+        scene.cards.read_current_authority.return_value = None
+    elif case == "successor":
+        scene.cards.read_current_authority.return_value = (object(), replace(revoked, card_revision=2, state="active"))
+    elif case == "changed":
+        scene.cards.read_current_authority.return_value = (object(), replace(revoked, label="Changed"))
+    elif case == "reactivated":
+        scene.cards.read_current_authority.return_value = (object(), replace(revoked, state="active"))
+    elif case == "reservation":
+        scene.store.issuance_clock.return_value = scene.plan.reserved_until
+    else:
+        scene.store.issuance_clock.return_value = scene.plan.delivery_deadline
+    assert await scene.target.fence(plan=scene.plan, result=SimpleNamespace(state="pending")) is False
+
+
+@pytest.mark.asyncio
+async def test_committed_fence_after_a_revoked_original_requires_the_exact_active_candidate(host):
+    scene = _revoked_original_scene(host)
+    committed = SimpleNamespace(state="committed")
+    # The revoked original is no target for delivery: only the committed, active candidate is.
+    assert await scene.target.fence(plan=scene.plan, result=committed) is False
+    scene.cards.read_current_authority.return_value = (object(), scene.candidate)
+    assert await scene.target.fence(plan=scene.plan, result=committed) is True
+    scene.cards.read_current_authority.return_value = (object(), replace(scene.candidate, state="revoked"))
+    assert await scene.target.fence(plan=scene.plan, result=committed) is False
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("field", ["access_id", "grantor_subject", "client_id", "delegate_subject"])
 async def test_candidate_identity_must_match_the_authenticated_plan_even_with_a_matching_hash(host, field):
