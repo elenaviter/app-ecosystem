@@ -374,6 +374,14 @@ applies it after its next authenticated board sync, including when rearming a
 held wake. Publish, heartbeat and a worker restart do not reset the saved value.
 An absent server setting disables paid capacity. Positive spending caps are not
 implemented until their accounting unit and reset period are defined.
+For rollout, activate the policy-aware client before exposing Settings on the
+server. Until an explicit server policy arrives, that client holds paid-credit
+wakes. This prevents an older compatibility client from ignoring an owner's
+newly saved zero. If server activation fails, retain the policy-aware client
+while restoring the previous server; missing policy remains disabled. A client
+startup failure before Settings is exposed can use the installer's ordinary
+rollback. Do not downgrade to a client that ignores saved consent after
+Settings has gone live.
 When enabled, the fresh authenticated native bucket must report `hasCredits`
 and either unlimited credits or a finite positive balance. Only a sanitized
 availability flag is retained, never the balance. Earned reset credits are
