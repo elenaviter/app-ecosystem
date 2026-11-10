@@ -3589,6 +3589,8 @@ class SharedFieldStore:
         owner = record.get("owner") if isinstance(record.get("owner"), Mapping) else {}
         account = record.get("runtime_account") if isinstance(record.get("runtime_account"), Mapping) else {}
         value = {
+            "worker_settings": dict(record.get("worker_settings") or {})
+                if isinstance(record.get("worker_settings"), Mapping) else {},
             "owner": {
                 "user_id": bounded_text(owner.get("user_id") or "", field="owner.user_id", maximum=256),
                 "display_name": bounded_text(owner.get("display_name") or "", field="owner.display_name", maximum=256),
@@ -5251,9 +5253,10 @@ class SharedFieldStore:
             if quota_observed_at:
                 from .codex_quota import (
                     SOURCE_CODEX_APP_SERVER, account_fingerprint, QUOTA_FRESH_SECONDS,
-                    DEFAULT_USE_CREDITS, with_credit_policy,
+                    worker_use_credits, with_credit_policy,
                 )
-                sample = with_credit_policy(row.get("runtime_limit_state") or {}, DEFAULT_USE_CREDITS)
+                sample = with_credit_policy(row.get("runtime_limit_state") or {},
+                    worker_use_credits(row.get("board_record") or {}))
                 account = (row.get("board_record") or {}).get("runtime_account") or {}
                 try:
                     observed_time = parse_utc(quota_observed_at)

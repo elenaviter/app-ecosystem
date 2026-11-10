@@ -675,3 +675,18 @@ def test_an_admitted_copy_with_attachment_custody_still_folds_without_locators()
     assert "download_path" not in text and "/download" not in text
     assert "1 admitted attachment entry match this message's attachments" in text
     assert "retirement_command.attachment_custody = delivery" in text
+
+
+@pytest.mark.parametrize("with_attachment", [False, True])
+def test_inspection_only_message_preview_renders_without_a_lease(with_attachment):
+    message = _message(state="inbox", body="Inspect this exact message.\nDo not execute it.")
+    message["attachments"] = [_attachment("evidence.txt")] if with_attachment else []
+    text = render_envelope({"ok": True, "result": {
+        "schema": "problem-board.worker-mail-preview.v1", "message": message}}, worker_flags=FLAGS)
+    assert "inspection only: no lease, settlement or execution authority" in text
+    assert MESSAGE_REF in text
+    assert message["body"].splitlines()[0] in text
+    assert message["body"].splitlines()[1] in text
+    assert "lease_id" not in text
+    if with_attachment:
+        assert message["attachments"][0]["file_ref"] in text

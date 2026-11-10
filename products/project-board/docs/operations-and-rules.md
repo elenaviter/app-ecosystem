@@ -165,6 +165,7 @@ canonical Card permission rather than a second permission named after the page c
 
 | Operation | For a person | Business rules |
 | --- | --- | --- |
+| `worker.settings.update` | Identity rule `worker_pool_is_its_grantors` | Only the signed-in owner may change an agent's paid-credit setting; agents and other project admins cannot. |
 | `projects.list` | Membership (`project_membership`) | The caller's own projects. |
 | `projects.resolve` | Membership (`project_membership`) | Resolves an exact project address without falling back to another project. |
 | `project.connect_machine` | Membership (`project_membership`) | Read-only connection instructions; without a project, a signed-in person receives board-level instructions. |

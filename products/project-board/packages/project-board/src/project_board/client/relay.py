@@ -38,6 +38,7 @@ from .heartbeat_reply import ReplyRequest, ReplySnapshots, ReplyDecodeError
 from .limit_state import qualify_limit_state, session_with_limit_state, wake_deferred_until
 from .limit_state import merge_codex_quota, codex_limit_state
 from .codex_quota import (
+    worker_use_credits,
     read_codex_quota, account_fingerprint, SOURCE_CODEX_APP_SERVER, QUOTA_REFRESH_SECONDS,
 )
 from .runtime_model import session_with_runtime_model
@@ -5597,6 +5598,7 @@ class ProblemBoardHostRelayAdapter:
                 runtime_session_id=self.config.runtime_session_id,
                 now=utc_now(),
                 recorded=self.field.runtime_limit_state(self.config.worker_name),
+                use_credits=worker_use_credits(self.field.worker_board_record(self.config.worker_name)),
             ),
             runtime_kind=self.config.runtime_kind,
             runtime_session_id=self.config.runtime_session_id,
@@ -6576,7 +6578,7 @@ class ProblemBoardRelaySupervisor:
             self._codex_quota_refresh_at.pop(channel.worker_name, None)
         if time.monotonic() < self._codex_quota_refresh_at.get(channel.worker_name, 0):
             return merge_codex_quota(base_state, recorded, runtime_session_id=channel.runtime_session_id,
-                                     now=now), self._codex_quota_errors.get(channel.worker_name, "")
+                                     now=now, use_credits=worker_use_credits(field.worker_board_record(channel.worker_name))), self._codex_quota_errors.get(channel.worker_name, "")
         self._codex_quota_refresh_at[channel.worker_name] = time.monotonic() + QUOTA_REFRESH_SECONDS
         try:
             observation = await self._codex_quota_reader(
@@ -6601,7 +6603,7 @@ class ProblemBoardRelaySupervisor:
             self._codex_quota_errors[channel.worker_name] = "work_codex_quota_unavailable"
             return state, "work_codex_quota_unavailable"
         merged = merge_codex_quota(base_state, observation, runtime_session_id=channel.runtime_session_id,
-                                   now=utc_now())
+                                   now=utc_now(), use_credits=worker_use_credits(field.worker_board_record(channel.worker_name)))
         if (observation.get("kind") not in {"ok", "rate_limited", "out_of_tokens"}
             or not merged or (merged.get("source") == SOURCE_CODEX_APP_SERVER and merged.get("kind") == "unknown")
             or (observation.get("kind") == "ok" and merged.get("source") != SOURCE_CODEX_APP_SERVER)):
@@ -6737,11 +6739,15 @@ class ProblemBoardRelaySupervisor:
         # the runtime named, said once per reset in the log, and the mail
         # stays pending for the wake that follows the reset.
         now = utc_now()
+        credit_policy = worker_use_credits(await self._channel_off_loop(
+            channel, field.worker_board_record, channel.worker_name
+        ))
         limit_state = session_with_limit_state(
             listener,
             runtime_kind=channel.runtime_kind,
             runtime_session_id=channel.runtime_session_id,
             now=now,
+            use_credits=credit_policy,
             recorded=await self._channel_off_loop(
                 channel, field.runtime_limit_state, channel.worker_name
             ),

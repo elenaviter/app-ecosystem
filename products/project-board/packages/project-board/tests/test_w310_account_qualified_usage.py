@@ -103,6 +103,9 @@ def test_a_sample_names_the_login_only_when_the_login_came_first():
 
 
 class _Field:
+    def worker_board_record(self, name):
+        return {}
+
     def worker_listener_session(self, name):
         return {"session_id": SESSION, "state": "listening"}
 

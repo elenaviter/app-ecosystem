@@ -30,6 +30,13 @@ QUOTA_FRESH_SECONDS = 120
 DEFAULT_USE_CREDITS = -1
 
 
+def worker_use_credits(record: Mapping[str, Any]) -> int | None:
+    """Only the server's explicit worker setting grants paid-credit consent."""
+    settings = record.get("worker_settings")
+    value = settings.get("use_credits") if isinstance(settings, Mapping) else None
+    return value if type(value) is int and value in {-1, 0} else None
+
+
 def _credits_available(value: Any) -> bool:
     if not isinstance(value, Mapping) or value.get("hasCredits") is not True:
         return False

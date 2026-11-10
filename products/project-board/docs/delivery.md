@@ -361,9 +361,27 @@ An expired positive reading is unknown, not proof of capacity or a return to an
 older exhausted measurement.
 
 An exhausted included-plan window does not imply that purchased Codex credits
-are exhausted. The numeric `use_credits` compatibility policy defaults to `-1`
+are exhausted. The numeric `use_credits` policy defaults to `-1`
 (allow available paid credits); `0`, explicit absence and unsupported values
-disable this path. Positive spending caps are not implemented by this policy.
+disable this path. The worker registry initializes an explicit default for
+existing and new workers. Its owner changes it under Team → Agents → Settings.
+The setting is durable Board metadata alongside the stable worker and its Card
+binding, not a Connection Hub grant or a provider billing setting. Only that
+signed-in owner may edit it, including on a shared project; agents and other
+project admins cannot grant paid spending. A revision fence protects concurrent
+saves. The server returns the policy in the worker's self record; the relay
+applies it after its next authenticated board sync, including when rearming a
+held wake. Publish, heartbeat and a worker restart do not reset the saved value.
+An absent server setting disables paid capacity. Positive spending caps are not
+implemented until their accounting unit and reset period are defined.
+For rollout, activate the policy-aware client before exposing Settings on the
+server. Until an explicit server policy arrives, that client holds paid-credit
+wakes. This prevents an older compatibility client from ignoring an owner's
+newly saved zero. If server activation fails, retain the policy-aware client
+while restoring the previous server; missing policy remains disabled. A client
+startup failure before Settings is exposed can use the installer's ordinary
+rollback. Do not downgrade to a client that ignores saved consent after
+Settings has gone live.
 When enabled, the fresh authenticated native bucket must report `hasCredits`
 and either unlimited credits or a finite positive balance. Only a sanitized
 availability flag is retained, never the balance. Earned reset credits are
@@ -372,6 +390,10 @@ an explicit provider credit/spend-control refusal remains held. The original
 included-usage percentages remain visible; eligibility says `paid credits
 available (included usage exhausted)`. This uses the provider's existing paid
 credit behavior; it does not purchase credits or change native billing settings.
+While that same-bucket credit reading remains fresh, a newer rollout snapshot
+that only reports included usage at 100% does not revoke paid capacity. The
+newer included-usage figures remain visible. A later actual provider turn
+refusal still takes precedence and requires a newer native capacity reading.
 
 Fresh capacity can end the old hold. If the provider refused an outstanding
 consumed wake, its recovery requires the same current session, a later matched

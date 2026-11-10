@@ -251,6 +251,9 @@ def test_the_relay_records_what_the_codex_rollout_said_so_a_miss_keeps_it(tmp_pa
         def __init__(self):
             self.model = {}
 
+        def worker_board_record(self, name):
+            return {}
+
         def worker_listener_session(self, name):
             return {"session_id": SESSION, "state": "listening"}
 
