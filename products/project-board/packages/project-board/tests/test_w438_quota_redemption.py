@@ -97,6 +97,28 @@ def test_early_redemption_rearms_only_one_current_same_session_wake(tmp_path, mo
     assert len(pushes) == 1 and len(reads) == 1, "duplicate observations neither query nor push in a loop"
 
 
+def test_exhausted_included_plan_with_paid_credits_releases_one_held_wake(tmp_path, monkeypatch):
+    from project_board.client.codex_quota import quota_state, account_fingerprint
+
+    host, identity, channel, field, supervisor, pushes = _held(tmp_path, monkeypatch)
+
+    async def native(**_kwargs):
+        return quota_state({"rateLimits": {"limitId": "codex",
+            "rateLimitReachedType": "rate_limit_reached",
+            "primary": {"usedPercent": 100, "windowDurationMins": 10080, "resetsAt": 1791496800},
+            "credits": {"hasCredits": True, "unlimited": False, "balance": "12.5"}}},
+            observed_at=NOW, runtime_session_id=identity.runtime_session_id,
+            fingerprint=account_fingerprint(EMAIL))
+
+    supervisor._codex_quota_reader = native
+    result = asyncio.run(supervisor._notify_available_input(host, channel))
+    assert len(pushes) == 1, ("paid credits may fund a held wake after included usage is exhausted", result)
+    assert not result.get("wake_deferred") and not field.wake_hold(identity.worker_name)
+    assert pushes[0]["wake_id"] == WAKE
+    asyncio.run(supervisor._notify_available_input(host, channel))
+    assert len(pushes) == 1, "paid credits do not create extra wake retries"
+
+
 def test_still_exhausted_and_read_errors_submit_no_model_turn(tmp_path, monkeypatch):
     host, identity, channel, field, supervisor, pushes = _held(tmp_path, monkeypatch)
 

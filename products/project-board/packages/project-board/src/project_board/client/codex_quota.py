@@ -14,6 +14,7 @@ import os
 import signal
 from collections.abc import Mapping
 from datetime import datetime, timezone
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any
 
@@ -24,6 +25,58 @@ from .session_delivery import _codex_executable, _command_environment
 SOURCE_CODEX_APP_SERVER = "codex-app-server"
 QUOTA_REFRESH_SECONDS = 60
 QUOTA_FRESH_SECONDS = 120
+# Operator-selected compatibility policy until durable per-worker settings land.
+# Explicit None/0 is disabled; -1 permits available paid credits.
+DEFAULT_USE_CREDITS = -1
+
+
+def _credits_available(value: Any) -> bool:
+    if not isinstance(value, Mapping) or value.get("hasCredits") is not True:
+        return False
+    if value.get("unlimited") is True:
+        return True
+    balance = value.get("balance")
+    if isinstance(balance, bool) or not isinstance(balance, (str, int, float)):
+        return False
+    if len(str(balance)) > 128:
+        return False
+    try:
+        amount = Decimal(str(balance))
+        return amount.is_finite() and amount > 0
+    except InvalidOperation:
+        return False
+
+
+def with_credit_policy(observation: Mapping[str, Any], use_credits: Any) -> dict[str, Any]:
+    """Apply spending consent to sanitized provider evidence, never to usage."""
+    candidate = dict(observation)
+    if type(use_credits) is not int or use_credits != -1:
+        return candidate
+    raw = observation.get("buckets")
+    if not isinstance(raw, Mapping) or not raw:
+        return candidate
+    buckets = {}
+    changed = False
+    for name, state in raw.items():
+        if not isinstance(state, Mapping):
+            continue
+        bucket = dict(state)
+        if (bucket.get("kind") == KIND_RATE_LIMITED and bucket.get("credits_available") is True
+            and bucket.get("reached") in {"rate_limit_reached", "primary", "secondary"}):
+            bucket.update(kind=KIND_OK, capacity_source="paid_credits", resets_at="")
+            changed = True
+        buckets[name] = bucket
+    if not changed:
+        return candidate
+    ordered = sorted(buckets.values(), key=lambda state: (
+        state.get("kind") in (KIND_RATE_LIMITED, KIND_OUT_OF_TOKENS),
+        state.get("kind") == KIND_OK, str(state.get("resets_at") or "")), reverse=True)
+    if ordered:
+        selected = ordered[0]
+        candidate.update({key: selected[key] for key in (
+            "kind", "windows", "reached", "resets_at", "limit_id", "credits_available", "capacity_source"
+        ) if key in selected}, buckets=buckets)
+    return candidate
 
 
 def account_fingerprint(email: str) -> str:
@@ -70,6 +123,9 @@ def quota_state(result: Mapping[str, Any], *, observed_at: str,
             normalized[window_name] = {"used_percent": used,
                 "window_minutes": minutes, "resets_at": reset}
         state = limit_state_from_codex(normalized, observed_at=observed_at)
+        # Paid balance is sensitive and unnecessary for eligibility. Earned
+        # rateLimitResetCredits are a different feature and are never read.
+        state["credits_available"] = _credits_available(value.get("credits"))
         state["limit_id"] = str(name)
         states[str(name)] = state
     ordered = sorted(states.values(), key=lambda state: (
