@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import asyncio
 import json
+from concurrent.futures import Future
+
 import pytest
 
 from project_board.client import wake_trace as module
@@ -94,6 +96,29 @@ def test_owner_refusal_failure_and_disabled_observation_do_not_escape():
     with disabled.check(WORKER):
         assert not disabled.emit("decision", WORKER, body=object())
     record(None, "decision", WORKER, body=object())
+
+
+def test_failed_write_receipt_is_counted_on_the_next_record():
+    lines = []
+    receipts = []
+
+    def submit(line):
+        lines.append(line)
+        receipt = Future()
+        receipts.append(receipt)
+        return receipt
+
+    trace = WakeTrace(submit=submit, process_id="test")
+    assert trace.emit("decision", WORKER, reason="eligible")
+    assert not receipts[0].done()
+    receipts[0].set_exception(OSError("private write failure"))
+    assert trace.emit("queue_started", WORKER)
+    receipts[1].set_result(None)
+    assert trace.emit("queue_finished", WORKER, reason="queued")
+    receipts[2].set_result(None)
+    assert rows(lines)[1]["prior_losses"].get("write_failed") == 1
+    assert rows(lines)[2]["prior_losses"]["write_failed"] == 1
+    assert "private write failure" not in "\n".join(lines)
 
 
 def test_check_ids_are_task_local_and_reset_even_when_a_check_is_cancelled():

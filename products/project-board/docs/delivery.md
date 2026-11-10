@@ -70,8 +70,8 @@ The records distinguish these boundaries:
 | `mail_replayed` | The store returned an existing idempotent receipt. This timestamp must not be counted as the original arrival. |
 | `quota_read_started` / `quota_read_finished` | A read the delivery path already required started/returned. A failure names an allowlisted code, including timeout. `quota_cache` distinguishes a cached error from a new read. Kind/source and the observation timestamp describe the existing decision evidence; no balance or account identifier is retained. |
 | `decision` | The notification pass reached an empty, detached, quiet, quota-error/hold, queue-withheld, eligible or coalesced branch. Eligibility is not native admission. |
-| `notify_lock` | A normal pass acquired its per-worker notification mutex after the recorded wait, or the beside-turn pass acquired it. The role is named; a native model turn does not own this mutex. |
-| `queue_started` / `queue_finished` | The existing notifier was invoked and returned. `queued` means it reported admission, not that the model started or received mail. `unconfirmed` retains any observed admission marker and submission tag; a command failure can follow admission. A start with no finish has an unknown outcome in this trace. |
+| `notify_lock` | The normal or beside-turn pass acquired its per-worker notification mutex after the recorded wait. Its `check_id` joins it to the check that followed acquisition. |
+| `queue_started` / `queue_finished` | The existing notifier was invoked and returned. `queued` means it reported admission. `admission_seen` is a failure-path marker and may be false on a successful submission. `unconfirmed` retains any such marker and submission tag. Earlier queue reconciliation is outside this interval. A start with no finish has an unknown outcome in this trace. |
 | `ack_observed` | A later notification check observed the existing wake receipt, with its original `recorded_at`. This can come from receive **or** a held window's wake-ack. It is not independent proof of body delivery, model entry or settlement. |
 | `check_finished` | The pass ended, failed or was cancelled. Within a check, `check_id` joins its quota, decision and queue records even across awaits. |
 
@@ -87,23 +87,28 @@ means it used the existing queued-wake view; it did not read the full mailbox.
 
 Bounds are **2 KiB per record** including a formatter-prefix reserve, **64 KiB
 per minute per relay process**, and **256** retained repeat signatures.
-Unchanged decision/cache/lock/receipt/check observations are sampled at most
-once per minute; a changed decision or pending count can be recorded sooner.
+Unchanged decision, cache, receipt and check observations are sampled at most
+once per minute. A changed decision or pending count can be recorded sooner.
+Lock waits sample each role and duration range independently: under 1 second,
+1 to under 5, 5 to under 30, 30 to under 60, and 60 seconds or more. A routine
+acquisition cannot suppress a later sample in a longer range.
 Record construction has fixed field/reference limits and performs no I/O.
 The existing owner receives a non-blocking enqueue outside the observer's
 short state lock. It retains its own queue, rotation and loss limits; the new
 trace adds no thread, pending-write queue, timer, await or retry.
 
 `prior_losses` reports earlier budget, oversize, owner-refusal, construction
-and submission failure counts on a later record. Enqueue acceptance is not a flush receipt.
-The log owner's existing drops/failures and a stopped process's unwritten
-tail remain uncertain; absence of a record never proves that a phase did not
-run. Sampling also means this is not an exhaustive per-poll ledger. Local
-mail sent directly outside the relay's control materializer has no new
-materialization record. For an exchange benchmark, correlate these records
-with the sender's acceptance, native queue/turn timestamps, matching receive
-and exact settlement receipts. Do not infer the whole pre-push cause from a
-slow-channel warning, a remote creation date or a missing log line alone.
+and submission losses. A completion callback counts a failed or cancelled
+write receipt as `write_failed` for subsequent records, without copying the
+exception text or waiting for the writer. Pending writes and a stopped
+process's unwritten tail remain uncertain. Absence of a record never proves
+that a phase did not run. Sampling also means this is not an exhaustive
+per-poll ledger. Local mail sent directly outside the relay's control
+materializer has no new materialization record. For an exchange benchmark,
+correlate these records with the sender's acceptance, native queue/turn
+timestamps, matching receive and exact settlement receipts. Do not infer the
+whole pre-push cause from a slow-channel warning, a remote creation date or a
+missing log line alone.
 
 ## Delivery invariants
 

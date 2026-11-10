@@ -6694,12 +6694,20 @@ class ProblemBoardRelaySupervisor:
         return pending_refs, listener, True
 
     async def _notify_available_input(
-        self, host: HostRelayConfig, channel: WorkerChannelConfig
+        self,
+        host: HostRelayConfig,
+        channel: WorkerChannelConfig,
+        *,
+        lock_wait: tuple[str, float] | None = None,
     ) -> dict[str, Any] | None:
         observer = getattr(self._trace, "wakes", None)
         check = observer.check(channel.worker_name) if isinstance(observer, WakeTrace) else nullcontext()
         with check:
             started = time.monotonic()
+            if lock_wait is not None:
+                reason, seconds = lock_wait
+                record_wake(self._trace, "notify_lock", channel.worker_name, repeat=True,
+                            reason=reason, seconds=seconds)
             outcome = "succeeded"
             try:
                 return await self._notify_available_input_body(host, channel)
@@ -9572,16 +9580,18 @@ class ProblemBoardRelaySupervisor:
         lock = self._notify_lock(channel.worker_name)
         if lock.locked():
             return None
+        lock_started = time.monotonic()
         try:
             async with lock:
-                record_wake(self._trace, "notify_lock", channel.worker_name, repeat=True,
-                            reason="beside_turn", seconds=0.0)
+                lock_seconds = time.monotonic() - lock_started
                 with self._trace.stage(
                     "session.notify",
                     channel=channel.worker_name,
                     operation=operation,
                 ):
-                    return await self._notify_available_input(host, channel)
+                    return await self._notify_available_input(
+                        host, channel, lock_wait=("beside_turn", lock_seconds),
+                    )
         except Exception:  # noqa: BLE001 - a local wake never blocks the cycle
             logger.warning(
                 "Problem Board session wake failed worker=%s", channel.worker_name,
@@ -9628,8 +9638,7 @@ class ProblemBoardRelaySupervisor:
             channel=channel.worker_name,
             operation="input.available",
         ):
-            record_wake(self._trace, "notify_lock", channel.worker_name, repeat=True,
-                        reason="normal", seconds=time.monotonic() - lock_started)
+            lock_seconds = time.monotonic() - lock_started
             # Local mail and the native session wake do not depend on a healthy
             # Data Bus reconciliation. A poisoned outbox or remote operation
             # refusal must not make an already-running coding session deaf.
@@ -9640,7 +9649,9 @@ class ProblemBoardRelaySupervisor:
                     channel=channel.worker_name,
                     operation="input.available",
                 ):
-                    delivery = await self._notify_available_input(host, channel)
+                    delivery = await self._notify_available_input(
+                        host, channel, lock_wait=("normal", lock_seconds),
+                    )
             except Exception as exc:  # noqa: BLE001
                 failure = staged_failure(
                     exc, operation="session.notify", target=channel.worker_name,

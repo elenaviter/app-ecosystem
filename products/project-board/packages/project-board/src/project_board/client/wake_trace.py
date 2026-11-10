@@ -13,7 +13,9 @@ import math
 import re
 import threading
 import time
+from bisect import bisect_right
 from collections import OrderedDict
+from concurrent.futures import Future
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from typing import Any, Callable, Iterator, Mapping
@@ -24,6 +26,7 @@ PREFIX_RESERVE_BYTES = 128
 BYTES_PER_MINUTE = 64 * 1024
 MAX_SIGNATURES = 256
 REPEAT_SECONDS = 60.0
+LOCK_WAIT_BOUNDS = (1.0, 5.0, 30.0, 60.0)
 MAX_REFS = 8
 _WORKER = re.compile(r"codex-[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}\Z")
 _STAMP = re.compile(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d{1,6})?Z\Z")
@@ -111,8 +114,8 @@ class WakeTrace:
 
     ``submit`` is the existing relay log owner's non-blocking ``submit_line``.
     None means no owner/disabled. A returned None means owner queue refusal.
-    Acceptance is not a write receipt; the owner's existing loss accounting
-    and the uncertain unwritten tail still apply. No fallback sink is opened.
+    Accepted records carry a Future for the eventual write result. Failed or
+    cancelled receipts increment the loss count for subsequent records.
     """
 
     def __init__(self, *, submit: Callable[[str], Any] | None, process_id: str,
@@ -124,9 +127,9 @@ class WakeTrace:
         self._lock = threading.Lock()
         self._window = monotonic()
         self._bytes = self._seq = self._checks = 0
-        self._seen: OrderedDict[tuple[str, str], tuple[str, float]] = OrderedDict()
+        self._seen: OrderedDict[tuple[str, str, str, int], tuple[str, float]] = OrderedDict()
         self.losses = {"budget": 0, "owner_refused": 0, "submit_failed": 0, "oversize": 0,
-                       "construction_failed": 0}
+                       "construction_failed": 0, "write_failed": 0}
 
     @contextmanager
     def check(self, worker: str) -> Iterator[None]:
@@ -165,7 +168,12 @@ class WakeTrace:
         signature = json.dumps({k: v for k, v in fields.items()
                                 if k not in {"seconds", "quota_age_seconds", "retry_at",
                                              "quota_observed_at", "recorded_at"}}, sort_keys=True)
-        key = (worker, event)
+        key = (worker, event, "", 0)
+        if event == "notify_lock":
+            # Sample each range independently so routine acquisitions cannot
+            # suppress contention, even when short and long waits alternate.
+            band = bisect_right(LOCK_WAIT_BOUNDS, fields.get("seconds", 0.0))
+            key = (worker, event, fields.get("reason", ""), band)
         with self._lock:
             previous = self._seen.get(key)
             if repeat and previous and previous[0] == signature and now - previous[1] < REPEAT_SECONDS:
@@ -200,15 +208,24 @@ class WakeTrace:
                 self._seen.popitem(last=False)
         # No lock is held across the owner's bounded enqueue. No wait/retry.
         try:
-            accepted = self._submit(line) is not None
+            receipt = self._submit(line)
         except Exception:  # noqa: BLE001 - never copy sink exception text
             with self._lock:
                 self.losses["submit_failed"] += 1
             return False
-        if not accepted:
+        if receipt is None:
             with self._lock:
                 self.losses["owner_refused"] += 1
-        return accepted
+            return False
+        if isinstance(receipt, Future):
+            receipt.add_done_callback(self._write_finished)
+        return True
+
+    def _write_finished(self, receipt: Future[None]) -> None:
+        # The owner invokes this after completion. Keep only the count.
+        if receipt.cancelled() or receipt.exception() is not None:
+            with self._lock:
+                self.losses["write_failed"] += 1
 
 
 def record(trace: Any, event: str, worker: str, **fields: Any) -> None:

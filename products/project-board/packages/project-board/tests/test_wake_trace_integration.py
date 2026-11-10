@@ -5,6 +5,7 @@ import asyncio
 import hashlib
 import json
 from concurrent.futures import Future
+from time import monotonic
 from types import SimpleNamespace
 
 from project_board.client import relay
@@ -81,6 +82,43 @@ def test_eligible_native_queue_records_admission_and_coalesces_later_mail(tmp_pa
     assert len(events(lines, "queue_started")) == len(events(lines, "queue_finished")) == 1
     assert events(lines, "queue_finished")[0]["reason"] == "queued"
     assert events(lines, "decision")[-1]["reason"] == "coalesced"
+
+
+def test_long_notify_lock_wait_survives_short_sample_and_joins_its_check(tmp_path, monkeypatch):
+    lines = capture(monkeypatch)
+    host, _field, worker, peer = _two_codex_channels(tmp_path)
+    supervisor = _with_session_stubs(make_supervisor(host), [])
+    clock = [monotonic()]
+    monkeypatch.setattr(relay, "time", SimpleNamespace(monotonic=lambda: clock[0]))
+    supervisor._trace.wakes._monotonic = lambda: clock[0]
+    waits = iter((0.125, 12.0, 0.25, 13.0))
+
+    class MeasuredLock(asyncio.Lock):
+        async def acquire(self):
+            acquired = await super().acquire()
+            clock[0] += next(waits)
+            return acquired
+
+    async def scenario():
+        supervisor._notify_locks[worker.worker_name] = MeasuredLock()
+        try:
+            for _ in range(4):
+                await supervisor._finish_active_turn(host, worker, {})
+            await supervisor._notify_beside_turn(host, peer, operation="input.available")
+        finally:
+            await supervisor.aclose()
+
+    asyncio.run(scenario())
+    normal = [row for row in events(lines, "notify_lock") if row["reason"] == "normal"]
+    assert [row["seconds"] for row in normal] == [0.125, 12.0]
+    decisions = events(lines, "decision")
+    for row, reason in zip(normal, ("eligible", "coalesced"), strict=True):
+        decision = next(row for row in decisions
+                        if row["worker"] == worker.worker_name and row["reason"] == reason)
+        assert row["check_id"] == decision["check_id"]
+    beside = next(row for row in events(lines, "notify_lock") if row["reason"] == "beside_turn")
+    peer_decision = next(row for row in decisions if row["worker"] == peer.worker_name)
+    assert beside["check_id"] == peer_decision["check_id"]
 
 
 def test_materialization_and_replay_keep_the_original_receipt_and_hash_only_locators(monkeypatch):
