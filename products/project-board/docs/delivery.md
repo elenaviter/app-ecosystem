@@ -667,6 +667,78 @@ unconfigured; no numeric inactivity default is inferred from heartbeat age.
 A scheduling gap is not evidence of operating-system sleep. Native sleep and
 session suspension without a persisted cause remain unknown.
 
+The restricted ordered reducer evaluates the preceding interval before an
+incoming handling point advances the future baseline. Its candidate evidence
+and baseline are persisted in one atomic update by the existing
+`ReturnReconciliation` owner and lock. An information/control-only entry can
+advance that future baseline, but cannot erase an already-latched candidate.
+When actionable mail arrives later, the original prior entry and interval
+remain available. A missing, invalid or backward prior interval is unknown,
+not a claim of sleep or continuous native activity.
+
+With the production elapsed policy unset, an empty requirements/episode state
+does not read the inbox at all. Unchanged confirmed episodes also skip census
+reads; the current holder epoch is still checked and a change revokes the old
+checkpoint without needing a scan. Pending or migrated requirements keep their
+fences and use the census path when input is needed.
+
+The owner checks the 16-project supported-attendance bound before holder-file
+fan-out, context hashing of project values, census capture or per-attendance
+transitions. Unsupported scope fences the whole worker, not a selected prefix.
+An entirely inactive None/no-episode/no-requirements state still takes its
+ordinary no-census path: unsupported attendance alone is not a return cause.
+The Store's original attendance list and all prior pending requirements,
+inventories and episodes remain intact; pending requests are invalidated and
+neither checkpoint approval nor the activity baseline can advance. Recovery
+probes do no coordinator or inbox fan-out while attendance is over the bound.
+They emit one explicitly worker-wide recovery notice, anchored to one real
+attended project only for existing message routing, with the actual attendance
+count and unknown inventory size. This is not an inventory or approval for
+that anchor or a truncated subset. Original evidence remains inspectable and
+the fence requires explicit recovery; merely reducing attendance cannot clear it.
+
+The needed input is a bounded snapshot of the existing Store inbox, captured
+outside the reconciliation lock, not a complete scan truncated afterward.
+One attempt admits at most 128 headers, examines at most 256 directory entries
+(plus one overflow sentinel), and reads at most 1 MiB total (plus one sentinel
+byte), with a 128 KiB per-record cap. The backlog record shares that byte
+budget; at most 16 attended project scopes plus the direct inbox are read.
+It does not sort/materialize the directory before applying those limits.
+Bodies/payloads from bounded JSON reads are discarded after the existing
+header projection; they never enter return state. Ordinary full-census
+inspection callers retain their existing complete interface.
+
+Each snapshot carries the worker, native session and exact attended project
+scope that actually selected its roots. Before committing, the owner binds
+that capture context to its expected/revalidated context and checks current
+return state and holder bindings plus bounded directory/backlog input stamps.
+Store validation also checks the captured session/scope, not only the returned
+stamps. A P-to-Q-to-P attendance change around capture cannot use a direct/Q
+snapshot to approve P's old inventory while missing new P mail. It retries
+against P or persists the recovery fence after the bounded attempts. An
+unrelated heartbeat revision is not used as a substitute for capture identity.
+These stamps detect input races, not execution authority. At most two captures
+are attempted per operation. Exhausted races, unreadable or oversized input
+persist a recovery/overflow fence, retain admitted evidence and prevent
+checkpoint/baseline advancement. Even a previously confirmed episode exposes
+that overflow signal when no actionable snapshot could be read. Later probes
+do not repeatedly scan an already-fenced inbox. An admission after the final
+optimistic validation is observed at the next handling boundary; no global
+atomic mailbox snapshot or wall-time bound on stalled filesystem I/O is claimed.
+
+`return_policy.py` is a pure transition helper, not another state owner. The
+internal `observe_activity` seam accepts only native-session ID, source
+generation, ordered cursor, opaque turn key and occurrence time. It rejects
+foreign sessions, invalid metadata, future points and stale order; duplicate
+points never count as fresh progress. **No native producer adapter is wired or
+qualified by this slice.** Synthetic point chains test reducer ordering only;
+they do not prove ordinary coding/tool cadence, producer version/schema or
+continuous active coverage. The named 3600-second elapsed and 60-second
+freshness values are regression-design candidates only. The production
+`INACTIVITY_THRESHOLD_SECONDS` remains `None`, and freshness expiry is not a
+60-second absence trigger. Adapter qualification and policy activation are
+separate gates.
+
 When `worker.return.reconciliation_required` appears, inspect and reconcile
 before executing queued actions. `pb worker inbox --cursor <cursor>` traverses
 the pending headers and the original request cohort retained by each pending
@@ -700,17 +772,44 @@ pb worker return-confirm --project-ref <project-ref> \
   --episode-id <episode-id> --decision-message-ref <exact-reply-ref>
 ```
 
-This explicit checkpoint checks the original inventory, project, current
-coordinator binding, correlation, reply-to and decision time. It never parses
+This explicit checkpoint checks the original inventory, project, native
+session, requirements hash, reconciliation generation, current coordinator
+binding, correlation, reply-to and decision time. It never parses
 prose into actions. Ordinary receive, acknowledgement, lease expiry and silence
-do not clear reconciliation. A changed inventory or coordinator requires a
-fresh request and reply. Confirming one project does not clear another.
+do not clear reconciliation. A changed inventory, coordinator or requirement
+set requires a fresh request and reply. Confirming one project consumes only
+that project's covered requirements; it does not clear another.
 
 Each native quota hold has a durable occurrence ID. Repeated observations of
 one hold retain that ID, even when its retry time changes. After capacity
 recovery makes the wake eligible and clears the hold, a later hold gets a new
 ID and can require a new reconciliation episode even with identical kind and
 source evidence. A heartbeat does not establish capacity recovery.
+
+If hold A and census R_A are still pending when recovered capacity is followed
+by distinct hold B, B joins the same episode's requirements without replacing
+A's original evidence or inventory. The generation advances and R_A is
+invalidated even when the inventory is unchanged. A delayed reply to R_A
+cannot clear A+B. Repeated observations of A or B are idempotent; the current
+coordinator must supply one fresh resume list against the new census R_B.
+
+Persisted legacy pending episodes retain their original evidence and census,
+but an in-flight request without the new fences must be replaced. A durable
+legacy confirmation may replay its receipt without consuming later causes or
+another project's pending requirement. A different native session never
+inherits the previous session's approval.
+
+New state is bounded: at most 16 project episodes/targets, 64 pending or
+per-episode requirements, 128 inventory headers, and 2048 encoded bytes per
+new evidence/header/metadata record. Consumed identities (256), invalidated
+request receipts (8 per episode) and confirmed episode metadata (20) are
+bounded caches, not pending evidence. Exceeding a bound preserves the admitted
+evidence prefix and persists an overflow fence. It blocks request/checkpoint
+approval and baseline advancement, while signals and ordinary control/inbox
+inspection remain available. Oversized legacy evidence is retained and fenced,
+not silently truncated or asserted to satisfy new-state byte bounds. Explicit
+coordinator/operator recovery is required; this slice adds no automatic prune,
+repair, reset or overflow-clear command.
 
 Use `pb worker settle --outcome obsolete` for obsolete mail under a current
 lease. It records local and canonical remote `obsolete`, separately from relay

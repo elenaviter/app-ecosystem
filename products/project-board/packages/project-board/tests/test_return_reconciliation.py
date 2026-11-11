@@ -3,7 +3,7 @@ from copy import deepcopy
 
 import pytest
 
-from project_board.client.io import read_json
+from project_board.client.io import content_hash, read_json
 from project_board.client.return_reconciliation import ReturnReconciliation, PREFIX
 from project_board.contract.errors import DomainError
 
@@ -25,6 +25,17 @@ class Field:
 
     def pending_mail_headers(self, name):
         return deepcopy(self.headers)
+
+    def pending_return_census(self, name, **limits):
+        headers = self.pending_mail_headers(name)
+        return {"headers": headers[:limits["max_headers"]], "stable": True,
+                "context": {"worker_name": name, "session_id": self.worker["runtime_session_id"],
+                            "projects": list(self.worker["attended_project_refs"])},
+                "overflow": "census_headers" if len(headers) > limits["max_headers"] else "",
+                "token": content_hash(headers)}
+
+    def pending_return_census_current(self, _name, snapshot):
+        return snapshot["token"] == content_hash(self.headers)
 
     def read_project_coordinator(self, project):
         return deepcopy(self.coordinator)
@@ -76,7 +87,10 @@ def test_no_numeric_default_and_no_false_sleep_claim(world):
     state.model_entry("receive", now="2025-01-01T00:00:00Z")
     field.headers.append(header())
     assert state.model_entry("receive", now=NOW) == []
-    assert state.model_entry("receive", now="2026-11-08T09:00:00Z", threshold_seconds=1) == []
+    [unknown] = state.model_entry("receive", now="2026-11-08T09:00:00Z", threshold_seconds=1)
+    assert unknown["cause"]["kind"] == "activity_interval_unknown"
+    assert unknown["cause"]["observed_gap_seconds"] is None
+    assert "sleep" not in unknown["cause"]
 
 
 def test_known_quota_cause_survives_empty_and_informational_wakes(world):
@@ -166,7 +180,8 @@ def test_notifier_or_heartbeat_cannot_advance_a_model_entry(world):
 
 
 @pytest.mark.parametrize("resets_at", ["", "2999-01-01T00:00:00Z"])
-def test_distinct_native_quota_holds_open_new_return_episodes(tmp_path, monkeypatch, resets_at):
+@pytest.mark.parametrize("confirm_first", [False, True])
+def test_distinct_native_quota_holds_open_new_return_episodes(tmp_path, monkeypatch, resets_at, confirm_first):
     """Exercise actual relay hold creation, repeated reads, and capacity recovery."""
     import asyncio
 
@@ -231,34 +246,56 @@ def test_distinct_native_quota_holds_open_new_return_episodes(tmp_path, monkeypa
     context = state.request_context(PROJECT, first["correlation_id"], "coordinator-one", coordinator)
     request = {"message_ref": "work:mail:census-A", "created_at": NOW}
     state.record_request(PROJECT, context, request)
-    state.confirm(PROJECT, first["episode_id"], {
+    decision_a = {
         "message_ref": "work:mail:decision-A", "project_ref": PROJECT, "sender": "coordinator-one",
         "kind": "reply", "correlation_id": first["correlation_id"], "reply_to": request["message_ref"],
         "created_at": NOW,
-    }, coordinator)
+    }
+    if confirm_first:
+        state.confirm(PROJECT, first["episode_id"], decision_a, coordinator)
     # Repeated exhaustion after confirmation is still the same hold. Neither
     # a repeated observation nor a heartbeat constitutes capacity recovery.
     assert observe()["wake_deferred"] is True
-    assert state.prepare() == []
-    [old] = field.pull_mail("project-one", worker_name=identity.worker_name, lease_owner=identity.runtime_session_id)
-    field.settle_mail(
-        "project-one", worker_name=identity.worker_name, message_ref=old["message_ref"],
-        lease_id=old["lease"]["lease_id"], lease_owner=identity.runtime_session_id,
-        outcome="obsolete", summary="Current coordinator recorded an empty resume list.",
-    )
-    enqueue("fresh-task-B")
+    if confirm_first:
+        assert state.prepare() == []
+        [old] = field.pull_mail("project-one", worker_name=identity.worker_name, lease_owner=identity.runtime_session_id)
+        field.settle_mail(
+            "project-one", worker_name=identity.worker_name, message_ref=old["message_ref"],
+            lease_id=old["lease"]["lease_id"], lease_owner=identity.runtime_session_id,
+            outcome="obsolete", summary="Current coordinator recorded an empty resume list.",
+        )
+        enqueue("fresh-task-B")
+    else:
+        assert state.prepare()[0]["reconciliation_generation"] == first["reconciliation_generation"]
+        assert read_json(state.path)["episodes"][PROJECT]["request"]["message_ref"] == request["message_ref"]
     quota.update(kind="ok", resets_at="")
     assert observe()["delivered"] is True
     assert len(pushes) == 1
     assert field.wake_hold(identity.worker_name) == {}
-    assert state.prepare() == []
+    if confirm_first:
+        assert state.prepare() == []
+    else:
+        # A/R_A remains pending across actual relay-observed recovery. Do not
+        # change the inventory: B alone must fence a delayed reply to R_A.
+        assert state.prepare()[0]["inventory_hash"] == first["inventory_hash"]
 
     quota.update(kind="rate_limited", resets_at=resets_at)
     assert observe()["wake_deferred"] is True
     # d65992a2 has consumed the same kind/source token for A and yields no
     # pending episode here. This assertion precedes access to the new ID.
     [second] = state.prepare()
-    assert second["episode_id"] != first["episode_id"]
+    if confirm_first:
+        assert second["episode_id"] != first["episode_id"]
+    else:
+        assert second["episode_id"] == first["episode_id"]
+        assert second["cause"] == first["cause"]
+        assert second["inventory_hash"] == first["inventory_hash"]
+        assert second["reconciliation_generation"] > first["reconciliation_generation"]
+        assert len(second["requirements"]) == 2
+        with pytest.raises(DomainError) as error:
+            state.confirm(PROJECT, first["episode_id"], decision_a, coordinator)
+        assert error.value.code == "field_return_decision_mismatch"
+        assert read_json(state.path)["episodes"][PROJECT]["request"] is None
     assert second["inventory_count"] == 1
     hold_b = field.wake_hold(identity.worker_name)
     assert hold_b["hold_id"] != hold_a["hold_id"]
@@ -266,3 +303,14 @@ def test_distinct_native_quota_holds_open_new_return_episodes(tmp_path, monkeypa
     assert observe()["wake_deferred"] is True
     assert state.prepare()[0]["episode_id"] == second["episode_id"]
     assert field.wake_hold(identity.worker_name)["hold_id"] == hold_b["hold_id"]
+    if not confirm_first:
+        context_b = state.request_context(PROJECT, second["correlation_id"], "coordinator-one", coordinator)
+        request_b = {"message_ref": "work:mail:census-B", "created_at": NOW}
+        state.record_request(PROJECT, context_b, request_b)
+        # Repeated B is still B; it must not invalidate its fresh request.
+        assert observe()["wake_deferred"] is True
+        assert read_json(state.path)["episodes"][PROJECT]["request"]["message_ref"] == request_b["message_ref"]
+        state.confirm(PROJECT, second["episode_id"], {
+            **decision_a, "message_ref": "work:mail:decision-B", "reply_to": request_b["message_ref"],
+        }, coordinator)
+        assert state.prepare() == []
