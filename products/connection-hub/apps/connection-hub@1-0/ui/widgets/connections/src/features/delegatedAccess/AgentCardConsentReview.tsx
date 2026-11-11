@@ -39,6 +39,19 @@ import {
 import { resolvePendingServiceCapability } from './pendingGrantProjection';
 import { operationRows } from './DelegatedResourceCatalog';
 import { OperationInvocationChoice } from './InvocationControls';
+import { AgentCardConsentExtras, MissingProviderPermissions } from './AgentCardConsentExtras';
+import {
+  allowedPicks,
+  consentExtraGrants,
+  consentExtrasOffer,
+  hasExtraPicks,
+  neededProviderClaims,
+  NO_EXTRA_PICKS,
+  providerUpgradeHref,
+  withExtraAccounts,
+  type ExtraPicks,
+  type NeededProviderClaims,
+} from './consentExtras';
 import { INVOCATION_MODE_TEXT, type InvocationMode } from './invocationChoice';
 
 type Scope = Record<string, Record<string, string[]>>;
@@ -54,6 +67,8 @@ interface Props {
   controlLabel: string;
   onApproved: () => void;
   onDismiss: () => void;
+  /** Opens a provider consent link; the browser location by default (a test can record it). */
+  navigate?: (href: string) => void;
 }
 
 function agentName(clientId: string): { agent: string; app: string } | null {
@@ -64,7 +79,7 @@ function agentName(clientId: string): { agent: string; app: string } | null {
 
 export function AgentCardConsentReview({
   request, card, resources, accounts, providerLabel, accountLabel, resourceLabel, controlLabel,
-  onApproved, onDismiss,
+  onApproved, onDismiss, navigate = (href) => window.location.assign(href),
 }: Props) {
   const capability = useMemo(
     () => resolvePendingServiceCapability(request, resources, operationRows),
@@ -121,40 +136,87 @@ export function AgentCardConsentReview({
   });
   const heldClaims = card.resource_grants?.[request.resource] || [];
   const addsClaims = newRequestedClaims(heldClaims, request.claims).length > 0;
-  const addsSomething = JSON.stringify(scope) !== JSON.stringify(heldScope)
+  const requestAdds = JSON.stringify(scope) !== JSON.stringify(heldScope)
     || operationSelected || outerSelected || addsClaims;
   const outerReady = !outerSelected || policy === 'none' || (policy !== 'missing' && Boolean(mode));
   const blockedByControl = controlUnavailable(control);
-  const canApprove = !busy && !done && !blockedByControl && satisfied && addsSomething && outerReady;
+  // W34: more access beyond the request, only added (merge), within the Control.
+  const [picks, setPicks] = useState<ExtraPicks>(NO_EXTRA_PICKS);
+  const offer = useMemo(() => consentExtrasOffer(card, control, resources, operationRows), [card, control, resources]);
+  const extras = allowedPicks(offer, picks);
+  const fullScope = withExtraAccounts(satisfied ? scope : heldScope, extras.accounts, accounts);
+  const needed = neededProviderClaims(card, resources, extras, accounts, fullScope, operationRows);
+  const extrasAdd = hasExtraPicks(extras) && (
+    JSON.stringify(fullScope) !== JSON.stringify(satisfied ? scope : heldScope)
+    || Object.keys(extras.grants).length + Object.keys(extras.outer).length + Object.keys(extras.named).length > 0
+  );
+  // The request is written when it is answerable; extras alone may still be saved.
+  const requestReady = satisfied && requestAdds && outerReady;
+  const canApprove = !busy && !done && !blockedByControl && (requestReady || extrasAdd);
 
-  const approve = async () => {
-    setBusy(true);
-    setError('');
-    try {
-      const args = request.outerOperation
+  /** The writes, in order: the request's own grant (when answerable), then one
+   *  merge per resource the extras touch. The Card-wide account scope travels
+   *  with the first write. Each write is made against the revision the
+   *  previous one produced. */
+  const writes = () => {
+    const out: Array<Parameters<typeof agentGrantWirePayload>[0]> = [];
+    if (requestReady) {
+      out.push(request.outerOperation
         ? agentCardOuterGrant({
           card: card as Parameters<typeof agentCardOuterGrant>[0]['card'],
-          request, requiredDoorGrants: [], operationSelected: outerSelected, accountScope: scope, mode,
+          request, requiredDoorGrants: [], operationSelected: outerSelected, accountScope: fullScope, mode,
         })
         : agentCardConsentGrant({
           card, request, requiredDoorGrants: capability?.requiredDoorGrants || [],
-          operationSelected, accountScope: scope,
-        });
-      const answer = await postOp<Record<string, unknown>>('delegated_agent_grant_create', agentGrantWirePayload(args));
-      if (answer?.ok === false) {
-        const outside = answer.error === 'agent_capability_selection_outside_control'
-          ? outsideControlText(answer.details, resourceLabel)
-          : '';
-        setError(outside || `Connection Hub refused the change: ${String(answer.error || 'unknown reason')}.`);
-        return;
+          operationSelected, accountScope: fullScope,
+        }));
+    }
+    const extraGrants = consentExtraGrants(card, request, offer, extras);
+    extraGrants.forEach((grant, index) => {
+      out.push(!out.length && index === 0 ? { ...grant, accountScope: fullScope } : grant);
+    });
+    if (!out.length && JSON.stringify(fullScope) !== JSON.stringify(heldScope)) {
+      out.push({ clientId: request.clientId, accessId: card.access_id, resource: request.resource, claims: heldClaims, accountScope: fullScope });
+    }
+    return out;
+  };
+
+  const approve = async (): Promise<boolean> => {
+    setBusy(true);
+    setError('');
+    try {
+      let revision: number | undefined = typeof card.card_revision === 'number' ? card.card_revision : undefined;
+      for (const args of writes()) {
+        const answer = await postOp<Record<string, unknown>>('delegated_agent_grant_create', agentGrantWirePayload({
+          ...args, expectedCardRevision: revision,
+        }));
+        if (answer?.ok === false) {
+          const outside = answer.error === 'agent_capability_selection_outside_control'
+            ? outsideControlText(answer.details, resourceLabel)
+            : '';
+          setError(outside || `Connection Hub refused the change: ${String(answer.error || 'unknown reason')}.`);
+          return false;
+        }
+        const next = (answer?.access as { card_revision?: unknown } | undefined)?.card_revision;
+        revision = typeof next === 'number' ? next : undefined;
       }
       setDone(true);
       onApproved();
+      return true;
     } catch (exc) {
       setError(exc instanceof Error ? exc.message : 'The change could not be sent.');
+      return false;
     } finally {
       setBusy(false);
     }
+  };
+
+  // "так, варіант 2": save what is selected first, then go to the provider; a refusal stays here.
+  const saveAndRequest = async (missing: NeededProviderClaims) => {
+    const href = providerUpgradeHref(window.location.href, missing, request.clientId, accounts);
+    if (!href) return;
+    if (canApprove && !(await approve())) return;
+    navigate(href);
   };
 
   const who = agentName(request.clientId);
@@ -302,6 +364,28 @@ export function AgentCardConsentReview({
           </div>
         );
       })}
+      {blockedByControl ? null : (
+        <AgentCardConsentExtras
+          offer={offer}
+          picks={picks}
+          onPicks={setPicks}
+          accounts={accounts}
+          baseScope={satisfied ? scope : heldScope}
+          bindable={needed.bindable}
+          providerLabel={providerLabel}
+          accountLabel={accountLabel}
+          disabled={busy || done}
+        />
+      )}
+      {blockedByControl ? null : (
+        <MissingProviderPermissions
+          missing={needed.missing}
+          accounts={accounts}
+          providerLabel={providerLabel}
+          disabled={busy}
+          onSaveAndRequest={(missing) => void saveAndRequest(missing)}
+        />
+      )}
       {blockedByControl ? (
         <div className="notice" role="status">This agent&apos;s Control cannot be read now, so nothing can be added to its Card. Try again later.</div>
       ) : null}

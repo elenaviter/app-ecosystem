@@ -233,6 +233,53 @@ scope, no event is authored (logged as
 `sdk_completion_without_account_scope`): a scope-blind match would close a
 demand whose account is still unbound. The approval itself still commits.
 
+#### More access in the same consent (W34)
+
+Under the request, a closed section **Give this agent more access (optional)**
+offers everything the agent's Control allows, not only what was asked:
+
+- the door grants, tools and named-service operations of every catalog
+  resource, across all of its namespaces;
+- every connected account's provider permissions.
+
+The selection rules:
+
+- nothing beyond the request is preselected;
+- entries the Card holds are shown ticked and cannot be changed;
+- entries outside the Control are shown disabled with the reason and are
+  never sent.
+
+The section only adds. Decision of 2026-11-11: "огляд лише додає. Повне
+редагування лишатиметься на редагуванні в самому хабі" (the review only adds;
+full editing stays in the Hub's own Card editor). Narrowing stays in the
+Card's Edit (`replace`). The same pending page offered this before W1018
+("Give this agent more access (optional) - pick from anything delegable
+here").
+
+An operation brings the door grants it needs. Provider permissions that the
+Card's held or selected operations need are marked **needed** on each account
+that can hold them; they are never ticked for the owner.
+
+One **Approve on this Card** writes, in order:
+
+1. the request's own grant, when it can be answered, carrying the Card-wide
+   `account_scope`;
+2. one merge `delegated_agent_grant_create` per further resource the selection
+   touches.
+
+Each write uses the revision the previous write returned. A refusal stops the
+sequence and is shown.
+
+A needed provider permission that no connected account holds gets a button
+**Save and request in <provider>** (**Save and connect a <provider>
+account** when none is connected). Decision of 2026-11-11: "так, варіант 2".
+The button first saves everything selected, as Approve does, and only then
+opens that provider's consent on the Accounts tab with the agent hand-off
+(`agent_client_id`, `agent_resource`). A refused save stays on the review.
+After the provider approves, **Continue - grant it to <agent>** returns to
+this review for the new permission. Nothing selected is held in the browser
+across that step: it is already on the Card.
+
 ## Delegated automation and provider-backed named services
 
 The generic named-services MCP resource has two authorization layers and may
