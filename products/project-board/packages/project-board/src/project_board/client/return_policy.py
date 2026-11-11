@@ -23,6 +23,12 @@ MAX_RECORD_BYTES = 2048
 MAX_REQUEST_HISTORY = 8
 MAX_HISTORY = 20
 MAX_SEEN = 256
+# Input-work budgets, separate from persisted inventory bounds. A reader may
+# inspect one extra directory entry/byte only to establish that a cap was hit.
+MAX_CENSUS_ENTRIES = 256
+MAX_CENSUS_BYTES = 1024 * 1024
+MAX_CENSUS_RECORD_BYTES = 128 * 1024
+MAX_CENSUS_ATTEMPTS = 2
 
 
 def fits(value: Any) -> bool:

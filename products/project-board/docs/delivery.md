@@ -676,6 +676,34 @@ When actionable mail arrives later, the original prior entry and interval
 remain available. A missing, invalid or backward prior interval is unknown,
 not a claim of sleep or continuous native activity.
 
+With the production elapsed policy unset, an empty requirements/episode state
+does not read the inbox at all. Unchanged confirmed episodes also skip census
+reads; the current holder epoch is still checked and a change revokes the old
+checkpoint without needing a scan. Pending or migrated requirements keep their
+fences and use the census path when input is needed.
+
+The needed input is a bounded snapshot of the existing Store inbox, captured
+outside the reconciliation lock, not a complete scan truncated afterward.
+One attempt admits at most 128 headers, examines at most 256 directory entries
+(plus one overflow sentinel), and reads at most 1 MiB total (plus one sentinel
+byte), with a 128 KiB per-record cap. The backlog record shares that byte
+budget; at most 16 attended project scopes plus the direct inbox are read.
+It does not sort/materialize the directory before applying those limits.
+Bodies/payloads from bounded JSON reads are discarded after the existing
+header projection; they never enter return state. Ordinary full-census
+inspection callers retain their existing complete interface.
+
+Before committing, the owner revalidates return state, native session,
+attendance and holder bindings plus bounded directory/backlog input stamps.
+These stamps detect input races, not execution authority. At most two captures
+are attempted per operation. Exhausted races, unreadable or oversized input
+persist a recovery/overflow fence, retain admitted evidence and prevent
+checkpoint/baseline advancement. Even a previously confirmed episode exposes
+that overflow signal when no actionable snapshot could be read. Later probes
+do not repeatedly scan an already-fenced inbox. An admission after the final
+optimistic validation is observed at the next handling boundary; no global
+atomic mailbox snapshot or wall-time bound on stalled filesystem I/O is claimed.
+
 `return_policy.py` is a pure transition helper, not another state owner. The
 internal `observe_activity` seam accepts only native-session ID, source
 generation, ordered cursor, opaque turn key and occurrence time. It rejects

@@ -3,7 +3,7 @@ from copy import deepcopy
 
 import pytest
 
-from project_board.client.io import read_json
+from project_board.client.io import content_hash, read_json
 from project_board.client.return_reconciliation import ReturnReconciliation, PREFIX
 from project_board.contract.errors import DomainError
 
@@ -25,6 +25,15 @@ class Field:
 
     def pending_mail_headers(self, name):
         return deepcopy(self.headers)
+
+    def pending_return_census(self, name, **limits):
+        headers = self.pending_mail_headers(name)
+        return {"headers": headers[:limits["max_headers"]], "stable": True,
+                "overflow": "census_headers" if len(headers) > limits["max_headers"] else "",
+                "token": content_hash(headers)}
+
+    def pending_return_census_current(self, _name, snapshot):
+        return snapshot["token"] == content_hash(self.headers)
 
     def read_project_coordinator(self, project):
         return deepcopy(self.coordinator)

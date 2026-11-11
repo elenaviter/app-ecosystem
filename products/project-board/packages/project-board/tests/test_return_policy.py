@@ -12,7 +12,7 @@ import pytest
 
 from project_board.client import return_policy as policy
 from project_board.client import return_reconciliation as returns
-from project_board.client.io import atomic_write_json, read_json
+from project_board.client.io import atomic_write_json, content_hash, read_json
 from project_board.contract.errors import DomainError
 
 PROJECT = "work:project:project-one"
@@ -47,6 +47,15 @@ class Field:
 
     def pending_mail_headers(self, _name):
         return deepcopy(self.headers)
+
+    def pending_return_census(self, name, **limits):
+        headers = self.pending_mail_headers(name)
+        return {"headers": headers[:limits["max_headers"]], "stable": True,
+                "overflow": "census_headers" if len(headers) > limits["max_headers"] else "",
+                "token": content_hash(headers)}
+
+    def pending_return_census_current(self, _name, snapshot):
+        return snapshot["token"] == content_hash(self.headers)
 
     def read_project_coordinator(self, project_id):
         return deepcopy(self.coordinators["work:project:" + project_id])

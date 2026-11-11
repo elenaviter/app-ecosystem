@@ -10,6 +10,7 @@ mimetypes.add_type("text/markdown", ".md")
 import logging
 import os
 import re
+import stat
 import time
 import uuid
 from contextlib import ExitStack, nullcontext
@@ -5960,22 +5961,128 @@ class SharedFieldStore:
                 message_ref = str(row.get("message_ref") or "")
                 if not message_ref:
                     continue
-                payload = row.get("payload") if isinstance(row.get("payload"), Mapping) else {}
-                operator = self._is_admitted_operator_mail(row)
-                headers.append({
-                    "message_ref": message_ref,
-                    "project_ref": project_ref,
-                    "kind": str(row.get("kind") or ""),
-                    "sender": str(row.get("sender") or ""),
-                    "subject": str(row.get("subject") or ""),
-                    "created_at": str(row.get("created_at") or ""),
-                    "correlation_id": str(row.get("correlation_id") or ""),
-                    "work_ref": str(row.get("work_ref") or ""),
-                    "operator": operator,
-                    "expected_reaction": str(payload.get("expected_reaction") or ""),
-                    "backlog": path.stem in backlog and not operator,
-                })
+                headers.append(self._pending_mail_header(row, project_ref, path.stem in backlog))
         return headers
+
+    def _pending_mail_header(self, row, project_ref, backlog):
+        """One header projection shared by full inspection and bounded returns."""
+        payload = row.get("payload") if isinstance(row.get("payload"), Mapping) else {}
+        operator = self._is_admitted_operator_mail(row)
+        return {
+            "message_ref": str(row.get("message_ref") or ""), "project_ref": project_ref,
+            "kind": str(row.get("kind") or ""), "sender": str(row.get("sender") or ""),
+            "subject": str(row.get("subject") or ""), "created_at": str(row.get("created_at") or ""),
+            "correlation_id": str(row.get("correlation_id") or ""), "work_ref": str(row.get("work_ref") or ""),
+            "operator": operator, "expected_reaction": str(payload.get("expected_reaction") or ""),
+            "backlog": backlog and not operator,
+        }
+
+    @staticmethod
+    def _return_census_stamp(path):
+        try:
+            value = path.stat()
+            return [value.st_dev, value.st_ino, value.st_mtime_ns, value.st_ctime_ns, value.st_size]
+        except FileNotFoundError:
+            return None
+
+    def pending_return_census(self, worker_name, *, max_entries, max_bytes,
+                              max_record_bytes, max_headers, max_projects):
+        """Capture bounded input for ReturnReconciliation, outside its lock.
+
+        This is a read of the existing inbox, not a new index or authority.
+        No glob/sort/materialize-all step precedes the budgets. Directory and
+        backlog stamps permit a bounded optimistic revalidation; an input
+        admitted after that check is observed by the next handling boundary.
+        The budgets bound work/bytes, not a stalled filesystem's wall time.
+        Full-census callers continue using pending_mail_headers unchanged.
+        """
+        if any(isinstance(v, bool) or not isinstance(v, int) or v <= 0
+               for v in (max_entries, max_bytes, max_record_bytes, max_headers, max_projects)):
+            raise ValueError("Return census budgets must be positive integers")
+        worker = self.read_worker(worker_name)
+        clean_name = str(worker.get("worker_name") or "")
+        projects = list(worker.get("attended_project_refs") or [])
+        snapshot = {"headers": [], "overflow": "", "stamps": [], "stable": True,
+                    "entries_seen": 0, "bytes_read": 0, "records_read": 0}
+        if len(projects) > max_projects:
+            snapshot["overflow"] = "census_projects"
+            return snapshot
+        scopes = [("", "")]
+        for project_ref in projects:
+            parsed = parse_ref(str(project_ref))
+            if parsed.kind == "project":
+                scopes.append((parsed.object_id, str(project_ref)))
+        backlog_path = self._backlog_path(clean_name)
+        roots = [(self._mail_root(p, clean_name) / "inbox", ref) for p, ref in scopes]
+        paths = [backlog_path, *(root for root, _ in roots)]
+
+        def read_record(path):
+            limit = min(max_record_bytes, max_bytes - snapshot["bytes_read"])
+            try:
+                descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+                with os.fdopen(descriptor, "rb") as stream:
+                    if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
+                        snapshot["overflow"] = "census_unsupported_record"
+                        return {}
+                    data = stream.read(limit + 1)
+            except FileNotFoundError:
+                return {}
+            snapshot["bytes_read"] += len(data)
+            snapshot["records_read"] += 1
+            if len(data) > limit:
+                snapshot["overflow"] = "census_bytes"
+                return {}
+            row = json.loads(data)
+            if not isinstance(row, dict):
+                snapshot["overflow"] = "census_record_shape"
+                return {}
+            return row
+
+        try:
+            snapshot["stamps"] = [[str(path), self._return_census_stamp(path)] for path in paths]
+            backlog_row = read_record(backlog_path)
+            backlog = frozenset(str(i) for i in backlog_row.get("message_ids", []) if i) if backlog_row.get("mark_id") else frozenset()
+            for root, project_ref in roots:
+                if snapshot["overflow"]:
+                    break
+                try:
+                    entries = os.scandir(root)
+                except FileNotFoundError:
+                    continue
+                with entries:
+                    for entry in entries:
+                        snapshot["entries_seen"] += 1
+                        if snapshot["entries_seen"] > max_entries:
+                            snapshot["overflow"] = "census_entries"
+                            break
+                        if not entry.name.endswith(".json"):
+                            continue
+                        if len(snapshot["headers"]) >= max_headers:
+                            snapshot["overflow"] = "census_headers"
+                            break
+                        row = read_record(Path(entry.path))
+                        if snapshot["overflow"]:
+                            break
+                        if row.get("message_ref"):
+                            snapshot["headers"].append(self._pending_mail_header(
+                                row, project_ref, Path(entry.name).stem in backlog,
+                            ))
+            snapshot["stable"] = self.pending_return_census_current(worker_name, snapshot)
+        except (OSError, ValueError, TypeError, RecursionError, DomainError):
+            snapshot["overflow"] = "census_unreadable"
+        return snapshot
+
+    def pending_return_census_current(self, worker_name, snapshot):
+        """O(attended scopes) validation, never another inbox enumeration.
+
+        ReturnReconciliation separately revalidates its state generation,
+        native session, attendance and holder bindings under its own lock.
+        These filesystem stamps are input-race detection, not authority.
+        """
+        try:
+            return all(self._return_census_stamp(Path(path)) == stamp for path, stamp in snapshot["stamps"])
+        except OSError:
+            return False
 
     def preview_worker_mail(self, worker_name: str, message_ref: str) -> dict[str, Any]:
         """Read one addressed message without acquiring or extending a lease."""

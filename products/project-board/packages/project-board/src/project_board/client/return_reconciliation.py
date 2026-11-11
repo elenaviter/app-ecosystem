@@ -37,9 +37,10 @@ class ReturnReconciliation:
         self.path = field.control / "return-reconciliation" / f"{self.worker}.json"
         self.lock = self.path.with_suffix(".lock")
 
-    def _read(self):
+    def _read(self, worker=None):
         value = read_json(self.path, required=False) or {}
-        session = str(self.field.read_worker(self.worker).get("runtime_session_id") or "")
+        worker = worker if worker is not None else self.field.read_worker(self.worker)
+        session = str(worker.get("runtime_session_id") or "")
         if value and value.get("session_id") != session:
             # A stable worker cannot borrow a different native session's approval.
             # Original mail remains in the inbox/history. Preserve the prior
@@ -50,7 +51,7 @@ class ReturnReconciliation:
                          "model_entry": value.get("model_entry"),
                          "episode_ids": [e["episode_id"] for e in value.get("episodes", {}).values()],
                      }}
-        projects = self.field.read_worker(self.worker).get("attended_project_refs") or []
+        projects = worker.get("attended_project_refs") or []
         return policy.migrate({"session_id": session, "episodes": {}, **value}, projects)
 
     def record_cause(self, cause: str, evidence: Mapping[str, Any]):
@@ -73,8 +74,11 @@ class ReturnReconciliation:
                 policy.add_requirement(row, token, value, projects, now)
             else:
                 policy.overflow(row, "cause_metadata", now)
-            self._observe(row, now=now, threshold_seconds=INACTIVITY_THRESHOLD_SECONDS)
+            # Admit/invalidate the occurrence under the owner lock before a
+            # potentially slow census. Other writers cannot approve R_A while
+            # B is waiting for its outside-lock input capture.
             atomic_write_json(self.path, row)
+        self._run(self._observe_and_write, now=now, threshold_seconds=INACTIVITY_THRESHOLD_SECONDS)
 
     def _coordinator(self, project):
         try:
@@ -90,10 +94,72 @@ class ReturnReconciliation:
                 and h.get("expected_reaction") not in {"acknowledge_only", "await_review"}
                 and not str(h.get("correlation_id") or "").startswith(PREFIX)]
 
-    def _observe(self, row, *, now, threshold_seconds):
+    def _state_context(self):
         worker = self.field.read_worker(self.worker)
+        row = self._read(worker)
         projects = worker.get("attended_project_refs") or []
-        headers = self.field.pending_mail_headers(self.worker)
+        # No mailbox or holder reads for the entirely inactive case. Existing
+        # episodes still need holder-epoch checks even when policy is None.
+        bindings = ({p: self._coordinator(p) for p in projects}
+                    if row["episodes"] or row["pending_requirements"] or row.get("overflow") else {})
+        context = {"session_id": row["session_id"], "projects": projects, "bindings": bindings}
+        return row, context, content_hash([row, context])
+
+    @staticmethod
+    def _needs_census(row, now, threshold_seconds):
+        if row.get("overflow"):
+            return False  # approval already fenced; never rescan on recovery probes
+        if row["pending_requirements"] or any(e["state"] == "pending" for e in row["episodes"].values()):
+            return True
+        if threshold_seconds is None:
+            return False
+        if isinstance(threshold_seconds, bool) or not isinstance(threshold_seconds, int) or threshold_seconds <= 0:
+            raise ValueError("An elapsed-policy threshold must be a positive integer or None")
+        gap = policy.gap_seconds(row["activity_baseline"], now)
+        return gap is None or gap >= threshold_seconds
+
+    def _run(self, action, *, now, threshold_seconds):
+        """Capture bounded census input outside the owner lock, then revalidate.
+
+        Full-census inspection remains the store's existing interface. This
+        optimistic snapshot is not a second mailbox/authority. A racing state,
+        attendance, session, holder or input stamp retries a bounded number of
+        times; exhaustion preserves evidence behind a durable recovery fence.
+        """
+        for _attempt in range(policy.MAX_CENSUS_ATTEMPTS):
+            with exclusive_lock(self.lock):
+                row, context, expected = self._state_context()
+                if not self._needs_census(row, now, threshold_seconds):
+                    return action(row, context, [], now, threshold_seconds)
+            snapshot = self.field.pending_return_census(
+                self.worker, max_entries=policy.MAX_CENSUS_ENTRIES,
+                max_bytes=policy.MAX_CENSUS_BYTES, max_record_bytes=policy.MAX_CENSUS_RECORD_BYTES,
+                max_headers=policy.MAX_INVENTORY, max_projects=policy.MAX_EPISODES,
+            )
+            with exclusive_lock(self.lock):
+                row, context, current = self._state_context()
+                if (current != expected or not snapshot["stable"]
+                        or not self.field.pending_return_census_current(self.worker, snapshot)):
+                    continue
+                if snapshot["overflow"]:
+                    policy.overflow(row, snapshot["overflow"], now)
+                # A new episode needs the current holder, including when the
+                # original no-episode snapshot did not need a holder read.
+                if not context["bindings"]:
+                    context["bindings"] = {p: self._coordinator(p) for p in context["projects"]}
+                return action(row, context, snapshot["headers"], now, threshold_seconds)
+        with exclusive_lock(self.lock):
+            row, context, _ = self._state_context()
+            policy.overflow(row, "census_retry_exhausted", now)
+            return action(row, context, [], now, threshold_seconds)
+
+    def _observe_and_write(self, row, context, headers, now, threshold_seconds):
+        self._observe(row, context, headers, now=now, threshold_seconds=threshold_seconds)
+        atomic_write_json(self.path, row)
+        return self.signals(row)
+
+    def _observe(self, row, context, headers, *, now, threshold_seconds):
+        projects = context["projects"]
         actionable = any(self._cohort(headers, p, projects) for p in projects)
         policy.latch_interval(row, now, threshold_seconds, projects, actionable=actionable)
         episodes = row["episodes"]
@@ -101,7 +167,7 @@ class ReturnReconciliation:
             episode = episodes.get(project)
             requirements = policy.pending_for(row, project)
             cohort = self._cohort(headers, project, projects)
-            binding = self._coordinator(project)
+            binding = context["bindings"].get(project)
             if episode and episode["state"] == "confirmed":
                 if (requirements or row.get("overflow")) and cohort:
                     row.setdefault("history", []).append(
@@ -175,9 +241,8 @@ class ReturnReconciliation:
         if via not in {"receive", "wake-ack", "lease-read", "settle"}:
             raise ValueError("Not a model-facing handling boundary")
         now = now or utc_now()
-        with exclusive_lock(self.lock):
-            row = self._read()
-            self._observe(row, now=now, threshold_seconds=threshold_seconds)
+        def apply(row, context, headers, now, threshold_seconds):
+            self._observe(row, context, headers, now=now, threshold_seconds=threshold_seconds)
             if not row.get("overflow"):
                 row["model_entry"] = {"at": now, "via": via, "session_id": row["session_id"]}
                 # The preceding candidate and this future baseline are one
@@ -185,6 +250,7 @@ class ReturnReconciliation:
                 row["activity_baseline"] = dict(row["model_entry"])
             atomic_write_json(self.path, row)
             return self.signals(row)
+        return self._run(apply, now=now, threshold_seconds=threshold_seconds)
 
     def observe_activity(self, point: Mapping[str, Any], *, now: str = "",
                          threshold_seconds=INACTIVITY_THRESHOLD_SECONDS):
@@ -204,8 +270,7 @@ class ReturnReconciliation:
         now = now or utc_now()
         if parse_utc(point["occurred_at"]) > parse_utc(now):
             raise DomainError("field_return_activity_invalid", "Future activity is not handling evidence.")
-        with exclusive_lock(self.lock):
-            row = self._read()
+        def apply(row, context, headers, now, threshold_seconds):
             if point["session_id"] != row["session_id"]:
                 raise DomainError("field_return_activity_session_mismatch", "Activity belongs to another native session.")
             incoming = dict(point)
@@ -215,15 +280,14 @@ class ReturnReconciliation:
                     if incoming == cursor:
                         # A repeated read is not new activity. It can still
                         # expose the open tail since that original point.
-                        self._observe(row, now=now, threshold_seconds=threshold_seconds)
+                        self._observe(row, context, headers, now=now, threshold_seconds=threshold_seconds)
                         atomic_write_json(self.path, row)
                         return self.signals(row)
                     raise DomainError("field_return_activity_order", "Activity is not the next ordered point.")
             previous = row.get("activity_baseline") or {}
             if previous.get("at") and parse_utc(point["occurred_at"]) < parse_utc(previous["at"]):
                 raise DomainError("field_return_activity_order", "Activity predates the committed handling baseline.")
-            projects = self.field.read_worker(self.worker).get("attended_project_refs") or []
-            headers = self.field.pending_mail_headers(self.worker)
+            projects = context["projects"]
             actionable = any(self._cohort(headers, p, projects) for p in projects)
             policy.latch_interval(row, point["occurred_at"], threshold_seconds, projects, actionable=actionable)
             if not row.get("overflow"):
@@ -233,7 +297,7 @@ class ReturnReconciliation:
                     "event_id": content_hash([point["source_generation"], point["cursor"]]),
                 }
                 row["activity_cursor"] = incoming
-            self._observe(row, now=now, threshold_seconds=threshold_seconds)
+            self._observe(row, context, headers, now=now, threshold_seconds=threshold_seconds)
             if row.get("overflow"):
                 # The open tail can itself exceed a bound after the incoming
                 # point was tentatively reduced. Commit its fence/evidence,
@@ -245,14 +309,11 @@ class ReturnReconciliation:
                     row.pop("activity_cursor", None)
             atomic_write_json(self.path, row)
             return self.signals(row)
+        return self._run(apply, now=now, threshold_seconds=threshold_seconds)
 
     def prepare(self):
         """A notifier may latch evidence, but never advance the model watermark."""
-        with exclusive_lock(self.lock):
-            row = self._read()
-            self._observe(row, now=utc_now(), threshold_seconds=INACTIVITY_THRESHOLD_SECONDS)
-            atomic_write_json(self.path, row)
-            return self.signals(row)
+        return self._run(self._observe_and_write, now=utc_now(), threshold_seconds=INACTIVITY_THRESHOLD_SECONDS)
 
     def signals(self, row=None):
         row = self._read() if row is None else row
@@ -271,7 +332,7 @@ class ReturnReconciliation:
         if row.get("overflow"):
             projects = self.field.read_worker(self.worker).get("attended_project_refs") or []
             for project in projects:
-                if project not in row["episodes"]:
+                if project not in row["episodes"] or row["episodes"][project]["state"] != "pending":
                     episode_id = "overflow_" + content_hash([row["session_id"], project, row["overflow"]])[:32]
                     signals.append({"kind": SIGNAL, "project_ref": project, "episode_id": episode_id,
                                     "correlation_id": PREFIX + episode_id,
@@ -294,9 +355,8 @@ class ReturnReconciliation:
 
     def request_context(self, project_ref, correlation_id, recipient, coordinator):
         """Validate a reconciliation request before publishing any mail."""
-        with exclusive_lock(self.lock):
-            row = self._read()
-            self._observe(row, now=utc_now(), threshold_seconds=INACTIVITY_THRESHOLD_SECONDS)
+        def apply(row, context, headers, now, threshold_seconds):
+            self._observe(row, context, headers, now=now, threshold_seconds=threshold_seconds)
             atomic_write_json(self.path, row)
             self._require_capacity(row)
             episode = row["episodes"].get(project_ref)
@@ -306,15 +366,15 @@ class ReturnReconciliation:
             if recipient != binding["worker_name"]:
                 raise DomainError("field_return_coordinator_mismatch", "Address the current coordinator.", status=409)
             return self._context(row, episode, binding)
+        return self._run(apply, now=utc_now(), threshold_seconds=INACTIVITY_THRESHOLD_SECONDS)
 
     def record_request(self, project_ref, context, message):
-        with exclusive_lock(self.lock):
-            row = self._read()
-            self._observe(row, now=utc_now(), threshold_seconds=INACTIVITY_THRESHOLD_SECONDS)
+        def apply(row, captured, headers, now, threshold_seconds):
+            self._observe(row, captured, headers, now=now, threshold_seconds=threshold_seconds)
             atomic_write_json(self.path, row)
             self._require_capacity(row)
             episode = row["episodes"].get(project_ref) or {}
-            current = self._context(row, episode, self._coordinator(project_ref)) if episode else {}
+            current = self._context(row, episode, captured["bindings"].get(project_ref)) if episode else {}
             if (episode.get("state") != "pending" or not current
                     or any(context.get(k) != v for k, v in current.items())):
                 raise DomainError("field_return_inventory_changed", "Inspect the changed requirements, inventory and authority; send a fresh reconciliation request.", status=409)
@@ -327,13 +387,13 @@ class ReturnReconciliation:
             episode["request"] = request
             atomic_write_json(self.path, row)
             return request
+        return self._run(apply, now=utc_now(), threshold_seconds=INACTIVITY_THRESHOLD_SECONDS)
 
     def confirm(self, project_ref, episode_id, decision, coordinator):
         """Explicit intent after the human-readable decisions have been recorded."""
         binding = coordinator_binding(coordinator)
-        with exclusive_lock(self.lock):
-            row = self._read()
-            self._observe(row, now=utc_now(), threshold_seconds=INACTIVITY_THRESHOLD_SECONDS)
+        def apply(row, context, headers, now, threshold_seconds):
+            self._observe(row, context, headers, now=now, threshold_seconds=threshold_seconds)
             atomic_write_json(self.path, row)
             self._require_capacity(row)
             episode = row["episodes"].get(project_ref) or {}
@@ -360,3 +420,4 @@ class ReturnReconciliation:
             policy.consume(row, project_ref, episode)
             atomic_write_json(self.path, row)
             return {"schema": "problem-board.worker-return-confirm.v1", **{k: v for k, v in episode.items() if k != "inventory"}, "replayed": False}
+        return self._run(apply, now=utc_now(), threshold_seconds=INACTIVITY_THRESHOLD_SECONDS)
