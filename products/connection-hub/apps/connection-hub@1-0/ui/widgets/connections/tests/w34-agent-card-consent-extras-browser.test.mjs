@@ -33,9 +33,10 @@ const grants = (page) => page.evaluate(() => window.__calls).then(grantsOf)
 const extras = (page) => page.getByTestId('agent-card-consent-extras')
 const operation = (page, key) => extras(page).getByTestId('agent-card-consent-extra-operation').filter({ hasText: key }).locator('input')
 
+// Open the extras and every group inside them (each group is its own disclosure).
 async function expand(page) {
-  await extras(page).locator('summary').first().click()
-  for (const summary of await extras(page).getByTestId('agent-card-consent-extra-namespace').locator('summary').all()) await summary.click()
+  await page.evaluate(() => document.querySelectorAll('[data-testid=agent-card-consent-extras], [data-testid=agent-card-consent-extras] details')
+    .forEach((node) => { node.open = true }))
 }
 
 test('W34: more access on the agent Card consent review', async (t) => {
@@ -50,6 +51,8 @@ test('W34: more access on the agent Card consent review', async (t) => {
     await t.test('the extras are offered closed, within the Control, held entries fixed and outside entries disabled', async () => {
       const { page, errors } = await open(browser, origin, 'account-only')
       assert.equal(await extras(page).evaluate((node) => node.open), false, 'nothing beyond the request is open or selected')
+      assert.ok((await extras(page).locator('summary').first().innerText()).includes('Open to choose'), 'the closed section says it opens')
+      assert.equal(await extras(page).locator('summary').first().evaluate((node) => getComputedStyle(node).cursor), 'pointer')
       await expand(page)
       assert.equal(await operation(page, 'object.list').isChecked(), true, 'the held operation is shown ticked')
       assert.equal(await operation(page, 'object.list').isDisabled(), true, 'and is never sent as a change')
@@ -57,6 +60,13 @@ test('W34: more access on the agent Card consent review', async (t) => {
       assert.ok((await extras(page).getByTestId('agent-card-consent-extra-operation').filter({ hasText: 'provider.capabilities' }).innerText())
         .toLowerCase().includes("not in this agent's control"))
       assert.equal(await operation(page, 'object.upsert').isDisabled(), false)
+      const choice = extras(page).getByTestId('agent-card-consent-extra-operation').filter({ hasText: 'object.upsert' })
+      assert.equal(await choice.evaluate((node) => getComputedStyle(node).opacity), '1', 'an open choice is not faded')
+      await choice.locator("input").check()
+      assert.ok(await choice.evaluate((node) => node.classList.contains('agent-card-consent-picked')), 'a picked row is marked')
+      await choice.locator("input").uncheck()
+      assert.deepEqual(await extras(page).getByTestId('agent-card-consent-extra-grant-group').locator('summary code').allInnerTexts(),
+        ['memories', 'named_services', 'slides'], 'permissions are grouped by service')
       assert.equal(await operation(page, 'values.update').isDisabled(), false, 'another namespace the Control allows')
       const memories = extras(page).getByTestId('agent-card-consent-extra-grant').filter({ hasText: 'memories:read' }).locator('input')
       assert.equal(await memories.isDisabled(), false, 'another service the Control allows')
@@ -131,12 +141,30 @@ test('W34: more access on the agent Card consent review', async (t) => {
       await page.close()
     })
 
-    await t.test('no account of the provider: connect it, nothing to save first', async () => {
+    await t.test('the request is answered first: with its account not chosen, Approve stays disabled whatever else is ticked', async () => {
+      const { page, errors } = await open(browser, origin, 'choose')
+      await expand(page)
+      await operation(page, 'values.update').check()
+      const approve = page.getByRole('button', { name: 'Approve on this Card' })
+      assert.equal(await approve.isDisabled(), true, 'two capable accounts and none chosen: the request is not answered')
+      await page.getByTestId('agent-card-consent-accounts').locator('input[type=radio]').first().check()
+      assert.equal(await approve.isDisabled(), false)
+      await approve.click()
+      await page.getByText('Approved. The agent').waitFor({ timeout: 10000 })
+      const sent = await grants(page)
+      assert.deepEqual(sent[0].account_scope, { google: { google_acct_1: ['slides:read'] } }, 'the request is in the first write')
+      assert.deepEqual(sent[1].named_service_operations, { slides: ['object.list'], sheets: ['values.update'] })
+      assert.deepEqual(errors, [])
+      await page.close()
+    })
+
+    await t.test('no account of the provider: the request cannot be answered, so the button only connects and saves nothing', async () => {
       const { page, errors } = await open(browser, origin, 'extras-none')
       const missing = page.getByTestId('agent-card-consent-extra-missing')
-      assert.ok((await missing.innerText()).includes('slides:read'), 'the held operation needs slides:read and no account exists')
+      assert.ok((await missing.innerText()).includes('slides:read'), 'the request needs slides:read and no account exists')
+      assert.ok((await missing.innerText()).includes('Nothing is saved before'))
       assert.equal(await page.getByRole('button', { name: 'Approve on this Card' }).isDisabled(), true)
-      await missing.getByRole('button', { name: 'Save and connect a Google account' }).click()
+      await missing.getByRole('button', { name: 'Connect a Google account' }).click()
       await page.waitForURL((url) => url.searchParams.get('tab') === 'delegated_to_kdcube', { timeout: 15000 })
       assert.equal(new URL(page.url()).searchParams.has('account_id'), false)
       assert.deepEqual(grantsOf(await page.evaluate(() => window.__previous)), [], 'nothing was selected, nothing written')

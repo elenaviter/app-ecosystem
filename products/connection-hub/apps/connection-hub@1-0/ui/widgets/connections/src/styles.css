@@ -4454,3 +4454,119 @@ fieldset.resource-edit-section__body { border: 0; margin: 0; min-width: 0; }
 .operation-group:first-child > .operation-group__label {
   margin-top: 0;
 }
+
+/* W34: the optional extras of the Agent Card consent review. Every group is a
+   disclosure that reads as one (a chevron, a framed head that reacts to the
+   pointer); selectable rows are full strength, a picked row is marked, and only
+   entries the owner cannot change (already allowed, outside the Control) are
+   muted. The editor's own `.namespace-operation` fades unselected rows; here an
+   unselected row is still an open choice, so it is not faded. */
+.agent-card-consent-extras > summary,
+.agent-card-consent-group > summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface-3);
+  cursor: pointer;
+  list-style: none;
+}
+
+.agent-card-consent-extras > summary::-webkit-details-marker,
+.agent-card-consent-group > summary::-webkit-details-marker {
+  display: none;
+}
+
+.agent-card-consent-extras > summary::before,
+.agent-card-consent-group > summary::before {
+  content: '\25B8';
+  flex: 0 0 auto;
+  color: var(--kind);
+  font-size: 14px;
+  transition: transform 0.12s ease;
+}
+
+.agent-card-consent-extras[open] > summary::before,
+.agent-card-consent-group[open] > summary::before {
+  transform: rotate(90deg);
+}
+
+.agent-card-consent-extras > summary:hover,
+.agent-card-consent-group > summary:hover {
+  border-color: var(--kind);
+  background: rgba(var(--kind-rgb), 0.06);
+}
+
+.agent-card-consent-extras > summary > span:first-child,
+.agent-card-consent-group__title {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.agent-card-consent-extras > summary strong,
+.agent-card-consent-extras > summary small,
+.agent-card-consent-group__title strong,
+.agent-card-consent-group__title small {
+  display: block;
+}
+
+.agent-card-consent-extras > summary small,
+.agent-card-consent-group__title small {
+  margin-top: 2px;
+  color: var(--text-2);
+  font-size: 11.5px;
+  font-weight: 400;
+}
+
+.agent-card-consent-group__count {
+  flex: 0 0 auto;
+  color: var(--text-2);
+  font-size: 11.5px;
+}
+
+.agent-card-consent-extras__note {
+  display: block;
+  margin: 8px 0;
+}
+
+.agent-card-consent-group {
+  margin-top: 8px;
+}
+
+.agent-card-consent-group__body {
+  padding: 8px 0 0 14px;
+}
+
+.agent-card-consent-extra-resource {
+  margin-top: 10px;
+}
+
+.namespace-operation.agent-card-consent-row {
+  opacity: 1;
+}
+
+.agent-card-consent-row.agent-card-consent-held,
+.agent-card-consent-row.agent-card-consent-outside,
+.agent-card-consent-chip.agent-card-consent-held,
+.agent-card-consent-chip.agent-card-consent-outside {
+  opacity: 0.55;
+  cursor: default;
+}
+
+.agent-card-consent-row.agent-card-consent-picked {
+  border-left: 3px solid var(--kind);
+  background: rgba(var(--kind-rgb), 0.08);
+}
+
+.agent-card-consent-chip {
+  color: var(--ink);
+}
+
+.agent-card-consent-chip.agent-card-consent-picked {
+  border-color: var(--kind);
+  background: rgba(var(--kind-rgb), 0.12);
+  font-weight: 600;
+}

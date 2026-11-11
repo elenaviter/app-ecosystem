@@ -238,9 +238,14 @@ demand whose account is still unbound. The approval itself still commits.
 Under the request, a closed section **Give this agent more access (optional)**
 offers everything the agent's Control allows, not only what was asked:
 
-- the door grants, tools and named-service operations of every catalog
-  resource, across all of its namespaces;
-- every connected account's provider permissions.
+- the named-service operations of every catalog resource, one group per
+  service (namespace);
+- its permissions (claims), one group per service prefix (`slack`, `docs`);
+- its tools;
+- every connected account's provider permissions, one group per provider.
+
+Every group opens on its own; its head shows how many entries can be added,
+how many are selected and how many the Card already holds.
 
 The selection rules:
 
@@ -251,6 +256,11 @@ The selection rules:
 
 The review only adds to the Card. Removing access is done in the Card's own
 Edit (`replace`).
+
+The agent's request is answered first. While an account the request asks for
+is not chosen, or an asked once/always choice is not made, **Approve on this
+Card** stays disabled, whatever else is selected: the extras are saved only
+together with the answered request.
 
 An operation brings the door grants it needs. Provider permissions that the
 Card's held or selected operations need are marked **needed** on each account
@@ -266,12 +276,20 @@ One **Approve on this Card** writes, in order:
 Each write uses the revision the previous write returned. A refusal stops the
 sequence and is shown.
 
-A needed provider permission that no connected account holds gets a button
-**Save and request in <provider>** (**Save and connect a <provider>
-account** when none is connected). The button first saves everything
-selected, as Approve does, and only then opens that provider's consent on the
-Accounts tab with the agent hand-off (`agent_client_id`, `agent_resource`). A
-refused save stays on the review. After the provider approves, **Continue -
+A provider permission that this consent needs and no connected account holds
+gets a button: one the request itself asks for, or one an operation selected
+here needs. What the Card already held before this consent is not offered
+there.
+
+- Once the request is answered, the button is **Save and request in
+  <provider>** (**Save and connect a <provider> account** when none is
+  connected). It first saves everything selected, as Approve does, and only
+  then opens that provider's consent on the Accounts tab with the agent
+  hand-off (`agent_client_id`, `agent_resource`). A refused save stays on the
+  review.
+- While the request cannot be answered (no account can do what it asks), the
+  button only opens the provider (**Request in <provider>**, **Connect a
+  <provider> account**) and saves nothing. After the provider approves, **Continue -
 grant it to <agent>** returns to this review for the new permission. Nothing
 selected is held in the browser across that step: it is already on the Card.
 

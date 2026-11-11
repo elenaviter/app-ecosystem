@@ -162,6 +162,20 @@ export function consentExtrasOffer(
   });
 }
 
+/** Door grants grouped by their service prefix (`slack:post` -> `slack`), in
+ *  catalog order of first appearance, so each service's permissions open on
+ *  their own. */
+export function grantGroups(rows: readonly ExtraRow[]): Array<{ service: string; rows: ExtraRow[] }> {
+  const groups = new Map<string, ExtraRow[]>();
+  rows.forEach((row) => {
+    const service = row.key.includes(':') ? row.key.slice(0, row.key.indexOf(':')) : row.key;
+    groups.set(service, [...(groups.get(service) || []), row]);
+  });
+  return Array.from(groups.entries())
+    .map(([service, items]) => ({ service, rows: items }))
+    .sort((left, right) => left.service.localeCompare(right.service));
+}
+
 /** The picks, kept only where the offer allows an addition (inside the
  *  Control, not held). A pick the offer no longer allows is never sent. */
 export function allowedPicks(offer: readonly ExtraResourceOffer[], picks: ExtraPicks): ExtraPicks {
@@ -267,9 +281,12 @@ export interface NeededProviderClaims {
   claims: string[];
 }
 
-/** Provider permissions the held and picked named-service operations need,
- *  per provider: `bindable` some connected account holds but the Card does not
- *  bind yet; `missing` no connected account of that provider holds. */
+/** Provider permissions named-service operations need, per provider.
+ *  `bindable`: needed by the held or picked operations, held by some connected
+ *  account, not bound on the Card yet (marked "needed", never ticked).
+ *  `missing`: needed by the operations picked in this consent and held by no
+ *  connected account of that provider. What the Card already held before this
+ *  consent is not this consent's question, so it is not offered as missing. */
 export function neededProviderClaims(
   card: ExtraCard,
   resources: readonly DelegatedAccessResourceOption[],
@@ -279,6 +296,13 @@ export function neededProviderClaims(
   rowsFor: (namespace: DelegatedAccessNamedServiceNamespaceOption) => Array<{ operation: string }>,
 ): { bindable: Record<string, string[]>; missing: NeededProviderClaims[] } {
   const needed = new Map<string, NeededProviderClaims>();
+  const pickedNeeds = new Map<string, NeededProviderClaims>();
+  const add = (into: Map<string, NeededProviderClaims>, resource: string, providerId: string, connectorAppId: string, claims: string[]) => {
+    const key = `${providerId}\u0000${connectorAppId}`;
+    const entry = into.get(key) || { providerId, connectorAppId, resource, claims: [] };
+    entry.claims = unique([...entry.claims, ...claims]);
+    into.set(key, entry);
+  };
   resources.forEach((option) => {
     (option.named_services || []).forEach((namespace) => {
       const held = heldNamed(card, option.resource, namespace.namespace);
@@ -291,23 +315,23 @@ export function neededProviderClaims(
           const requirement = (namespace.connected_accounts || [])
             .find((item) => String(item.provider_id || '').trim() === providerId);
           const connectorAppId = String(requirement?.connector_app_id || '').trim();
-          const key = `${providerId}\u0000${connectorAppId}`;
-          const entry = needed.get(key) || { providerId, connectorAppId, resource: option.resource, claims: [] };
-          entry.claims = unique([...entry.claims, ...claims]);
-          needed.set(key, entry);
+          add(needed, option.resource, providerId, connectorAppId, claims);
+          if (picked.includes(operation)) add(pickedNeeds, option.resource, providerId, connectorAppId, claims);
         });
       });
     });
   });
   const bindable: Record<string, string[]> = {};
   const missing: NeededProviderClaims[] = [];
+  const holdableBy = (providerId: string, claim: string) => accounts
+    .some((account) => account.provider_id === providerId && (account.claims || []).includes(claim));
   needed.forEach((entry) => {
     const bound = new Set(Object.values(scope[entry.providerId] || {}).flat());
-    const providerAccounts = accounts.filter((account) => account.provider_id === entry.providerId);
-    const holdable = entry.claims.filter((claim) => providerAccounts.some((account) => (account.claims || []).includes(claim)));
-    const open = holdable.filter((claim) => !bound.has(claim));
+    const open = entry.claims.filter((claim) => holdableBy(entry.providerId, claim) && !bound.has(claim));
     if (open.length) bindable[entry.providerId] = unique([...(bindable[entry.providerId] || []), ...open]);
-    const absent = entry.claims.filter((claim) => !holdable.includes(claim));
+  });
+  pickedNeeds.forEach((entry) => {
+    const absent = entry.claims.filter((claim) => !holdableBy(entry.providerId, claim));
     if (absent.length) missing.push({ ...entry, claims: absent });
   });
   return { bindable, missing };

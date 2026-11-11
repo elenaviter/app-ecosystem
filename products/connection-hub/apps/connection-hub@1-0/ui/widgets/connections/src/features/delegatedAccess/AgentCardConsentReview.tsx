@@ -144,15 +144,26 @@ export function AgentCardConsentReview({
   const [picks, setPicks] = useState<ExtraPicks>(NO_EXTRA_PICKS);
   const offer = useMemo(() => consentExtrasOffer(card, control, resources, operationRows), [card, control, resources]);
   const extras = allowedPicks(offer, picks);
-  const fullScope = withExtraAccounts(satisfied ? scope : heldScope, extras.accounts, accounts);
+  const fullScope = withExtraAccounts(scope, extras.accounts, accounts);
   const needed = neededProviderClaims(card, resources, extras, accounts, fullScope, operationRows);
+  // The request's own account requirement that no connected account can meet:
+  // its provider is asked first, and nothing is saved before it is answered.
+  const requestMissing: NeededProviderClaims[] = requirements.flatMap((requirement, index) => (
+    proposals[index].kind === 'none' && !accountSatisfying(heldScope, requirement)
+      ? [{ providerId: requirement.providerId, connectorAppId: '', resource: request.resource, claims: requirement.claims }]
+      : []
+  ));
+  const missing = [...requestMissing, ...needed.missing.filter((item) => !requestMissing
+    .some((first) => first.providerId === item.providerId && item.claims.every((claim) => first.claims.includes(claim))))];
   const extrasAdd = hasExtraPicks(extras) && (
-    JSON.stringify(fullScope) !== JSON.stringify(satisfied ? scope : heldScope)
+    JSON.stringify(fullScope) !== JSON.stringify(scope)
     || Object.keys(extras.grants).length + Object.keys(extras.outer).length + Object.keys(extras.named).length > 0
   );
-  // The request is written when it is answerable; extras alone may still be saved.
-  const requestReady = satisfied && requestAdds && outerReady;
-  const canApprove = !busy && !done && !blockedByControl && (requestReady || extrasAdd);
+  // The agent's request is answered first: every account it asks for is chosen
+  // and an asked once/always choice is made. Until then nothing is approved,
+  // the extras included; they are saved only together with the request.
+  const requestAnswered = satisfied && outerReady;
+  const canApprove = !busy && !done && !blockedByControl && requestAnswered && (requestAdds || extrasAdd);
 
   /** The writes, in order: the request's own grant (when answerable), then one
    *  merge per resource the extras touch. The Card-wide account scope travels
@@ -160,7 +171,7 @@ export function AgentCardConsentReview({
    *  previous one produced. */
   const writes = () => {
     const out: Array<Parameters<typeof agentGrantWirePayload>[0]> = [];
-    if (requestReady) {
+    if (requestAdds) {
       out.push(request.outerOperation
         ? agentCardOuterGrant({
           card: card as Parameters<typeof agentCardOuterGrant>[0]['card'],
@@ -211,9 +222,10 @@ export function AgentCardConsentReview({
     }
   };
 
-  // Save what is selected first, then go to the provider; a refusal stays here.
-  const saveAndRequest = async (missing: NeededProviderClaims) => {
-    const href = providerUpgradeHref(window.location.href, missing, request.clientId, accounts);
+  // Once the request is answered: save what is selected first, then go to the
+  // provider; a refusal stays here. Before that, only go to the provider.
+  const saveAndRequest = async (target: NeededProviderClaims) => {
+    const href = providerUpgradeHref(window.location.href, target, request.clientId, accounts);
     if (!href) return;
     if (canApprove && !(await approve())) return;
     navigate(href);
@@ -370,7 +382,7 @@ export function AgentCardConsentReview({
           picks={picks}
           onPicks={setPicks}
           accounts={accounts}
-          baseScope={satisfied ? scope : heldScope}
+          baseScope={scope}
           bindable={needed.bindable}
           providerLabel={providerLabel}
           accountLabel={accountLabel}
@@ -379,11 +391,12 @@ export function AgentCardConsentReview({
       )}
       {blockedByControl ? null : (
         <MissingProviderPermissions
-          missing={needed.missing}
+          missing={missing}
           accounts={accounts}
           providerLabel={providerLabel}
           disabled={busy}
-          onSaveAndRequest={(missing) => void saveAndRequest(missing)}
+          canSave={canApprove}
+          onRequest={(target) => void saveAndRequest(target)}
         />
       )}
       {blockedByControl ? (

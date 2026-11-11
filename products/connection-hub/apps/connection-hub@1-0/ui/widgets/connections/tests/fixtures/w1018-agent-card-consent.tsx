@@ -123,6 +123,8 @@ if (variant === 'pending-outside') Object.assign(link, { namespace: 'slides', op
 // An external client's pending request keeps the legacy pending page.
 if (variant === 'external') { delete link.agent_card_consent; Object.assign(link, { agent_client_id: 'dcr-cli', resource: SERVICE, claims: 'records:read', account_claim: '' }) }
 if (variant === 'provider') link.account_provider_id = 'google'
+// W34: no Google account at all; the SDK link names the provider (as connected_accounts.py does).
+if (variant === 'extras-none') link.account_provider_id = 'google'
 // Outer (MCP/REST) operations keep the pending page's once/always contract inside the Card approval.
 if (variant === 'outer-choose') Object.assign(link, { resource: SERVICE, account_claim: '', outer_operation: 'records_export', invocation_policy: 'choose', invocation_change_id: 'consent-9' })
 if (variant === 'outer-bound') Object.assign(link, { resource: SERVICE, account_claim: '', outer_operation: 'records_export', invocation_policy: 'once', invocation_change_id: 'consent-10',

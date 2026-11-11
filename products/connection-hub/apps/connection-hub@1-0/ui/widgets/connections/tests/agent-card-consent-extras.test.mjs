@@ -7,6 +7,7 @@ import {
   allowedPicks,
   consentExtraGrants,
   consentExtrasOffer,
+  grantGroups,
   hasExtraPicks,
   neededProviderClaims,
   NO_EXTRA_PICKS,
@@ -145,18 +146,23 @@ test('account permissions are added only where the account holds them, never rem
   assert.equal(withExtraAccounts(held, {}, accounts), held)
 })
 
-test('provider permissions the Card needs: bindable on a connected account, or missing everywhere', () => {
+test('provider permissions: needed ones are marked where an account holds them; missing ones only for what this consent adds', () => {
   const accounts = [{ account_id: 'g1', provider_id: 'google', claims: ['slides:read', 'docs:read'] }]
   const picks = { ...NO_EXTRA_PICKS, named: { [NAMED]: { docs: ['object.action.export'] } } }
   // Held slides operations need slides:read and slides:write; the picked docs export needs docs:read and drive:read.
   const { bindable, missing } = neededProviderClaims(card, resources, picks, accounts, { google: { g1: ['slides:read'] } }, rowsFor)
   assert.deepEqual(bindable, { google: ['docs:read'] })
-  assert.deepEqual(missing, [
-    { providerId: 'google', connectorAppId: '', resource: NAMED, claims: ['slides:write'] },
-    { providerId: 'google', connectorAppId: 'gmail', resource: NAMED, claims: ['drive:read'] },
-  ])
+  assert.deepEqual(missing, [{ providerId: 'google', connectorAppId: 'gmail', resource: NAMED, claims: ['drive:read'] }],
+    'slides:write, needed by what the Card already held, is not this consent\'s question')
   const none = neededProviderClaims(card, resources, NO_EXTRA_PICKS, [], {}, rowsFor)
-  assert.deepEqual(none.missing.map((item) => item.claims), [['slides:read', 'slides:write']], 'no account connected: every needed claim is missing')
+  assert.deepEqual(none.missing, [], 'nothing picked: nothing to request at a provider')
+})
+
+test('permissions are grouped by service, each group on its own', () => {
+  const rows = ['slack:post', 'docs:read', 'slack:files:read', 'named_services:use'].map((key) => ({ key, label: key, held: false, inControl: true, grants: [key] }))
+  assert.deepEqual(grantGroups(rows).map((group) => [group.service, group.rows.map((row) => row.key)]), [
+    ['docs', ['docs:read']], ['named_services', ['named_services:use']], ['slack', ['slack:post', 'slack:files:read']],
+  ])
 })
 
 test('the provider link carries the agent hand-off and drops the Card review params', () => {
