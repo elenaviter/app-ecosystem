@@ -84,24 +84,28 @@ test('W34: more access on the agent Card consent review', async (t) => {
       await extras(page).getByTestId('agent-card-consent-extra-grant').filter({ hasText: 'memories:read' }).locator('input').check()
       await extras(page).getByTestId('agent-card-consent-extra-tool').filter({ hasText: 'records_export' }).locator('input').check()
       // values.update needs sheets:read and sheets:write on one Google account: marked needed, never auto-ticked.
-      const sheetsWrite = extras(page).getByTestId('agent-card-consent-extra-account-claim').filter({ hasText: 'sheets:write' })
-      assert.ok((await sheetsWrite.innerText()).toLowerCase().includes('needed'))
-      assert.equal(await sheetsWrite.locator('input').isChecked(), false)
-      await sheetsWrite.locator('input').check()
+      const claim = (name) => extras(page).getByTestId('agent-card-consent-extra-account-claim').filter({ hasText: name })
+      assert.ok((await claim('sheets:write').innerText()).toLowerCase().includes('needed'))
+      assert.equal(await claim('sheets:write').locator('input').isChecked(), false)
+      // values.update needs both on an account; until they are bound the review names them and does not send.
+      assert.equal(await page.getByRole('button', { name: 'Approve on this Card' }).isDisabled(), true)
+      assert.ok((await page.getByTestId('agent-card-consent-unbound').innerText()).includes('sheets:write'))
+      await claim('sheets:read').locator('input').check()
+      await claim('sheets:write').locator('input').check()
+      assert.equal(await page.getByTestId('agent-card-consent-unbound').count(), 0)
       await page.getByRole('button', { name: 'Approve on this Card' }).click()
       await page.getByText('Approved. The agent').waitFor({ timeout: 10000 })
       const sent = await grants(page)
+      // The request and what was added on the requested resource commit in one write; other resources follow.
       assert.deepEqual(sent, [{
         client_id: CLIENT, resource: NAMED, claims: ['named_services:use', 'slides:read'], label: '', access_id: 'agent-0e150a469bf4edbd',
-        account_scope: { google: { google_acct_1: ['slides:read', 'sheets:write'] } }, expected_card_revision: 7,
+        named_service_operations: { slides: ['object.list'], sheets: ['values.update'] },
+        account_scope: { google: { google_acct_1: ['slides:read', 'sheets:read', 'sheets:write'] } }, expected_card_revision: 7,
       }, {
         client_id: CLIENT, resource: MEMORIES, claims: ['memories:read'], label: '', access_id: 'agent-0e150a469bf4edbd', expected_card_revision: 8,
       }, {
         client_id: CLIENT, resource: SERVICE, claims: ['records:read'], label: '', access_id: 'agent-0e150a469bf4edbd',
         resource_operations: { [SERVICE]: ['records_list', 'records_export'] }, expected_card_revision: 9,
-      }, {
-        client_id: CLIENT, resource: NAMED, claims: ['named_services:use', 'slides:read'], label: '', access_id: 'agent-0e150a469bf4edbd',
-        named_service_operations: { slides: ['object.list'], sheets: ['values.update'] }, expected_card_revision: 10,
       }])
       assert.ok(sent.every((grant) => !('replace' in grant)), 'the review only adds')
       assert.deepEqual(errors, [])
@@ -124,8 +128,10 @@ test('W34: more access on the agent Card consent review', async (t) => {
       assert.equal(url.searchParams.get('agent_client_id'), CLIENT)
       assert.equal(url.searchParams.get('agent_resource'), NAMED)
       const saved = grantsOf(await page.evaluate(() => window.__previous))
-      assert.equal(saved.length, 2, 'the request and the added operation were saved before leaving')
-      assert.deepEqual(saved[1].named_service_operations, { slides: ['object.list', 'object.upsert'] })
+      assert.equal(saved.length, 1, 'the answered request was saved before leaving')
+      assert.deepEqual(saved[0].account_scope, { google: { google_acct_1: ['slides:read'] } })
+      assert.equal(saved[0].named_service_operations, undefined,
+        'object.upsert needs slides:write, which no account holds yet: it is chosen again after Google grants it')
       assert.deepEqual(errors, [])
       await page.close()
     })
@@ -148,12 +154,16 @@ test('W34: more access on the agent Card consent review', async (t) => {
       const approve = page.getByRole('button', { name: 'Approve on this Card' })
       assert.equal(await approve.isDisabled(), true, 'two capable accounts and none chosen: the request is not answered')
       await page.getByTestId('agent-card-consent-accounts').locator('input[type=radio]').first().check()
+      const claim = (name) => extras(page).getByTestId('agent-card-consent-extra-account-claim').filter({ hasText: name }).first()
+      await claim('sheets:read').locator('input').check()
+      await claim('sheets:write').locator('input').check()
       assert.equal(await approve.isDisabled(), false)
       await approve.click()
       await page.getByText('Approved. The agent').waitFor({ timeout: 10000 })
       const sent = await grants(page)
-      assert.deepEqual(sent[0].account_scope, { google: { google_acct_1: ['slides:read'] } }, 'the request is in the first write')
-      assert.deepEqual(sent[1].named_service_operations, { slides: ['object.list'], sheets: ['values.update'] })
+      assert.equal(sent.length, 1, 'request and extras on the same resource: one write')
+      assert.deepEqual(sent[0].account_scope, { google: { google_acct_1: ['slides:read', 'sheets:read', 'sheets:write'] } })
+      assert.deepEqual(sent[0].named_service_operations, { slides: ['object.list'], sheets: ['values.update'] })
       assert.deepEqual(errors, [])
       await page.close()
     })

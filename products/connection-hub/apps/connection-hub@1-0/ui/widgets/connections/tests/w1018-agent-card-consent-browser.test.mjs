@@ -112,7 +112,8 @@ test('W1018 A: the agent Card consent review', async (t) => {
       await page.getByTestId('agent-card-consent').waitFor({ timeout: 15000 })
       const op = page.getByTestId('agent-card-consent-operation').locator('input[type=checkbox]')
       assert.equal(await op.isChecked(), true)
-      assert.equal(await op.isEnabled(), true)
+      // W34 live check: what the agent asked for is fixed on the review, answered, never unticked.
+      assert.equal(await op.isDisabled(), true)
       await page.getByRole('button', { name: 'Approve on this Card' }).click()
       await page.getByText('Approved. The agent').waitFor({ timeout: 10000 })
       const [grant] = await grants(page)

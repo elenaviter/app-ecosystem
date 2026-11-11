@@ -275,7 +275,7 @@ export function MissingProviderPermissions({ missing, accounts, providerLabel, d
   accounts: ConsentAccount[];
   providerLabel: (providerId: string) => string;
   disabled: boolean;
-  canSave: boolean;
+  canSave: (needed: NeededProviderClaims) => boolean;
   onRequest: (needed: NeededProviderClaims) => void;
 }) {
   return (
@@ -284,6 +284,7 @@ export function MissingProviderPermissions({ missing, accounts, providerLabel, d
         const label = providerLabel(needed.providerId) || needed.providerId;
         const connected = accounts.some((account) => account.provider_id === needed.providerId);
         const action = connected ? `request in ${label}` : `connect a ${label} account`;
+        const saves = canSave(needed);
         return (
           <div className="notice" style={{ marginTop: 8 }} data-testid="agent-card-consent-extra-missing" key={`${needed.providerId}:${needed.connectorAppId}`}>
             <div>
@@ -291,12 +292,14 @@ export function MissingProviderPermissions({ missing, accounts, providerLabel, d
                 ? <>None of your {label} accounts can do <code>{needed.claims.join(', ')}</code> yet.</>
                 : <>No {label} account is connected for <code>{needed.claims.join(', ')}</code>.</>}
               {' '}
-              {canSave
-                ? <>What you selected is saved on the Card first; then {label} asks you to approve.</>
+              {saves
+                ? <>What you selected is saved on the Card first; then {label} asks you to approve. Operations
+                  that need <code>{needed.claims.join(', ')}</code> are saved after {label} grants it: choose them again
+                  when you return here.</>
                 : <>Nothing is saved before the agent&apos;s request above is answered.</>}
             </div>
             <button className="btn" type="button" disabled={disabled} onClick={() => onRequest(needed)}>
-              {canSave ? `Save and ${action}` : action.charAt(0).toUpperCase() + action.slice(1)}
+              {saves ? `Save and ${action}` : action.charAt(0).toUpperCase() + action.slice(1)}
             </button>
           </div>
         );

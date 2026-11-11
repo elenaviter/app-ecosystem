@@ -257,10 +257,19 @@ The selection rules:
 The review only adds to the Card. Removing access is done in the Card's own
 Edit (`replace`).
 
-The agent's request is answered first. While an account the request asks for
-is not chosen, or an asked once/always choice is not made, **Approve on this
-Card** stays disabled, whatever else is selected: the extras are saved only
-together with the answered request.
+The agent's request is answered first. What the agent asked for (its service
+operation or tool) is shown selected and cannot be removed in the review.
+While an account the request asks for is not chosen, or an asked once/always
+choice is not made, **Approve on this Card** stays disabled, whatever else is
+selected: the extras are saved only together with the answered request. When
+the Card already holds everything asked for, the review says so and only the
+extras remain to approve.
+
+An operation added here may need a provider permission on an account (for
+example `sheets:write` for a spreadsheet write). Until such a permission is
+bound on an account in this review, the review names it with the operations
+that need it and **Approve on this Card** stays disabled; Connection Hub would
+refuse the operation otherwise.
 
 An operation brings the door grants it needs. Provider permissions that the
 Card's held or selected operations need are marked **needed** on each account
@@ -268,8 +277,9 @@ that can hold them; they are never ticked for the owner.
 
 One **Approve on this Card** writes, in order:
 
-1. the request's own grant, when it can be answered, carrying the Card-wide
-   `account_scope`;
+1. the request's own grant, carrying the Card-wide `account_scope` and
+   whatever was added on the requested resource, so both commit together (a
+   focused once/always grant stays exactly that operation and is not merged);
 2. one merge `delegated_agent_grant_create` per further resource the selection
    touches.
 
@@ -283,10 +293,12 @@ there.
 
 - Once the request is answered, the button is **Save and request in
   <provider>** (**Save and connect a <provider> account** when none is
-  connected). It first saves everything selected, as Approve does, and only
-  then opens that provider's consent on the Accounts tab with the agent
-  hand-off (`agent_client_id`, `agent_resource`). A refused save stays on the
-  review.
+  connected). It first saves the answered request and everything selected that
+  does not depend on the permission being requested, as Approve does, and
+  only then opens that provider's consent on the Accounts tab with the agent
+  hand-off (`agent_client_id`, `agent_resource`). Operations that need that
+  permission are chosen again after the provider grants it. A refused save
+  stays on the review.
 - While the request cannot be answered (no account can do what it asks), the
   button only opens the provider (**Request in <provider>**, **Connect a
   <provider> account**) and saves nothing. After the provider approves, **Continue -

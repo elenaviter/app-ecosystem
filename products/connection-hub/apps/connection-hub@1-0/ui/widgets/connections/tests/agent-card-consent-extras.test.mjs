@@ -12,6 +12,7 @@ import {
   neededProviderClaims,
   NO_EXTRA_PICKS,
   providerUpgradeHref,
+  unboundPickedClaims,
   withExtraAccounts,
 } from '../src/features/delegatedAccess/consentExtras.ts'
 
@@ -183,4 +184,15 @@ test('the provider link carries the agent hand-off and drops the Card review par
   assert.equal(several.searchParams.has('account_id'), false, 'several accounts: the owner picks at the provider step')
   assert.equal(several.searchParams.has('connector_app_id'), false)
   assert.equal(providerUpgradeHref('not a url', { providerId: 'google', connectorAppId: '', resource: NAMED, claims: ['x'] }, CLIENT, []), '')
+})
+
+test('an operation picked here whose provider permission nothing binds is named, so it is never sent to be refused', () => {
+  const picks = { ...NO_EXTRA_PICKS, named: { [NAMED]: { docs: ['object.get'] } } }
+  assert.deepEqual(unboundPickedClaims(card, resources, offer, picks, {}), [
+    { providerId: 'google', claim: 'docs:read', operations: ['docs.object.get'] },
+  ], 'docs.get needs docs:read on a Google account')
+  assert.deepEqual(unboundPickedClaims(card, resources, offer, picks, { google: { g1: ['docs:read'] } }), [], 'bound: nothing to name')
+  assert.deepEqual(unboundPickedClaims(card, resources, offer, { ...picks, grants: { [NAMED]: ['docs:read'] } }, {}), [],
+    'a door grant of the same name carried by the write also answers it')
+  assert.deepEqual(unboundPickedClaims(card, resources, offer, NO_EXTRA_PICKS, {}), [], 'what the Card already held is not this consent\'s question')
 })

@@ -36,7 +36,7 @@ import {
   type AgentCardConsentRequest,
   type ConsentAccount,
 } from './agentCardConsent';
-import { resolvePendingServiceCapability } from './pendingGrantProjection';
+import { accountClaimsForOperation, resolvePendingServiceCapability } from './pendingGrantProjection';
 import { operationRows } from './DelegatedResourceCatalog';
 import { OperationInvocationChoice } from './InvocationControls';
 import { AgentCardConsentExtras, MissingProviderPermissions } from './AgentCardConsentExtras';
@@ -47,6 +47,7 @@ import {
   hasExtraPicks,
   neededProviderClaims,
   NO_EXTRA_PICKS,
+  unboundPickedClaims,
   providerUpgradeHref,
   withExtraAccounts,
   type ExtraPicks,
@@ -111,13 +112,16 @@ export function AgentCardConsentReview({
   const scope: Scope = requirements.reduce((next, requirement, index) => (
     chosen[index] ? withAccountClaims(next, requirement.providerId, chosen[index], requirement.claims) : next
   ), heldScope);
-  const [operationSelected, setOperationSelected] = useState(operationAllowed && Boolean(request.operation));
+  // What the agent asked for is fixed: shown selected and not removable here.
+  // A request is answered by choosing its account (and an asked once/always),
+  // never by unticking what was asked (W34 live check).
+  const operationSelected = operationAllowed && Boolean(request.operation);
   // An outer (MCP/REST) operation keeps the pending page's once/always contract:
   // chosen beside that one operation, or fixed by the request, and sent in the
   // same approval with its change id and any request-bound proof.
   const outerAllowed = outerOperationInControl(control, request.resource, request.outerOperation);
   const policy = outerPolicyState(request);
-  const [outerSelected, setOuterSelected] = useState(outerAllowed && Boolean(request.outerOperation));
+  const outerSelected = outerAllowed && Boolean(request.outerOperation);
   const [mode, setMode] = useState<InvocationMode | null>(() => (
     policy === 'preset' && (request.invocationPolicy === 'once' || request.invocationPolicy === 'always')
       ? request.invocationPolicy
@@ -136,8 +140,13 @@ export function AgentCardConsentReview({
   });
   const heldClaims = card.resource_grants?.[request.resource] || [];
   const addsClaims = newRequestedClaims(heldClaims, request.claims).length > 0;
+  const operationHeld = (() => {
+    const stored = card.named_service_operations;
+    if (!request.namespace || !request.operation) return false;
+    return stored === '*' || Boolean(stored?.[request.resource]?.[request.namespace]?.includes(request.operation));
+  })();
   const requestAdds = JSON.stringify(scope) !== JSON.stringify(heldScope)
-    || operationSelected || outerSelected || addsClaims;
+    || (operationSelected && !operationHeld) || outerSelected || addsClaims;
   const outerReady = !outerSelected || policy === 'none' || (policy !== 'missing' && Boolean(mode));
   const blockedByControl = controlUnavailable(control);
   // W34: more access beyond the request, only added (merge), within the Control.
@@ -163,13 +172,17 @@ export function AgentCardConsentReview({
   // and an asked once/always choice is made. Until then nothing is approved,
   // the extras included; they are saved only together with the request.
   const requestAnswered = satisfied && outerReady;
-  const canApprove = !busy && !done && !blockedByControl && requestAnswered && (requestAdds || extrasAdd);
+  // An operation picked here whose provider permission no account binds would
+  // be refused by Connection Hub; it is named, and nothing is sent until bound.
+  const unbound = unboundPickedClaims(card, resources, offer, extras, fullScope);
+  const canApprove = !busy && !done && !blockedByControl && requestAnswered && !unbound.length
+    && (requestAdds || extrasAdd);
 
   /** The writes, in order: the request's own grant (when answerable), then one
    *  merge per resource the extras touch. The Card-wide account scope travels
    *  with the first write. Each write is made against the revision the
    *  previous one produced. */
-  const writes = () => {
+  const writes = (chosen = extras) => {
     const out: Array<Parameters<typeof agentGrantWirePayload>[0]> = [];
     if (requestAdds) {
       out.push(request.outerOperation
@@ -182,7 +195,27 @@ export function AgentCardConsentReview({
           operationSelected, accountScope: fullScope,
         }));
     }
-    const extraGrants = consentExtraGrants(card, request, offer, extras);
+    let extraGrants = consentExtraGrants(card, request, offer, chosen);
+    // The extras on the requested resource travel in the request's own write, so
+    // the request and what was added beside it on that resource commit together.
+    // A focused once/always grant stays exactly that operation and is not merged.
+    const base = out[0];
+    const same = extraGrants.find((grant) => grant.resource === request.resource);
+    if (base && same && !base.invocationMode) {
+      out[0] = {
+        ...base,
+        claims: Array.from(new Set([...base.claims, ...same.claims])),
+        ...(same.resourceOperations ? { resourceOperations: Array.from(new Set([...(base.resourceOperations || []), ...same.resourceOperations])) } : {}),
+        ...(same.namedServiceOperations ? {
+          namedServiceOperations: Object.fromEntries(Array.from(new Set([
+            ...Object.keys(base.namedServiceOperations || {}), ...Object.keys(same.namedServiceOperations),
+          ])).map((namespace) => [namespace, Array.from(new Set([
+            ...(base.namedServiceOperations?.[namespace] || []), ...(same.namedServiceOperations?.[namespace] || []),
+          ]))])),
+        } : {}),
+      };
+      extraGrants = extraGrants.filter((grant) => grant !== same);
+    }
     extraGrants.forEach((grant, index) => {
       out.push(!out.length && index === 0 ? { ...grant, accountScope: fullScope } : grant);
     });
@@ -192,12 +225,12 @@ export function AgentCardConsentReview({
     return out;
   };
 
-  const approve = async (): Promise<boolean> => {
+  const approve = async (chosen = extras): Promise<boolean> => {
     setBusy(true);
     setError('');
     try {
       let revision: number | undefined = typeof card.card_revision === 'number' ? card.card_revision : undefined;
-      for (const args of writes()) {
+      for (const args of writes(chosen)) {
         const answer = await postOp<Record<string, unknown>>('delegated_agent_grant_create', agentGrantWirePayload({
           ...args, expectedCardRevision: revision,
         }));
@@ -224,10 +257,35 @@ export function AgentCardConsentReview({
 
   // Once the request is answered: save what is selected first, then go to the
   // provider; a refusal stays here. Before that, only go to the provider.
+  // Operations that need the permission being requested cannot be saved before
+  // the provider grants it; they are left out of this save and named.
+  const withoutDependents = (target: NeededProviderClaims): ExtraPicks => {
+    const needsTarget = (resource: string, namespace: string, operation: string) => {
+      const option = resources.find((item) => item.resource === resource)?.named_services
+        ?.find((item) => item.namespace === namespace);
+      return Boolean(option) && accountClaimsForOperation(option!, operation).some((need) => (
+        need.providerId === target.providerId && need.claims.some((claim) => target.claims.includes(claim))));
+    };
+    const named: ExtraPicks['named'] = {};
+    Object.entries(extras.named).forEach(([resource, byNamespace]) => {
+      Object.entries(byNamespace).forEach(([namespace, operations]) => {
+        const kept = operations.filter((operation) => !needsTarget(resource, namespace, operation));
+        if (kept.length) named[resource] = { ...(named[resource] || {}), [namespace]: kept };
+      });
+    });
+    return { ...extras, named };
+  };
+  const canSaveBefore = (target: NeededProviderClaims): boolean => {
+    const chosen = withoutDependents(target);
+    const scopeFor = withExtraAccounts(scope, chosen.accounts, accounts);
+    return !busy && !done && !blockedByControl && requestAnswered
+      && !unboundPickedClaims(card, resources, offer, chosen, scopeFor).length
+      && (requestAdds || hasExtraPicks(chosen));
+  };
   const saveAndRequest = async (target: NeededProviderClaims) => {
     const href = providerUpgradeHref(window.location.href, target, request.clientId, accounts);
     if (!href) return;
-    if (canApprove && !(await approve())) return;
+    if (canSaveBefore(target) && !(await approve(withoutDependents(target)))) return;
     navigate(href);
   };
 
@@ -249,15 +307,13 @@ export function AgentCardConsentReview({
       {request.namespace && request.operation ? (
         <div className="request-review-section" data-testid="agent-card-consent-operation">
           <div className="account-title">Service operation</div>
-          <label className={`namespace-operation${operationAllowed ? '' : ' namespace-operation-unavailable'}`}>
-            <input
-              type="checkbox"
-              checked={operationSelected}
-              disabled={!operationAllowed || done}
-              onChange={(event) => setOperationSelected(event.target.checked)}
-            />
+          <label className={`namespace-operation agent-card-consent-row${operationAllowed ? ' agent-card-consent-picked' : ' agent-card-consent-outside'}`}>
+            <input type="checkbox" checked={operationSelected} disabled readOnly />
             <span>
               <code>{request.namespace}</code>{' · '}<code>{request.operation}</code>
+              {operationAllowed ? (
+                <span className="badge badge-warn" style={{ marginLeft: 8 }}>{operationHeld ? 'already allowed' : 'requested'}</span>
+              ) : null}
               {operationAllowed ? null : (
                 <span className="badge badge-error" style={{ marginLeft: 8 }}>not in this agent&apos;s Control</span>
               )}
@@ -272,12 +328,7 @@ export function AgentCardConsentReview({
         <div className="request-review-section" data-testid="agent-card-consent-outer">
           <div className="account-title">Tool</div>
           <label className={`namespace-operation${outerAllowed ? '' : ' namespace-operation-unavailable'}`}>
-            <input
-              type="checkbox"
-              checked={outerSelected}
-              disabled={!outerAllowed || done}
-              onChange={(event) => setOuterSelected(event.target.checked)}
-            />
+            <input type="checkbox" checked={outerSelected} disabled readOnly />
             <span>
               <code>{request.outerOperation}</code>
               {outerAllowed ? null : (
@@ -395,10 +446,27 @@ export function AgentCardConsentReview({
           accounts={accounts}
           providerLabel={providerLabel}
           disabled={busy}
-          canSave={canApprove}
+          canSave={canSaveBefore}
           onRequest={(target) => void saveAndRequest(target)}
         />
       )}
+      {requestAnswered && !requestAdds && !done ? (
+        <div className="notice" role="status" data-testid="agent-card-consent-request-held">
+          What the agent asked for is already allowed on this Card. You can still add more below.
+        </div>
+      ) : null}
+      {unbound.length ? (
+        <div className="notice" role="status" data-testid="agent-card-consent-unbound">
+          Choose an account for these permissions before approving; the operations you added need them:
+          <ul style={{ margin: '4px 0 0', paddingLeft: 18 }}>
+            {unbound.map((item) => (
+              <li key={`${item.providerId}:${item.claim}`}>
+                <code>{item.claim}</code> ({providerLabel(item.providerId) || item.providerId}) for {item.operations.map((op) => <code key={op} style={{ marginRight: 4 }}>{op}</code>)}
+              </li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
       {blockedByControl ? (
         <div className="notice" role="status">This agent&apos;s Control cannot be read now, so nothing can be added to its Card. Try again later.</div>
       ) : null}

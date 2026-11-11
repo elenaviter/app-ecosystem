@@ -337,6 +337,53 @@ export function neededProviderClaims(
   return { bindable, missing };
 }
 
+/** A provider permission an operation picked here needs and nothing in this
+ *  consent gives: not bound on any account of its provider in `scope` and not
+ *  a door grant the write will carry. Connection Hub refuses such an operation
+ *  (`invalid_named_service_operation_selection`), so the review names it and
+ *  waits for the owner to bind it on an account (or request it at the
+ *  provider) instead of sending. */
+export interface UnboundClaim {
+  providerId: string;
+  claim: string;
+  operations: string[];
+}
+
+export function unboundPickedClaims(
+  card: ExtraCard,
+  resources: readonly DelegatedAccessResourceOption[],
+  offer: readonly ExtraResourceOffer[],
+  picks: ExtraPicks,
+  scope: Scope,
+): UnboundClaim[] {
+  const out = new Map<string, UnboundClaim>();
+  resources.forEach((option) => {
+    const item = offer.find((entry) => entry.resource === option.resource);
+    (option.named_services || []).forEach((namespace) => {
+      const picked = picks.named[option.resource]?.[namespace.namespace] || [];
+      if (!picked.length) return;
+      const doorAfter = new Set([
+        ...(card.resource_grants?.[option.resource] || []),
+        ...(picks.grants[option.resource] || []),
+        ...(item?.namespaces.find((entry) => entry.namespace === namespace.namespace)?.rows
+          .filter((row) => picked.includes(row.key)).flatMap((row) => row.grants) || []),
+      ]);
+      picked.forEach((operation) => {
+        accountClaimsForOperation(namespace, operation).forEach(({ providerId, claims }) => {
+          const bound = new Set(Object.values(scope[providerId] || {}).flat());
+          claims.filter((claim) => !bound.has(claim) && !doorAfter.has(claim)).forEach((claim) => {
+            const key = `${providerId}\u0000${claim}`;
+            const entry = out.get(key) || { providerId, claim, operations: [] };
+            entry.operations = unique([...entry.operations, `${namespace.namespace}.${operation}`]);
+            out.set(key, entry);
+          });
+        });
+      });
+    });
+  });
+  return Array.from(out.values());
+}
+
 // The Card review's own link params; the provider step must read a clean state.
 const CARD_REVIEW_PARAMS = [
   'agent_card_consent', 'pending_agent_grant', 'access_id', 'account_claim', 'account_provider_id', 'namespace',
