@@ -29,6 +29,8 @@ class Field:
     def pending_return_census(self, name, **limits):
         headers = self.pending_mail_headers(name)
         return {"headers": headers[:limits["max_headers"]], "stable": True,
+                "context": {"worker_name": name, "session_id": self.worker["runtime_session_id"],
+                            "projects": list(self.worker["attended_project_refs"])},
                 "overflow": "census_headers" if len(headers) > limits["max_headers"] else "",
                 "token": content_hash(headers)}
 

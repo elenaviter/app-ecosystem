@@ -94,15 +94,23 @@ class ReturnReconciliation:
                 and h.get("expected_reaction") not in {"acknowledge_only", "await_review"}
                 and not str(h.get("correlation_id") or "").startswith(PREFIX)]
 
-    def _state_context(self):
+    def _state_context(self, now, threshold_seconds):
         worker = self.field.read_worker(self.worker)
         row = self._read(worker)
         projects = worker.get("attended_project_refs") or []
+        supported = len(projects) <= policy.MAX_EPISODES
+        if not supported and (row["episodes"] or row["pending_requirements"] or row.get("overflow")
+                              or self._needs_census(row, now, threshold_seconds)):
+            # Do not select a seemingly valid prefix: the whole worker is
+            # fenced, its original attendance/evidence remains in its owners,
+            # and no holder, census or per-attendance transition is attempted.
+            policy.overflow(row, "attended_projects", now)
         # No mailbox or holder reads for the entirely inactive case. Existing
         # episodes still need holder-epoch checks even when policy is None.
         bindings = ({p: self._coordinator(p) for p in projects}
-                    if row["episodes"] or row["pending_requirements"] or row.get("overflow") else {})
-        context = {"session_id": row["session_id"], "projects": projects, "bindings": bindings}
+                    if supported and (row["episodes"] or row["pending_requirements"] or row.get("overflow")) else {})
+        context = {"session_id": row["session_id"], "projects": projects if supported else None,
+                   "scope_supported": supported, "attended_project_count": len(projects), "bindings": bindings}
         return row, context, content_hash([row, context])
 
     @staticmethod
@@ -128,7 +136,7 @@ class ReturnReconciliation:
         """
         for _attempt in range(policy.MAX_CENSUS_ATTEMPTS):
             with exclusive_lock(self.lock):
-                row, context, expected = self._state_context()
+                row, context, expected = self._state_context(now, threshold_seconds)
                 if not self._needs_census(row, now, threshold_seconds):
                     return action(row, context, [], now, threshold_seconds)
             snapshot = self.field.pending_return_census(
@@ -137,8 +145,11 @@ class ReturnReconciliation:
                 max_headers=policy.MAX_INVENTORY, max_projects=policy.MAX_EPISODES,
             )
             with exclusive_lock(self.lock):
-                row, context, current = self._state_context()
+                row, context, current = self._state_context(now, threshold_seconds)
+                capture_context = {"worker_name": self.worker, "session_id": context["session_id"],
+                                   "projects": context["projects"]}
                 if (current != expected or not snapshot["stable"]
+                        or snapshot.get("context") != capture_context
                         or not self.field.pending_return_census_current(self.worker, snapshot)):
                     continue
                 if snapshot["overflow"]:
@@ -149,7 +160,7 @@ class ReturnReconciliation:
                     context["bindings"] = {p: self._coordinator(p) for p in context["projects"]}
                 return action(row, context, snapshot["headers"], now, threshold_seconds)
         with exclusive_lock(self.lock):
-            row, context, _ = self._state_context()
+            row, context, _ = self._state_context(now, threshold_seconds)
             policy.overflow(row, "census_retry_exhausted", now)
             return action(row, context, [], now, threshold_seconds)
 
@@ -159,6 +170,8 @@ class ReturnReconciliation:
         return self.signals(row)
 
     def _observe(self, row, context, headers, *, now, threshold_seconds):
+        if not context["scope_supported"]:
+            return  # preserve every prior episode/inventory; no partial scope
         projects = context["projects"]
         actionable = any(self._cohort(headers, p, projects) for p in projects)
         policy.latch_interval(row, now, threshold_seconds, projects, actionable=actionable)
@@ -287,9 +300,10 @@ class ReturnReconciliation:
             previous = row.get("activity_baseline") or {}
             if previous.get("at") and parse_utc(point["occurred_at"]) < parse_utc(previous["at"]):
                 raise DomainError("field_return_activity_order", "Activity predates the committed handling baseline.")
-            projects = context["projects"]
-            actionable = any(self._cohort(headers, p, projects) for p in projects)
-            policy.latch_interval(row, point["occurred_at"], threshold_seconds, projects, actionable=actionable)
+            if context["scope_supported"]:
+                projects = context["projects"]
+                actionable = any(self._cohort(headers, p, projects) for p in projects)
+                policy.latch_interval(row, point["occurred_at"], threshold_seconds, projects, actionable=actionable)
             if not row.get("overflow"):
                 row["activity_baseline"] = {
                     "at": point["occurred_at"], "via": "metadata_point",
@@ -317,6 +331,22 @@ class ReturnReconciliation:
 
     def signals(self, row=None):
         row = self._read() if row is None else row
+        projects = self.field.read_worker(self.worker).get("attended_project_refs") or []
+        if (len(projects) > policy.MAX_EPISODES
+                and (row["episodes"] or row["pending_requirements"] or row.get("overflow"))):
+            # A single explicitly worker-wide recovery notice, not one signal
+            # per attended project or a silently truncated inventory. Anchor
+            # it to a real attended project for the existing routing contract.
+            overflow = row.get("overflow") or {"reason": "attended_projects", "at": utc_now()}
+            episode_id = "overflow_" + content_hash([row["session_id"], overflow])[:32]
+            return [{"kind": SIGNAL, "project_ref": projects[0], "episode_id": episode_id,
+                     "correlation_id": PREFIX + episode_id, "began_at": overflow["at"],
+                     "recovery_scope": "worker", "attended_project_count": len(projects),
+                     "supported_project_limit": policy.MAX_EPISODES,
+                     "inventory_count": "unknown", "inventory_hash": "unknown",
+                     "last_model_handled_at": "unknown", "handled_via": "unknown",
+                     "cause": {"kind": "state_overflow"}, "state_overflow": dict(overflow),
+                     "next": "Worker attendance exceeds the supported scope. This notice is worker-wide, not a census of its anchor project. Inspect all original attendance and preserved pending evidence; ask the current coordinator for explicit recovery. No subset is approved and queued execution stays gated."}]
         signals = [{"kind": SIGNAL, "episode_id": e["episode_id"], "project_ref": p,
                  "began_at": e["began_at"], "last_model_handled_at": e["prior_model_entry"].get("at") or "unknown",
                  "handled_via": e["prior_model_entry"].get("via") or "unknown",
@@ -330,7 +360,6 @@ class ReturnReconciliation:
                  "next": "Inspect the queued requests with worker inbox; ask the current coordinator for one current resume list; record per-item decisions, then explicitly return-confirm. Silence never confirms."}
                 for p, e in row["episodes"].items() if e["state"] == "pending"]
         if row.get("overflow"):
-            projects = self.field.read_worker(self.worker).get("attended_project_refs") or []
             for project in projects:
                 if project not in row["episodes"] or row["episodes"][project]["state"] != "pending":
                     episode_id = "overflow_" + content_hash([row["session_id"], project, row["overflow"]])[:32]

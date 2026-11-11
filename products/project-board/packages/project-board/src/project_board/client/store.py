@@ -6001,9 +6001,12 @@ class SharedFieldStore:
             raise ValueError("Return census budgets must be positive integers")
         worker = self.read_worker(worker_name)
         clean_name = str(worker.get("worker_name") or "")
-        projects = list(worker.get("attended_project_refs") or [])
+        projects = worker.get("attended_project_refs") or []
         snapshot = {"headers": [], "overflow": "", "stamps": [], "stable": True,
-                    "entries_seen": 0, "bytes_read": 0, "records_read": 0}
+                    "entries_seen": 0, "bytes_read": 0, "records_read": 0,
+                    "context": {"worker_name": clean_name,
+                                "session_id": str(worker.get("runtime_session_id") or ""),
+                                "projects": list(projects) if len(projects) <= max_projects else None}}
         if len(projects) > max_projects:
             snapshot["overflow"] = "census_projects"
             return snapshot
@@ -6075,11 +6078,17 @@ class SharedFieldStore:
     def pending_return_census_current(self, worker_name, snapshot):
         """O(attended scopes) validation, never another inbox enumeration.
 
-        ReturnReconciliation separately revalidates its state generation,
-        native session, attendance and holder bindings under its own lock.
+        The actual captured session/scope must still match, including on an
+        attendance P/Q/P race around capture. ReturnReconciliation also binds
+        this capture context to its expected state and revalidates holders.
         These filesystem stamps are input-race detection, not authority.
         """
         try:
+            worker = self.read_worker(worker_name)
+            if snapshot.get("context") != {"worker_name": str(worker.get("worker_name") or ""),
+                                          "session_id": str(worker.get("runtime_session_id") or ""),
+                                          "projects": worker.get("attended_project_refs") or []}:
+                return False
             return all(self._return_census_stamp(Path(path)) == stamp for path, stamp in snapshot["stamps"])
         except OSError:
             return False

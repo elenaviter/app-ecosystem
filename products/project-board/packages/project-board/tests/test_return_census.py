@@ -63,9 +63,13 @@ def forbid_census(*_args, **_kwargs):
 
 
 @pytest.mark.parametrize("via", ["prepare", "receive", "wake-ack", "lease-read", "settle"])
-def test_inactive_none_no_requirements_no_episode_never_reads_headers(field, monkeypatch, via):
+@pytest.mark.parametrize("project_count", [1, 17])
+def test_inactive_none_no_requirements_no_episode_never_reads_headers(field, monkeypatch, via, project_count):
     state = returns.ReturnReconciliation(field, WORKER)
     enqueue(field, "ordinary-task")  # a nonempty inbox is not permission to scan
+    field.sync_worker_attendances(WORKER, [PROJECT, *(
+        f"work:project:project-extra-{n}" for n in range(project_count - 1)
+    )])
     monkeypatch.setattr(field, "pending_mail_headers", forbid_census)
     monkeypatch.setattr(field, "pending_return_census", forbid_census)
     signals = state.prepare() if via == "prepare" else state.model_entry(via)
@@ -73,6 +77,7 @@ def test_inactive_none_no_requirements_no_episode_never_reads_headers(field, mon
     row = read_json(state.path)
     assert row["episodes"] == {}
     assert row["pending_requirements"] == {}
+    assert not row.get("overflow")  # unsupported scope alone is not a return cause
 
 
 @pytest.mark.parametrize("via", ["prepare", "receive", "wake-ack", "lease-read", "settle"])
@@ -299,3 +304,152 @@ def test_overflow_after_confirmation_remains_visible_without_actionable_snapshot
     with pytest.raises(DomainError) as error:
         state.confirm(PROJECT, signal["episode_id"], decision, coordinator())
     assert error.value.code == "field_return_state_overflow"
+
+
+@pytest.mark.parametrize("initial", ["pending", "confirmed", "legacy_pending"])
+@pytest.mark.parametrize("via", ["prepare", "receive", "wake-ack", "lease-read", "settle",
+                                "request", "record_request", "confirm", "activity", "cause"])
+def test_unsupported_attendance_never_fans_out_and_keeps_all_evidence(field, monkeypatch, initial, via):
+    state = returns.ReturnReconciliation(field, WORKER)
+    state.model_entry("receive")
+    signal, decision = requested(field, state)
+    context = deepcopy(read_json(state.path)["episodes"][PROJECT]["request"])
+    if initial == "confirmed":
+        state.confirm(PROJECT, signal["episode_id"], decision, coordinator())
+    elif initial == "legacy_pending":
+        legacy = read_json(state.path)
+        legacy.pop("state_version")
+        atomic_write_json(state.path, legacy)
+    before = read_json(state.path)
+    projects = sorted([PROJECT, *(f"work:project:project-extra-{n}" for n in range(16))])
+    field.sync_worker_attendances(WORKER, projects)  # the real owner permits 17
+    holder_reads = []
+
+    def forbid_holder(project):
+        holder_reads.append(project)
+        pytest.fail("Unsupported attendance must be fenced before any coordinator-file read")
+
+    monkeypatch.setattr(field, "read_project_coordinator", forbid_holder)
+    monkeypatch.setattr(field, "pending_mail_headers", forbid_census)
+    monkeypatch.setattr(field, "pending_return_census", forbid_census)
+
+    def probe():
+        if via == "prepare":
+            state.prepare()
+        elif via in {"receive", "wake-ack", "lease-read", "settle"}:
+            state.model_entry(via, now="2026-11-08T12:00:00Z")
+        elif via == "request":
+            state.request_context(PROJECT, signal.get("correlation_id", ""), "coordinator-one", coordinator())
+        elif via == "record_request":
+            state.record_request(PROJECT, context, {"message_ref": "work:mail:new-census", "created_at": NOW})
+        elif via == "confirm":
+            state.confirm(PROJECT, signal.get("episode_id", ""), decision, coordinator())
+        elif via == "activity":
+            state.observe_activity({"session_id": field.read_worker(WORKER)["runtime_session_id"],
+                                    "source_generation": "fixture", "cursor": 1,
+                                    "turn_key": "fixture-one", "occurred_at": NOW})
+        else:
+            state.record_cause("session_suspension", {"occurrence_id": "B", "source": "fixture"})
+
+    for _ in range(2):  # first detection AND an already-fenced control/model probe
+        if via in {"request", "record_request", "confirm"}:
+            with pytest.raises(DomainError) as error:
+                probe()
+            assert error.value.code == "field_return_state_overflow"
+        else:
+            probe()
+        [notice] = state.signals()
+        assert notice["recovery_scope"] == "worker"
+        assert notice["attended_project_count"] == 17
+        assert notice["supported_project_limit"] == 16
+        assert notice["state_overflow"]
+        assert notice["inventory_count"] == "unknown"  # never a complete/partial census claim
+        after = read_json(state.path)
+        assert after["activity_baseline"] == before["activity_baseline"]
+        assert after["pending_requirements"] == before["pending_requirements"]
+        assert set(after["episodes"]) == set(before["episodes"])
+        for project, original in before["episodes"].items():
+            episode = after["episodes"][project]
+            assert episode["inventory"] == original["inventory"]
+            assert episode["requirements"] == original["requirements"]
+            if original["state"] == "pending":
+                assert episode["request"] is None
+        assert field.read_worker(WORKER)["attended_project_refs"] == projects
+    assert holder_reads == []
+
+
+def test_first_known_return_with_unsupported_scope_keeps_cause_and_visible_fence(field, monkeypatch):
+    state = returns.ReturnReconciliation(field, WORKER)
+    state.model_entry("receive")
+    before = read_json(state.path)
+    projects = [PROJECT, *(f"work:project:project-extra-{n}" for n in range(16))]
+    field.sync_worker_attendances(WORKER, projects)
+    monkeypatch.setattr(field, "read_project_coordinator", forbid_census)
+    monkeypatch.setattr(field, "pending_return_census", forbid_census)
+    state.record_cause("quota_hold", {"hold_id": "A", "source": "fixture"})
+    after = read_json(state.path)
+    assert after["activity_baseline"] == before["activity_baseline"]
+    assert after["cause"]["evidence"]["hold_id"] == "A"
+    assert after["overflow"]["blocked_requirement_id"] == after["cause"]["token"]
+    assert after["episodes"] == {}  # no partial set of newly invented episodes
+    [notice] = state.prepare()
+    assert notice["recovery_scope"] == "worker"
+    assert notice["attended_project_count"] == 17
+    assert len(field.read_worker(WORKER)["attended_project_refs"]) == 17
+
+
+@pytest.mark.parametrize("repeat", [False, True])
+def test_capture_scope_p_q_p_cannot_confirm_a_request_missing_new_p_mail(field, monkeypatch, repeat):
+    state = returns.ReturnReconciliation(field, WORKER)
+    signal, decision = requested(field, state)
+    before = read_json(state.path)
+    other = "work:project:project-two"
+    reader = field.pending_return_census
+    snapshots = []
+
+    def attendance_race(*args, **kwargs):
+        if not snapshots:
+            # Admission is BEFORE capture/final validation, while P is attended.
+            enqueue(field, "new-P-task")
+        if not snapshots or repeat:
+            field.sync_worker_attendances(WORKER, [other])
+            snapshot = reader(*args, **kwargs)
+            assert snapshot["stable"] is True
+            assert snapshot["context"]["projects"] == [other]
+            omitted = str(field._mail_root("project-one", WORKER) / "inbox")
+            assert omitted not in {path for path, _stamp in snapshot["stamps"]}
+            field.sync_worker_attendances(WORKER, [PROJECT])
+        else:
+            snapshot = reader(*args, **kwargs)
+        snapshots.append(snapshot)
+        return snapshot
+
+    monkeypatch.setattr(field, "pending_return_census", attendance_race)
+    with pytest.raises(DomainError) as error:
+        state.confirm(PROJECT, signal["episode_id"], decision, coordinator())
+    after = read_json(state.path)
+    assert len(snapshots) == policy.MAX_CENSUS_ATTEMPTS
+    assert after["episodes"][PROJECT]["state"] == "pending"
+    assert after["episodes"][PROJECT]["request"] is None
+    assert after["activity_baseline"] == before["activity_baseline"]
+    assert field.read_worker(WORKER)["attended_project_refs"] == [PROJECT]
+    if repeat:
+        assert error.value.code == "field_return_state_overflow"
+        assert after["overflow"]["reason"] == "census_retry_exhausted"
+        assert after["episodes"][PROJECT]["inventory"] == before["episodes"][PROJECT]["inventory"]
+    else:
+        assert error.value.code == "field_return_decision_mismatch"
+        assert snapshots[1]["context"]["projects"] == [PROJECT]
+        assert {h["subject"] for h in after["episodes"][PROJECT]["inventory"]} == {"old-task", "new-P-task"}
+
+
+@pytest.mark.parametrize("key,value", [("worker_name", "other-worker"), ("session_id", "other-session"),
+                                     ("projects", ["work:project:project-two"]), ("missing", None)])
+def test_store_validation_checks_captured_identity_not_just_matching_stamps(field, key, value):
+    snapshot = capture(field)
+    assert field.pending_return_census_current(WORKER, snapshot)
+    if key == "missing":
+        snapshot.pop("context")
+    else:
+        snapshot["context"][key] = value
+    assert not field.pending_return_census_current(WORKER, snapshot)

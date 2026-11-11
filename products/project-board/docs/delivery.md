@@ -682,6 +682,21 @@ reads; the current holder epoch is still checked and a change revokes the old
 checkpoint without needing a scan. Pending or migrated requirements keep their
 fences and use the census path when input is needed.
 
+The owner checks the 16-project supported-attendance bound before holder-file
+fan-out, context hashing of project values, census capture or per-attendance
+transitions. Unsupported scope fences the whole worker, not a selected prefix.
+An entirely inactive None/no-episode/no-requirements state still takes its
+ordinary no-census path: unsupported attendance alone is not a return cause.
+The Store's original attendance list and all prior pending requirements,
+inventories and episodes remain intact; pending requests are invalidated and
+neither checkpoint approval nor the activity baseline can advance. Recovery
+probes do no coordinator or inbox fan-out while attendance is over the bound.
+They emit one explicitly worker-wide recovery notice, anchored to one real
+attended project only for existing message routing, with the actual attendance
+count and unknown inventory size. This is not an inventory or approval for
+that anchor or a truncated subset. Original evidence remains inspectable and
+the fence requires explicit recovery; merely reducing attendance cannot clear it.
+
 The needed input is a bounded snapshot of the existing Store inbox, captured
 outside the reconciliation lock, not a complete scan truncated afterward.
 One attempt admits at most 128 headers, examines at most 256 directory entries
@@ -693,8 +708,15 @@ Bodies/payloads from bounded JSON reads are discarded after the existing
 header projection; they never enter return state. Ordinary full-census
 inspection callers retain their existing complete interface.
 
-Before committing, the owner revalidates return state, native session,
-attendance and holder bindings plus bounded directory/backlog input stamps.
+Each snapshot carries the worker, native session and exact attended project
+scope that actually selected its roots. Before committing, the owner binds
+that capture context to its expected/revalidated context and checks current
+return state and holder bindings plus bounded directory/backlog input stamps.
+Store validation also checks the captured session/scope, not only the returned
+stamps. A P-to-Q-to-P attendance change around capture cannot use a direct/Q
+snapshot to approve P's old inventory while missing new P mail. It retries
+against P or persists the recovery fence after the bounded attempts. An
+unrelated heartbeat revision is not used as a substitute for capture identity.
 These stamps detect input races, not execution authority. At most two captures
 are attempted per operation. Exhausted races, unreadable or oversized input
 persist a recovery/overflow fence, retain admitted evidence and prevent

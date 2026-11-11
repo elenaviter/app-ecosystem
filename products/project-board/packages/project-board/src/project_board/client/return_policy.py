@@ -86,10 +86,14 @@ def add_requirement(row, requirement_id: str, evidence: Mapping[str, Any], proje
         row["overflow"].setdefault("blocked_requirement_id", requirement_id)
         row["overflow"].setdefault("blocked_evidence_hash", content_hash(evidence))
         return
-    targets = list(dict.fromkeys(projects))
-    if len(targets) > MAX_EPISODES:
+    # Attendance is already normalized by its owner. Check cardinality before
+    # copying/deduplicating an unsupported scope into the bounded ledger.
+    if len(projects) > MAX_EPISODES:
         overflow(row, "attended_projects", now)
+        row["overflow"].setdefault("blocked_requirement_id", requirement_id)
+        row["overflow"].setdefault("blocked_evidence_hash", content_hash(evidence))
         return
+    targets = list(dict.fromkeys(projects))
     record = {"requirement_id": requirement_id, "evidence": deepcopy(dict(evidence)),
               "projects": targets, "consumed_by": []}
     pending[requirement_id] = record
@@ -214,9 +218,12 @@ def migrate(row, projects):
     if cause_key and (unconfirmed or cause_key != row.get("consumed_cause")):
         if cause_key in row["pending_requirements"]:
             record = row["pending_requirements"][cause_key]
-            record["projects"] = list(dict.fromkeys([*record["projects"], *projects]))
-            if len(record["projects"]) > MAX_EPISODES:
+            if len(projects) > MAX_EPISODES:
                 overflow(row, "legacy_attended_projects", now)
+            else:
+                record["projects"] = list(dict.fromkeys([*record["projects"], *projects]))
+                if len(record["projects"]) > MAX_EPISODES:
+                    overflow(row, "legacy_attended_projects", now)
         else:
             add_requirement(row, cause_key, cause, projects, now)
     elif cause_key:
