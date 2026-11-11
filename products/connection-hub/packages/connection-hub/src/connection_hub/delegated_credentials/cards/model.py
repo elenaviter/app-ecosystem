@@ -725,6 +725,34 @@ def authority_is_usable(authority: "CardAuthority", moment: int) -> bool:
     return authority.expires_at > moment
 
 
+CONNECTOR_ENTRY_RESOURCE_MISSING = "card_identity_entry_resource_missing"
+
+
+def connector_entry_resource_refusal(
+    candidate: "CardAuthority", original: "CardAuthority | None"
+) -> str | None:
+    """The refusal for a write that removes a live connector Card's entry door.
+
+    A connector Card's identity is (owner, client, kind, entry_resource), and
+    a refresh of a family issued by the original exchange (which records only
+    ``resources``) takes its resource from the Card. A write never removes
+    the door (W35): a candidate without one is refused when the revision it
+    replaces held one. A Card that is already without its door (older
+    connector Cards, Cards an editor Save emptied before this rule) stays
+    writable, so refresh, re-consent and disconnect can repair or remove it.
+    A revoked candidate is not live authority and is never refused.
+    """
+    if (
+        candidate.card_kind == CARD_KIND_CONNECTOR
+        and candidate.state == CARD_STATE_ACTIVE
+        and not str(candidate.entry_resource or "").strip()
+        and original is not None
+        and str(original.entry_resource or "").strip()
+    ):
+        return CONNECTOR_ENTRY_RESOURCE_MISSING
+    return None
+
+
 def authority_is_credentialless(authority: "CardAuthority") -> bool:
     """Whether this regular Card intentionally carries no credential."""
     return (
