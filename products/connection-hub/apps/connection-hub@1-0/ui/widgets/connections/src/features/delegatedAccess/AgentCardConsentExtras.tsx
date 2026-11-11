@@ -172,7 +172,7 @@ export function AgentCardConsentExtras({
 
 /** Provider permissions the Card's operations need that no connected account
  *  holds. The button saves what is selected first, then opens that provider's
- *  consent with the agent hand-off (the colleague, 2026-11-11: "так, варіант 2"). */
+ *  consent with the agent hand-off. */
 export function MissingProviderPermissions({ missing, accounts, providerLabel, disabled, onSaveAndRequest }: {
   missing: NeededProviderClaims[];
   accounts: ConsentAccount[];

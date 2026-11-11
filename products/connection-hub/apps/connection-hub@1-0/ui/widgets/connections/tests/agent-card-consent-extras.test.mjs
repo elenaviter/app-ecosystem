@@ -1,6 +1,5 @@
 // W34: the Agent Card consent review adds more access within the agent's Control, and only adds.
-// The colleague, 2026-11-11: "огляд лише додає. Повне редагування лишатиметься на редагуванні в самому хабі."
-// and, for a provider permission no account holds, "так, варіант 2": save first, then the provider.
+// Narrowing stays in the Card's Edit. A provider permission no account holds is requested after a save.
 import assert from 'node:assert/strict'
 import test from 'node:test'
 

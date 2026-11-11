@@ -1,5 +1,5 @@
-// W34 (the colleague, 2026-11-11): the Agent Card consent review offers more access within the agent's Control
-// and only adds ("огляд лише додає"); a provider permission nobody holds is requested after saving ("варіант 2").
+// W34: the Agent Card consent review offers more access within the agent's Control and only adds;
+// a provider permission nobody holds is requested at its provider after saving the selection.
 // Mounted: the real DelegatedAccessPanel and store in Chromium, the Hub the recording bridge of the W1018 fixture
 // (tests/fixtures/w1018-agent-card-consent.tsx). The Card holds slides object.list; its Control also allows
 // slides provider.about and object.upsert, sheets values.update, memories:read and the records_export tool.

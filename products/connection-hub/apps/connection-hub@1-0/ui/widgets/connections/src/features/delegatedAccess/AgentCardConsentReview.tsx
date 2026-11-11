@@ -211,7 +211,7 @@ export function AgentCardConsentReview({
     }
   };
 
-  // "так, варіант 2": save what is selected first, then go to the provider; a refusal stays here.
+  // Save what is selected first, then go to the provider; a refusal stays here.
   const saveAndRequest = async (missing: NeededProviderClaims) => {
     const href = providerUpgradeHref(window.location.href, missing, request.clientId, accounts);
     if (!href) return;

@@ -1,9 +1,8 @@
 /**
  * W34: more access, added on the agent's Card in the same consent.
  *
- * The colleague, 2026-11-11: "огляд лише додає. Повне редагування лишатиметься
- * на редагуванні в самому хабі." The Agent Card consent review offers, beside
- * what the agent asked for, everything the agent's Control allows on every
+ * The Agent Card consent review offers, beside what the agent asked for,
+ * everything the agent's Control allows on every
  * resource and service, and every connected account's provider permissions.
  * It only adds (merge): what the Card holds is shown and never removed; the
  * Card's own Edit stays the place that narrows (`replace`).
@@ -12,8 +11,8 @@
  * (optional) - pick from anything delegable here", 2026-07-18); W1018 moved a
  * hosted agent's consent to its Card review, which held only the request.
  *
- * And, "так, варіант 2": a provider permission no connected account holds is
- * requested at that provider by a button that first saves everything selected.
+ * A provider permission no connected account holds is requested at that
+ * provider by a button that first saves everything selected.
  */
 import type {
   DelegatedAccessNamedServiceNamespaceOption,
