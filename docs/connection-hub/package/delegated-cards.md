@@ -948,6 +948,16 @@ on the Agent Card unchanged. The descriptor initializes and caps the Control
 Card; the Agent Card reconciles against the Control Card, not directly against
 the descriptor.
 
+The synchronization checks each named-service operation of the Agent Card by
+the same rule as a Save (see [Projection into a saved card](#projection-into-a-saved-card)):
+an operation is backed by its door grants or by provider-backed grants bound on
+the Agent Card's own `account_scope`. The descriptor Control Card is
+credentialless and has no account binding, so its ceiling is resolved from door
+grants only. The two are separate entry points
+(`resolve_descriptor_control_ceiling`, `resolve_agent_card_standard_authority`)
+over one shared check, and the agent entry point always takes the Card's
+binding, `{}` when it binds no account.
+
 An MCP server with individually declared tool capabilities stores the selected
 tools. A server exposed only as one capability selects the operations declared
 for that server; it does not become an empty resource merely because no child

@@ -49,6 +49,7 @@ from connection_hub.delegated_credentials.automation_access import (
     _application_policy_refusal,
     _clean,
     _delegate_mutation_refusal,
+    _effective_named_service_grants,
     _record_is_credentialless,
     _selection_policy_argument,
     _serving_state_unavailable,
@@ -694,7 +695,7 @@ def _descriptor_standard_maps(
     )
 
 
-async def resolve_agent_descriptor_standard_authority(
+async def resolve_descriptor_control_ceiling(
     service: Any,
     *,
     active: Any,
@@ -704,7 +705,68 @@ async def resolve_agent_descriptor_standard_authority(
     named_service_operations: Mapping[str, Any] | str | None,
     properties: Mapping[str, Any],
 ) -> "ResolvedCardAuthority":
-    """Resolve a descriptor ceiling without treating it as a user grant.
+    """Resolve the descriptor Control ceiling: a credentialless Card.
+
+    A Control Card has no credential and no account binding, so a named-service
+    operation is backed only by the door grants it names. This entry point has
+    no account parameter on purpose: an account binding never widens a ceiling.
+    The agent's own Card resolves through ``resolve_agent_card_standard_authority``.
+    """
+
+    return await _resolve_descriptor_standard_authority(
+        service, active=active, owner_subject=owner_subject, resource_grants=resource_grants,
+        resource_operations=resource_operations, named_service_operations=named_service_operations,
+        properties=properties, operation_grants=lambda resource, door, config: list(door),
+    )
+
+
+async def resolve_agent_card_standard_authority(
+    service: Any,
+    *,
+    active: Any,
+    owner_subject: str,
+    resource_grants: Mapping[str, Any],
+    resource_operations: Mapping[str, Any] | None,
+    named_service_operations: Mapping[str, Any] | str | None,
+    properties: Mapping[str, Any],
+    account_scope: Mapping[str, Any],
+) -> "ResolvedCardAuthority":
+    """Resolve a descriptor agent's own Card, which carries an account binding.
+
+    A named-service operation is backed by its door grants or by a
+    provider-backed grant bound on ``account_scope``, exactly as a Card Save
+    decides it (``_effective_named_service_grants``; delegated-cards.md,
+    "Projection into a saved card"). ``account_scope`` is required: pass the
+    Card's binding, or ``{}`` when it binds no account. W37: before this split one
+    function served both the ceiling and the agent's Card and counted door grants
+    only, so the sync refused Cards that Save and consent accept.
+    """
+
+    return await _resolve_descriptor_standard_authority(
+        service, active=active, owner_subject=owner_subject, resource_grants=resource_grants,
+        resource_operations=resource_operations, named_service_operations=named_service_operations,
+        properties=properties,
+        operation_grants=lambda resource, door, config: _effective_named_service_grants(
+            door, account_scope=account_scope, required=config.resource_grants(resource)),
+    )
+
+
+async def _resolve_descriptor_standard_authority(
+    service: Any,
+    *,
+    active: Any,
+    owner_subject: str,
+    resource_grants: Mapping[str, Any],
+    resource_operations: Mapping[str, Any] | None,
+    named_service_operations: Mapping[str, Any] | str | None,
+    properties: Mapping[str, Any],
+    operation_grants: Any,
+) -> "ResolvedCardAuthority":
+    """The shared primitive: resolve and check descriptor standard authority.
+
+    It knows nothing about whose Card this is. ``operation_grants(resource,
+    door_grants, catalog_config)`` returns the grants that back a named-service
+    operation on that resource; the two entry points above decide it.
 
     A Control Card only narrows a participant Card. Its exact ceiling may
     therefore name authority the current user does not hold; intersection
@@ -821,7 +883,7 @@ async def resolve_agent_descriptor_standard_authority(
                 named_services=row_named_services,
                 resource=resource,
                 selection=_selection_policy_argument(selection),
-                grants=selected_grants.get(resource, ()),
+                grants=operation_grants(resource, selected_grants.get(resource, ()), catalog_config),
             )
         except ValueError as exc:
             return ResolvedCardAuthority(
@@ -1009,7 +1071,8 @@ async def sync_agent_capability_control(
             named_service_operations,
             descriptor_named,
         )
-        resolved = await resolve_agent_descriptor_standard_authority(
+        # The descriptor Control ceiling: credentialless, door grants only.
+        resolved = await resolve_descriptor_control_ceiling(
             service,
             active=active,
             owner_subject=grantor_subject,
@@ -1036,8 +1099,13 @@ async def sync_agent_capability_control(
                 if requested_selection is not None
                 else ({}, {}, {})
             )
-            selected_standard = await resolve_agent_descriptor_standard_authority(
+            # The agent's requested selection. No agent Card is loaded at this
+            # point, so no account binding is known: its door grants come from the
+            # explicit request and the descriptor maps. The Card's own binding is
+            # applied when the Card is projected and aligned below.
+            selected_standard = await resolve_agent_card_standard_authority(
                 service,
+                account_scope={},
                 active=active,
                 owner_subject=grantor_subject,
                 resource_grants=_merge_authority_map(
@@ -1210,7 +1278,8 @@ async def sync_agent_capability_control(
             bounded_named = NamedServiceSelection.exact(bounded_named_map)
         else:
             bounded_named = NamedServiceSelection.none()
-        resolved = await resolve_agent_descriptor_standard_authority(
+        # The stored Control ceiling bounded by what the descriptor still allows: credentialless.
+        resolved = await resolve_descriptor_control_ceiling(
             service,
             active=active,
             owner_subject=grantor_subject,
@@ -1444,8 +1513,10 @@ async def sync_agent_capability_control(
                     include_overridden=True,
                 )
             )
-            projected_standard = await resolve_agent_descriptor_standard_authority(
+            # The agent's Card projected from its selection: the Card's own account binding applies.
+            projected_standard = await resolve_agent_card_standard_authority(
                 service,
+                account_scope=(existing_resident.account_scope if existing_resident is not None else {}),
                 active=active,
                 owner_subject=grantor_subject,
                 resource_grants=selected_grants,
@@ -1668,9 +1739,11 @@ async def sync_agent_capability_control(
             grants, operations, named = selected_standard_maps(resident=existing_resident if passive_sync else resident,
                 control=record_from_card(control_authority), authority=authority, selected=selected, config=catalog_config,
                 allow_additions=not passive_sync)
-            aligned = await resolve_agent_descriptor_standard_authority(service, active=active,
+            # The agent's Card aligned in its transaction: its own account binding backs provider claims (W37).
+            aligned = await resolve_agent_card_standard_authority(service, active=active,
                 owner_subject=grantor_subject, resource_grants=grants, resource_operations=operations,
-                named_service_operations=named.to_stored(), properties=resident.properties)
+                named_service_operations=named.to_stored(), properties=resident.properties,
+                account_scope=resident.account_scope)
             if aligned.error is not None:
                 return {"retryable": False, **aligned.error}
             resident = dataclasses.replace(resident,
@@ -2118,7 +2191,8 @@ async def update_agent_capability_selection(
 
 __all__ = [
     "AGENT_CAPABILITY_CARD_LEASE_SECONDS",
-    "resolve_agent_descriptor_standard_authority",
+    "resolve_agent_card_standard_authority",
+    "resolve_descriptor_control_ceiling",
     "sync_agent_capability_control",
     "update_agent_capability_selection",
 ]
