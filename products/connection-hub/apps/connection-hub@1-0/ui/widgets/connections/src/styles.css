@@ -4570,3 +4570,24 @@ fieldset.resource-edit-section__body { border: 0; margin: 0; min-width: 0; }
   background: rgba(var(--kind-rgb), 0.12);
   font-weight: 600;
 }
+
+/* W34: All / None of a group act on its addable entries only. */
+.agent-card-consent-group__bulk {
+  display: inline-flex;
+  flex: 0 0 auto;
+  gap: 4px;
+}
+
+.agent-card-consent-group__bulk button {
+  padding: 2px 8px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--surface-1, #fff);
+  color: var(--kind);
+  font-size: 11.5px;
+  cursor: pointer;
+}
+
+.agent-card-consent-group__bulk button:hover:not(:disabled) {
+  border-color: var(--kind);
+}

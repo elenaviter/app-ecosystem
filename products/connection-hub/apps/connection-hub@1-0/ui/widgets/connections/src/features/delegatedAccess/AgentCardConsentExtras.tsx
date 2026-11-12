@@ -33,27 +33,51 @@ interface Props {
   providerLabel: (providerId: string) => string;
   accountLabel: (accountId: string) => string;
   disabled: boolean;
+  /** What the agent asked for: shown selected, fixed and marked "requested"
+   *  wherever it appears in the groups, never counted as something to add. */
+  requested?: {
+    resource: string;
+    namespace?: string;
+    operation?: string;
+    outerOperation?: string;
+    grants: string[];
+    accountClaims: Record<string, string[]>;
+  };
 }
 
 function toggled(values: string[], value: string, checked: boolean): string[] {
   return checked ? Array.from(new Set([...values, value])) : values.filter((item) => item !== value);
 }
 
-function countText(rows: readonly ExtraRow[], picked: readonly string[]): string {
-  const addable = rows.filter((row) => row.inControl && !row.held).length;
+function countText(rows: readonly ExtraRow[], picked: readonly string[], asked: readonly string[] = []): string {
+  const open = rows.filter((row) => row.inControl && !row.held && !asked.includes(row.key));
   const held = rows.filter((row) => row.held).length;
-  const chosen = rows.filter((row) => picked.includes(row.key) && row.inControl && !row.held).length;
+  const requested = rows.filter((row) => !row.held && asked.includes(row.key)).length;
+  const chosen = open.filter((row) => picked.includes(row.key)).length;
   return [
+    requested ? `${requested} requested` : '',
     chosen ? `${chosen} selected` : '',
-    `${addable} can be added`,
+    `${open.length} can be added`,
     held ? `${held} already allowed` : '',
   ].filter(Boolean).join(' · ');
 }
 
+/** The keys All would select: inside the Control, not held, not requested. */
+function addableKeys(rows: readonly ExtraRow[], asked: readonly string[] = []): string[] {
+  return rows.filter((row) => row.inControl && !row.held && !asked.includes(row.key)).map((row) => row.key);
+}
+
 /** One collapsible group, its summary styled as a control the owner opens. */
-function Group({ title, hint, count, testId, children }: {
+function Group({ title, hint, count, testId, children, onAll, onNone, disabled }: {
   title: ReactNode; hint?: string; count: string; testId: string; children: ReactNode;
+  /** All / None for the group's addable entries; absent for groups of groups. */
+  onAll?: () => void; onNone?: () => void; disabled?: boolean;
 }) {
+  const press = (action?: () => void) => (event: { preventDefault: () => void; stopPropagation: () => void }) => {
+    event.preventDefault();
+    event.stopPropagation();
+    action?.();
+  };
   return (
     <details className="agent-card-consent-group" data-testid={testId}>
       <summary>
@@ -61,6 +85,12 @@ function Group({ title, hint, count, testId, children }: {
           <strong>{title}</strong>
           {hint ? <small>{hint}</small> : null}
         </span>
+        {onAll || onNone ? (
+          <span className="agent-card-consent-group__bulk">
+            <button type="button" disabled={disabled} onClick={press(onAll)} data-testid="agent-card-consent-group-all">All</button>
+            <button type="button" disabled={disabled} onClick={press(onNone)} data-testid="agent-card-consent-group-none">None</button>
+          </span>
+        ) : null}
         <span className="agent-card-consent-group__count">{count}</span>
       </summary>
       <div className="agent-card-consent-group__body">{children}</div>
@@ -69,14 +99,31 @@ function Group({ title, hint, count, testId, children }: {
 }
 
 export function AgentCardConsentExtras({
-  offer, picks, onPicks, accounts, baseScope, bindable, providerLabel, accountLabel, disabled,
+  offer, picks, onPicks, accounts, baseScope, bindable, providerLabel, accountLabel, disabled, requested,
 }: Props) {
+  const askedOperations = (resource: string, namespace: string) => (
+    requested && requested.resource === resource && requested.namespace === namespace && requested.operation
+      ? [requested.operation] : []);
+  const askedGrants = (resource: string) => (requested && requested.resource === resource ? requested.grants : []);
+  const askedOuter = (resource: string) => (
+    requested && requested.resource === resource && requested.outerOperation ? [requested.outerOperation] : []);
   const providers = Array.from(new Set(accounts.map((account) => account.provider_id))).sort();
   const pickedCount = Object.values(picks.grants).flat().length + Object.values(picks.outer).flat().length
     + Object.values(picks.named).flatMap((byNamespace) => Object.values(byNamespace).flat()).length
     + Object.values(picks.accounts).flatMap((byAccount) => Object.values(byAccount).flat()).length;
 
-  const row = (item: ExtraRow, checked: boolean, onChange: (value: boolean) => void, testId: string, chip = false) => {
+  const row = (item: ExtraRow, checked: boolean, onChange: (value: boolean) => void, testId: string, chip = false, asked = false) => {
+    if (asked && !item.held) {
+      return (
+        <label className={`${chip ? 'grant-chip agent-card-consent-chip' : 'namespace-operation agent-card-consent-row'} agent-card-consent-picked agent-card-consent-requested`} key={item.key} data-testid={testId}>
+          <input type="checkbox" checked disabled readOnly />
+          <span>
+            {item.label !== item.key ? <>{item.label} <code>{item.key}</code></> : <code>{item.key}</code>}
+            <span className="badge badge-warn" style={{ marginLeft: 8 }}>requested</span>
+          </span>
+        </label>
+      );
+    }
     const picked = checked && item.inControl && !item.held;
     const className = [
       chip ? 'grant-chip agent-card-consent-chip' : 'namespace-operation agent-card-consent-row',
@@ -132,12 +179,23 @@ export function AgentCardConsentExtras({
               >
                 {item.namespaces.map((namespace) => {
                   const selected = picks.named[item.resource]?.[namespace.namespace] || [];
+                  const asked = askedOperations(item.resource, namespace.namespace);
+                  const setNamespace = (operations: string[]) => onPicks({
+                    ...picks,
+                    named: {
+                      ...picks.named,
+                      [item.resource]: { ...(picks.named[item.resource] || {}), [namespace.namespace]: operations },
+                    },
+                  });
                   return (
                     <Group
                       key={namespace.namespace}
                       title={<>{namespace.label} <code>{namespace.namespace}</code></>}
-                      count={countText(namespace.rows, selected)}
+                      count={countText(namespace.rows, selected, asked)}
                       testId="agent-card-consent-extra-namespace"
+                      disabled={disabled}
+                      onAll={() => setNamespace(addableKeys(namespace.rows, asked))}
+                      onNone={() => setNamespace([])}
                     >
                       <div className="namespace-operation-list">
                         {namespace.rows.map((operation) => row(
@@ -154,6 +212,8 @@ export function AgentCardConsentExtras({
                             },
                           }),
                           'agent-card-consent-extra-operation',
+                          false,
+                          asked.includes(operation.key),
                         ))}
                       </div>
                     </Group>
@@ -165,15 +225,21 @@ export function AgentCardConsentExtras({
               <Group
                 title="Permissions (claims)"
                 hint="Grouped by service; each group opens on its own"
-                count={countText(item.grants, pickedGrants)}
+                count={countText(item.grants, pickedGrants, askedGrants(item.resource))}
                 testId="agent-card-consent-extra-grants"
               >
                 {grantGroups(item.grants).map((group) => (
                   <Group
                     key={group.service}
                     title={<code>{group.service}</code>}
-                    count={countText(group.rows, pickedGrants)}
+                    count={countText(group.rows, pickedGrants, askedGrants(item.resource))}
                     testId="agent-card-consent-extra-grant-group"
+                    disabled={disabled}
+                    onAll={() => onPicks({ ...picks, grants: { ...picks.grants, [item.resource]: Array.from(new Set([
+                      ...pickedGrants, ...addableKeys(group.rows, askedGrants(item.resource)),
+                    ])) } })}
+                    onNone={() => onPicks({ ...picks, grants: { ...picks.grants, [item.resource]: pickedGrants
+                      .filter((key) => !group.rows.some((entry) => entry.key === key)) } })}
                   >
                     <div className="resource-grants">
                       {group.rows.map((grant) => row(
@@ -182,6 +248,7 @@ export function AgentCardConsentExtras({
                         (checked) => onPicks({ ...picks, grants: { ...picks.grants, [item.resource]: toggled(pickedGrants, grant.key, checked) } }),
                         'agent-card-consent-extra-grant',
                         true,
+                        askedGrants(item.resource).includes(grant.key),
                       ))}
                     </div>
                   </Group>
@@ -191,8 +258,11 @@ export function AgentCardConsentExtras({
             {item.outer.some((operation) => !operation.held) ? (
               <Group
                 title="Tools"
-                count={countText(item.outer, pickedOuter)}
+                count={countText(item.outer, pickedOuter, askedOuter(item.resource))}
                 testId="agent-card-consent-extra-tools"
+                disabled={disabled}
+                onAll={() => onPicks({ ...picks, outer: { ...picks.outer, [item.resource]: addableKeys(item.outer, askedOuter(item.resource)) } })}
+                onNone={() => onPicks({ ...picks, outer: { ...picks.outer, [item.resource]: [] } })}
               >
                 <div className="namespace-operation-list">
                   {item.outer.map((operation) => row(
@@ -200,6 +270,8 @@ export function AgentCardConsentExtras({
                     pickedOuter.includes(operation.key),
                     (checked) => onPicks({ ...picks, outer: { ...picks.outer, [item.resource]: toggled(pickedOuter, operation.key, checked) } }),
                     'agent-card-consent-extra-tool',
+                    false,
+                    askedOuter(item.resource).includes(operation.key),
                   ))}
                 </div>
               </Group>
@@ -252,7 +324,9 @@ export function AgentCardConsentExtras({
                         />
                         <span>{claim}</span>
                         {held.has(claim) ? <span className="badge badge-ok">already allowed</span>
-                          : needed.includes(claim) ? <span className="badge badge-warn">needed</span> : null}
+                          : (requested?.accountClaims[providerId] || []).includes(claim)
+                            ? <span className="badge badge-warn">requested above</span>
+                            : needed.includes(claim) ? <span className="badge badge-warn">needed</span> : null}
                       </label>
                     ))}
                   </div>

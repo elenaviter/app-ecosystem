@@ -244,8 +244,12 @@ offers everything the agent's Control allows, not only what was asked:
 - its tools;
 - every connected account's provider permissions, one group per provider.
 
-Every group opens on its own; its head shows how many entries can be added,
-how many are selected and how many the Card already holds.
+Every group opens on its own; its head shows how many entries are requested,
+selected, can be added and are already on the Card. **All** and **None** on a
+group select or clear its addable entries only: never what the Card holds,
+what the Control does not allow, or what the agent asked for. What the agent
+asked for also appears in its group, selected, fixed and marked
+**requested**.
 
 The selection rules:
 

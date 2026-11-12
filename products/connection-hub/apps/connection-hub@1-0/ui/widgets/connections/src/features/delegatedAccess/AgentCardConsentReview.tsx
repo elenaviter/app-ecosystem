@@ -434,6 +434,20 @@ export function AgentCardConsentReview({
           onPicks={setPicks}
           accounts={accounts}
           baseScope={scope}
+          requested={{
+            resource: request.resource,
+            namespace: operationAllowed ? request.namespace : undefined,
+            operation: operationAllowed ? request.operation : undefined,
+            outerOperation: outerAllowed ? request.outerOperation : undefined,
+            grants: Array.from(new Set([
+              ...request.claims,
+              ...(operationAllowed && request.operation ? capability?.requiredDoorGrants || [] : []),
+            ])),
+            accountClaims: requirements.reduce<Record<string, string[]>>((out, requirement) => ({
+              ...out,
+              [requirement.providerId]: Array.from(new Set([...(out[requirement.providerId] || []), ...requirement.claims])),
+            }), {}),
+          }}
           bindable={needed.bindable}
           providerLabel={providerLabel}
           accountLabel={accountLabel}
