@@ -39,7 +39,7 @@ import {
 import { accountClaimsForOperation, resolvePendingServiceCapability } from './pendingGrantProjection';
 import { operationRows } from './DelegatedResourceCatalog';
 import { OperationInvocationChoice } from './InvocationControls';
-import { AgentCardConsentExtras, MissingProviderPermissions } from './AgentCardConsentExtras';
+import { AgentCardConsentExtras, MissingProviderPermissions, FixedChoice } from './AgentCardConsentExtras';
 import {
   allowedPicks,
   consentExtraGrants,
@@ -308,7 +308,7 @@ export function AgentCardConsentReview({
         <div className="request-review-section" data-testid="agent-card-consent-operation">
           <div className="account-title">Service operation</div>
           <label className={`namespace-operation agent-card-consent-row${operationAllowed ? ' agent-card-consent-picked' : ' agent-card-consent-outside'}`}>
-            <input type="checkbox" checked={operationSelected} disabled readOnly />
+            {operationSelected ? <FixedChoice /> : <input type="checkbox" checked={false} disabled readOnly />}
             <span>
               <code>{request.namespace}</code>{' · '}<code>{request.operation}</code>
               {operationAllowed ? (
@@ -328,7 +328,7 @@ export function AgentCardConsentReview({
         <div className="request-review-section" data-testid="agent-card-consent-outer">
           <div className="account-title">Tool</div>
           <label className={`namespace-operation${outerAllowed ? '' : ' namespace-operation-unavailable'}`}>
-            <input type="checkbox" checked={outerSelected} disabled readOnly />
+            {outerSelected ? <FixedChoice /> : <input type="checkbox" checked={false} disabled readOnly />}
             <span>
               <code>{request.outerOperation}</code>
               {outerAllowed ? null : (
@@ -405,13 +405,15 @@ export function AgentCardConsentReview({
                     return (
                       <li className={`account${requested ? ' agent-card-consent-requested' : ''}`} key={account.account_id}>
                         <label style={{ display: 'flex', gap: 10, alignItems: 'baseline' }}>
-                          <input
-                            type="radio"
-                            name={`agent-card-consent-${index}`}
-                            checked={chosen[index] === account.account_id}
-                            disabled={done || Boolean(heldAccount)}
-                            onChange={() => setChosen((current) => current.map((value, at) => (at === index ? account.account_id : value)))}
-                          />
+                          {held ? <FixedChoice type="radio" name={`agent-card-consent-${index}`} /> : (
+                            <input
+                              type="radio"
+                              name={`agent-card-consent-${index}`}
+                              checked={chosen[index] === account.account_id}
+                              disabled={done || Boolean(heldAccount)}
+                              onChange={() => setChosen((current) => current.map((value, at) => (at === index ? account.account_id : value)))}
+                            />
+                          )}
                           <span>
                             <span className="account-title">{accountLabel(account.account_id)}</span>{' '}
                             <code>{claimsText}</code>

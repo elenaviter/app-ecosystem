@@ -4548,11 +4548,22 @@ fieldset.resource-edit-section__body { border: 0; margin: 0; min-width: 0; }
   opacity: 1;
 }
 
-.agent-card-consent-row.agent-card-consent-held,
 .agent-card-consent-row.agent-card-consent-outside,
-.agent-card-consent-chip.agent-card-consent-held,
 .agent-card-consent-chip.agent-card-consent-outside {
   opacity: 0.55;
+  cursor: default;
+}
+
+/* A decided choice (requested, or already on the Card): selected in the normal
+   colour, fixed, never greyed out like an unavailable one. */
+.agent-card-consent-row.agent-card-consent-held,
+.agent-card-consent-chip.agent-card-consent-held,
+label:has(> .agent-card-consent-fixed) {
+  cursor: default;
+}
+
+.agent-card-consent-fixed {
+  accent-color: var(--kind);
   cursor: default;
 }
 

@@ -45,6 +45,25 @@ interface Props {
   };
 }
 
+/** A choice that is already decided (requested, or already on the Card): it
+ *  shows as selected in the normal colour and cannot be changed. Unlike a
+ *  `disabled` input it is not greyed out, so it never reads as unavailable. */
+export function FixedChoice({ type = 'checkbox', name }: { type?: 'checkbox' | 'radio'; name?: string }) {
+  const hold = (event: { preventDefault: () => void }) => event.preventDefault();
+  return (
+    <input
+      type={type}
+      name={name}
+      className="agent-card-consent-fixed"
+      checked
+      readOnly
+      aria-readonly="true"
+      onClick={hold}
+      onKeyDown={(event) => { if (event.key === ' ' || event.key === 'Enter') event.preventDefault(); }}
+    />
+  );
+}
+
 function toggled(values: string[], value: string, checked: boolean): string[] {
   return checked ? Array.from(new Set([...values, value])) : values.filter((item) => item !== value);
 }
@@ -116,7 +135,7 @@ export function AgentCardConsentExtras({
     if (asked && !item.held) {
       return (
         <label className={`${chip ? 'grant-chip agent-card-consent-chip' : 'namespace-operation agent-card-consent-row'} agent-card-consent-picked agent-card-consent-requested`} key={item.key} data-testid={testId}>
-          <input type="checkbox" checked disabled readOnly />
+          <FixedChoice />
           <span>
             {item.label !== item.key ? <>{item.label} <code>{item.key}</code></> : <code>{item.key}</code>}
             <span className="badge badge-warn" style={{ marginLeft: 8 }}>requested</span>
@@ -133,12 +152,14 @@ export function AgentCardConsentExtras({
     ].filter(Boolean).join(' ');
     return (
       <label className={className} key={item.key} data-testid={testId}>
-        <input
-          type="checkbox"
-          checked={item.held || checked}
-          disabled={disabled || item.held || !item.inControl}
-          onChange={(event) => onChange(event.target.checked)}
-        />
+        {item.held ? <FixedChoice /> : (
+          <input
+            type="checkbox"
+            checked={checked}
+            disabled={disabled || !item.inControl}
+            onChange={(event) => onChange(event.target.checked)}
+          />
+        )}
         <span>
           {item.label !== item.key ? <>{item.label} <code>{item.key}</code></> : <code>{item.key}</code>}
           {item.held ? <span className="badge badge-ok" style={{ marginLeft: 8 }}>already allowed</span> : null}
@@ -307,10 +328,10 @@ export function AgentCardConsentExtras({
                         key={claim}
                         data-testid="agent-card-consent-extra-account-claim"
                       >
-                        <input
+                        {held.has(claim) ? <FixedChoice /> : <input
                           type="checkbox"
-                          checked={held.has(claim) || chosen.includes(claim)}
-                          disabled={disabled || held.has(claim)}
+                          checked={chosen.includes(claim)}
+                          disabled={disabled}
                           onChange={(event) => onPicks({
                             ...picks,
                             accounts: {
@@ -321,7 +342,7 @@ export function AgentCardConsentExtras({
                               },
                             },
                           })}
-                        />
+                        />}
                         <span>{claim}</span>
                         {held.has(claim) ? <span className="badge badge-ok">already allowed</span>
                           : (requested?.accountClaims[providerId] || []).includes(claim)
