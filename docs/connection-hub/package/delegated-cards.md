@@ -948,6 +948,29 @@ on the Agent Card unchanged. The descriptor initializes and caps the Control
 Card; the Agent Card reconciles against the Control Card, not directly against
 the descriptor.
 
+#### Named-service actions on a descriptor Control
+
+A descriptor Control holds the named-service actions twice: in its standard
+part (`named_service_operations`) and in its capability ceiling
+(`kdcube.agent_capability_authority`). Both read the agent's descriptor by the
+ceiling rule that KDCube documents for `allowed`
+([capabilities README](https://github.com/kdcube/kdcube/blob/main/app/ai-app/docs/sdk/solutions/user-settings/capabilities-README.md#named-service-actions-in-the-ceiling)):
+`object.action` stands for every action the active catalog offers for the
+namespace, with or without listed actions beside it; listed actions alone are
+the ceiling as they stand. The synchronization expands the capability ceiling,
+the defaults and the requested selection from the catalog with the same code
+as the standard part, so the Card editor, the consent review, the base, the
+picker and the next synchronization offer and keep the same actions. The
+parent `object.action` stays in the ceiling while the namespace keeps any
+action.
+
+An administrator Save on a descriptor Control is an explicit list. It narrows
+the standard part and the capability ceiling alike in the same Save, and every
+later synchronization bounds the ceiling by the saved standard part. Actions a
+service adds after that Save are not included until the administrator selects
+them and saves again. The Control editor states which of these applies under
+Service actions.
+
 An MCP server with individually declared tool capabilities stores the selected
 tools. A server exposed only as one capability selects the operations declared
 for that server; it does not become an empty resource merely because no child
