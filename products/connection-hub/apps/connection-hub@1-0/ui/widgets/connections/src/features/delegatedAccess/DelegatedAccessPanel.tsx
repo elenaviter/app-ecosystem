@@ -34,6 +34,7 @@ import {
   cardAgentCapabilityMetadata,
   cardAgentCapabilitySelection,
   isAgentDescriptorControl,
+  descriptorOpenActions,
   type AgentCapabilitySelection,
 } from './agentCapabilitySelection';
 import { AgentCapabilityPolicyView } from './AgentCapabilityPolicyView';
@@ -4770,6 +4771,7 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
           <DelegatedResourceCatalog
             resource={shownResourceOption || resourceOption}
             heldManagedOperations={heldManagedNamedOperations}
+            openActions={descriptorOpenActions(item)}
             selectedGrants={editedGrants}
             selectedOperations={editNamedServiceOperations[resource] || {}}
             onOperationChange={(namespace, operation, operationGrants, checked) => {

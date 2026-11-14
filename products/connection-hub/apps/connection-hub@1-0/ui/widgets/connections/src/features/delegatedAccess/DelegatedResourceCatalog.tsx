@@ -49,6 +49,8 @@ interface DelegatedResourceCatalogProps {
   };
   /** W739: per namespace, the managed operations the Card holds (drawn ticked); '*' when it holds every one. */
   heldManagedOperations?: Record<string, string[]> | '*';
+  /** W38: on a descriptor Control, the services whose descriptor allows every action. */
+  openActions?: { namespaces: string[]; overridden: boolean } | null;
 }
 
 const CONSENT_ACTION_LABEL: Record<Exclude<ConsentPlanAction, 'done'>, string> = {
@@ -56,6 +58,13 @@ const CONSENT_ACTION_LABEL: Record<Exclude<ConsentPlanAction, 'done'>, string> =
   reconnect: 'Reconnect account',
   approve: 'Approve access',
 };
+
+function namesText(names: string[], namespaces: { namespace: string; label?: string }[]): string {
+  return names
+    .filter((name) => namespaces.some((row) => row.namespace === name))
+    .map((name) => namespaces.find((row) => row.namespace === name)?.label || name)
+    .join(', ');
+}
 
 function strings(value: unknown): string[] {
   if (!Array.isArray(value)) return [];
@@ -213,6 +222,7 @@ export function DelegatedResourceCatalog({
   accounts,
   composition,
   heldManagedOperations,
+  openActions,
 }: DelegatedResourceCatalogProps) {
   const namespaces = resource.named_services || [];
   const [open, setOpen] = useState(false);
@@ -305,6 +315,18 @@ export function DelegatedResourceCatalog({
             </button>
           </span>
         </div>
+        {openActions && openActions.namespaces.some((name) => namespaces.some((row) => row.namespace === name)) ? (
+          <div className="resource-boundaries-open-actions" role="note" data-testid="control-open-actions-notice">
+            <strong>
+              {openActions.overridden ? 'Explicit list in force' : 'Every action is included automatically'}
+            </strong>
+            <p>
+              {openActions.overridden
+                ? <>The app descriptor allows every action of {namesText(openActions.namespaces, namespaces)}, but this Control Card holds an explicit list. Actions these services add later are not included until you select them and save again.</>
+                : <>The app descriptor allows every action of {namesText(openActions.namespaces, namespaces)} (<code>object.action</code>), so the default ceiling includes every action these services offer, and actions they add later. To limit it to an explicit list, select the actions here and save this Control Card.</>}
+            </p>
+          </div>
+        ) : null}
         {offeredRows.length && !selectedCount ? (
           <p className="resource-boundaries-empty">
             No service actions selected. Open a service below to choose what this card may do.
