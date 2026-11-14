@@ -276,6 +276,38 @@ def expand_object_action_ceiling(
     )
 
 
+def bound_ceiling_to_standard_part(
+    policy: AgentCapabilityPolicy | None,
+    named_service_operations: Any,
+) -> AgentCapabilityPolicy | None:
+    """Keep the capability ceiling's named-service operations inside the standard part (W38).
+
+    Both parts of a descriptor Control describe one ceiling. Without an
+    administrator override they already agree once ``object.action`` is
+    expanded; with one, the override is an explicit list that narrows the
+    standard part, and this narrows the capability ceiling to the same list.
+    """
+
+    if policy is None or _NAMED_SERVICE_OPERATIONS_CATEGORY not in policy.capabilities:
+        return policy
+    if not getattr(named_service_operations, "is_exact", False):
+        return policy
+    allowed = {
+        _capability_member(str(namespace).strip().lower().rstrip(":"), str(operation))
+        for namespaces in named_service_operations.operations.values()
+        for namespace, operations in namespaces.items()
+        for operation in operations
+    }
+    values = tuple(policy.capabilities.get(_NAMED_SERVICE_OPERATIONS_CATEGORY, ()))
+    kept = tuple(value for value in values if value in allowed)
+    if kept == values:
+        return policy
+    return AgentCapabilityPolicy(
+        resource=policy.resource,
+        capabilities={**dict(policy.capabilities), _NAMED_SERVICE_OPERATIONS_CATEGORY: kept},
+    )
+
+
 def _operation_matches(declared: str, operation: str) -> bool:
     return declared == "*" or operation == declared or operation.startswith(
         f"{declared}."
@@ -1148,6 +1180,25 @@ async def sync_agent_capability_control(
     if selected_standard is not None and selected_standard.error is not None:
         return selected_standard.error
 
+    # W38: the capability ceiling never exceeds the standard part it describes,
+    # so an administrator override narrows both parts of the Control alike.
+    bounded_authority = bound_ceiling_to_standard_part(authority, resolved.named_service_operations)
+    if bounded_authority is not authority:
+        authority = bounded_authority
+        descriptor_properties = {
+            **descriptor_properties,
+            **descriptor_control_properties(
+                authority=authority,
+                defaults=control_defaults,
+                metadata=capability_metadata,
+                targets=conversation_target_resources,
+            ),
+        }
+        resolved = dataclasses.replace(
+            resolved,
+            properties={**dict(resolved.properties or {}), **descriptor_properties},
+        )
+
     descriptor_evidence_payload = {
         "descriptor": copy.deepcopy(dict(descriptor_payload)),
         "capability_authority": authority.to_property(),
@@ -1295,6 +1346,24 @@ async def sync_agent_capability_control(
         )
         if resolved.error is not None:
             return resolved.error
+        # W38: a human Control edit narrows the capability ceiling with it.
+        edited_ceiling = AgentCapabilityPolicy.from_property(
+            refreshed_properties[AGENT_CAPABILITY_AUTHORITY_PROPERTY]
+        )
+        bounded_ceiling = bound_ceiling_to_standard_part(
+            edited_ceiling, resolved.named_service_operations
+        )
+        if bounded_ceiling is not edited_ceiling:
+            narrowed = {**dict(resolved.properties or {})}
+            narrowed[AGENT_CAPABILITY_AUTHORITY_PROPERTY] = bounded_ceiling.to_property()
+            raw_defaults = narrowed.get(AGENT_CAPABILITY_DEFAULTS_PROPERTY)
+            if isinstance(raw_defaults, Mapping):
+                narrowed[AGENT_CAPABILITY_DEFAULTS_PROPERTY] = (
+                    AgentCapabilityPolicy.from_property(raw_defaults)
+                    .intersection(bounded_ceiling)
+                    .to_property()
+                )
+            resolved = dataclasses.replace(resolved, properties=narrowed)
     if descriptor_is_current:
         control_authority = card_authority_from_record(existing_control)
         control_changed = False

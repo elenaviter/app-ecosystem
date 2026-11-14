@@ -97,3 +97,25 @@ async def test_an_agent_card_editor_save_keeps_the_actions_of_a_parent_only_desc
     assert replay["ok"], replay
     synced = await _current(store, resident)
     assert POST in synced.named_service_operations.operations[NAMED_RESOURCE]["slack"], "and the next sync keeps it on the Card"
+
+
+@pytest.mark.asyncio
+async def test_an_administrator_override_narrows_both_parts_of_the_control():
+    """The override is an explicit list: it narrows the standard part and the capability ceiling alike."""
+    from connection_hub.delegated_credentials.agent_capability_policy import CAPABILITY_NOT_ALLOWED
+
+    service, persistence = _service(named_services=True)
+    arguments = _arguments(LIST, PARENT)
+    arguments["descriptor_payload"] = {**arguments["descriptor_payload"], "standard_authority_overridden": True}
+    answer = await service.sync_agent_capability_control(
+        {"user_id": OWNER}, **arguments,
+        resource_grants={NAMED_RESOURCE: ["named_services:use", "slack:read"]},
+        resource_operations={NAMED_RESOURCE: ["named_services_call"]},
+        named_service_operations={NAMED_RESOURCE: {"slack": [LIST]}},
+        selected_capabilities=_policy_with_named_operations(LIST, PARENT))
+    assert answer["ok"], answer
+    control = persistence.records[answer["control_card"]["access_id"]][0]
+    assert set(control.named_service_operations.operations[NAMED_RESOURCE]["slack"]) == {LIST}
+    ceiling = _keys(control, AGENT_CAPABILITY_AUTHORITY_PROPERTY)
+    assert f"slack/{POST}" not in ceiling and f"slack/{PARENT}" not in ceiling, ceiling
+    assert answer["states"]["named_service_operations"].get(f"slack/{POST}") in (None, CAPABILITY_NOT_ALLOWED)
