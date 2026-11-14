@@ -1167,6 +1167,11 @@ An omitted account scope preserves the stored binding; an explicit empty
 scope binds no accounts. Current provider capability and Control checks
 remain authoritative at commit and use time.
 
+The review can also add more than the request, within the Control, and only
+add: one merge grant per resource touched, chained by revision. A provider
+permission no account holds is requested at its provider after a save. See
+[More access in the same consent](../frontend/application/README.md#more-access-in-the-same-consent).
+
 Hosted chat demands carry `agent_card_consent: true` and omit the direct
 resource-only `grant` shortcut. The served URL and structured scene-open
 parameters preserve the same account-only request, including empty door

@@ -64,15 +64,26 @@ const resources = [{
 }]
 const google = (id: string, email: string, claims = ['slides:read', 'slides:write', 'sheets:read', 'sheets:write']) => ({
   account_id: id, provider_id: 'google', display_name: email, email, claims, status: 'active', has_credential: true })
-const accounts = variant === 'choose' ? [google('google_acct_1', 'owner@example.test'), google('google_acct_2', 'work@example.test')]
+// W34: 'extras-missing' holds slides:read only, so an added object.upsert needs slides:write nobody holds;
+// 'extras-none' has no Google account at all.
+const accounts = variant === 'extras-none' ? []
+  : variant.startsWith('extras-missing') ? [google('google_acct_1', 'owner@example.test', ['slides:read'])]
+  : variant === 'choose' ? [google('google_acct_1', 'owner@example.test'), google('google_acct_2', 'work@example.test')]
   : variant === 'named-incapable-bound' ? [google('google_acct_1', 'owner@example.test'), google('google_acct_ro', 'readonly@example.test', ['drive:read'])]
   : variant === 'two-claims' ? [google('google_acct_1', 'owner@example.test'), google('google_acct_ro', 'readonly@example.test', ['sheets:read'])]
   : [google('google_acct_1', 'owner@example.test')]
 const calls: Array<{ operation: string, data: Record<string, unknown> }> = []
 ;(window as unknown as Record<string, unknown>).__calls = calls
+// W34: a save-then-request leaves this page; the calls made before it are kept for the test to read.
+try {
+  ;(window as unknown as Record<string, unknown>).__previous = JSON.parse(sessionStorage.getItem('w34-calls') || '[]')
+  sessionStorage.removeItem('w34-calls')
+} catch { /* no storage: the test reads nothing */ }
+const remember = () => { try { sessionStorage.setItem('w34-calls', JSON.stringify(calls)) } catch { /* ignore */ } }
 
 setConnectionsCallOperation(async (_method, operation, data) => {
   calls.push({ operation, data: JSON.parse(JSON.stringify(data || {})) })
+  remember()
   if (operation === 'delegated_access_list') {
     const old = { ...card(), access_id: 'agent-old-revoked', state: 'revoked' }
     return { ok: true, platform_user_id: 'person-1', items: variant === 'inactive-id' ? [old, card()] : [card()],
@@ -83,7 +94,7 @@ setConnectionsCallOperation(async (_method, operation, data) => {
   }
   if (operation === 'delegated_agent_grant_create') {
     const payload = data as Record<string, unknown>
-    if (variant === 'refused') {
+    if (variant === 'refused' || variant.endsWith('-refused')) {
       return { ok: false, error: 'agent_capability_selection_outside_control', status: 403,
         details: { outside: [{ resource: NAMED, namespace: 'slides', operation: 'object.upsert' }] } } as never
     }
@@ -112,6 +123,8 @@ if (variant === 'pending-outside') Object.assign(link, { namespace: 'slides', op
 // An external client's pending request keeps the legacy pending page.
 if (variant === 'external') { delete link.agent_card_consent; Object.assign(link, { agent_client_id: 'dcr-cli', resource: SERVICE, claims: 'records:read', account_claim: '' }) }
 if (variant === 'provider') link.account_provider_id = 'google'
+// W34: no Google account at all; the SDK link names the provider (as connected_accounts.py does).
+if (variant === 'extras-none') link.account_provider_id = 'google'
 // Outer (MCP/REST) operations keep the pending page's once/always contract inside the Card approval.
 if (variant === 'outer-choose') Object.assign(link, { resource: SERVICE, account_claim: '', outer_operation: 'records_export', invocation_policy: 'choose', invocation_change_id: 'consent-9' })
 if (variant === 'outer-bound') Object.assign(link, { resource: SERVICE, account_claim: '', outer_operation: 'records_export', invocation_policy: 'once', invocation_change_id: 'consent-10',
