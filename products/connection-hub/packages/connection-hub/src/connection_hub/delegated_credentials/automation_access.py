@@ -1846,6 +1846,41 @@ def _effective_named_service_grants(
     return effective
 
 
+def _descriptor_control_ceiling_after_edit(
+    properties: Mapping[str, Any] | None,
+    named_service_operations: Any,
+) -> dict[str, Any]:
+    """An edit of a descriptor Control narrows its capability ceiling with it (W38).
+
+    The edit is an explicit list on the standard part. The capability ceiling
+    and the defaults on the same Card describe the same choice, so they are
+    bounded by it in the same Save.
+    """
+
+    from connection_hub.delegated_credentials.agent_capability_policy import (
+        AGENT_CAPABILITY_AUTHORITY_PROPERTY,
+        AGENT_CAPABILITY_DEFAULTS_PROPERTY,
+        AgentCapabilityPolicy,
+    )
+    from connection_hub.delegated_credentials.object_action_ceiling import bound_ceiling_to_standard_part
+
+    out = copy.deepcopy(dict(properties or {}))
+    raw_ceiling = out.get(AGENT_CAPABILITY_AUTHORITY_PROPERTY)
+    if not isinstance(raw_ceiling, Mapping):
+        return out
+    ceiling = AgentCapabilityPolicy.from_property(raw_ceiling)
+    bounded = bound_ceiling_to_standard_part(ceiling, named_service_operations)
+    if bounded is ceiling:
+        return out
+    out[AGENT_CAPABILITY_AUTHORITY_PROPERTY] = bounded.to_property()
+    raw_defaults = out.get(AGENT_CAPABILITY_DEFAULTS_PROPERTY)
+    if isinstance(raw_defaults, Mapping):
+        out[AGENT_CAPABILITY_DEFAULTS_PROPERTY] = (
+            AgentCapabilityPolicy.from_property(raw_defaults).intersection(bounded).to_property()
+        )
+    return out
+
+
 class AutomationAccessService:
     """Create/list/revoke user-created delegated automation credentials."""
 
@@ -7030,6 +7065,10 @@ class AutomationAccessService:
             selected_properties = reviewed_control_snapshot_properties(
                 selected_properties,
                 basis_catalog_version=catalog_version,
+            )
+        if existing.issuer_kind == AGENT_DESCRIPTOR_ISSUER_KIND:
+            selected_properties = _descriptor_control_ceiling_after_edit(
+                selected_properties, selected_named_service_operations
             )
         now = int(time.time())
         # Editing is about the grants, expiry about the credential. An expired

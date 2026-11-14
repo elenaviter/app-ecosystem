@@ -57,6 +57,9 @@ async def test_a_parent_object_action_expands_the_capability_ceiling_to_every_ca
     assert POST in standard
     assert f"slack/{POST}" in _keys(control, AGENT_CAPABILITY_AUTHORITY_PROPERTY), "the ceiling equals the standard part"
     assert f"slack/{POST}" in _keys(control, AGENT_CAPABILITY_DEFAULTS_PROPERTY)
+    # The parent stays allowed: the SDK reads it as the switch for the action call itself.
+    assert f"slack/{PARENT}" in _keys(control, AGENT_CAPABILITY_AUTHORITY_PROPERTY)
+    assert answer["states"]["named_service_operations"].get(f"slack/{PARENT}") == CAPABILITY_ALLOWED_SELECTED
     # D1a: the picker state of a concrete action is decided by the expanded ceiling.
     assert answer["states"]["named_service_operations"].get(f"slack/{POST}") == CAPABILITY_ALLOWED_SELECTED
 
@@ -119,3 +122,29 @@ async def test_an_administrator_override_narrows_both_parts_of_the_control():
     ceiling = _keys(control, AGENT_CAPABILITY_AUTHORITY_PROPERTY)
     assert f"slack/{POST}" not in ceiling and f"slack/{PARENT}" not in ceiling, ceiling
     assert answer["states"]["named_service_operations"].get(f"slack/{POST}") in (None, CAPABILITY_NOT_ALLOWED)
+
+
+@pytest.mark.asyncio
+async def test_a_human_edit_of_the_descriptor_control_narrows_its_capability_ceiling():
+    """An administrator Save on the descriptor Control is an explicit list too."""
+    service, persistence = _service(named_services=True)
+    created = await _sync(service, LIST, PARENT)
+    assert created["ok"], created
+    control_id = created["control_card"]["access_id"]
+    changed = await service.update_access(
+        {"user_id": OWNER, "roles": ["kdcube:role:super-admin"]}, access_id=control_id,
+        resource_grants={NAMED_RESOURCE: ["named_services:use", "slack:read"]}, resource_operations={},
+        named_service_operations={NAMED_RESOURCE: {"slack": [LIST]}}, account_scope={},
+        expected_card_revision=created["control_card"]["card_revision"],
+        expected_catalog_version=created["control_card"]["catalog_version"],
+        composition_mode="and", properties=created["control_card"]["properties"])
+    assert changed["ok"], changed
+    saved = persistence.records[control_id][0]
+    assert f"slack/{POST}" not in _keys(saved, AGENT_CAPABILITY_AUTHORITY_PROPERTY), "right after the Save"
+    refreshed = await service.sync_agent_capability_control(
+        {"user_id": OWNER}, **{**_arguments(LIST, PARENT), "descriptor_revision": "descriptor-r2",
+                               "descriptor_payload": {**_arguments(LIST, PARENT)["descriptor_payload"], "revision": "descriptor-r2"}})
+    assert refreshed["ok"], refreshed
+    control = persistence.records[control_id][0]
+    assert set(control.named_service_operations.operations[NAMED_RESOURCE]["slack"]) == {LIST}
+    assert f"slack/{POST}" not in _keys(control, AGENT_CAPABILITY_AUTHORITY_PROPERTY), "and after a descriptor refresh"
