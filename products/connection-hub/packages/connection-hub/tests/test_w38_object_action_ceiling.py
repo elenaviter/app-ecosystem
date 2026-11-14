@@ -75,12 +75,13 @@ async def test_a_list_without_the_parent_is_exactly_the_listed_actions():
 
 
 @pytest.mark.asyncio
-async def test_an_agent_card_editor_save_keeps_the_actions_of_a_parent_only_descriptor(tmp_path):
+@pytest.mark.parametrize("declared", [(LIST, PARENT), (LIST, PARENT, POST)], ids=["parent-only", "parent-plus-list"])
+async def test_an_agent_card_editor_save_keeps_the_actions_of_a_parent_only_descriptor(tmp_path, declared):
     """D1c: aligning the base after a Save intersects the Card's concrete actions with the ceiling."""
     from test_descriptor_agent_card_transaction import _current, _world
 
     service, persistence = _service(named_services=True)
-    answer = await _sync(service, LIST, PARENT)
+    answer = await _sync(service, *declared)
     assert answer["ok"], answer
     resident = persistence.records[answer["card"]["access_id"]][0]
     control = persistence.records[answer["control_card"]["access_id"]][0]
@@ -96,7 +97,7 @@ async def test_an_agent_card_editor_save_keeps_the_actions_of_a_parent_only_desc
     assert saved["ok"], saved
     after = await _current(store, resident)
     assert f"slack/{POST}" in _keys(after, AGENT_CAPABILITY_SELECTION_PROPERTY), "the Save keeps the action in the base"
-    replay = await _sync(service, LIST, PARENT, selected=None)
+    replay = await _sync(service, *declared, selected=None)
     assert replay["ok"], replay
     synced = await _current(store, resident)
     assert POST in synced.named_service_operations.operations[NAMED_RESOURCE]["slack"], "and the next sync keeps it on the Card"
