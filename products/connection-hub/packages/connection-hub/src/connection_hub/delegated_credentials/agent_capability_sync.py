@@ -10,7 +10,7 @@ import dataclasses
 import logging
 import time
 from typing import Any, Iterable, Mapping
-from urllib.parse import unquote
+from urllib.parse import quote, unquote
 
 from connection_hub.delegated_credentials.agent_capability_control import (
     AGENT_DESCRIPTOR_CARD_EDIT_PROVENANCE_KEY,
@@ -216,6 +216,64 @@ def _capability_children(
         for value in policy.capabilities.get(category, ())
         if value.startswith(prefix)
     }
+
+
+_OBJECT_ACTION = "object.action"
+_NAMED_SERVICE_OPERATIONS_CATEGORY = "named_service_operations"
+
+
+def _capability_member(parent: str, child: str) -> str:
+    return f"{quote(parent, safe='-._~@')}/{quote(child, safe='-._~@')}"
+
+
+def expand_object_action_ceiling(
+    policy: AgentCapabilityPolicy | None,
+    catalog_config: Any,
+) -> AgentCapabilityPolicy | None:
+    """Apply the one ceiling rule for named-service actions to a capability policy (W38).
+
+    A parent ``<namespace>/object.action`` names every action the active
+    Connection Hub catalog offers for that namespace, today's and later ones,
+    with or without an explicit list beside it. Without the parent, the listed
+    ``object.action.<name>`` keys are the ceiling as they stand. The standard
+    part of a descriptor Control is resolved by the same rule
+    (``_descriptor_standard_maps``), so both parts of the Control agree and an
+    exact-key comparison (picker states, a picker save, the base after a Card
+    Save) holds against the concrete action keys.
+    """
+
+    if policy is None:
+        return None
+    values = tuple(policy.capabilities.get(_NAMED_SERVICE_OPERATIONS_CATEGORY, ()))
+    parents: set[str] = set()
+    for value in values:
+        namespace, separator, operation = str(value or "").partition("/")
+        if separator and unquote(operation) == _OBJECT_ACTION:
+            parents.add(unquote(namespace).strip().lower().rstrip(":"))
+    if not parents:
+        return policy
+    expanded = set(values)
+    for configured in getattr(catalog_config, "resources", ()) or ():
+        named_services = getattr(configured, "named_services", None)
+        if not isinstance(named_services, Mapping):
+            continue
+        for namespace, operations in configured_named_service_operations(named_services).items():
+            if namespace not in parents:
+                continue
+            expanded.update(
+                _capability_member(namespace, operation)
+                for operation in operations
+                if str(operation).startswith(f"{_OBJECT_ACTION}.")
+            )
+    if expanded == set(values):
+        return policy
+    return AgentCapabilityPolicy(
+        resource=policy.resource,
+        capabilities={
+            **dict(policy.capabilities),
+            _NAMED_SERVICE_OPERATIONS_CATEGORY: tuple(sorted(expanded)),
+        },
+    )
 
 
 def _operation_matches(declared: str, operation: str) -> bool:
@@ -990,6 +1048,22 @@ async def sync_agent_capability_control(
             active,
             owner_subject=grantor_subject,
         )
+        # W38: the capability ceiling, the descriptive catalog and the defaults
+        # read object.action by the same rule as the standard part below.
+        authority = expand_object_action_ceiling(authority, catalog_config)
+        catalog = expand_object_action_ceiling(catalog, catalog_config)
+        control_defaults = expand_object_action_ceiling(control_defaults, catalog_config)
+        # A selection that holds the parent chose every action it names.
+        requested_selection = expand_object_action_ceiling(requested_selection, catalog_config)
+        descriptor_properties = {
+            **descriptor_properties,
+            **descriptor_control_properties(
+                authority=authority,
+                defaults=control_defaults,
+                metadata=capability_metadata,
+                targets=conversation_target_resources,
+            ),
+        }
         descriptor_grants, descriptor_operations, descriptor_named = (
             _descriptor_standard_maps(
                 catalog_config=catalog_config,
