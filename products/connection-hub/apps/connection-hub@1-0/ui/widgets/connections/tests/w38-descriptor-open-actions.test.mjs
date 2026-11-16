@@ -60,3 +60,13 @@ test('D4: an outside-Control save refusal names what the Control refused', async
   const text = outsideControlText({ outside: [{ namespace: 'docs', operation: 'provider.capabilities' }] }, (r) => r)
   assert.equal(text, "Not allowed by this agent's Control: docs.provider.capabilities.")
 })
+
+test('D4: the editor applies the Control in the Caller Card view as well, not only in the Effective Card view', async () => {
+  const { readFile } = await import('node:fs/promises')
+  const panel = await readFile(new URL('../src/features/delegatedAccess/DelegatedAccessPanel.tsx', import.meta.url), 'utf8')
+  const catalog = await readFile(new URL('../src/features/delegatedAccess/DelegatedResourceCatalog.tsx', import.meta.url), 'utf8')
+  // Live check: composition exists only while "Effective Card" is shown, so the rule never applied while editing.
+  assert.match(panel, /const controlBound: EffectiveCompositionView \| undefined = linkedControl\?\.control_authority/)
+  assert.match(panel, /controlBound=\{controlBound \?/)
+  assert.match(catalog, /operationOutsideControl\(controlBound \?\? composition, namespace, operation\)/)
+})

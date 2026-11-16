@@ -48,6 +48,12 @@ interface DelegatedResourceCatalogProps {
     controlLabel: string;
     controlOperations: Record<string, string[]>;
   };
+  /** kdcube#270 D4: the linked Control's operations, in either Card view; what
+   *  it does not hold is shown, not offered. `composition` is only the diff view. */
+  controlBound?: {
+    mode: ControlCompositionMode;
+    controlOperations: Record<string, string[]>;
+  };
   /** W739: per namespace, the managed operations the Card holds (drawn ticked); '*' when it holds every one. */
   heldManagedOperations?: Record<string, string[]> | '*';
   /** W38: on a descriptor Control, the services whose descriptor allows every action. */
@@ -222,6 +228,7 @@ export function DelegatedResourceCatalog({
   providers,
   accounts,
   composition,
+  controlBound,
   heldManagedOperations,
   openActions,
 }: DelegatedResourceCatalogProps) {
@@ -254,7 +261,7 @@ export function DelegatedResourceCatalog({
   // W38 / kdcube#270 D4: under an AND Control an operation outside it can never
   // take effect, and the Card save refuses it; it is shown, not offered.
   const outsideControl = (namespace: string, operation: string): boolean => (
-    operationOutsideControl(composition, namespace, operation)
+    operationOutsideControl(controlBound ?? composition, namespace, operation)
   );
   const setEveryOperation = (checked: boolean) => {
     offeredRows.forEach(({ namespace, row }) => {

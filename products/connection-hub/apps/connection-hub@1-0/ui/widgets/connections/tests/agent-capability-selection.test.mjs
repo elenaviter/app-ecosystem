@@ -153,7 +153,7 @@ test('Agent Cards use the ordinary Card workbench plus KDCube metadata', () => {
   assert.match(panel, /title="KDCube agent defaults"/)
   assert.match(panel, /title="KDCube administrator preset"/)
   assert.match(panel, /renderCardComposition\(record, \{ editing: true \}\)/)
-  assert.match(panel, /renderEditResourceSections\(record, effectiveComposition\)/)
+  assert.match(panel, /renderEditResourceSections\(record, effectiveComposition, controlBound\)/)
   assert.match(panel, /renderAccountScopePicker\(/)
   assert.match(panel, /updateDelegatedAccess\(\{/)
   assert.match(panel, /changedEditorCardProperties/)

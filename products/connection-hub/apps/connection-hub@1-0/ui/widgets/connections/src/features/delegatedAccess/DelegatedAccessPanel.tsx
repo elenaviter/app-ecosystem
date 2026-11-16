@@ -4366,6 +4366,7 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
     selectionParent = '',
     composition?: EffectiveCompositionView,
     resourceFamilyRoot = false,
+    controlBound?: EffectiveCompositionView,
   ) => {
     const resourceOption = catalogRowFor(
       resources, resource, (key) => (item.catalog_row_by_resource || {})[key] || key,
@@ -4782,6 +4783,16 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
             }}
             providers={providers}
             accounts={accounts}
+            controlBound={controlBound ? {
+              mode: controlBound.mode,
+              controlOperations: (
+                controlBound.control.effective_named_service_operations?.[resource]
+                || (controlBound.control.named_service_operations !== '*'
+                  ? controlBound.control.named_service_operations?.[resource]
+                  : undefined)
+                || {}
+              ),
+            } : undefined}
             composition={composition ? {
               mode: composition.mode,
               controlLabel,
@@ -4836,6 +4847,7 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
   const renderEditResourceSections = (
     item: DelegatedAccessRecord,
     composition?: EffectiveCompositionView,
+    controlBound?: EffectiveCompositionView,
   ) => {
     const problems = editSaveProblems(item);
     const secretOffer = (item.resource_offers || []).find(
@@ -4905,6 +4917,7 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
         parent,
         composition,
         resourceFamilyRoots.has(resource),
+        controlBound,
       )
     );
     return (
@@ -5499,6 +5512,16 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
       ? 'or'
       : 'and';
     const callerDraft = pendingCallerAuthority(record);
+    // The Control bounds what the Card may hold in either view (kdcube#270 D4);
+    // only the diff markers follow the Effective Card view.
+    const controlBound: EffectiveCompositionView | undefined = linkedControl?.control_authority
+      ? {
+          mode: compositionMode,
+          control: linkedControl.control_authority,
+          effective: linkedControl.control_authority,
+          controlLabel,
+        }
+      : undefined;
     const effectiveComposition: EffectiveCompositionView | undefined = showingEffective
       && linkedControl?.control_authority
       ? {
@@ -5708,7 +5731,7 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
           {(record.source === 'agent'
             || record.source === 'control'
             || Object.keys(record.resource_grants || {}).length)
-            ? renderEditResourceSections(record, effectiveComposition)
+            ? renderEditResourceSections(record, effectiveComposition, controlBound)
             : null}
           {renderAccountScopePicker(
               editAccountScope,
