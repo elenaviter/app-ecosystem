@@ -80,6 +80,14 @@ def expand_object_action_ceiling(
     )
 
 
+def _is_object_action_member(value: str) -> bool:
+    _, separator, operation = str(value or "").partition("/")
+    operation = unquote(operation)
+    return bool(separator) and (
+        operation == _OBJECT_ACTION or operation.startswith(f"{_OBJECT_ACTION}.")
+    )
+
+
 def bound_ceiling_to_standard_part(
     policy: AgentCapabilityPolicy | None,
     named_service_operations: Any,
@@ -90,6 +98,8 @@ def bound_ceiling_to_standard_part(
     administrator override they already agree once ``object.action`` is
     expanded; with one, the override is an explicit list that narrows the
     standard part, and this narrows the capability ceiling to the same list.
+    Only ``object.action`` and ``object.action.<name>`` keys are narrowed; any
+    other operation stays as the descriptor allows it.
     """
 
     if policy is None or _NAMED_SERVICE_OPERATIONS_CATEGORY not in policy.capabilities:
@@ -107,7 +117,13 @@ def bound_ceiling_to_standard_part(
                 if str(operation).startswith(f"{_OBJECT_ACTION}."):
                     allowed.add(_capability_member(name, _OBJECT_ACTION))
     values = tuple(policy.capabilities.get(_NAMED_SERVICE_OPERATIONS_CATEGORY, ()))
-    kept = tuple(value for value in values if value in allowed)
+    # Only object.action keys follow this rule. Other operations a descriptor
+    # allows may be served outside the Connection Hub catalog (the SDK's
+    # object.host_file, for one) and never appear in the standard part.
+    kept = tuple(
+        value for value in values
+        if not _is_object_action_member(value) or value in allowed
+    )
     if kept == values:
         return policy
     return AgentCapabilityPolicy(

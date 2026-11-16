@@ -149,3 +149,25 @@ async def test_a_human_edit_of_the_descriptor_control_narrows_its_capability_cei
     control = persistence.records[control_id][0]
     assert set(control.named_service_operations.operations[NAMED_RESOURCE]["slack"]) == {LIST}
     assert f"slack/{POST}" not in _keys(control, AGENT_CAPABILITY_AUTHORITY_PROPERTY), "and after a descriptor refresh"
+
+
+
+HOST_FILE = "object.host_file"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("declared", [(LIST, PARENT, HOST_FILE), (LIST, PARENT, POST, HOST_FILE)], ids=["parent-only", "parent-plus-list"])
+async def test_an_operation_outside_the_hub_catalog_stays_in_the_ceiling(declared):
+    """Live W38 regression: the descriptor also allows an SDK-side operation the Hub
+    catalog does not list (object.host_file). Bounding the ceiling to the standard part
+    narrows only object.action keys, so the operation stays and the selection the SDK
+    sends is not refused as agent_capability_selection_outside_control."""
+    service, persistence = _service(named_services=True)
+    answer = await _sync(service, *declared)
+    assert answer["ok"], answer
+    control = persistence.records[answer["control_card"]["access_id"]][0]
+    assert HOST_FILE not in set(control.named_service_operations.operations[NAMED_RESOURCE]["slack"])
+    ceiling = _keys(control, AGENT_CAPABILITY_AUTHORITY_PROPERTY)
+    assert f"slack/{HOST_FILE}" in ceiling and f"slack/{POST}" in ceiling and f"slack/{PARENT}" in ceiling, ceiling
+    replay = await _sync(service, *declared)
+    assert replay["ok"], replay
