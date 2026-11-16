@@ -1,6 +1,7 @@
 import { createAsyncThunk, createSlice, type PayloadAction } from '@reduxjs/toolkit';
 import { getOp, postOp } from '../../api/client';
 import { isPolicyPending } from './focusedGrantRecovery';
+import { outsideControlText } from './agentCardConsent';
 import { agentGrantWirePayload, type GrantAgentAccessArgs } from './agentGrantPayload';
 import { isStaleEditRefusal, withNewerCard } from './cardFreshness';
 import {
@@ -349,6 +350,11 @@ export const updateDelegatedAccess = createAsyncThunk<
       // A precondition failure is not an error to show and forget: it carries
       // the refreshed card the editor must reload.
       if (res?.ok === false && res?.status === 409) return res;
+      if (res?.ok === false && res.error === 'agent_capability_selection_outside_control') {
+        // kdcube#270 D4: name what the Control refused instead of the code.
+        const named = outsideControlText((res as { details?: unknown }).details, (resource) => resource);
+        if (named) return rejectWithValue(`${named} Untick it and save again; your draft is kept.`);
+      }
       if (res?.ok === false) return rejectWithValue(resultError(res, 'Failed to update delegated access'));
       return res || {};
     } catch (e) {

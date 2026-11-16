@@ -12,6 +12,7 @@ import { operationHelpText } from './resourceEditing';
 import {
   compositionRowState,
   type ControlCompositionMode,
+  operationOutsideControl,
 } from './controlCardPreview';
 import { InfoMark } from '../../components/InfoMark';
 import { MANAGED_OPERATION_NOTE } from './managedGrants';
@@ -250,10 +251,16 @@ export function DelegatedResourceCatalog({
     : selectedCount;
   const removedCount = compositionStates.filter((state) => state === 'removed').length;
   const addedCount = compositionStates.filter((state) => state === 'added').length;
+  // W38 / kdcube#270 D4: under an AND Control an operation outside it can never
+  // take effect, and the Card save refuses it; it is shown, not offered.
+  const outsideControl = (namespace: string, operation: string): boolean => (
+    operationOutsideControl(composition, namespace, operation)
+  );
   const setEveryOperation = (checked: boolean) => {
     offeredRows.forEach(({ namespace, row }) => {
       const held = new Set(selectedOperations[namespace] || []);
       if (held.has(row.operation) === checked) return;
+      if (checked && outsideControl(namespace, row.operation)) return;
       onOperationChange(namespace, row.operation, row.grants, checked);
     });
   };
@@ -265,6 +272,7 @@ export function DelegatedResourceCatalog({
     const held = new Set(selectedOperations[namespace] || []);
     rows.forEach((row) => {
       if (held.has(row.operation) === checked) return;
+      if (checked && outsideControl(namespace, row.operation)) return;
       onOperationChange(namespace, row.operation, row.grants, checked);
     });
   };
@@ -372,7 +380,9 @@ export function DelegatedResourceCatalog({
               <span className="namespace-boundary__quick">
                 <button
                   type="button"
-                  disabled={includedRows.length >= rows.length}
+                  disabled={rows.every((row) => (
+                    includedRows.includes(row) || outsideControl(namespace.namespace, row.operation)
+                  ))}
                   title={`Grant every operation of ${namespace.label || namespace.namespace}`}
                   onClick={(event) => {
                     event.preventDefault();
@@ -422,6 +432,7 @@ export function DelegatedResourceCatalog({
                 const included = includedRows.includes(row);
                 const controlSelected = (composition?.controlOperations[namespace.namespace] || [])
                   .some((operation) => operation === '*' || operation === row.operation);
+                const notOffered = !included && outsideControl(namespace.namespace, row.operation);
                 const diffState = composition
                   ? compositionRowState(included, controlSelected, composition.mode)
                   : 'absent';
@@ -439,6 +450,7 @@ export function DelegatedResourceCatalog({
                     className={[
                       'namespace-operation',
                       included ? 'namespace-operation-included' : '',
+                      notOffered ? 'namespace-operation-outside' : '',
                       diffState === 'added' ? 'authority-diff-added' : '',
                       diffState === 'removed' ? 'authority-diff-removed' : '',
                     ].filter(Boolean).join(' ')}
@@ -447,6 +459,7 @@ export function DelegatedResourceCatalog({
                     <input
                       type="checkbox"
                       checked={included}
+                      disabled={notOffered}
                       onChange={(event) => onOperationChange(
                         namespace.namespace,
                         row.operation,
@@ -462,6 +475,9 @@ export function DelegatedResourceCatalog({
                         ) : null}
                         {diffState === 'removed' ? (
                           <span className="badge badge-error">removed by {composition?.controlLabel}</span>
+                        ) : null}
+                        {notOffered ? (
+                          <span className="badge badge-error">not in this agent&apos;s Control</span>
                         ) : null}
                         {row.label !== row.operation ? (
                           <code className="operation-id">{row.operation}</code>
