@@ -384,12 +384,15 @@ export function unboundPickedClaims(
   return Array.from(out.values());
 }
 
-// The Card review's own link params; the provider step must read a clean state.
-const CARD_REVIEW_PARAMS = [
-  'agent_card_consent', 'pending_agent_grant', 'access_id', 'account_claim', 'account_provider_id', 'namespace',
-  'operation', 'outer_operation', 'invocation_policy', 'invocation_change_id', 'request_bound', 'request_digest',
-  'request_approval_ticket', 'request_card_revision', 'request_authority_revision', 'approval_application_id',
-  'agent_claims', 'connector_app_id', 'account_id',
+// The Card review's account params, which the provider step reads for its own
+// account choice. The agent's request itself (agent_card_consent, namespace,
+// operation, outer_operation, access_id, invocation_* and request_*) stays in
+// the link: the provider step ignores it (the tab selects the panel), and
+// "Continue - grant it to <agent>" returns to the same request with the
+// account bound, instead of an account-only request that drops the operation
+// the agent asked for (W34 live check, 2026-11-16).
+const CARD_REVIEW_ACCOUNT_PARAMS = [
+  'pending_agent_grant', 'account_claim', 'account_provider_id', 'agent_claims', 'connector_app_id', 'account_id',
 ];
 
 /** The provider consent link (Accounts tab) for permissions no connected
@@ -403,7 +406,7 @@ export function providerUpgradeHref(
 ): string {
   try {
     const url = new URL(baseUrl);
-    CARD_REVIEW_PARAMS.forEach((key) => url.searchParams.delete(key));
+    CARD_REVIEW_ACCOUNT_PARAMS.forEach((key) => url.searchParams.delete(key));
     url.searchParams.set('tab', 'delegated_to_kdcube');
     url.searchParams.set('provider_id', needed.providerId);
     if (needed.connectorAppId) url.searchParams.set('connector_app_id', needed.connectorAppId);

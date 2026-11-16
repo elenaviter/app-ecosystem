@@ -29,6 +29,10 @@ interface Props {
   accounts: ConsentAccount[];
   /** The scope before the extras: what the Card binds plus the request's own choice. */
   baseScope: Scope;
+  /** The Card's accounts with the agent's request applied to the account it is
+   *  answered with. A claim there that the Card does not hold yet is the
+   *  request: shown fixed and marked "requested above", never "already allowed". */
+  requestedScope?: Scope;
   bindable: Record<string, string[]>;
   providerLabel: (providerId: string) => string;
   accountLabel: (accountId: string) => string;
@@ -118,7 +122,7 @@ function Group({ title, hint, count, testId, children, onAll, onNone, disabled }
 }
 
 export function AgentCardConsentExtras({
-  offer, picks, onPicks, accounts, baseScope, bindable, providerLabel, accountLabel, disabled, requested,
+  offer, picks, onPicks, accounts, baseScope, requestedScope, bindable, providerLabel, accountLabel, disabled, requested,
 }: Props) {
   const askedOperations = (resource: string, namespace: string) => (
     requested && requested.resource === resource && requested.namespace === namespace && requested.operation
@@ -313,6 +317,8 @@ export function AgentCardConsentExtras({
           >
             {providerAccounts.map((account) => {
               const held = new Set(baseScope[providerId]?.[account.account_id] || []);
+              const asked = new Set((requestedScope || baseScope)[providerId]?.[account.account_id] || []);
+              const fixed = (claim: string) => held.has(claim) || asked.has(claim);
               const chosen = picks.accounts[providerId]?.[account.account_id] || [];
               return (
                 <div className="account-provider-account" key={account.account_id}>
@@ -322,13 +328,13 @@ export function AgentCardConsentExtras({
                       <label
                         className={[
                           'grant-chip agent-card-consent-chip',
-                          held.has(claim) ? 'agent-card-consent-held' : '',
-                          !held.has(claim) && chosen.includes(claim) ? 'agent-card-consent-picked' : '',
+                          fixed(claim) ? 'agent-card-consent-held' : '',
+                          !fixed(claim) && chosen.includes(claim) ? 'agent-card-consent-picked' : '',
                         ].filter(Boolean).join(' ')}
                         key={claim}
                         data-testid="agent-card-consent-extra-account-claim"
                       >
-                        {held.has(claim) ? <FixedChoice /> : <input
+                        {fixed(claim) ? <FixedChoice /> : <input
                           type="checkbox"
                           checked={chosen.includes(claim)}
                           disabled={disabled}
@@ -345,7 +351,7 @@ export function AgentCardConsentExtras({
                         />}
                         <span>{claim}</span>
                         {held.has(claim) ? <span className="badge badge-ok">already allowed</span>
-                          : (requested?.accountClaims[providerId] || []).includes(claim)
+                          : asked.has(claim)
                             ? <span className="badge badge-warn">requested above</span>
                             : needed.includes(claim) ? <span className="badge badge-warn">needed</span> : null}
                       </label>

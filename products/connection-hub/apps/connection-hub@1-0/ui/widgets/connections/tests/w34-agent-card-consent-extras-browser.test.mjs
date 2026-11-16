@@ -82,6 +82,22 @@ test('W34: more access on the agent Card consent review', async (t) => {
       await page.close()
     })
 
+    await t.test('the account claim the agent asked for is marked requested, not already allowed', async () => {
+      // W34 live check, 2026-11-16: the review asked for docs:read on the only Google account, and the
+      // accounts group below said "already allowed" for that same claim, which the Card did not hold.
+      const { page, errors } = await open(browser, origin, 'account-only')
+      await expand(page)
+      const chip = extras(page).getByTestId('agent-card-consent-extra-account-claim').filter({ hasText: 'slides:read' }).first()
+      const text = (await chip.innerText()).toLowerCase()
+      assert.ok(text.includes('requested above'), text)
+      assert.ok(!text.includes('already allowed'), text)
+      const box = chip.locator('input[type=checkbox]')
+      assert.equal(await box.isChecked(), true)
+      assert.equal(await box.getAttribute('aria-readonly'), 'true', 'what the agent asked for is fixed, not a choice')
+      assert.deepEqual(errors, [])
+      await page.close()
+    })
+
     await t.test('one Approve sends the request, then one merge per resource the extras touch, at the chained revision', async () => {
       const { page, errors } = await open(browser, origin, 'account-only')
       await expand(page)

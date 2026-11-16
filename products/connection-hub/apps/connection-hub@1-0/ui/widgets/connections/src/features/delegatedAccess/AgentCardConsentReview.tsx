@@ -435,7 +435,8 @@ export function AgentCardConsentReview({
           picks={picks}
           onPicks={setPicks}
           accounts={accounts}
-          baseScope={scope}
+          baseScope={heldScope}
+          requestedScope={scope}
           requested={{
             resource: request.resource,
             namespace: operationAllowed ? request.namespace : undefined,

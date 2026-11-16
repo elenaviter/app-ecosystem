@@ -15,6 +15,8 @@ import {
   unboundPickedClaims,
   withExtraAccounts,
 } from '../src/features/delegatedAccess/consentExtras.ts'
+import { agentCardConsentFromParams } from '../src/features/delegatedAccess/agentCardConsent.ts'
+import { agentCardHref } from '../src/features/delegatedToKdcube/agentHandoff.ts'
 
 const CLIENT = 'kdcube-agent:workspace@2026-03-31-13-36:main'
 const NAMED = '*/api/integrations/bundles/*/*/kdcube-services@1-0/public/mcp/named_services*'
@@ -178,7 +180,10 @@ test('the provider link carries the agent hand-off and drops the Card review par
   assert.equal(href.searchParams.get('agent_client_id'), CLIENT)
   assert.equal(href.searchParams.get('agent_resource'), NAMED)
   assert.equal(href.searchParams.get('keep'), '1')
-  for (const key of ['agent_card_consent', 'pending_agent_grant', 'account_claim', 'namespace']) assert.equal(href.searchParams.has(key), false, key)
+  for (const key of ['pending_agent_grant', 'account_claim']) assert.equal(href.searchParams.has(key), false, key)
+  // The agent's request stays in the link, so the hand-off returns to it (W34 live check, 2026-11-16).
+  assert.equal(href.searchParams.get('agent_card_consent'), '1')
+  assert.equal(href.searchParams.get('namespace'), 'slides')
   const several = new URL(providerUpgradeHref(base, { providerId: 'google', connectorAppId: '', resource: NAMED, claims: ['drive:read'] },
     CLIENT, [{ account_id: 'g1', provider_id: 'google' }, { account_id: 'g2', provider_id: 'google' }]))
   assert.equal(several.searchParams.has('account_id'), false, 'several accounts: the owner picks at the provider step')
@@ -195,4 +200,35 @@ test('an operation picked here whose provider permission nothing binds is named,
   assert.deepEqual(unboundPickedClaims(card, resources, offer, { ...picks, grants: { [NAMED]: ['docs:read'] } }, {}), [],
     'a door grant of the same name carried by the write also answers it')
   assert.deepEqual(unboundPickedClaims(card, resources, offer, NO_EXTRA_PICKS, {}), [], 'what the Card already held is not this consent\'s question')
+})
+
+test('connecting an account from the Card review returns to the same request, operation included', () => {
+  // W34 live check, 2026-11-16: the agent asked for docs object.get with docs:read; no account could do
+  // docs:read, so the owner connected one and pressed "Continue - grant it to main". The review it
+  // opened asked only for the account claim: the operation the agent asked for was gone.
+  const review = new URL('https://hub.example/connections')
+  for (const [key, value] of Object.entries({
+    tab: 'delegated_by_kdcube', pending_agent_grant: '1', agent_client_id: CLIENT, resource: NAMED,
+    claims: 'docs:read', agent_card_consent: '1', namespace: 'docs', operation: 'object.get',
+    account_claim: 'docs:read', account_provider_id: 'google',
+  })) review.searchParams.set(key, value)
+  const connect = providerUpgradeHref(review.toString(), { providerId: 'google', connectorAppId: '', resource: NAMED, claims: ['docs:read'] },
+    CLIENT, [{ account_id: 'g1', provider_id: 'google', claims: ['sheets:read'] }])
+  // The provider step runs on the Accounts tab, with its own params; then the hand-off link is built there.
+  const previous = globalThis.window
+  globalThis.window = { location: { href: connect } }
+  try {
+    const back = new URL(agentCardHref({ clientId: CLIENT, resource: NAMED, accountId: 'g1', claim: 'docs:read' }))
+    const request = agentCardConsentFromParams((key) => back.searchParams.get(key) ?? '')
+    assert.ok(request, 'the hand-off opens the Card review')
+    assert.equal(request.namespace, 'docs')
+    assert.equal(request.operation, 'object.get', 'the requested operation survives the account step')
+    assert.equal(request.accountClaim, 'docs:read')
+    assert.equal(request.accountId, 'g1')
+    assert.equal(request.resource, NAMED)
+    assert.equal(back.searchParams.get('tab'), 'delegated_by_kdcube')
+    assert.equal(back.searchParams.has('provider_id'), false, 'the provider step params are gone')
+  } finally {
+    globalThis.window = previous
+  }
 })
