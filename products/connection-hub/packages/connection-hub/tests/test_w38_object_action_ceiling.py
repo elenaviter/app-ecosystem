@@ -199,3 +199,39 @@ async def test_an_operation_outside_the_hub_catalog_stays_in_the_ceiling(declare
     assert f"slack/{HOST_FILE}" in ceiling and f"slack/{POST}" in ceiling and f"slack/{PARENT}" in ceiling, ceiling
     replay = await _sync(service, *declared)
     assert replay["ok"], replay
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("ceiling", [
+    (LIST, PARENT, "object.action.add_reaction"),
+    (LIST, "object.action.add_reaction"),
+], ids=["administrator-narrowing-keeps-the-parent", "descriptor-list-only"])
+async def test_a_narrowed_action_stays_on_the_agent_card_as_provenance(ceiling):
+    """kdcube#270 contract item 10, whichever way the Control narrows.
+
+    The sync's standard-part step keeps a saved choice the ceiling no longer
+    governs. An administrator narrowing keeps the bare object.action parent
+    while the namespace keeps any action; read as a pattern, the parent made the
+    removed action governed and dropped the owner's saved choice, while a
+    descriptor list without the parent kept it."""
+    import dataclasses
+
+    from connection_hub.delegated_credentials.agent_capability_policy import AgentCapabilityPolicy
+    from connection_hub.delegated_credentials.cards.model import NamedServiceSelection
+    from connection_hub.delegated_credentials.descriptor_agent_selection import selected_standard_maps
+
+    service, persistence = _service(named_services=True)
+    created = await _sync(service, LIST, POST)
+    control_id = created["control_card"]["access_id"]
+    card = next(rows[0] for access_id, rows in persistence.records.items() if access_id != control_id)
+    assert POST in card.named_service_operations.operations[NAMED_RESOURCE]["slack"]
+    control = dataclasses.replace(persistence.records[control_id][0],
+        named_service_operations=NamedServiceSelection.exact({NAMED_RESOURCE: {"slack": [LIST]}}))
+    selection = card.properties[AGENT_CAPABILITY_SELECTION_PROPERTY]
+    authority = AgentCapabilityPolicy.from_property({**selection, "capabilities": {
+        "named_services": ["slack"], "named_service_operations": [f"slack/{key}" for key in ceiling]}})
+    config = await service._catalog_config(await service._active_catalog(), owner_subject=OWNER)
+    _grants, _operations, named = selected_standard_maps(
+        resident=card, control=control, authority=authority,
+        selected=AgentCapabilityPolicy.from_property(selection), config=config, allow_additions=False)
+    assert set(named.operations[NAMED_RESOURCE]["slack"]) == {LIST, POST}

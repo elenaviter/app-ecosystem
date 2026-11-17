@@ -11,6 +11,9 @@ from urllib.parse import quote, unquote
 from .cards.model import NamedServiceSelection
 from .descriptor_agent_card import DescriptorAgentCardRefused
 
+_OBJECT_ACTION = "object.action"
+_OBJECT_ACTION_CHILD = _OBJECT_ACTION + "."
+
 
 def children(policy: Any, category: str, parent: str) -> set[str]:
     prefix = quote(parent, safe="-._~@") + "/"
@@ -72,6 +75,14 @@ def selected_standard_maps(*, resident: Any, control: Any, authority: Any, selec
         for namespace in namespaces & set(offered):
             offered_ops = set(offered[namespace])
             visible = children(authority, "named_service_operations", namespace)
+            if any(key.startswith(_OBJECT_ACTION_CHILD) for key in visible):
+                # A ceiling that lists its actions keeps the bare parent only as
+                # the SDK's switch for the action call (W38). Read as a pattern it
+                # would make an action the Control no longer allows "visible" and
+                # drop the owner's saved choice; an action outside the ceiling
+                # stays on the Card as provenance, as a descriptor narrowing
+                # keeps it (kdcube#270 contract item 10).
+                visible.discard(_OBJECT_ACTION)
             if "named_service_operations" not in authority.capabilities:
                 visible = offered_ops
             visible = {operation for operation in offered_ops if any(_operation_matches(want, operation) for want in visible)}

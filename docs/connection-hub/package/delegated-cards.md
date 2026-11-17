@@ -1001,7 +1001,10 @@ identity, so Connection Hub refuses direct revocation; the reset action
 restores its starting selection without destroying that identity.
 
 An administrator's Save submits one revision-checked Control Card update. The
-Card records that the administrator edited its selection. Descriptor and
+Card records that the administrator edited its selection. An administrator
+narrowing treats a user's Agent Card like a descriptor narrowing does: a saved
+choice the Control no longer allows stays on the Agent Card as provenance,
+grants nothing, and applies again once the Control allows it. Descriptor and
 bundle properties stay unchanged; on a later descriptor revision, sync keeps
 the saved Card choice within the refreshed descriptor and catalog ceilings.
 The linked KDCube capability document remains the source for descriptor-owned
