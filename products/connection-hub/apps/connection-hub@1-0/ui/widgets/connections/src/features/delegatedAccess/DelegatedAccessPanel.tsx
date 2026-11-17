@@ -1,4 +1,5 @@
 import { FormEvent, Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { bridgeToAdd } from './bridgeTools';
 import { CONNECTORS_OWNER_ONLY_NOTE, connectorsOwnerOnly, isConnectorResource } from './connectorOwnership';
 import { useAppDispatch, useAppSelector } from '../../app/hooks';
 import { PaneGroup } from '../../components/Pane';
@@ -1308,6 +1309,9 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
   const [editOpenPermissions, setEditOpenPermissions] = useState<Record<string, boolean>>({});
   const [editOpenTools, setEditOpenTools] = useState<Record<string, boolean>>({});
   // Namespace narrowing being edited: {resource: {namespace: [operation]}}.
+  // W34 C: bridge tools ticked for the operations that need them, keyed
+  // "<resource>\n<bridge>", so the editor can say what each one is for.
+  const [addedBridges, setAddedBridges] = useState<Record<string, string[]>>({});
   const [editNamedServiceOperations, setEditNamedServiceOperations] =
     useState<DelegatedAccessNamedServiceOperations>({});
   // Card resource -> catalog row, for the record being edited.
@@ -3050,6 +3054,27 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
         ...current,
         ...Object.fromEntries(required.map((grant) => [`${resource}:${grant}`, true])),
       }));
+      // W34 C: the agent calls this operation through an MCP bridge tool; tick
+      // it too when the draft lacks it and the Control allows it. Its Once or
+      // Every time choice stays the owner's, as for any added permission.
+      const editing = items.find((item) => item.access_id === editingAccessId)
+        || (focusedCard?.access_id === editingAccessId ? focusedCard : undefined);
+      const control = editing ? linkedControlCard(editing) : undefined;
+      const controlAllowed = control?.state === 'active'
+        ? (control.control_authority?.resource_operations || {})[resource] || []
+        : undefined;
+      const bridge = bridgeToAdd(operation, {
+        offered: (resourceOption?.operations || []).map((item) => item.name),
+        selected: editResourceOperations[resource] || [],
+        controlAllowed,
+      });
+      if (bridge) {
+        setEditResourceOperations((current) => withLinkedOperation(current, resource, bridge));
+        setAddedBridges((current) => ({
+          ...current,
+          [`${resource}\n${bridge}`]: Array.from(new Set([...(current[`${resource}\n${bridge}`] || []), operation])),
+        }));
+      }
     }
     setEditNamedServiceOperations((current) => {
       const namespaces = { ...(current[resource] || {}) };
@@ -3072,6 +3097,7 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
     setEditingAccessId(null);
     setEditPicks({});
     setEditResourceOperations({});
+    setAddedBridges({});
     setEditApplicationRolePolicy({ defaultRole: '', operationRoles: {} });
     setEditOpenResources({});
     setEditOpenPermissions({});
@@ -5607,6 +5633,22 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
             </div>
           ) : null}
           <CatalogDriftNotice drift={cardCatalogDrift(record)} />
+          {Object.keys(addedBridges).length ? (
+            <div className="notice added-bridges-notice" role="status" data-testid="added-bridges-notice">
+              <strong>Bridge tools added for the operations you ticked</strong>
+              <ul style={{ margin: '4px 0 0', paddingLeft: 18 }}>
+                {Object.entries(addedBridges).map(([key, operations]) => {
+                  const bridge = key.split('\n')[1];
+                  return (
+                    <li key={key}>
+                      <code>{bridge}</code> is needed for {operations.map((operation) => <code key={operation} style={{ marginRight: 4 }}>{operation}</code>)}.
+                      {' '}Choose Once or Every time for it before saving.
+                    </li>
+                  );
+                })}
+              </ul>
+            </div>
+          ) : null}
           {/* W681: the My Card's GitHub link stays in view while the Card is edited; Edit never hides it. */}
           {isMyCard(record)
             ? <MyCardGithubSection projectRef={myCardProjectRef(record)} openParams={openParams} />
