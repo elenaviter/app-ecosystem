@@ -110,6 +110,7 @@ from connection_hub.delegated_credentials.application_operation_policy import (
 from connection_hub.delegated_credentials.agent_capability_control import (
     AGENT_DESCRIPTOR_CARD_EDIT_PROVENANCE_KEY,
     AGENT_DESCRIPTOR_ISSUER_KIND,
+    AGENT_DESCRIPTOR_ACCEPTANCE_KIND,
     align_resident_selection_to_card_authority,
     preserve_descriptor_acceptance,
     resident_selection_properties,
@@ -8128,6 +8129,66 @@ class AutomationAccessService:
         from connection_hub.delegated_credentials.agent_sync_outcome import AgentSyncOutcomeStore
 
         return AgentSyncOutcomeStore(self._redis, tenant=self._tenant, project=self._project)
+
+    async def return_control_to_descriptor(
+        self,
+        user: Mapping[str, Any],
+        *,
+        access_id: str,
+        expected_card_revision: int | None,
+        expected_catalog_version: str | None = None,
+    ) -> dict[str, Any]:
+        """Hand a descriptor Control back to its descriptor (W38).
+
+        An administrator's Save marks the Control edited, and from then on a
+        descriptor refresh only narrows it. This is the explicit way back: one
+        revision-checked Control update, through the ordinary administrator
+        Save, that clears the edited mark and the accepted descriptor evidence.
+        The Control keeps its current choices until the agent's next
+        synchronization, which then seeds it from the current descriptor, as
+        for a new Control; the agents' Cards follow from that sync.
+        """
+        grantor_subject = _subject_from_user(user)
+        loaded = await self._load_record_any_state(_clean(access_id), grantor_subject=grantor_subject)
+        existing = loaded[0] if loaded is not None else None
+        if (
+            existing is None
+            or not _record_is_credentialless(existing)
+            or existing.issuer_kind != AGENT_DESCRIPTOR_ISSUER_KIND
+        ):
+            return {"ok": False, "error": "control_card_not_descriptor_control", "status": 404}
+        if dict(existing.provenance or {}).get(AGENT_DESCRIPTOR_CARD_EDIT_PROVENANCE_KEY) is not True:
+            return {"ok": False, "error": "control_card_already_follows_descriptor", "status": 409}
+
+        def _follow_descriptor(_before: AutomationAccessRecord, after: AutomationAccessRecord) -> AutomationAccessRecord:
+            provenance = dict(after.provenance or {})
+            provenance.pop(AGENT_DESCRIPTOR_CARD_EDIT_PROVENANCE_KEY, None)
+            return dataclasses.replace(
+                after,
+                provenance=provenance,
+                resource_acceptance={
+                    resource: acceptance
+                    for resource, acceptance in dict(after.resource_acceptance or {}).items()
+                    if acceptance.kind != AGENT_DESCRIPTOR_ACCEPTANCE_KIND
+                },
+            )
+
+        return await self.update_access(
+            user,
+            access_id=existing.access_id,
+            resource_grants={key: list(value) for key, value in existing.resource_grants.items()},
+            resource_operations={key: list(value) for key, value in existing.resource_operations.items()},
+            named_service_operations=existing.named_service_operations.to_stored(),
+            account_scope={
+                provider: {account: list(claims) for account, claims in accounts.items()}
+                for provider, accounts in dict(existing.account_scope or {}).items()
+            },
+            properties=copy.deepcopy(dict(existing.properties or {})),
+            composition_mode=existing.composition_mode,
+            expected_card_revision=expected_card_revision,
+            expected_catalog_version=expected_catalog_version,
+            _record_transform=_follow_descriptor,
+        )
 
     async def update_agent_capability_selection(
         self,

@@ -407,6 +407,33 @@ export const updateAgentCapabilitySelection = createAsyncThunk<
   },
 );
 
+/** W38: hand an administrator-edited descriptor Control back to its
+ *  descriptor. The next sync of the agent seeds it from the descriptor. */
+export const returnControlToDescriptor = createAsyncThunk<
+  DelegatedAccessCreateResult,
+  { accessId: string; expectedCardRevision: number; expectedCatalogVersion?: string },
+  { rejectValue: string }
+>(
+  'delegatedAccess/returnControlToDescriptor',
+  async ({ accessId, expectedCardRevision, expectedCatalogVersion }, { rejectWithValue }) => {
+    try {
+      const res = await postOp<DelegatedAccessCreateResult>('delegated_access_update', {
+        access_id: accessId,
+        return_to_descriptor: true,
+        expected_card_revision: expectedCardRevision,
+        ...(expectedCatalogVersion ? { expected_catalog_version: expectedCatalogVersion } : {}),
+      });
+      if (res?.ok === false && res?.status === 409) return res;
+      if (res?.ok === false) {
+        return rejectWithValue(resultError(res, 'The Control was not returned to its descriptor'));
+      }
+      return res || {};
+    } catch (e) {
+      return rejectWithValue(message(e));
+    }
+  },
+);
+
 export const PERSON_REMOVAL_GUIDANCE =
   'Remove this person in Project Board (Team). Their Control Card and access stay as they are until then.';
 

@@ -160,6 +160,7 @@ import {
   renewDelegatedAccess,
   revokeDelegatedAccess,
   updateAgentCapabilitySelection,
+  returnControlToDescriptor,
   updateDelegatedAccess,
   loadProjectAgentCard,
 } from './delegatedAccessSlice';
@@ -1908,6 +1909,12 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
   // button arms a "Revoke? Confirm / Cancel" row on the same spot.
   const [confirmRevokeId, setConfirmRevokeId] = useState<string | null>(null);
   const [confirmRenew, setConfirmRenew] = useState<{ accessId: string; mode: 'prolong' | 'reissue' } | null>(null);
+  const [confirmReturnToDescriptor, setConfirmReturnToDescriptor] = useState<{
+    accessId: string;
+    cardRevision: number;
+    catalogVersion: string;
+    label: string;
+  } | null>(null);
   const [confirmAgentReset, setConfirmAgentReset] = useState<{
     accessId: string;
     cardRevision: number;
@@ -3166,6 +3173,44 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
       setEditActionError(`Control defaults were not applied: ${String(error || 'request refused')}`);
     }
   };
+
+  const returnToDescriptor = async () => {
+    const pending = confirmReturnToDescriptor;
+    if (!pending) return;
+    setConfirmReturnToDescriptor(null);
+    setEditActionError('');
+    try {
+      const result = await dispatch(returnControlToDescriptor({
+        accessId: pending.accessId,
+        expectedCardRevision: pending.cardRevision,
+        expectedCatalogVersion: pending.catalogVersion,
+      })).unwrap();
+      if (!result || result.ok === false) {
+        setEditActionError(
+          result?.status === 409
+            ? 'This Control changed while the dialog was open. Review the current Control and try again.'
+            : `The Control was not returned to its descriptor: ${result?.error || 'request refused'}`,
+        );
+        void dispatch(loadDelegatedAccess());
+        return;
+      }
+      clearEditState();
+      void dispatch(loadDelegatedAccess());
+    } catch (error) {
+      setEditActionError(`The Control was not returned to its descriptor: ${String(error || 'request refused')}`);
+    }
+  };
+
+  const renderReturnToDescriptorDialog = () => (
+    <ConfirmDialog
+      open={confirmReturnToDescriptor !== null}
+      title={`Return ${confirmReturnToDescriptor?.label || 'this Control'} to its descriptor?`}
+      body="Your explicit list stops applying. At the agent's next synchronization the Control is seeded from the current descriptor again, and later descriptor changes, additions included, reach it. Choices people kept on their Agent Cards apply again where the descriptor allows them."
+      confirmLabel="Return to descriptor"
+      onCancel={() => setConfirmReturnToDescriptor(null)}
+      onConfirm={() => { void returnToDescriptor(); }}
+    />
+  );
 
   const renderAgentResetDialog = () => (
     <ConfirmDialog
@@ -5740,6 +5785,29 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
                   </div>
                 )}
               </Field>
+              {descriptorCapabilityControl && record.provenance?.agent_descriptor_card_edited === true ? (
+                <Field label="Explicit list" wide>
+                  <div className="control-return-to-descriptor">
+                    <small>
+                      An administrator saved this Control, so descriptor changes only narrow it and
+                      actions added later do not reach it.
+                    </small>
+                    <button
+                      className="btn btn-ghost"
+                      type="button"
+                      disabled={busy || typeof record.card_revision !== 'number'}
+                      onClick={() => setConfirmReturnToDescriptor({
+                        accessId: record.access_id,
+                        cardRevision: record.card_revision as number,
+                        catalogVersion: record.catalog_version || '',
+                        label: cardTitle(record),
+                      })}
+                    >
+                      Return to descriptor
+                    </button>
+                  </div>
+                </Field>
+              ) : null}
             </div>
           ) : null}
           {record.source !== 'agent' && !descriptorCapabilityControl ? (
@@ -6280,6 +6348,7 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
     <section className="card">
       {renderRenewDialog()}
       {renderAgentResetDialog()}
+      {renderReturnToDescriptorDialog()}
 
       {accessCardFocus && accessCardFocusState === 'loading' ? (
         <div className="notice" role="status">Opening the requested Card...</div>

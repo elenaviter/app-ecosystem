@@ -352,3 +352,58 @@ async def test_a_claim_the_control_excludes_is_not_asked_of_the_user(control_kee
         assert "consent" not in denial
         assert denial["ret"]["recovery"]["request_user_consent"] is False
         assert denial["missing_grants"] == ["slack:post"]
+
+
+@pytest.mark.asyncio
+async def test_return_to_descriptor_hands_the_control_back_to_the_descriptor():
+    """W38: an administrator's Save only ever narrows on later descriptor
+    refreshes; the explicit way back clears the edited mark, and the next sync
+    seeds the Control from the descriptor again."""
+    from connection_hub.delegated_credentials.agent_capability_control import (
+        AGENT_DESCRIPTOR_CARD_EDIT_PROVENANCE_KEY,
+    )
+
+    service, persistence = _service(named_services=True)
+    created = await _sync(service, LIST, POST)
+    control_id = created["control_card"]["access_id"]
+    await _administrator_keeps_only_list(service, created)
+
+    def control():
+        return persistence.records[control_id][0]
+
+    assert control().provenance[AGENT_DESCRIPTOR_CARD_EDIT_PROVENANCE_KEY] is True
+    refreshed = await service.sync_agent_capability_control(
+        {"user_id": OWNER}, **{**_arguments(LIST, POST), "descriptor_revision": "descriptor-r2",
+                               "descriptor_payload": {**_arguments(LIST, POST)["descriptor_payload"], "revision": "descriptor-r2"}})
+    assert refreshed["ok"], refreshed
+    assert set(control().named_service_operations.operations[NAMED_RESOURCE]["slack"]) == {LIST}, \
+        "an edited Control never widens on a refresh"
+
+    admin = {"user_id": OWNER, "roles": ["kdcube:role:super-admin"]}
+    returned = await service.return_control_to_descriptor(
+        admin, access_id=control_id, expected_card_revision=control().card_revision,
+        expected_catalog_version=control().catalog_version)
+    assert returned["ok"], returned
+    assert AGENT_DESCRIPTOR_CARD_EDIT_PROVENANCE_KEY not in control().provenance
+
+    again = await _sync(service, LIST, POST)
+    assert again["ok"], again
+    assert set(control().named_service_operations.operations[NAMED_RESOURCE]["slack"]) == {LIST, POST}
+    assert f"slack/{POST}" in _keys(control(), AGENT_CAPABILITY_AUTHORITY_PROPERTY)
+
+    twice = await service.return_control_to_descriptor(
+        admin, access_id=control_id, expected_card_revision=control().card_revision)
+    assert twice["ok"] is False and twice["error"] == "control_card_already_follows_descriptor"
+
+
+@pytest.mark.asyncio
+async def test_only_an_administrator_returns_a_control_to_its_descriptor():
+    service, persistence = _service(named_services=True)
+    created = await _sync(service, LIST, POST)
+    control_id = created["control_card"]["access_id"]
+    await _administrator_keeps_only_list(service, created)
+    control = persistence.records[control_id][0]
+    refused = await service.return_control_to_descriptor(
+        {"user_id": OWNER}, access_id=control_id, expected_card_revision=control.card_revision)
+    assert refused["ok"] is False
+    assert persistence.records[control_id][0].card_revision == control.card_revision

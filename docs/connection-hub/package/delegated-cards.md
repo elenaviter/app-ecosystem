@@ -1001,7 +1001,12 @@ identity, so Connection Hub refuses direct revocation; the reset action
 restores its starting selection without destroying that identity.
 
 An administrator's Save submits one revision-checked Control Card update. The
-Card records that the administrator edited its selection. An administrator
+Card records that the administrator edited its selection; from then on a
+descriptor refresh only narrows it. **Return to descriptor** on such a Control
+is the explicit way back: one revision-checked Control update, through the same
+administrator Save, clears the edited mark and the accepted descriptor
+evidence, and the agent's next synchronization seeds the Control from the
+current descriptor as for a new Control. An administrator
 narrowing treats a user's Agent Card like a descriptor narrowing does: a saved
 choice the Control no longer allows stays on the Agent Card as provenance,
 grants nothing, and applies again once the Control allows it. The Card read
