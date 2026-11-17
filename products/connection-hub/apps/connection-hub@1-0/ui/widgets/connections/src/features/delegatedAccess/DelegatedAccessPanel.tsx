@@ -1,4 +1,5 @@
 import { FormEvent, Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { controlNarrowingRows, controlNarrowingSource } from './controlNarrowing';
 import { CONNECTORS_OWNER_ONLY_NOTE, connectorsOwnerOnly, isConnectorResource } from './connectorOwnership';
 import { useAppDispatch, useAppSelector } from '../../app/hooks';
 import { PaneGroup } from '../../components/Pane';
@@ -140,6 +141,8 @@ import type {
   DelegatedAccessResourceOperations,
   DelegatedAccessStoredNamedServices,
   DelegatedCatalogDrift,
+  DelegatedOutsideControl,
+  DelegatedAgentSyncRefusal,
   DelegatedControlCardAuthority,
   DelegatedControlCardBinding,
   DelegatedInvocationPolicy,
@@ -1102,6 +1105,51 @@ function CatalogDriftNotice({ drift }: { drift?: DelegatedCatalogDrift }) {
           </div>
         ) : null}
       </details>
+    </div>
+  );
+}
+
+/** W38: choices this Card keeps that its Control no longer allows, and a
+ *  refused descriptor sync. Both come from the server; the panel only renders. */
+function ControlNarrowingNotice({
+  outside,
+  refusal,
+}: {
+  outside?: DelegatedOutsideControl;
+  refusal?: DelegatedAgentSyncRefusal;
+}) {
+  const rows = controlNarrowingRows(outside);
+  if (!rows.length && !refusal) return null;
+  const narrowedBy = controlNarrowingSource(outside);
+  return (
+    <div className="notice control-narrowing-notice" style={{ marginTop: 10, marginBottom: 10 }}>
+      {refusal ? (
+        <div className="control-sync-refusal">
+          <strong>The last update from this agent's descriptor was refused</strong>
+          <div>
+            Nothing on this Card changed. Reason: <code>{refusal.error}</code>
+            {refusal.at ? ` (${new Date(refusal.at * 1000).toLocaleString()})` : ''}.
+            {refusal.retryable ? ' It is retried with the next message.' : ''}
+          </div>
+        </div>
+      ) : null}
+      {rows.length ? (
+        <div>
+          <strong>Not in this agent's Control</strong>
+          <div>
+            {narrowedBy} no longer allows these choices. They stay on this Card, grant
+            nothing, and apply again once the Control allows them.
+          </div>
+          <details>
+            <summary>{rows.length === 1 ? '1 choice' : `${rows.length} choices`}</summary>
+            <ul className="catalog-drift-list">
+              {rows.map((row) => (
+                <DriftCatalogRow key={`outside-${driftLabel(row)}`} row={row} removed />
+              ))}
+            </ul>
+          </details>
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -5632,6 +5680,10 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
             </div>
           ) : null}
           <CatalogDriftNotice drift={cardCatalogDrift(record)} />
+          <ControlNarrowingNotice
+            outside={linkedControlCard(record)?.outside_control}
+            refusal={record.agent_sync_refusal || linkedControlCard(record)?.agent_sync_refusal}
+          />
           {/* W681: the My Card's GitHub link stays in view while the Card is edited; Edit never hides it. */}
           {isMyCard(record)
             ? <MyCardGithubSection projectRef={myCardProjectRef(record)} openParams={openParams} />
@@ -6051,6 +6103,10 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
                         </div>
                       ) : null}
                       <CatalogDriftNotice drift={cardCatalogDrift(item)} />
+                      <ControlNarrowingNotice
+                        outside={linkedControlCard(item)?.outside_control}
+                        refusal={item.agent_sync_refusal}
+                      />
                       {isMyCard(item)
                         ? <MyCardGithubSection projectRef={myCardProjectRef(item)} openParams={openParams} />
                         : null}

@@ -163,6 +163,7 @@ from connection_hub.delegated_credentials.controls.account_scope_policy import (
 )
 from connection_hub.delegated_credentials.controls.hierarchy import compose_control_hierarchy
 from connection_hub.delegated_credentials.controls.attribution import ResolvedCardComposition
+from connection_hub.delegated_credentials.application_resources import ApplicationResource
 from connection_hub.delegated_credentials.conversation_target_policy import (
     conversation_targets,
 )
@@ -1882,6 +1883,53 @@ def _descriptor_control_ceiling_after_edit(
     return out
 
 
+def _outside_control(
+    caller: AutomationAccessRecord,
+    effective: AutomationAccessRecord,
+    control: AutomationAccessRecord,
+) -> dict[str, Any]:
+    """Caller choices the composed authority drops: the Control excludes them.
+
+    Only the AND composition (a descriptor or project Control) is a plain
+    intersection, so only there does "held but not effective" mean "outside
+    the Control". ``by`` names who narrowed it: the administrator's saved list
+    or the descriptor.
+    """
+    if _clean(control.composition_mode or "and") != "and":
+        return {}
+    named: dict[str, dict[str, list[str]]] = {}
+    caller_named = caller.named_service_operations
+    effective_named = effective.named_service_operations
+    if caller_named.is_exact:
+        for resource, namespaces in caller_named.operations.items():
+            for namespace, operations in namespaces.items():
+                if effective_named.is_all:
+                    continue
+                kept = set(effective_named.operations.get(resource, {}).get(namespace, ()))
+                dropped = sorted(set(operations) - kept)
+                if dropped:
+                    named.setdefault(resource, {})[namespace] = dropped
+    outer = {
+        resource: sorted(set(operations) - set(effective.resource_operations.get(resource, ())))
+        for resource, operations in caller.resource_operations.items()
+        if set(operations) - set(effective.resource_operations.get(resource, ()))
+    }
+    claims = {
+        resource: sorted(set(grants) - set(effective.resource_grants.get(resource, ())))
+        for resource, grants in caller.resource_grants.items()
+        if set(grants) - set(effective.resource_grants.get(resource, ()))
+    }
+    if not (named or outer or claims):
+        return {}
+    edited = dict(control.provenance or {}).get(AGENT_DESCRIPTOR_CARD_EDIT_PROVENANCE_KEY) is True
+    return {
+        "by": "administrator" if edited else "descriptor",
+        "named_service_operations": named,
+        "outer_operations": outer,
+        "claims": claims,
+    }
+
+
 class AutomationAccessService:
     """Create/list/revoke user-created delegated automation credentials."""
 
@@ -2288,6 +2336,13 @@ class AutomationAccessService:
         return {
             "state": "active",
             "fail_closed": False,
+            # W38: what this Card keeps that the Control no longer allows. The
+            # choices stay on the Card as provenance and grant nothing; the
+            # owner sees why they do not apply and that they return when the
+            # Control allows them again.
+            "outside_control": _outside_control(
+                record, record_from_card(effective), control
+            ),
             "binding": effective.control_card.to_dict()
             if effective.control_card is not None
             else binding.to_dict(),
@@ -4854,6 +4909,14 @@ class AutomationAccessService:
             if profile is not None:
                 item["caller_profile"] = profile.to_dict()
                 item["stable_identity"] = record.access_id == profile.access_id
+                # W38: a refused descriptor sync changed nothing on this Card.
+                refusal = await self._agent_sync_outcomes().read(
+                    grantor_subject=record.grantor_subject,
+                    application=profile.application,
+                    agent_id=profile.agent_id,
+                )
+                if refusal:
+                    item["agent_sync_refusal"] = refusal
             # Which owner-visible delegable resources may join this card, and
             # why the others may not. The editor renders the picker from this;
             # a resident ceiling (Projection) narrows it further downstream.
@@ -8028,7 +8091,7 @@ class AutomationAccessService:
             sync_agent_capability_control,
         )
 
-        return await sync_agent_capability_control(
+        result = await sync_agent_capability_control(
             self,
             user,
             application=application,
@@ -8051,6 +8114,20 @@ class AutomationAccessService:
             issuer_label=issuer_label,
             manage_url=manage_url,
         )
+        # W38: a refused sync changes no Card; keep it so the editor can say so.
+        await self._agent_sync_outcomes().record(
+            result,
+            grantor_subject=_subject_from_user(user),
+            application=application,
+            agent_id=agent_id,
+            descriptor_revision=descriptor_revision,
+        )
+        return result
+
+    def _agent_sync_outcomes(self) -> "AgentSyncOutcomeStore":
+        from connection_hub.delegated_credentials.agent_sync_outcome import AgentSyncOutcomeStore
+
+        return AgentSyncOutcomeStore(self._redis, tenant=self._tenant, project=self._project)
 
     async def update_agent_capability_selection(
         self,
@@ -8135,6 +8212,22 @@ class AutomationAccessService:
         access["catalog_drift"] = dict(card.get("catalog_drift") or {})
         access["resource_offers"] = list(card.get("resource_offers") or [])
         access["invocation_policies"] = []
+        # W38: the administrator sees a refused descriptor sync on the Control too.
+        marker = descriptor_control(record.properties)
+        if marker is not None:
+            try:
+                target = ApplicationResource.parse(marker.resource)
+            except Exception:
+                target = None
+            if target is not None:
+                refusal = await self._agent_sync_outcomes().read(
+                    grantor_subject=grantor_subject,
+                    application=target.application,
+                    agent_id=target.agent,
+                )
+                if refusal:
+                    card["agent_sync_refusal"] = refusal
+                    access["agent_sync_refusal"] = refusal
         try:
             active = await self._active_catalog()
             catalog_config = await self._catalog_config(

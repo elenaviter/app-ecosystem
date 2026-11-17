@@ -1004,7 +1004,12 @@ An administrator's Save submits one revision-checked Control Card update. The
 Card records that the administrator edited its selection. An administrator
 narrowing treats a user's Agent Card like a descriptor narrowing does: a saved
 choice the Control no longer allows stays on the Agent Card as provenance,
-grants nothing, and applies again once the Control allows it. Descriptor and
+grants nothing, and applies again once the Control allows it. The Card read
+names those choices (`control_card.outside_control`, with `by` naming the
+administrator's list or the descriptor), and the editor lists them under "Not
+in this agent's Control". A refused descriptor synchronization changes no Card;
+its code and time are kept per owner and agent (`agent_sync_refusal` on the
+Agent Card and the Control read) until the next successful synchronization. Descriptor and
 bundle properties stay unchanged; on a later descriptor revision, sync keeps
 the saved Card choice within the refreshed descriptor and catalog ceilings.
 The linked KDCube capability document remains the source for descriptor-owned

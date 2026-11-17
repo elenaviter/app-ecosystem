@@ -235,3 +235,69 @@ async def test_a_narrowed_action_stays_on_the_agent_card_as_provenance(ceiling):
         resident=card, control=control, authority=authority,
         selected=AgentCapabilityPolicy.from_property(selection), config=config, allow_additions=False)
     assert set(named.operations[NAMED_RESOURCE]["slack"]) == {LIST, POST}
+
+
+class _FakeRedis:
+    def __init__(self):
+        self.values = {}
+
+    async def set(self, key, value, ex=None):
+        self.values[key] = value
+
+    async def get(self, key):
+        return self.values.get(key)
+
+    async def delete(self, key):
+        self.values.pop(key, None)
+
+
+async def _administrator_keeps_only_list(service, created):
+    card = created["control_card"]
+    changed = await service.update_access(
+        {"user_id": OWNER, "roles": ["kdcube:role:super-admin"]}, access_id=card["access_id"],
+        resource_grants={NAMED_RESOURCE: ["named_services:use", "slack:read"]}, resource_operations={},
+        named_service_operations={NAMED_RESOURCE: {"slack": [LIST]}}, account_scope={},
+        expected_card_revision=card["card_revision"], expected_catalog_version=card["catalog_version"],
+        composition_mode="and", properties=card["properties"])
+    assert changed["ok"], changed
+
+
+@pytest.mark.asyncio
+async def test_the_agent_card_view_names_what_the_control_no_longer_allows():
+    """W38 visibility: the choice stays on the Card as provenance, and the
+    owner sees which choices the Control excludes and who narrowed it."""
+    service, persistence = _service(named_services=True)
+    created = await _sync(service, LIST, POST)
+    control_id = created["control_card"]["access_id"]
+    await _administrator_keeps_only_list(service, created)
+    agent = next(rows[0] for access_id, rows in persistence.records.items() if access_id != control_id)
+    from connection_hub.delegated_credentials.automation_access import record_from_card
+
+    view = await service._effective_control_view(record_from_card(agent))
+
+    outside = view["outside_control"]
+    assert outside["by"] == "administrator"
+    assert outside["named_service_operations"] == {NAMED_RESOURCE: {"slack": [POST]}}
+    assert "slack:post" in outside["claims"][NAMED_RESOURCE]
+
+
+@pytest.mark.asyncio
+async def test_a_refused_sync_is_recorded_for_the_owner_and_cleared_by_the_next_success():
+    """W38 visibility: a refused sync changes no Card, so it is recorded."""
+    service, _persistence = _service(named_services=True)
+    service._redis = _FakeRedis()
+    created = await _sync(service, LIST, POST)
+    assert created["ok"], created
+    refused = await service.sync_agent_capability_control(
+        {"user_id": OWNER}, **{**_arguments(LIST, POST), "capability_authority": {"schema": "broken"}})
+    assert refused["ok"] is False
+    store = service._agent_sync_outcomes()
+    recorded = await store.read(grantor_subject=OWNER, application=APPLICATION, agent_id=AGENT)
+    assert recorded and recorded["error"] == refused["error"]
+    shown = await service.control_card_get(
+        {"user_id": OWNER, "roles": ["kdcube:role:super-admin"]}, control_id=created["control_card"]["access_id"])
+    assert shown["control_card"]["agent_sync_refusal"]["error"] == refused["error"]
+
+    again = await _sync(service, LIST, POST)
+    assert again["ok"], again
+    assert await store.read(grantor_subject=OWNER, application=APPLICATION, agent_id=AGENT) is None
