@@ -1171,7 +1171,10 @@ operation also adds the MCP bridge tool the agent calls it with (for example
 it and the linked Control allows it. A passive sync never re-creates a bridge
 the owner removed, so without this the agent would hold the operation and
 nothing to call it with; bridges for operations the request did not name are
-left as they are.
+left as they are. The Card editor does the same when the owner ticks a
+named-service operation whose bridge the draft lacks and the Control allows: it
+ticks the bridge and says which operation needs it. The bridge's Once or Every
+time choice stays the owner's, as for any added permission.
 
 The review can also add more than the request, within the Control, and only
 add: one merge grant per resource touched, chained by revision. A provider
