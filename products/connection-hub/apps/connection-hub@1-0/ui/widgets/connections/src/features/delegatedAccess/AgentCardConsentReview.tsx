@@ -467,7 +467,7 @@ export function AgentCardConsentReview({
           onRequest={(target) => void saveAndRequest(target)}
         />
       )}
-      {requestAnswered && !requestAdds && !done ? (
+      {requestAnswered && !requestAdds && !done && (operationAllowed || !request.operation) ? (
         <div className="notice" role="status" data-testid="agent-card-consent-request-held">
           What the agent asked for is already allowed on this Card. You can still add more below.
         </div>

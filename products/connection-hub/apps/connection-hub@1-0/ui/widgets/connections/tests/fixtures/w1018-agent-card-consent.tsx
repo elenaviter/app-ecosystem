@@ -40,7 +40,7 @@ const card = () => ({
     },
   },
 })
-let bound: Record<string, Record<string, string[]>> = variant === 'named-incapable-bound'
+let bound: Record<string, Record<string, string[]>> = variant === 'named-incapable-bound' || variant === 'outside-bound'
   ? { google: { google_acct_1: ['slides:read'] } } : {}
 const resources = [{
   resource: MEMORIES, label: 'Memories', grants: ['memories:read', 'memories:write'], operations: [],
@@ -109,7 +109,7 @@ store.dispatch(loadDelegatedAccess())
 store.dispatch(loadDelegatedToKdcube())
 const link: Record<string, string> = { agent_card_consent: '1', pending_agent_grant: '1', agent_client_id: CLIENT, resource: NAMED, claims: '', account_claim: 'slides:read' }
 if (variant === 'operation' || variant === 'refused') Object.assign(link, { namespace: 'slides', operation: 'object.upsert', account_claim: 'slides:write' })
-if (variant === 'outside') Object.assign(link, { namespace: 'slides', operation: 'provider.capabilities' })
+if (variant === 'outside' || variant === 'outside-bound') Object.assign(link, { namespace: 'slides', operation: 'provider.capabilities' })
 if (variant === 'mismatch') link.access_id = 'agent-someone-else'
 if (variant === 'inactive-id') link.access_id = 'agent-old-revoked'
 if (variant === 'claims-only') Object.assign(link, { resource: MEMORIES, claims: 'memories:read', account_claim: '' })

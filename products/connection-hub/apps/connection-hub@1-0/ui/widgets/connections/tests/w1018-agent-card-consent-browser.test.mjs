@@ -163,6 +163,18 @@ test('W1018 A: the agent Card consent review', async (t) => {
       await page.close()
     })
 
+    await t.test('an operation outside the Control is never reported as already allowed (W38 live finding)', async () => {
+      // The account permission is already bound, so the request adds nothing: because nothing
+      // here can grant the operation, not because the Card already allows it.
+      const { page, errors } = await open(browser, origin, 'outside-bound')
+      const section = page.getByTestId('agent-card-consent-operation')
+      assert.match(await section.innerText(), /not in this agent's Control/i)
+      await page.waitForTimeout(500)
+      assert.equal(await page.getByTestId('agent-card-consent-request-held').count(), 0)
+      assert.deepEqual(errors, [])
+      await page.close()
+    })
+
     await t.test('a markerless hosted link naming an operation outside the Control shows it unavailable on the Card', async () => {
       const { page, errors } = await open(browser, origin, 'pending-outside')
       const section = page.getByTestId('agent-card-consent-operation')
