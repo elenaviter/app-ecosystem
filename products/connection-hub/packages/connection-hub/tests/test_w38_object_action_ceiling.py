@@ -301,3 +301,54 @@ async def test_a_refused_sync_is_recorded_for_the_owner_and_cleared_by_the_next_
     again = await _sync(service, LIST, POST)
     assert again["ok"], again
     assert await store.read(grantor_subject=OWNER, application=APPLICATION, agent_id=AGENT) is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("control_keeps_post", [False, True], ids=["control-excludes-the-claim", "only-the-card-lacks-it"])
+async def test_a_claim_the_control_excludes_is_not_asked_of_the_user(control_keeps_post):
+    """W38: the credential carries only effective claims, but the guard keeps the
+    live composition for the request. A missing claim the Control excludes gets
+    the Control-blocked denial; a claim only the Agent Card lacks still asks."""
+    import dataclasses
+    from types import SimpleNamespace
+
+    from connection_hub.delegated_credentials.automation_access import card_authority_from_record
+    from connection_hub.delegated_credentials.consent_denial import agent_grant_consent_denial
+    from connection_hub.delegated_credentials.controls.attribution import ResolvedCardComposition
+    from connection_hub.named_service_admission import MANAGED_ADMISSION_STATE_ATTR
+
+    service, persistence = _service(named_services=True)
+    created = await _sync(service, LIST, POST)
+    control_id = created["control_card"]["access_id"]
+    caller = card_authority_from_record(
+        next(rows[0] for access_id, rows in persistence.records.items() if access_id != control_id))
+    control = persistence.records[control_id][0]
+    if not control_keeps_post:
+        control = dataclasses.replace(control, resource_grants={NAMED_RESOURCE: ("named_services:use", "slack:read")})
+    caller = dataclasses.replace(caller, resource_grants={NAMED_RESOURCE: (
+        ("named_services:use", "slack:read", "slack:post") if not control_keeps_post
+        else ("named_services:use", "slack:read"))})
+    effective = dataclasses.replace(caller, resource_grants={NAMED_RESOURCE: ("named_services:use", "slack:read")})
+    snapshot = SimpleNamespace(
+        card_composition=ResolvedCardComposition(caller_card=caller, effective_card=effective,
+                                                 control_card=card_authority_from_record(control)),
+        resource=NAMED_RESOURCE, request_resource="", access_id=caller.access_id,
+        card_revision=caller.card_revision, card_catalog_version=caller.catalog_version)
+    request = SimpleNamespace(state=SimpleNamespace(**{
+        MANAGED_ADMISSION_STATE_ATTR: snapshot,
+        "delegated_credential": {"credential": {"attrs": {"grants": ["named_services:use", "slack:read"],
+                                                          "resource": NAMED_RESOURCE}},
+                                 "grant_record": {"client_id": caller.client_id, "grants": [],
+                                                  "registry_access_id": caller.access_id}}}))
+
+    denial = agent_grant_consent_denial(
+        request, namespace="slack", tool="named_services_action", operation=POST,
+        required=["named_services:use", "slack:post"], missing=["slack:post"],
+        available=["named_services:use", "slack:read"])
+
+    if control_keeps_post:
+        assert "consent" in denial
+    else:
+        assert "consent" not in denial
+        assert denial["ret"]["recovery"]["request_user_consent"] is False
+        assert denial["missing_grants"] == ["slack:post"]

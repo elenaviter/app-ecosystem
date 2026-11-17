@@ -244,6 +244,62 @@ def connection_hub_invocation_policy_url(
     )
 
 
+def _control_blocked_claim_denial(
+    request: Any,
+    missing: Sequence[str],
+    *,
+    namespace: str,
+    tool: str,
+    operation: str,
+) -> dict[str, Any] | None:
+    """A missing claim the linked Control Card excludes is not a consent case.
+
+    The credential carries only the effective claims (Agent Card AND Control),
+    but the guard keeps the live composition for this request. When the
+    attribution names the Control as a blocker of a missing claim, no user
+    consent can supply it, so the denial names the Control and asks for none
+    (W38). Without a request-local composition nothing changes.
+    """
+    from connection_hub.delegated_credentials.catalog.authorization import (
+        CAPABILITY_RESOURCE_CLAIM,
+        CapabilityRequest,
+        CardProvenance,
+        card_boundary_denial,
+    )
+    from connection_hub.named_service_admission import MANAGED_ADMISSION_STATE_ATTR
+
+    snapshot = getattr(getattr(request, "state", None), MANAGED_ADMISSION_STATE_ATTR, None)
+    composition = getattr(snapshot, "card_composition", None)
+    if composition is None or getattr(composition, "control_card", None) is None or not missing:
+        return None
+    resource = str(getattr(snapshot, "resource", "") or "").strip()
+    provenance = CardProvenance(
+        access_id=str(getattr(snapshot, "access_id", "") or ""),
+        card_revision=int(getattr(snapshot, "card_revision", 0) or 0),
+        catalog_version=str(getattr(snapshot, "card_catalog_version", "") or ""),
+    )
+    for claim in missing:
+        denial = card_boundary_denial(
+            provenance=provenance,
+            request=CapabilityRequest(
+                kind=CAPABILITY_RESOURCE_CLAIM,
+                resource=resource,
+                request_resource=str(getattr(snapshot, "request_resource", "") or ""),
+                surface="named_service",
+                namespace=namespace,
+                operation=operation,
+                claim=claim,
+            ),
+            card_composition=composition,
+        )
+        recovery = (denial.get("ret") or {}).get("recovery") or {}
+        if recovery.get("request_user_consent") is False:
+            denial.update({"namespace": namespace, "tool": tool, "operation": operation,
+                           "missing_grants": list(missing)})
+            return denial
+    return None
+
+
 def agent_grant_consent_denial(
     request: Any,
     *,
@@ -281,6 +337,11 @@ def agent_grant_consent_denial(
             "whose initial consent includes this grant."
         ),
     }
+    blocked = _control_blocked_claim_denial(
+        request, missing_list, namespace=namespace, tool=tool, operation=operation,
+    )
+    if blocked is not None:
+        return blocked
     view = delegated_credential_view(request)
     client_id = view.agent_client_id
     # An external OAuth client (Claude Code) takes the SAME focused path: the
