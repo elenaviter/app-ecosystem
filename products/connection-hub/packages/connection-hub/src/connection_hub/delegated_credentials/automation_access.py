@@ -162,6 +162,7 @@ from connection_hub.delegated_credentials.controls.account_scope_policy import (
     direct_write_refusal as account_scope_policy_direct_write_refusal,
 )
 from connection_hub.delegated_credentials.controls.hierarchy import compose_control_hierarchy
+from connection_hub.delegated_credentials.controls.attribution import ResolvedCardComposition
 from connection_hub.delegated_credentials.conversation_target_policy import (
     conversation_targets,
 )
@@ -9849,11 +9850,19 @@ class AutomationAccessService:
                     client_id=client_id,
                     resources=[cfg.resource],
                 )
+            composition = None
             if record is not None and record.control_card is not None:
                 try:
                     control, composed = await self._compose_with_control(record)
                     if control is None or composed is None:
                         raise ControlCardMismatch("control_card_unresolvable")
+                    # Keep who refuses: an operation the Control excludes is not
+                    # something the owner's consent can add (W38).
+                    composition = ResolvedCardComposition(
+                        caller_card=card_authority_from_record(record),
+                        effective_card=composed,
+                        control_card=card_authority_from_record(control),
+                    )
                     record = record_from_card(composed)
                 except (CardUnavailable, ControlCardMismatch) as exc:
                     return {
@@ -9947,6 +9956,7 @@ class AutomationAccessService:
                                     namespace=ns,
                                     operation=op,
                                 ),
+                                card_composition=composition,
                             )
             return {
                 "governed": True,

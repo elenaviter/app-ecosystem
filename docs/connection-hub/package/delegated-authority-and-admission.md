@@ -293,7 +293,11 @@ hosted agent's chat can open the focused card and submit only that operation;
 an external OAuth/MCP client receives the same focused Connection Hub route.
 Grant completion emits a passive `connections.consent.granted` event only for
 the matching caller, resource, and operation. Approval does not replay the
-refused call.
+refused call. When the linked Control Card is what excludes the operation (an
+administrator narrowing or the descriptor), the evidence names the Control as
+the blocker with `recovery.request_user_consent: false`, and no consent block is
+added: no user consent can lift a Control limit. The native grant state and the
+managed MCP door attribute the refusal the same way.
 
 Conversation MCP demonstrates a plain managed operation with no connected
 provider account. Its `conversations_export` tool requires

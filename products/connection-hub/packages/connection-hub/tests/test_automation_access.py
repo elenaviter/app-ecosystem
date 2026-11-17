@@ -473,3 +473,65 @@ def test_a_concrete_card_grant_is_offered_as_the_pattern_row_that_governs_it() -
     assert service._card_resource_keys(["https://host.example/gone"]) == (
         "https://host.example/gone",
     )
+
+
+@pytest.mark.asyncio
+async def test_native_grant_state_names_the_control_card_when_it_excludes_the_operation() -> None:
+    """W38: an operation the linked Control Card excludes is not a consent case.
+
+    The Agent Card holds object.search; the administrator's Control does not.
+    The card-side denial names the Control as the blocker and asks for no
+    consent, so the chat does not demand what no user can grant."""
+    import dataclasses
+
+    from connection_hub.delegated_credentials.automation_access import card_authority_from_record
+    from connection_hub.delegated_credentials.cards.model import ControlCardBinding
+
+    resource = "https://example.test/mcp/conversations"
+
+    def tree(*operations: str) -> dict:
+        return {"namespaces": {"conv": {"tools": {"objects": {"operations": {
+            operation: {"grants": ["conversations:read"]} for operation in operations}}}}}}
+
+    document = CatalogDocument.build({"delegated_credentials": {"oauth": {"enabled": True, "resources": [{
+        "resource": resource, "grants": ["conversations:read"],
+        "named_services": tree("object.list", "object.search")}]}}})
+
+    async def _active():
+        return document
+
+    service = AutomationAccessService(
+        redis=None, tenant="tenant", project="project",
+        config=oauth_delegated_config_from_connections(document.connections),
+        catalog_resolver=SimpleNamespace(resolve_active=_active))
+
+    def card(access_id: str, kind: str, *operations: str) -> AutomationAccessRecord:
+        return AutomationAccessRecord(
+            access_id=access_id, label=access_id, client_id="agent-1", grantor_subject="user-1",
+            delegate_subject="integration:agent-1:user-1", card_kind=kind, operations=(),
+            resource_grants={resource: ("conversations:read",)},
+            named_service_operations=NamedServiceSelection.exact({resource: {"conv": operations}}),
+            named_services=tree(*operations), catalog_version=document.version)
+
+    agent = dataclasses.replace(card("agent-card", CARD_KIND_AGENT, "object.list", "object.search"),
+                                control_card=ControlCardBinding(control_id="control-1", issuer_ref="workspace"))
+    control = card("control-1", "control", "object.list")
+    composed = card_authority_from_record(dataclasses.replace(
+        agent, named_service_operations=control.named_service_operations, named_services=control.named_services))
+
+    async def _record(**_kwargs):
+        return agent
+
+    async def _compose(_record):
+        return control, composed
+
+    service._resident_card_for_resources = _record
+    service._compose_with_control = _compose
+
+    state = await service.agent_namespace_grant_state(
+        grantor_subject="user-1", client_id="agent-1", namespace="conv", operation="object.search")
+
+    assert state["granted"] is False
+    recovery = state["not_granted"]["ret"]["recovery"]
+    assert recovery["request_user_consent"] is False
+    assert recovery["action"] == "review_blocking_control_card"
