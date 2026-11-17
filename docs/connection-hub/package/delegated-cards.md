@@ -1165,7 +1165,13 @@ capability selection and `account_scope` through
 `delegated_agent_grant_create` together. There is no second normal Card Save.
 An omitted account scope preserves the stored binding; an explicit empty
 scope binds no accounts. Current provider capability and Control checks
-remain authoritative at commit and use time.
+remain authoritative at commit and use time. A consent merge that adds a named-service
+operation also adds the MCP bridge tool the agent calls it with (for example
+`named_services_action` for an `object.action.*` operation) when the Card lacks
+it and the linked Control allows it. A passive sync never re-creates a bridge
+the owner removed, so without this the agent would hold the operation and
+nothing to call it with; bridges for operations the request did not name are
+left as they are.
 
 The review can also add more than the request, within the Control, and only
 add: one merge grant per resource touched, chained by revision. A provider
