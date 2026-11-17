@@ -233,6 +233,17 @@ test('W34: more access on the agent Card consent review', async (t) => {
       assert.deepEqual(errors, [])
       await page.close()
     })
+    await t.test('a held operation outside the Control shows only "not in this agent\'s Control" (W38 live)', async () => {
+      const { page, errors } = await open(browser, origin, 'held-outside')
+      await expand(page)
+      const row = extras(page).getByTestId('agent-card-consent-extra-operation').filter({ hasText: 'provider.capabilities' })
+      const text = await row.innerText()
+      assert.match(text, /not in this agent's Control/i)
+      assert.doesNotMatch(text, /already allowed/i)
+      assert.deepEqual(errors, [])
+      await page.close()
+    })
+
   } finally {
     await browser.close()
     await server.close()

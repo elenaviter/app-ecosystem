@@ -26,7 +26,8 @@ const card = () => ({
   created_at: 1_760_000_000, expires_at: 1_960_000_000,
   resource_grants: { [NAMED]: ['named_services:use', 'slides:read'], [SERVICE]: ['records:read'] },
   resource_operations: { [NAMED]: ['named_services_call'], [SERVICE]: ['records_list'] },
-  named_service_operations: { [NAMED]: { slides: ['object.list'] } },
+  // 'held-outside': the Card still holds slides provider.capabilities, which the Control no longer allows (W38).
+  named_service_operations: { [NAMED]: { slides: variant === 'held-outside' ? ['object.list', 'provider.capabilities'] : ['object.list'] } },
   catalog_row_by_resource: { [NAMED]: NAMED }, account_scope: bound, properties: {}, composition_mode: '',
   control_card: {
     state: 'active', ...(variant === 'fail-closed' ? { fail_closed: true } : {}), binding: { issuer_kind: 'agent_descriptor', issuer_ref: 'workspace', label: 'Descriptor ceiling' },

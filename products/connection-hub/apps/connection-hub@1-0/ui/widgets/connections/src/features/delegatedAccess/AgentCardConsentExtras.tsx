@@ -74,7 +74,7 @@ function toggled(values: string[], value: string, checked: boolean): string[] {
 
 function countText(rows: readonly ExtraRow[], picked: readonly string[], asked: readonly string[] = []): string {
   const open = rows.filter((row) => row.inControl && !row.held && !asked.includes(row.key));
-  const held = rows.filter((row) => row.held).length;
+  const held = rows.filter((row) => row.held && row.inControl).length;
   const requested = rows.filter((row) => !row.held && asked.includes(row.key)).length;
   const chosen = open.filter((row) => picked.includes(row.key)).length;
   return [
@@ -166,7 +166,8 @@ export function AgentCardConsentExtras({
         )}
         <span>
           {item.label !== item.key ? <>{item.label} <code>{item.key}</code></> : <code>{item.key}</code>}
-          {item.held ? <span className="badge badge-ok" style={{ marginLeft: 8 }}>already allowed</span> : null}
+          {/* W38: outside the Control wins; a held choice there grants nothing, so it is never "already allowed". */}
+          {item.held && item.inControl ? <span className="badge badge-ok" style={{ marginLeft: 8 }}>already allowed</span> : null}
           {item.inControl ? null : (
             <span className="badge badge-error" style={{ marginLeft: 8 }}>not in this agent&apos;s Control</span>
           )}
