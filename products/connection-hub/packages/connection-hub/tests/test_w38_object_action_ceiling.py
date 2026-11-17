@@ -439,3 +439,42 @@ async def test_a_passive_sync_under_a_narrowed_control_is_not_refused(tmp_path):
         {"user_id": OWNER}, **wider,
         selected_capabilities=_policy_with_named_operations(READ, POST), replace_selection=True)
     assert explicit["ok"] is False and explicit["error"] == "agent_capability_selection_outside_control"
+
+
+@pytest.mark.asyncio
+async def test_an_owner_save_keeps_the_choices_the_control_no_longer_allows(tmp_path):
+    """kdcube#270 item 10, editor Save: the editor shows a held action outside the
+    Control and does not send it; the Save must not read that as a removal, or the
+    choice is lost for good (a passive sync never re-adds it)."""
+    from test_descriptor_agent_card_transaction import _current
+    from test_descriptor_agent_consent import READ, _consent, _consent_world, _selection, _sync_arguments
+
+    service, store, _decisions, resident, control, _, _ = await _consent_world(tmp_path)
+    consented = await _consent(service, resident)
+    assert consented["ok"], consented
+    resident = await _current(store, resident)
+    admin = {"user_id": OWNER, "roles": ["kdcube:role:super-admin"]}
+    narrowed = await service.update_access(
+        admin, access_id=control.access_id,
+        resource_grants={NAMED_RESOURCE: ["named_services:use", "slack:read"]},
+        resource_operations={NAMED_RESOURCE: ["named_services_call"]},
+        named_service_operations={NAMED_RESOURCE: {"slack": [READ]}}, account_scope={},
+        expected_card_revision=control.card_revision, expected_catalog_version=control.catalog_version,
+        composition_mode="and", properties=control.properties, request_id="admin-narrows")
+    assert narrowed["ok"], narrowed
+    synced = await service.sync_agent_capability_control({"user_id": OWNER}, **_sync_arguments())
+    assert synced["ok"], synced
+    resident = await _current(store, resident)
+
+    saved = await service.update_access(
+        admin, access_id=resident.access_id,
+        resource_grants={NAMED_RESOURCE: ["named_services:use", "slack:read"]},
+        resource_operations={NAMED_RESOURCE: ["named_services_call"]},
+        named_service_operations={NAMED_RESOURCE: {"slack": [READ]}},
+        expected_card_revision=resident.card_revision, expected_catalog_version=resident.catalog_version,
+        invocation_modes={}, _screen_save=True, request_id="owner-save")
+    assert saved["ok"], saved
+    after = await _current(store, resident)
+    assert set(after.named_service_operations.operations[NAMED_RESOURCE]["slack"]) == {READ, POST}
+    assert "slack:post" in after.resource_grants[NAMED_RESOURCE]
+    assert f"slack/{POST}" in _selection(after)

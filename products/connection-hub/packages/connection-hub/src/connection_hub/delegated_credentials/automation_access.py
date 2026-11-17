@@ -6650,6 +6650,46 @@ class AutomationAccessService:
             result = {**result, "changed": True, "added": added}
         return result
 
+    async def _keep_outside_control_choices(
+        self,
+        existing: AutomationAccessRecord,
+        named_service_operations: Mapping[str, Any],
+        resource_grants: Mapping[str, Any],
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
+        """Add back held named-service operations (and their held claims) the
+        linked Control excludes, for resources the Save keeps (W38, item 10)."""
+        named = {resource: dict(namespaces) if isinstance(namespaces, Mapping) else namespaces
+                 for resource, namespaces in named_service_operations.items()}
+        grants = {resource: list(_as_list(values)) for resource, values in resource_grants.items()}
+        held = existing.named_service_operations
+        if not held.is_exact:
+            return named, grants
+        try:
+            control, _composed = await self._compose_with_control(existing)
+        except Exception:
+            return named, grants
+        if control is None or control.named_service_operations.is_all:
+            return named, grants
+        allowed = control.named_service_operations
+        for resource, namespaces in held.operations.items():
+            if resource not in grants or not isinstance(named.get(resource), Mapping):
+                continue
+            kept_any = False
+            for namespace, operations in namespaces.items():
+                inside = set(allowed.operations.get(resource, {}).get(namespace, ()))
+                outside = [operation for operation in operations if operation not in inside]
+                if not outside:
+                    continue
+                current = list(_as_list(named[resource].get(namespace, [])))
+                named[resource][namespace] = current + [op for op in outside if op not in current]
+                kept_any = True
+            if kept_any:
+                control_claims = set(control.resource_grants.get(resource, ()))
+                for claim in existing.resource_grants.get(resource, ()):
+                    if claim not in control_claims and claim not in grants[resource]:
+                        grants[resource].append(claim)
+        return named, grants
+
     async def update_access(
         self,
         user: Mapping[str, Any],
@@ -6981,6 +7021,20 @@ class AutomationAccessService:
         if conflict is not None:
             return conflict
 
+        if (
+            existing.control_card is not None
+            and is_resident_client_id(existing.client_id)
+            and not _application_write
+            and isinstance(named_service_operations, Mapping)
+            and isinstance(resource_grants, Mapping)
+        ):
+            # kdcube#270 item 10: an owner's Save keeps the choices the Control no
+            # longer allows. The editor shows them outside the Control and never
+            # sends them, so the Save must not read their absence as a removal;
+            # they stay as provenance and apply again once the Control allows them.
+            named_service_operations, resource_grants = await self._keep_outside_control_choices(
+                existing, named_service_operations, resource_grants
+            )
         resolved = await self._resolve_card_authority(
             user=user,
             existing=existing,

@@ -33,4 +33,7 @@ test('W38: the editor and the listing render the notice beside the catalog drift
   assert.match(panel, /outside=\{linkedControlCard\(record\)\?\.outside_control\}/)
   assert.match(panel, /outside=\{linkedControlCard\(item\)\?\.outside_control\}/)
   assert.match(panel, /The last update from this agent's descriptor was refused/)
+  // An outside-Control row never says a Save removes it (kdcube#270 item 10).
+  const notice = panel.slice(panel.indexOf('function ControlNarrowingNotice'), panel.indexOf('// W587'))
+  assert.match(notice, /stays on this Card when you save/)
 })

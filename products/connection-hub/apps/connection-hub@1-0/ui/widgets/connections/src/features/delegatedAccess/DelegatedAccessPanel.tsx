@@ -1025,9 +1025,12 @@ function driftLabel(row: { resource: string; namespace?: string; claim?: string;
 function DriftCatalogRow({
   row,
   removed,
+  caption,
 }: {
   row: { resource: string; namespace?: string; claim?: string; operation?: string };
   removed: boolean;
+  /** W38: a row outside the Control says what happens to it instead. */
+  caption?: string;
 }) {
   const kind = row.claim ? 'Permission' : row.namespace ? 'Service action' : row.operation ? 'Tool' : 'Service';
   const subject = readableIdentifier(row.claim || row.operation || doorAlias(row.resource) || row.resource);
@@ -1040,7 +1043,7 @@ function DriftCatalogRow({
         {subject || 'Unnamed capability'}
       </span>
       <InfoMark text={`Exact catalog identifier: ${driftLabel(row)}`} />
-      <small>{removed ? 'Unavailable now; saving removes it from the card.' : 'Available now; it remains ungranted until selected.'}</small>
+      <small>{caption || (removed ? 'Unavailable now; saving removes it from the card.' : 'Available now; it remains ungranted until selected.')}</small>
     </li>
   );
 }
@@ -1145,7 +1148,12 @@ function ControlNarrowingNotice({
             <summary>{rows.length === 1 ? '1 choice' : `${rows.length} choices`}</summary>
             <ul className="catalog-drift-list">
               {rows.map((row) => (
-                <DriftCatalogRow key={`outside-${driftLabel(row)}`} row={row} removed />
+                <DriftCatalogRow
+                  key={`outside-${driftLabel(row)}`}
+                  row={row}
+                  removed
+                  caption="Inactive now; it stays on this Card when you save and applies again once the Control allows it."
+                />
               ))}
             </ul>
           </details>
