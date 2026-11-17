@@ -5,7 +5,7 @@ summary: "Canonical lifecycle of Connection Hub Cards: credential-backed callers
 status: active
 tags: ["sdk", "solutions", "connections", "connection-hub", "delegated-access", "cards", "grants", "mcp", "named-services"]
 keywords: ["Delegated by KDCube", "AutomationAccessRecord", "resource_grants", "resource_operations", "application operations", "delegated role", "named_service_operations", "account_scope", "registry_access_id", "card authority", "control card", "My Card", "project identity edge", "effective authority", "descriptor drift", "grant lifecycle", "stable resident identity", "resource_acceptance", "multi-resource card", "card read model"]
-updated_at: 2026-10-12
+updated_at: 2026-11-17
 see_also:
   - ./delegated-authority-and-admission.md
   - ./oauth-delegated-credential-protocol.md
@@ -147,14 +147,15 @@ the same catalog choices, revisions, current pointer, drift calculation,
 editor, update path, and revoke lifecycle. Connection Hub owns it physically
 and durably. A descriptor-controlled agent gives the Card an exact application
 and agent target. The application synchronizes the descriptor projection;
-Connection Hub stores the Card. The descriptor and its bundle properties seed
-the first Card and define its maximum authority. An administrator's Save writes
-one new Card revision; it does not also write bundle properties. A refused Save
-leaves both the Card and descriptor unchanged. Later descriptor synchronization
-keeps an administrator's saved selection within the current descriptor and
-catalog ceilings, even when an older bundle-property seed remains present.
-Without an administrator edit, synchronization can still adopt changed
-descriptor defaults.
+Connection Hub stores the Card. The descriptor seeds the first Card and
+defines its maximum authority. An administrator's Save writes one new Card
+revision; it does not also write bundle properties. A refused Save leaves both
+the Card and descriptor unchanged. The stored Card is the only place an
+administrator's narrowing lives: later descriptor synchronization keeps the
+saved selection within the current descriptor and catalog ceilings, and an
+`agent_capability_control_overrides` entry an older write-through left in
+bundle properties neither seeds nor narrows it. Without an administrator edit,
+synchronization can still adopt changed descriptor defaults.
 
 ### Credential delivery and resource reach
 

@@ -104,10 +104,10 @@ async def test_an_agent_card_editor_save_keeps_the_actions_of_a_parent_only_desc
 
 
 @pytest.mark.asyncio
-async def test_an_administrator_override_narrows_both_parts_of_the_control():
-    """The override is an explicit list: it narrows the standard part and the capability ceiling alike."""
-    from connection_hub.delegated_credentials.agent_capability_policy import CAPABILITY_NOT_ALLOWED
-
+async def test_a_props_override_from_an_older_sdk_does_not_narrow_the_control():
+    """Only the stored Control Card narrows. Before W757 a Control save also wrote
+    bundle props, and an SDK that still reads them marks the payload overridden and
+    sends the narrower list: the descriptor's own standard part still counts."""
     service, persistence = _service(named_services=True)
     arguments = _arguments(LIST, PARENT)
     arguments["descriptor_payload"] = {**arguments["descriptor_payload"], "standard_authority_overridden": True}
@@ -119,10 +119,8 @@ async def test_an_administrator_override_narrows_both_parts_of_the_control():
         selected_capabilities=_policy_with_named_operations(LIST, PARENT))
     assert answer["ok"], answer
     control = persistence.records[answer["control_card"]["access_id"]][0]
-    assert set(control.named_service_operations.operations[NAMED_RESOURCE]["slack"]) == {LIST}
-    ceiling = _keys(control, AGENT_CAPABILITY_AUTHORITY_PROPERTY)
-    assert f"slack/{POST}" not in ceiling and f"slack/{PARENT}" not in ceiling, ceiling
-    assert answer["states"]["named_service_operations"].get(f"slack/{POST}") in (None, CAPABILITY_NOT_ALLOWED)
+    assert set(control.named_service_operations.operations[NAMED_RESOURCE]["slack"]) == {LIST, POST}
+    assert f"slack/{POST}" in _keys(control, AGENT_CAPABILITY_AUTHORITY_PROPERTY)
 
 
 @pytest.mark.asyncio
@@ -149,6 +147,36 @@ async def test_a_human_edit_of_the_descriptor_control_narrows_its_capability_cei
     control = persistence.records[control_id][0]
     assert set(control.named_service_operations.operations[NAMED_RESOURCE]["slack"]) == {LIST}
     assert f"slack/{POST}" not in _keys(control, AGENT_CAPABILITY_AUTHORITY_PROPERTY), "and after a descriptor refresh"
+
+
+@pytest.mark.asyncio
+async def test_a_props_override_does_not_intersect_an_administrator_save():
+    """The administrator keeps both operations; an older SDK then sends a leftover
+    props override listing only the action. The stored Save wins, and nothing is
+    lost for good once the leftover goes away."""
+    service, persistence = _service(named_services=True)
+    created = await _sync(service, LIST, PARENT)
+    control_id = created["control_card"]["access_id"]
+    both = {NAMED_RESOURCE: {"slack": [LIST, POST]}}
+    changed = await service.update_access(
+        {"user_id": OWNER, "roles": ["kdcube:role:super-admin"]}, access_id=control_id,
+        resource_grants={NAMED_RESOURCE: ["named_services:use", "slack:read", "slack:post"]},
+        resource_operations={}, named_service_operations=both, account_scope={},
+        expected_card_revision=created["control_card"]["card_revision"],
+        expected_catalog_version=created["control_card"]["catalog_version"],
+        composition_mode="and", properties=created["control_card"]["properties"])
+    assert changed["ok"], changed
+    stale = _arguments(LIST, PARENT)
+    stale["descriptor_revision"] = "descriptor-with-props"
+    stale["descriptor_payload"] = {**stale["descriptor_payload"], "revision": "descriptor-with-props",
+                                   "standard_authority_overridden": True}
+    answer = await service.sync_agent_capability_control(
+        {"user_id": OWNER}, **stale,
+        resource_grants={NAMED_RESOURCE: ["named_services:use", "slack:post"]},
+        named_service_operations={NAMED_RESOURCE: {"slack": [POST]}})
+    assert answer["ok"], answer
+    control = persistence.records[control_id][0]
+    assert set(control.named_service_operations.operations[NAMED_RESOURCE]["slack"]) == {LIST, POST}
 
 
 

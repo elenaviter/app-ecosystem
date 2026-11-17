@@ -545,15 +545,15 @@ def _descriptor_standard_maps(
     catalog_config: Any,
     descriptor_payload: Mapping[str, Any],
     selection: AgentCapabilityPolicy | None,
-    include_overridden: bool = False,
 ) -> tuple[dict[str, list[str]], dict[str, list[str]], dict[str, Any]]:
-    """Resolve consumer requests through the active provider-owned catalog."""
+    """Resolve consumer requests through the active provider-owned catalog.
 
-    if (
-        descriptor_payload.get("standard_authority_overridden") is True
-        and not include_overridden
-    ):
-        return {}, {}, {}
+    The descriptor's standard part always counts. An administrator's narrowing
+    lives only in the stored Control Card; a descriptor payload marked
+    ``standard_authority_overridden`` (sent by an SDK that still read a bundle
+    props override) no longer replaces it (W38).
+    """
+
     request = descriptor_payload.get("standard_authority")
     if request is None:
         return {}, {}, {}
@@ -1491,14 +1491,12 @@ async def sync_agent_capability_control(
                 catalog_config=catalog_config,
                 descriptor_payload=descriptor_payload,
                 selection=None,
-                include_overridden=True,
             )
             selected_grants, selected_operations, selected_named = (
                 _descriptor_standard_maps(
                     catalog_config=catalog_config,
                     descriptor_payload=descriptor_payload,
                     selection=selected,
-                    include_overridden=True,
                 )
             )
             projected_standard = await resolve_agent_descriptor_standard_authority(
