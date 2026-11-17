@@ -407,3 +407,35 @@ async def test_only_an_administrator_returns_a_control_to_its_descriptor():
         {"user_id": OWNER}, access_id=control_id, expected_card_revision=control.card_revision)
     assert refused["ok"] is False
     assert persistence.records[control_id][0].card_revision == control.card_revision
+
+
+@pytest.mark.asyncio
+async def test_a_passive_sync_under_a_narrowed_control_is_not_refused(tmp_path):
+    """Live 2026-11-17: once the descriptor allowed more than an administrator-
+    narrowed Control, every passive sync re-sent the descriptor default and was
+    refused as outside the Control, so the agent ran closed. Only an explicit
+    selection save is checked; the Control stays narrowed."""
+    from test_descriptor_agent_card_transaction import _current
+    from test_descriptor_agent_consent import READ, _consent_world, _sync_arguments
+
+    service, store, _decisions, resident, control, _, _ = await _consent_world(tmp_path)
+    admin = {"user_id": OWNER, "roles": ["kdcube:role:super-admin"]}
+    narrowed = await service.update_access(
+        admin, access_id=control.access_id,
+        resource_grants={NAMED_RESOURCE: ["named_services:use", "slack:read"]},
+        resource_operations={NAMED_RESOURCE: ["named_services_call"]},
+        named_service_operations={NAMED_RESOURCE: {"slack": [READ]}}, account_scope={},
+        expected_card_revision=control.card_revision, expected_catalog_version=control.catalog_version,
+        composition_mode="and", properties=control.properties, request_id="admin-narrows")
+    assert narrowed["ok"], narrowed
+    wider = {**_sync_arguments(), "descriptor_revision": "descriptor-r2",
+             "descriptor_payload": {"revision": "descriptor-r2"}}
+    passive = await service.sync_agent_capability_control(
+        {"user_id": OWNER}, **wider, selected_capabilities=_policy_with_named_operations(READ, POST))
+    assert passive["ok"], passive
+    assert POST not in (await _current(store, resident)).named_service_operations.operations[NAMED_RESOURCE]["slack"]
+
+    explicit = await service.sync_agent_capability_control(
+        {"user_id": OWNER}, **wider,
+        selected_capabilities=_policy_with_named_operations(READ, POST), replace_selection=True)
+    assert explicit["ok"] is False and explicit["error"] == "agent_capability_selection_outside_control"

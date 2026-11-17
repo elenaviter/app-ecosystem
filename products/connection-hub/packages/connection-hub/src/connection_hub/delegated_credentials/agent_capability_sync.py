@@ -1446,7 +1446,13 @@ async def sync_agent_capability_control(
         )
         if current_selection.resource != agent_resource:
             raise AgentCapabilityPolicyError("agent_capability_resource_mismatch")
-        if getattr(service, "_card_coordinator", None) is not None and requested_selection is not None:
+        # Only an explicit selection save is checked against the Control. A
+        # passive sync re-sends the descriptor's default selection and keeps the
+        # Card's own; refusing it whenever the descriptor allows more than an
+        # administrator-narrowed Control refused every sync of the agent, which
+        # then ran closed (W38, live 2026-11-17).
+        if (getattr(service, "_card_coordinator", None) is not None and requested_selection is not None
+                and replace_selection):
             stored_selection = (AgentCapabilityPolicy.from_property(raw_current_selection)
                                 if raw_current_selection is not None else AgentCapabilityPolicy.empty(agent_resource))
             if any(requested_selection.subtract(stored_selection).subtract(authority).capabilities.values()):
