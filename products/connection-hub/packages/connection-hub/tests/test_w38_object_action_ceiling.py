@@ -478,3 +478,69 @@ async def test_an_owner_save_keeps_the_choices_the_control_no_longer_allows(tmp_
     assert set(after.named_service_operations.operations[NAMED_RESOURCE]["slack"]) == {READ, POST}
     assert "slack:post" in after.resource_grants[NAMED_RESOURCE]
     assert f"slack/{POST}" in _selection(after)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("evidence_lost", [False, True], ids=["edited", "evidence-lost"])
+async def test_return_to_descriptor_passes_the_agent_card_transaction(tmp_path, evidence_lost):
+    """Live 2026-11-17: Return to descriptor removed the Control's descriptor
+    evidence, and the agent Card transaction (which validates the stored Control)
+    refused every later sync with agent_capability_control_evidence_invalid.
+    The return keeps well-formed but stale evidence, so the next sync seeds the
+    Control from the descriptor; it also repairs a Control that lost it."""
+    import dataclasses
+
+    from connection_hub.delegated_credentials.agent_capability_control import (
+        AGENT_DESCRIPTOR_ACCEPTANCE_KIND, AGENT_DESCRIPTOR_CARD_EDIT_PROVENANCE_KEY,
+    )
+    from test_descriptor_agent_card_transaction import _current
+    from test_descriptor_agent_consent import READ, _consent_world, _sync_arguments
+
+    service, store, _decisions, resident, control, _, _ = await _consent_world(tmp_path)
+    admin = {"user_id": OWNER, "roles": ["kdcube:role:super-admin"]}
+    narrowed = await service.update_access(
+        admin, access_id=control.access_id,
+        resource_grants={NAMED_RESOURCE: ["named_services:use", "slack:read"]},
+        resource_operations={NAMED_RESOURCE: ["named_services_call"]},
+        named_service_operations={NAMED_RESOURCE: {"slack": [READ]}}, account_scope={},
+        expected_card_revision=control.card_revision, expected_catalog_version=control.catalog_version,
+        composition_mode="and", properties=control.properties, request_id="admin-narrows")
+    assert narrowed["ok"], narrowed
+    control = await _current(store, control)
+    assert set(control.named_service_operations.operations[NAMED_RESOURCE]["slack"]) == {READ}
+    if evidence_lost:
+        # The state the first build of the button left behind.
+        def strip(_before, after):
+            return dataclasses.replace(
+                after,
+                provenance={},
+                resource_acceptance={k: v for k, v in after.resource_acceptance.items()
+                                     if v.kind != AGENT_DESCRIPTOR_ACCEPTANCE_KIND},
+            )
+
+        stripped = await service.update_access(
+            admin, access_id=control.access_id,
+            resource_grants={k: list(v) for k, v in control.resource_grants.items()},
+            resource_operations={k: list(v) for k, v in control.resource_operations.items()},
+            named_service_operations=control.named_service_operations.to_stored(), account_scope={},
+            expected_card_revision=control.card_revision, expected_catalog_version=control.catalog_version,
+            composition_mode="and", properties=control.properties, request_id="first-build-return",
+            _record_transform=strip)
+        assert stripped["ok"], stripped
+        control = await _current(store, control)
+        refused = await service.sync_agent_capability_control({"user_id": OWNER}, **_sync_arguments())
+        assert refused["ok"] is False and refused["error"] == "agent_capability_control_evidence_invalid"
+
+    returned = await service.return_control_to_descriptor(
+        admin, access_id=control.access_id, expected_card_revision=control.card_revision,
+        expected_catalog_version=control.catalog_version)
+    assert returned["ok"], returned
+    control = await _current(store, control)
+    assert AGENT_DESCRIPTOR_CARD_EDIT_PROVENANCE_KEY not in control.provenance
+
+    synced = await service.sync_agent_capability_control({"user_id": OWNER}, **_sync_arguments())
+    assert synced["ok"], synced
+    control = await _current(store, control)
+    assert set(control.named_service_operations.operations[NAMED_RESOURCE]["slack"]) == {READ, POST}
+    again = await service.sync_agent_capability_control({"user_id": OWNER}, **_sync_arguments())
+    assert again["ok"], again

@@ -111,6 +111,7 @@ from connection_hub.delegated_credentials.agent_capability_control import (
     AGENT_DESCRIPTOR_CARD_EDIT_PROVENANCE_KEY,
     AGENT_DESCRIPTOR_ISSUER_KIND,
     AGENT_DESCRIPTOR_ACCEPTANCE_KIND,
+    descriptor_acceptance,
     align_resident_selection_to_card_authority,
     preserve_descriptor_acceptance,
     resident_selection_properties,
@@ -8211,8 +8212,31 @@ class AutomationAccessService:
             or existing.issuer_kind != AGENT_DESCRIPTOR_ISSUER_KIND
         ):
             return {"ok": False, "error": "control_card_not_descriptor_control", "status": 404}
-        if dict(existing.provenance or {}).get(AGENT_DESCRIPTOR_CARD_EDIT_PROVENANCE_KEY) is not True:
+        agent_resource = _clean(existing.issuer_ref)
+        held_evidence = dict(existing.resource_acceptance or {}).get(agent_resource)
+        evidence_missing = held_evidence is None or held_evidence.kind != AGENT_DESCRIPTOR_ACCEPTANCE_KIND
+        edited = dict(existing.provenance or {}).get(AGENT_DESCRIPTOR_CARD_EDIT_PROVENANCE_KEY) is True
+        if not edited and not evidence_missing:
             return {"ok": False, "error": "control_card_already_follows_descriptor", "status": 409}
+        try:
+            ceiling = AgentCapabilityPolicy.from_property(
+                dict(existing.properties or {}).get(AGENT_CAPABILITY_AUTHORITY_PROPERTY)
+            )
+            # The descriptor evidence stays well formed (the agent's Card
+            # transaction validates the stored Control) but names no descriptor
+            # revision, so the next synchronization finds it stale and seeds the
+            # Control from the current descriptor. Removing it instead left a
+            # Control every later sync refused (live 2026-11-17).
+            returned_evidence = descriptor_acceptance(
+                authority=ceiling,
+                descriptor_revision="returned-to-descriptor",
+                descriptor_payload={
+                    "returned_to_descriptor": True,
+                    "previous_digest": "" if evidence_missing else held_evidence.digest,
+                },
+            )
+        except AgentCapabilityPolicyError as exc:
+            return {"ok": False, "error": exc.reason, "status": 409}
 
         def _follow_descriptor(_before: AutomationAccessRecord, after: AutomationAccessRecord) -> AutomationAccessRecord:
             provenance = dict(after.provenance or {})
@@ -8221,9 +8245,8 @@ class AutomationAccessService:
                 after,
                 provenance=provenance,
                 resource_acceptance={
-                    resource: acceptance
-                    for resource, acceptance in dict(after.resource_acceptance or {}).items()
-                    if acceptance.kind != AGENT_DESCRIPTOR_ACCEPTANCE_KIND
+                    **dict(after.resource_acceptance or {}),
+                    agent_resource: returned_evidence,
                 },
             )
 

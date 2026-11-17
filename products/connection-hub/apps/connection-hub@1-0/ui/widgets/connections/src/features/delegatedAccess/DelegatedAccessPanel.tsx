@@ -5793,7 +5793,12 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
                   </div>
                 )}
               </Field>
-              {descriptorCapabilityControl && record.provenance?.agent_descriptor_card_edited === true ? (
+              {descriptorCapabilityControl && (
+                record.provenance?.agent_descriptor_card_edited === true
+                // A Control the first build of this button left without descriptor
+                // evidence: every sync refuses until it is returned again.
+                || !Object.values(record.resource_acceptance || {}).some((item) => item?.kind === 'kdcube_agent_descriptor')
+              ) ? (
                 <Field label="Explicit list" wide>
                   <div className="control-return-to-descriptor">
                     <small>

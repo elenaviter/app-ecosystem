@@ -15,7 +15,8 @@ test('W38: Return to descriptor is one update request carrying only the return f
 
 test('W38: the button is offered only on a descriptor Control an administrator edited, behind a confirmation', () => {
   const panel = read('features/delegatedAccess/DelegatedAccessPanel.tsx')
-  assert.match(panel, /descriptorCapabilityControl && record\.provenance\?\.agent_descriptor_card_edited === true \?/)
+  assert.match(panel, /record\.provenance\?\.agent_descriptor_card_edited === true/)
+  assert.match(panel, /item\?\.kind === 'kdcube_agent_descriptor'/)
   assert.match(panel, />\s*Return to descriptor\s*<\/button>/)
   assert.match(panel, /onClick=\{\(\) => setConfirmReturnToDescriptor\(\{/)
   assert.match(panel, /\{renderReturnToDescriptorDialog\(\)\}/)
