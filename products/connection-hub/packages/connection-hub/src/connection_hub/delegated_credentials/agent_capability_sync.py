@@ -102,6 +102,10 @@ from connection_hub.delegated_credentials.controls.snapshot import (
 from connection_hub.delegated_credentials.conversation_target_policy import (
     CONVERSATION_TARGETS_PROPERTY,
 )
+from connection_hub.delegated_credentials.object_action_ceiling import (
+    bound_ceiling_to_standard_part,
+    expand_object_action_ceiling,
+)
 from connection_hub.delegated_credentials.named_service_policy import (
     configured_named_service_operations,
     named_service_policy_for_resource,
@@ -541,15 +545,15 @@ def _descriptor_standard_maps(
     catalog_config: Any,
     descriptor_payload: Mapping[str, Any],
     selection: AgentCapabilityPolicy | None,
-    include_overridden: bool = False,
 ) -> tuple[dict[str, list[str]], dict[str, list[str]], dict[str, Any]]:
-    """Resolve consumer requests through the active provider-owned catalog."""
+    """Resolve consumer requests through the active provider-owned catalog.
 
-    if (
-        descriptor_payload.get("standard_authority_overridden") is True
-        and not include_overridden
-    ):
-        return {}, {}, {}
+    The descriptor's standard part always counts. An administrator's narrowing
+    lives only in the stored Control Card; a descriptor payload marked
+    ``standard_authority_overridden`` (sent by an SDK that still read a bundle
+    props override) no longer replaces it (W38).
+    """
+
     request = descriptor_payload.get("standard_authority")
     if request is None:
         return {}, {}, {}
@@ -990,6 +994,22 @@ async def sync_agent_capability_control(
             active,
             owner_subject=grantor_subject,
         )
+        # W38: the capability ceiling, the descriptive catalog and the defaults
+        # read object.action by the same rule as the standard part below.
+        authority = expand_object_action_ceiling(authority, catalog_config)
+        catalog = expand_object_action_ceiling(catalog, catalog_config)
+        control_defaults = expand_object_action_ceiling(control_defaults, catalog_config)
+        # A selection that holds the parent chose every action it names.
+        requested_selection = expand_object_action_ceiling(requested_selection, catalog_config)
+        descriptor_properties = {
+            **descriptor_properties,
+            **descriptor_control_properties(
+                authority=authority,
+                defaults=control_defaults,
+                metadata=capability_metadata,
+                targets=conversation_target_resources,
+            ),
+        }
         descriptor_grants, descriptor_operations, descriptor_named = (
             _descriptor_standard_maps(
                 catalog_config=catalog_config,
@@ -1073,6 +1093,25 @@ async def sync_agent_capability_control(
         return resolved.error
     if selected_standard is not None and selected_standard.error is not None:
         return selected_standard.error
+
+    # W38: the capability ceiling never exceeds the standard part it describes,
+    # so an administrator override narrows both parts of the Control alike.
+    bounded_authority = bound_ceiling_to_standard_part(authority, resolved.named_service_operations)
+    if bounded_authority is not authority:
+        authority = bounded_authority
+        descriptor_properties = {
+            **descriptor_properties,
+            **descriptor_control_properties(
+                authority=authority,
+                defaults=control_defaults,
+                metadata=capability_metadata,
+                targets=conversation_target_resources,
+            ),
+        }
+        resolved = dataclasses.replace(
+            resolved,
+            properties={**dict(resolved.properties or {}), **descriptor_properties},
+        )
 
     descriptor_evidence_payload = {
         "descriptor": copy.deepcopy(dict(descriptor_payload)),
@@ -1221,6 +1260,24 @@ async def sync_agent_capability_control(
         )
         if resolved.error is not None:
             return resolved.error
+        # W38: a human Control edit narrows the capability ceiling with it.
+        edited_ceiling = AgentCapabilityPolicy.from_property(
+            refreshed_properties[AGENT_CAPABILITY_AUTHORITY_PROPERTY]
+        )
+        bounded_ceiling = bound_ceiling_to_standard_part(
+            edited_ceiling, resolved.named_service_operations
+        )
+        if bounded_ceiling is not edited_ceiling:
+            narrowed = {**dict(resolved.properties or {})}
+            narrowed[AGENT_CAPABILITY_AUTHORITY_PROPERTY] = bounded_ceiling.to_property()
+            raw_defaults = narrowed.get(AGENT_CAPABILITY_DEFAULTS_PROPERTY)
+            if isinstance(raw_defaults, Mapping):
+                narrowed[AGENT_CAPABILITY_DEFAULTS_PROPERTY] = (
+                    AgentCapabilityPolicy.from_property(raw_defaults)
+                    .intersection(bounded_ceiling)
+                    .to_property()
+                )
+            resolved = dataclasses.replace(resolved, properties=narrowed)
     if descriptor_is_current:
         control_authority = card_authority_from_record(existing_control)
         control_changed = False
@@ -1389,7 +1446,13 @@ async def sync_agent_capability_control(
         )
         if current_selection.resource != agent_resource:
             raise AgentCapabilityPolicyError("agent_capability_resource_mismatch")
-        if getattr(service, "_card_coordinator", None) is not None and requested_selection is not None:
+        # Only an explicit selection save is checked against the Control. A
+        # passive sync re-sends the descriptor's default selection and keeps the
+        # Card's own; refusing it whenever the descriptor allows more than an
+        # administrator-narrowed Control refused every sync of the agent, which
+        # then ran closed (W38, live 2026-11-17).
+        if (getattr(service, "_card_coordinator", None) is not None and requested_selection is not None
+                and replace_selection):
             stored_selection = (AgentCapabilityPolicy.from_property(raw_current_selection)
                                 if raw_current_selection is not None else AgentCapabilityPolicy.empty(agent_resource))
             if any(requested_selection.subtract(stored_selection).subtract(authority).capabilities.values()):
@@ -1434,14 +1497,12 @@ async def sync_agent_capability_control(
                 catalog_config=catalog_config,
                 descriptor_payload=descriptor_payload,
                 selection=None,
-                include_overridden=True,
             )
             selected_grants, selected_operations, selected_named = (
                 _descriptor_standard_maps(
                     catalog_config=catalog_config,
                     descriptor_payload=descriptor_payload,
                     selection=selected,
-                    include_overridden=True,
                 )
             )
             projected_standard = await resolve_agent_descriptor_standard_authority(

@@ -1,6 +1,7 @@
 import { createAsyncThunk, createSlice, type PayloadAction } from '@reduxjs/toolkit';
 import { getOp, postOp } from '../../api/client';
 import { isPolicyPending } from './focusedGrantRecovery';
+import { outsideControlText } from './agentCardConsent';
 import { agentGrantWirePayload, type GrantAgentAccessArgs } from './agentGrantPayload';
 import { isStaleEditRefusal, withNewerCard } from './cardFreshness';
 import {
@@ -349,6 +350,11 @@ export const updateDelegatedAccess = createAsyncThunk<
       // A precondition failure is not an error to show and forget: it carries
       // the refreshed card the editor must reload.
       if (res?.ok === false && res?.status === 409) return res;
+      if (res?.ok === false && res.error === 'agent_capability_selection_outside_control') {
+        // kdcube#270 D4: name what the Control refused instead of the code.
+        const named = outsideControlText((res as { details?: unknown }).details, (resource) => resource);
+        if (named) return rejectWithValue(`${named} Untick it and save again; your draft is kept.`);
+      }
       if (res?.ok === false) return rejectWithValue(resultError(res, 'Failed to update delegated access'));
       return res || {};
     } catch (e) {
@@ -393,6 +399,33 @@ export const updateAgentCapabilitySelection = createAsyncThunk<
       if (res?.ok === false && res?.status === 409) return res;
       if (res?.ok === false) {
         return rejectWithValue(resultError(res, 'Failed to update the Agent Card base'));
+      }
+      return res || {};
+    } catch (e) {
+      return rejectWithValue(message(e));
+    }
+  },
+);
+
+/** W38: hand an administrator-edited descriptor Control back to its
+ *  descriptor. The next sync of the agent seeds it from the descriptor. */
+export const returnControlToDescriptor = createAsyncThunk<
+  DelegatedAccessCreateResult,
+  { accessId: string; expectedCardRevision: number; expectedCatalogVersion?: string },
+  { rejectValue: string }
+>(
+  'delegatedAccess/returnControlToDescriptor',
+  async ({ accessId, expectedCardRevision, expectedCatalogVersion }, { rejectWithValue }) => {
+    try {
+      const res = await postOp<DelegatedAccessCreateResult>('delegated_access_update', {
+        access_id: accessId,
+        return_to_descriptor: true,
+        expected_card_revision: expectedCardRevision,
+        ...(expectedCatalogVersion ? { expected_catalog_version: expectedCatalogVersion } : {}),
+      });
+      if (res?.ok === false && res?.status === 409) return res;
+      if (res?.ok === false) {
+        return rejectWithValue(resultError(res, 'The Control was not returned to its descriptor'));
       }
       return res || {};
     } catch (e) {

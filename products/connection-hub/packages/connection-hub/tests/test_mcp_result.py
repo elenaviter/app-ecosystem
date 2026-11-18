@@ -422,3 +422,37 @@ async def test_account_only_hosted_denial_preserves_the_complete_review_context(
     assert review["agent_card_consent"] is True and "grant" not in review
     event = announced[0].chat_event_payload()["consent"]
     assert event["url"] == url and event["account_provider_id"] == "google"
+
+
+@pytest.mark.asyncio
+async def test_a_control_blocked_denial_announces_nothing() -> None:
+    """W38 live 2026-11-18: a Control-blocked denial reached the MCP result
+    handling with request_user_consent: false; it was treated as an announceable
+    consent case and skipped only because its block was empty. It is now no
+    consent case at all, even when a block is present."""
+    denial = json.dumps(
+        {
+            "ok": False,
+            "error": {"code": "delegated_capability_not_granted",
+                      "message": "The linked Control Card excludes the requested resource claim."},
+            "ret": {"recovery": {"action": "review_blocking_control_card", "request_user_consent": False}},
+            "consent": {
+                "agent_client_id": "kdcube-agent:app@v1:main",
+                "resource": "*/app@v1/public/mcp/services*",
+                "claims": ["memories:write"],
+                "namespace": "mem",
+                "operation": "object.upsert",
+            },
+        }
+    )
+    announced: list[object] = []
+
+    async def announce(consent: object) -> None:
+        announced.append(consent)
+
+    tool = tool_for((denial, {"artifact": None}))
+    bind_chat_result_handling([tool], agent_consent_announcer=announce)
+    content, _artifact = await tool.coroutine()
+
+    assert announced == []
+    assert json.loads(content)["ret"]["recovery"]["request_user_consent"] is False

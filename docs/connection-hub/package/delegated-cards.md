@@ -5,7 +5,7 @@ summary: "Canonical lifecycle of Connection Hub Cards: credential-backed callers
 status: active
 tags: ["sdk", "solutions", "connections", "connection-hub", "delegated-access", "cards", "grants", "mcp", "named-services"]
 keywords: ["Delegated by KDCube", "AutomationAccessRecord", "resource_grants", "resource_operations", "application operations", "delegated role", "named_service_operations", "account_scope", "registry_access_id", "card authority", "control card", "My Card", "project identity edge", "effective authority", "descriptor drift", "grant lifecycle", "stable resident identity", "resource_acceptance", "multi-resource card", "card read model"]
-updated_at: 2026-10-12
+updated_at: 2026-11-17
 see_also:
   - ./delegated-authority-and-admission.md
   - ./oauth-delegated-credential-protocol.md
@@ -147,14 +147,15 @@ the same catalog choices, revisions, current pointer, drift calculation,
 editor, update path, and revoke lifecycle. Connection Hub owns it physically
 and durably. A descriptor-controlled agent gives the Card an exact application
 and agent target. The application synchronizes the descriptor projection;
-Connection Hub stores the Card. The descriptor and its bundle properties seed
-the first Card and define its maximum authority. An administrator's Save writes
-one new Card revision; it does not also write bundle properties. A refused Save
-leaves both the Card and descriptor unchanged. Later descriptor synchronization
-keeps an administrator's saved selection within the current descriptor and
-catalog ceilings, even when an older bundle-property seed remains present.
-Without an administrator edit, synchronization can still adopt changed
-descriptor defaults.
+Connection Hub stores the Card. The descriptor seeds the first Card and
+defines its maximum authority. An administrator's Save writes one new Card
+revision; it does not also write bundle properties. A refused Save leaves both
+the Card and descriptor unchanged. The stored Card is the only place an
+administrator's narrowing lives: later descriptor synchronization keeps the
+saved selection within the current descriptor and catalog ceilings, and an
+`agent_capability_control_overrides` entry an older write-through left in
+bundle properties neither seeds nor narrows it. Without an administrator edit,
+synchronization can still adopt changed descriptor defaults.
 
 ### Credential delivery and resource reach
 
@@ -948,6 +949,29 @@ on the Agent Card unchanged. The descriptor initializes and caps the Control
 Card; the Agent Card reconciles against the Control Card, not directly against
 the descriptor.
 
+#### Named-service actions on a descriptor Control
+
+A descriptor Control holds the named-service actions twice: in its standard
+part (`named_service_operations`) and in its capability ceiling
+(`kdcube.agent_capability_authority`). Both read the agent's descriptor by the
+ceiling rule that KDCube documents for `allowed`
+([capabilities README](https://github.com/kdcube/kdcube/blob/main/app/ai-app/docs/sdk/solutions/user-settings/capabilities-README.md#named-service-actions-in-the-ceiling)):
+`object.action` stands for every action the active catalog offers for the
+namespace, with or without listed actions beside it; listed actions alone are
+the ceiling as they stand. The synchronization expands the capability ceiling,
+the defaults and the requested selection from the catalog with the same code
+as the standard part, so the Card editor, the consent review, the base, the
+picker and the next synchronization offer and keep the same actions. The
+parent `object.action` stays in the ceiling while the namespace keeps any
+action.
+
+An administrator Save on a descriptor Control is an explicit list. It narrows
+the standard part and the capability ceiling alike in the same Save, and every
+later synchronization bounds the ceiling by the saved standard part. Actions a
+service adds after that Save are not included until the administrator selects
+them and saves again. The Control editor states which of these applies under
+Service actions.
+
 An MCP server with individually declared tool capabilities stores the selected
 tools. A server exposed only as one capability selects the operations declared
 for that server; it does not become an empty resource merely because no child
@@ -977,7 +1001,20 @@ identity, so Connection Hub refuses direct revocation; the reset action
 restores its starting selection without destroying that identity.
 
 An administrator's Save submits one revision-checked Control Card update. The
-Card records that the administrator edited its selection. Descriptor and
+Card records that the administrator edited its selection; from then on a
+descriptor refresh only narrows it. **Return to descriptor** on such a Control
+is the explicit way back: one revision-checked Control update, through the same
+administrator Save, clears the edited mark and the accepted descriptor
+evidence, and the agent's next synchronization seeds the Control from the
+current descriptor as for a new Control. An administrator
+narrowing treats a user's Agent Card like a descriptor narrowing does: a saved
+choice the Control no longer allows stays on the Agent Card as provenance,
+grants nothing, and applies again once the Control allows it. The Card read
+names those choices (`control_card.outside_control`, with `by` naming the
+administrator's list or the descriptor), and the editor lists them under "Not
+in this agent's Control". A refused descriptor synchronization changes no Card;
+its code and time are kept per owner and agent (`agent_sync_refusal` on the
+Agent Card and the Control read) until the next successful synchronization. Descriptor and
 bundle properties stay unchanged; on a later descriptor revision, sync keeps
 the saved Card choice within the refreshed descriptor and catalog ceilings.
 The linked KDCube capability document remains the source for descriptor-owned

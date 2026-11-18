@@ -110,6 +110,8 @@ from connection_hub.delegated_credentials.application_operation_policy import (
 from connection_hub.delegated_credentials.agent_capability_control import (
     AGENT_DESCRIPTOR_CARD_EDIT_PROVENANCE_KEY,
     AGENT_DESCRIPTOR_ISSUER_KIND,
+    AGENT_DESCRIPTOR_ACCEPTANCE_KIND,
+    descriptor_acceptance,
     align_resident_selection_to_card_authority,
     preserve_descriptor_acceptance,
     resident_selection_properties,
@@ -162,6 +164,8 @@ from connection_hub.delegated_credentials.controls.account_scope_policy import (
     direct_write_refusal as account_scope_policy_direct_write_refusal,
 )
 from connection_hub.delegated_credentials.controls.hierarchy import compose_control_hierarchy
+from connection_hub.delegated_credentials.controls.attribution import ResolvedCardComposition
+from connection_hub.delegated_credentials.application_resources import ApplicationResource
 from connection_hub.delegated_credentials.conversation_target_policy import (
     conversation_targets,
 )
@@ -1846,6 +1850,88 @@ def _effective_named_service_grants(
     return effective
 
 
+def _descriptor_control_ceiling_after_edit(
+    properties: Mapping[str, Any] | None,
+    named_service_operations: Any,
+) -> dict[str, Any]:
+    """An edit of a descriptor Control narrows its capability ceiling with it (W38).
+
+    The edit is an explicit list on the standard part. The capability ceiling
+    and the defaults on the same Card describe the same choice, so they are
+    bounded by it in the same Save.
+    """
+
+    from connection_hub.delegated_credentials.agent_capability_policy import (
+        AGENT_CAPABILITY_AUTHORITY_PROPERTY,
+        AGENT_CAPABILITY_DEFAULTS_PROPERTY,
+        AgentCapabilityPolicy,
+    )
+    from connection_hub.delegated_credentials.object_action_ceiling import bound_ceiling_to_standard_part
+
+    out = copy.deepcopy(dict(properties or {}))
+    raw_ceiling = out.get(AGENT_CAPABILITY_AUTHORITY_PROPERTY)
+    if not isinstance(raw_ceiling, Mapping):
+        return out
+    ceiling = AgentCapabilityPolicy.from_property(raw_ceiling)
+    bounded = bound_ceiling_to_standard_part(ceiling, named_service_operations)
+    if bounded is ceiling:
+        return out
+    out[AGENT_CAPABILITY_AUTHORITY_PROPERTY] = bounded.to_property()
+    raw_defaults = out.get(AGENT_CAPABILITY_DEFAULTS_PROPERTY)
+    if isinstance(raw_defaults, Mapping):
+        out[AGENT_CAPABILITY_DEFAULTS_PROPERTY] = (
+            AgentCapabilityPolicy.from_property(raw_defaults).intersection(bounded).to_property()
+        )
+    return out
+
+
+def _outside_control(
+    caller: AutomationAccessRecord,
+    effective: AutomationAccessRecord,
+    control: AutomationAccessRecord,
+) -> dict[str, Any]:
+    """Caller choices the composed authority drops: the Control excludes them.
+
+    Only the AND composition (a descriptor or project Control) is a plain
+    intersection, so only there does "held but not effective" mean "outside
+    the Control". ``by`` names who narrowed it: the administrator's saved list
+    or the descriptor.
+    """
+    if _clean(control.composition_mode or "and") != "and":
+        return {}
+    named: dict[str, dict[str, list[str]]] = {}
+    caller_named = caller.named_service_operations
+    effective_named = effective.named_service_operations
+    if caller_named.is_exact:
+        for resource, namespaces in caller_named.operations.items():
+            for namespace, operations in namespaces.items():
+                if effective_named.is_all:
+                    continue
+                kept = set(effective_named.operations.get(resource, {}).get(namespace, ()))
+                dropped = sorted(set(operations) - kept)
+                if dropped:
+                    named.setdefault(resource, {})[namespace] = dropped
+    outer = {
+        resource: sorted(set(operations) - set(effective.resource_operations.get(resource, ())))
+        for resource, operations in caller.resource_operations.items()
+        if set(operations) - set(effective.resource_operations.get(resource, ()))
+    }
+    claims = {
+        resource: sorted(set(grants) - set(effective.resource_grants.get(resource, ())))
+        for resource, grants in caller.resource_grants.items()
+        if set(grants) - set(effective.resource_grants.get(resource, ()))
+    }
+    if not (named or outer or claims):
+        return {}
+    edited = dict(control.provenance or {}).get(AGENT_DESCRIPTOR_CARD_EDIT_PROVENANCE_KEY) is True
+    return {
+        "by": "administrator" if edited else "descriptor",
+        "named_service_operations": named,
+        "outer_operations": outer,
+        "claims": claims,
+    }
+
+
 class AutomationAccessService:
     """Create/list/revoke user-created delegated automation credentials."""
 
@@ -2252,6 +2338,13 @@ class AutomationAccessService:
         return {
             "state": "active",
             "fail_closed": False,
+            # W38: what this Card keeps that the Control no longer allows. The
+            # choices stay on the Card as provenance and grant nothing; the
+            # owner sees why they do not apply and that they return when the
+            # Control allows them again.
+            "outside_control": _outside_control(
+                record, record_from_card(effective), control
+            ),
             "binding": effective.control_card.to_dict()
             if effective.control_card is not None
             else binding.to_dict(),
@@ -4818,6 +4911,14 @@ class AutomationAccessService:
             if profile is not None:
                 item["caller_profile"] = profile.to_dict()
                 item["stable_identity"] = record.access_id == profile.access_id
+                # W38: a refused descriptor sync changed nothing on this Card.
+                refusal = await self._agent_sync_outcomes().read(
+                    grantor_subject=record.grantor_subject,
+                    application=profile.application,
+                    agent_id=profile.agent_id,
+                )
+                if refusal:
+                    item["agent_sync_refusal"] = refusal
             # Which owner-visible delegable resources may join this card, and
             # why the others may not. The editor renders the picker from this;
             # a resident ceiling (Projection) narrows it further downstream.
@@ -6550,6 +6651,46 @@ class AutomationAccessService:
             result = {**result, "changed": True, "added": added}
         return result
 
+    async def _keep_outside_control_choices(
+        self,
+        existing: AutomationAccessRecord,
+        named_service_operations: Mapping[str, Any],
+        resource_grants: Mapping[str, Any],
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
+        """Add back held named-service operations (and their held claims) the
+        linked Control excludes, for resources the Save keeps (W38, item 10)."""
+        named = {resource: dict(namespaces) if isinstance(namespaces, Mapping) else namespaces
+                 for resource, namespaces in named_service_operations.items()}
+        grants = {resource: list(_as_list(values)) for resource, values in resource_grants.items()}
+        held = existing.named_service_operations
+        if not held.is_exact:
+            return named, grants
+        try:
+            control, _composed = await self._compose_with_control(existing)
+        except Exception:
+            return named, grants
+        if control is None or control.named_service_operations.is_all:
+            return named, grants
+        allowed = control.named_service_operations
+        for resource, namespaces in held.operations.items():
+            if resource not in grants or not isinstance(named.get(resource), Mapping):
+                continue
+            kept_any = False
+            for namespace, operations in namespaces.items():
+                inside = set(allowed.operations.get(resource, {}).get(namespace, ()))
+                outside = [operation for operation in operations if operation not in inside]
+                if not outside:
+                    continue
+                current = list(_as_list(named[resource].get(namespace, [])))
+                named[resource][namespace] = current + [op for op in outside if op not in current]
+                kept_any = True
+            if kept_any:
+                control_claims = set(control.resource_grants.get(resource, ()))
+                for claim in existing.resource_grants.get(resource, ()):
+                    if claim not in control_claims and claim not in grants[resource]:
+                        grants[resource].append(claim)
+        return named, grants
+
     async def update_access(
         self,
         user: Mapping[str, Any],
@@ -6881,6 +7022,20 @@ class AutomationAccessService:
         if conflict is not None:
             return conflict
 
+        if (
+            existing.control_card is not None
+            and is_resident_client_id(existing.client_id)
+            and not _application_write
+            and isinstance(named_service_operations, Mapping)
+            and isinstance(resource_grants, Mapping)
+        ):
+            # kdcube#270 item 10: an owner's Save keeps the choices the Control no
+            # longer allows. The editor shows them outside the Control and never
+            # sends them, so the Save must not read their absence as a removal;
+            # they stay as provenance and apply again once the Control allows them.
+            named_service_operations, resource_grants = await self._keep_outside_control_choices(
+                existing, named_service_operations, resource_grants
+            )
         resolved = await self._resolve_card_authority(
             user=user,
             existing=existing,
@@ -7030,6 +7185,10 @@ class AutomationAccessService:
             selected_properties = reviewed_control_snapshot_properties(
                 selected_properties,
                 basis_catalog_version=catalog_version,
+            )
+        if existing.issuer_kind == AGENT_DESCRIPTOR_ISSUER_KIND:
+            selected_properties = _descriptor_control_ceiling_after_edit(
+                selected_properties, selected_named_service_operations
             )
         now = int(time.time())
         # Editing is about the grants, expiry about the credential. An expired
@@ -7988,7 +8147,7 @@ class AutomationAccessService:
             sync_agent_capability_control,
         )
 
-        return await sync_agent_capability_control(
+        result = await sync_agent_capability_control(
             self,
             user,
             application=application,
@@ -8010,6 +8169,102 @@ class AutomationAccessService:
             properties=properties,
             issuer_label=issuer_label,
             manage_url=manage_url,
+        )
+        # W38: a refused sync changes no Card; keep it so the editor can say so.
+        await self._agent_sync_outcomes().record(
+            result,
+            grantor_subject=_subject_from_user(user),
+            application=application,
+            agent_id=agent_id,
+            descriptor_revision=descriptor_revision,
+        )
+        return result
+
+    def _agent_sync_outcomes(self) -> "AgentSyncOutcomeStore":
+        from connection_hub.delegated_credentials.agent_sync_outcome import AgentSyncOutcomeStore
+
+        return AgentSyncOutcomeStore(self._redis, tenant=self._tenant, project=self._project)
+
+    async def return_control_to_descriptor(
+        self,
+        user: Mapping[str, Any],
+        *,
+        access_id: str,
+        expected_card_revision: int | None,
+        expected_catalog_version: str | None = None,
+    ) -> dict[str, Any]:
+        """Hand a descriptor Control back to its descriptor (W38).
+
+        An administrator's Save marks the Control edited, and from then on a
+        descriptor refresh only narrows it. This is the explicit way back: one
+        revision-checked Control update, through the ordinary administrator
+        Save, that clears the edited mark and the accepted descriptor evidence.
+        The Control keeps its current choices until the agent's next
+        synchronization, which then seeds it from the current descriptor, as
+        for a new Control; the agents' Cards follow from that sync.
+        """
+        grantor_subject = _subject_from_user(user)
+        loaded = await self._load_record_any_state(_clean(access_id), grantor_subject=grantor_subject)
+        existing = loaded[0] if loaded is not None else None
+        if (
+            existing is None
+            or not _record_is_credentialless(existing)
+            or existing.issuer_kind != AGENT_DESCRIPTOR_ISSUER_KIND
+        ):
+            return {"ok": False, "error": "control_card_not_descriptor_control", "status": 404}
+        agent_resource = _clean(existing.issuer_ref)
+        held_evidence = dict(existing.resource_acceptance or {}).get(agent_resource)
+        evidence_missing = held_evidence is None or held_evidence.kind != AGENT_DESCRIPTOR_ACCEPTANCE_KIND
+        edited = dict(existing.provenance or {}).get(AGENT_DESCRIPTOR_CARD_EDIT_PROVENANCE_KEY) is True
+        if not edited and not evidence_missing:
+            return {"ok": False, "error": "control_card_already_follows_descriptor", "status": 409}
+        try:
+            ceiling = AgentCapabilityPolicy.from_property(
+                dict(existing.properties or {}).get(AGENT_CAPABILITY_AUTHORITY_PROPERTY)
+            )
+            # The descriptor evidence stays well formed (the agent's Card
+            # transaction validates the stored Control) but names no descriptor
+            # revision, so the next synchronization finds it stale and seeds the
+            # Control from the current descriptor. Removing it instead left a
+            # Control every later sync refused (live 2026-11-17).
+            returned_evidence = descriptor_acceptance(
+                authority=ceiling,
+                descriptor_revision="returned-to-descriptor",
+                descriptor_payload={
+                    "returned_to_descriptor": True,
+                    "previous_digest": "" if evidence_missing else held_evidence.digest,
+                },
+            )
+        except AgentCapabilityPolicyError as exc:
+            return {"ok": False, "error": exc.reason, "status": 409}
+
+        def _follow_descriptor(_before: AutomationAccessRecord, after: AutomationAccessRecord) -> AutomationAccessRecord:
+            provenance = dict(after.provenance or {})
+            provenance.pop(AGENT_DESCRIPTOR_CARD_EDIT_PROVENANCE_KEY, None)
+            return dataclasses.replace(
+                after,
+                provenance=provenance,
+                resource_acceptance={
+                    **dict(after.resource_acceptance or {}),
+                    agent_resource: returned_evidence,
+                },
+            )
+
+        return await self.update_access(
+            user,
+            access_id=existing.access_id,
+            resource_grants={key: list(value) for key, value in existing.resource_grants.items()},
+            resource_operations={key: list(value) for key, value in existing.resource_operations.items()},
+            named_service_operations=existing.named_service_operations.to_stored(),
+            account_scope={
+                provider: {account: list(claims) for account, claims in accounts.items()}
+                for provider, accounts in dict(existing.account_scope or {}).items()
+            },
+            properties=copy.deepcopy(dict(existing.properties or {})),
+            composition_mode=existing.composition_mode,
+            expected_card_revision=expected_card_revision,
+            expected_catalog_version=expected_catalog_version,
+            _record_transform=_follow_descriptor,
         )
 
     async def update_agent_capability_selection(
@@ -8095,6 +8350,22 @@ class AutomationAccessService:
         access["catalog_drift"] = dict(card.get("catalog_drift") or {})
         access["resource_offers"] = list(card.get("resource_offers") or [])
         access["invocation_policies"] = []
+        # W38: the administrator sees a refused descriptor sync on the Control too.
+        marker = descriptor_control(record.properties)
+        if marker is not None:
+            try:
+                target = ApplicationResource.parse(marker.resource)
+            except Exception:
+                target = None
+            if target is not None:
+                refusal = await self._agent_sync_outcomes().read(
+                    grantor_subject=grantor_subject,
+                    application=target.application,
+                    agent_id=target.agent,
+                )
+                if refusal:
+                    card["agent_sync_refusal"] = refusal
+                    access["agent_sync_refusal"] = refusal
         try:
             active = await self._active_catalog()
             catalog_config = await self._catalog_config(
@@ -9810,11 +10081,19 @@ class AutomationAccessService:
                     client_id=client_id,
                     resources=[cfg.resource],
                 )
+            composition = None
             if record is not None and record.control_card is not None:
                 try:
                     control, composed = await self._compose_with_control(record)
                     if control is None or composed is None:
                         raise ControlCardMismatch("control_card_unresolvable")
+                    # Keep who refuses: an operation the Control excludes is not
+                    # something the owner's consent can add (W38).
+                    composition = ResolvedCardComposition(
+                        caller_card=card_authority_from_record(record),
+                        effective_card=composed,
+                        control_card=card_authority_from_record(control),
+                    )
                     record = record_from_card(composed)
                 except (CardUnavailable, ControlCardMismatch) as exc:
                     return {
@@ -9908,6 +10187,7 @@ class AutomationAccessService:
                                     namespace=ns,
                                     operation=op,
                                 ),
+                                card_composition=composition,
                             )
             return {
                 "governed": True,

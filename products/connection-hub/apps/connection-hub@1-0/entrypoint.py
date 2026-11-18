@@ -7260,7 +7260,17 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
         )
         try:
             access_service = await _automation_access_service(self, request)
-            if "reset_to_control_defaults" in payload:
+            if "return_to_descriptor" in payload:
+                # W38: the administrator hands a descriptor Control back to its descriptor.
+                if payload.get("return_to_descriptor") is not True:
+                    raise ValueError("return_to_descriptor must be true")
+                _result = await access_service.return_control_to_descriptor(
+                    user,
+                    access_id=_access_id_for_log,
+                    expected_card_revision=_expected_card_revision(payload),
+                    expected_catalog_version=str(payload.get("expected_catalog_version") or "").strip() or None,
+                )
+            elif "reset_to_control_defaults" in payload:
                 if payload.get("reset_to_control_defaults") is not True:
                     raise ValueError("reset_to_control_defaults must be true")
                 if "selected_capabilities" in payload:

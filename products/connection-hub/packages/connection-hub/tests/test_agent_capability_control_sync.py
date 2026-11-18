@@ -675,7 +675,6 @@ async def test_agent_card_reset_uses_live_control_defaults_and_keeps_user_state(
     }
     descriptor_payload = {
         "revision": "descriptor-r1",
-        "standard_authority_overridden": True,
         "standard_authority": {
             "resources": [{
                 "server_id": "review",
@@ -1270,7 +1269,6 @@ async def test_existing_selection_repairs_control_managed_authority_only() -> No
     }
     descriptor_payload = {
         "revision": "descriptor-r1",
-        "standard_authority_overridden": True,
         "standard_authority": {
             "resources": [{
                 "server_id": "review",
