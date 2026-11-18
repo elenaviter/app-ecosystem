@@ -9,6 +9,7 @@ import base64
 import hashlib
 import hmac
 import json
+import secrets
 import time
 import uuid
 from typing import Any, Mapping
@@ -66,8 +67,50 @@ def verify_state(state: str, secret: str) -> dict[str, Any]:
     return payload
 
 
+# An opaque account-connect state: a random reference and its signature. The
+# provider carries it to the callback and back; it reads nothing from it. The
+# connection context (user, provider, claims, account, return target) stays in
+# the state store. Earlier states carried that context as readable base64 JSON.
+_OPAQUE_STATE_PREFIX = "v2."
+_OPAQUE_STATE_CONTEXT = "kdcube.delegated-to-kdcube.oauth-state.v2:"
+
+
+def _opaque_signature(nonce: str, secret: str) -> str:
+    return hmac.new(
+        str(secret).encode("utf-8"),
+        (_OPAQUE_STATE_CONTEXT + nonce).encode("utf-8"),
+        hashlib.sha256,
+    ).hexdigest()
+
+
+def _opaque_state(nonce: str, secret: str) -> str:
+    if not str(secret or "").strip():
+        raise ValueError("OAuth state secret is not configured")
+    return f"{_OPAQUE_STATE_PREFIX}{nonce}.{_opaque_signature(nonce, secret)}"
+
+
+def is_opaque_state(state: str) -> bool:
+    return str(state or "").strip().startswith(_OPAQUE_STATE_PREFIX)
+
+
+def _verify_opaque_state(state: str, secret: str) -> str:
+    """The nonce of a well-signed opaque state; raises otherwise."""
+
+    raw = str(state or "").strip()[len(_OPAQUE_STATE_PREFIX):]
+    if "." not in raw:
+        raise ValueError("OAuth state is invalid")
+    nonce, received_signature = raw.rsplit(".", 1)
+    if not nonce or not hmac.compare_digest(received_signature, _opaque_signature(nonce, secret)):
+        raise ValueError("OAuth state signature is invalid")
+    return nonce
+
+
 def peek_state_payload(state: str) -> dict[str, Any]:
+    """The readable payload of a legacy state. An opaque state carries none."""
+
     raw = str(state or "").strip()
+    if is_opaque_state(raw):
+        raise ValueError("OAuth state carries no readable payload")
     if "." not in raw:
         raise ValueError("OAuth state is invalid")
     encoded, _signature = raw.rsplit(".", 1)
@@ -144,7 +187,7 @@ async def create_oauth_state(
         "claims": [str(item) for item in claims],
         "account_id": str(account_id or "").strip(),
         "claims_mode": str(claims_mode or "add").strip().lower() or "add",
-        "nonce": uuid.uuid4().hex,
+        "nonce": secrets.token_urlsafe(32),
         "source": str(source or "").strip() or "connection_hub_widget",
         "return_hint": str(return_hint or "").strip(),
         "iat": now,
@@ -156,7 +199,7 @@ async def create_oauth_state(
         raise ValueError("OAuth state requires provider_id")
     if not payload["connector_app_id"]:
         raise ValueError("OAuth state requires connector_app_id")
-    state = sign_state(payload, secret)
+    state = _opaque_state(payload["nonce"], secret)
     await state_store.put(state, payload, ttl_seconds=ttl_seconds)
     return {"state": state, "payload": payload, "state_id": state_digest(state)}
 
@@ -167,6 +210,17 @@ async def consume_oauth_state(
     state: str,
     secret: str,
 ) -> dict[str, Any]:
+    if is_opaque_state(state):
+        nonce = _verify_opaque_state(state, secret)
+        stored = await state_store.pop(state)
+        if stored is None:
+            raise ValueError("OAuth state was not found or already used")
+        if str(stored.get("nonce") or "") != nonce:
+            raise ValueError("OAuth state storage mismatch")
+        if int(stored.get("exp") or 0) < int(time.time()):
+            raise ValueError("OAuth state expired")
+        return dict(stored)
+    # A state issued before opaque states: readable and self-describing.
     payload = verify_state(state, secret)
     stored = await state_store.pop(state)
     if stored is None:
@@ -182,6 +236,7 @@ __all__ = [
     "RedisOAuthStateStore",
     "consume_oauth_state",
     "create_oauth_state",
+    "is_opaque_state",
     "peek_state_payload",
     "sign_state",
     "state_digest",

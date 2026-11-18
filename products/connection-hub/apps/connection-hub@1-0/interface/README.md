@@ -263,9 +263,14 @@ providers such as Gmail and Slack:
 | `remote_mcp_oauth_callback` | GET | public | `…/connection-hub@1-0/public/remote_mcp_oauth_callback` |
 | `remote_mcp_oauth_client_metadata` | GET | public | Client metadata document used as the URL-based OAuth client id when the authorization server advertises that method. |
 
-It accepts `code`, `state`, `error` and completes the hub-owned flow, validating
-`state` with `connections.delegated_to_kdcube.oauth_state_secret`. The
-provider + connector app are read from the signed `state`.
+It accepts `code`, `state`, `error` and completes the hub-owned flow. The
+`state` is opaque: a random single-use reference signed with
+`connections.delegated_to_kdcube.oauth_state_secret`. The provider sees
+nothing of the connection in it. The callback verifies the signature and
+consumes the state from the state store once; the user, provider, connector
+app, claims, account and return target come from that stored record. A
+readable signed state issued before this change is still accepted until it
+expires.
 
 The remote-MCP callback consumes a random single-use state. Its durable
 pointer contains only a digest, owner, secret reference, and expiry. PKCE,

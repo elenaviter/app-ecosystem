@@ -526,6 +526,7 @@ class DelegatedToKdcubeOperations:
         state_store: OAuthStateStore,
         state_secret: str,
         client_secret_resolver: Callable[..., Any],
+        consumed_state: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
         LOGGER.info(
             "[delegated.oauth] callback begin user=%s state=%s code_present=%s",
@@ -533,7 +534,13 @@ class DelegatedToKdcubeOperations:
             state_digest(state),
             bool(code),
         )
-        payload = await consume_oauth_state(state_store, state=state, secret=state_secret)
+        # The callback consumes an opaque state itself to learn whose store to
+        # open; it hands the consumed payload over instead of consuming twice.
+        payload = (
+            dict(consumed_state)
+            if consumed_state is not None
+            else await consume_oauth_state(state_store, state=state, secret=state_secret)
+        )
         user_id = as_str(payload.get("user_id"))
         if user_id != self.store.user_id:
             raise ValueError("OAuth state user does not match integration store")

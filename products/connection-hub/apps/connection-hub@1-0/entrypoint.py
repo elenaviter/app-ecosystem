@@ -217,6 +217,7 @@ from kdcube_ai_app.apps.chat.sdk.integrations.connection_hub.delegated_to_kdcube
     state_digest,
 )
 import connection_hub.delegated_to_kdcube.providers  # noqa: F401
+from connection_hub.delegated_to_kdcube.oauth import consume_oauth_state, is_opaque_state
 from connection_hub.delegated_to_kdcube.refresh_lock import RedisRefreshLock
 from connection_hub.delegated_credentials.credential_view import DelegatedCredentialView
 from connection_hub.project_github_key import AgentGitHubTokenIssuer, ProjectGitHubKey
@@ -8317,7 +8318,18 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
                 body="The OAuth callback is missing code or state.",
             )
         try:
-            preview = peek_state_payload(state)
+            # An opaque state names nothing: the callback consumes it from the
+            # state store (one use, as before) to learn whose store to open.
+            consumed_state = None
+            if is_opaque_state(state):
+                consumed_state = await consume_oauth_state(
+                    _delegated_to_kdcube_oauth_state_store(self),
+                    state=state,
+                    secret=await _delegated_to_kdcube_oauth_state_secret(self),
+                )
+                preview = consumed_state
+            else:
+                preview = peek_state_payload(state)
             platform_user_id = str(preview.get("user_id") or "").strip()
             if not platform_user_id:
                 raise ValueError("OAuth state is missing user_id")
@@ -8345,6 +8357,7 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
                 state_store=_delegated_to_kdcube_oauth_state_store(self),
                 state_secret=await _delegated_to_kdcube_oauth_state_secret(self),
                 client_secret_resolver=_client_secret_resolver,
+                consumed_state=consumed_state,
             )
             account = result.get("account") or {}
             LOGGER.info(
