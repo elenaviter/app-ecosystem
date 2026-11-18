@@ -91,6 +91,14 @@ _CONTROL_NOT_GRANTED_MESSAGES = {
     CAPABILITY_NAMED_SERVICE_OPERATION: "The linked Control Card excludes the requested named-service operation.",
 }
 
+# W38: what an agent tells its user when the Control blocks a request. The
+# owner's consent cannot lift it, so the agent must not offer that.
+_CONTROL_BLOCKED_NEXT_STEP = (
+    "This is limited by the agent's Control (set by its administrator or its "
+    "app's descriptor), not by a missing user permission. The user cannot grant "
+    "it here; tell them an administrator of this app can allow it."
+)
+
 _COMPOSED_NOT_GRANTED_MESSAGES = {
     CAPABILITY_RESOURCE: "The Caller Card and linked Control Card both exclude the requested resource.",
     CAPABILITY_RESOURCE_CLAIM: "The Caller Card and linked Control Card both exclude the requested resource claim.",
@@ -375,6 +383,7 @@ def card_boundary_denial(
                 "retry_same_request": False,
                 "request_user_consent": False,
                 "edit_route_available": False,
+                "next_step": _CONTROL_BLOCKED_NEXT_STEP,
             }
             blocker = attribution.single_blocker
             if blocker is not None:
@@ -390,6 +399,7 @@ def card_boundary_denial(
                 "retry_same_request": False,
                 "request_user_consent": False,
                 "edit_route_available": False,
+                "next_step": _CONTROL_BLOCKED_NEXT_STEP,
             }
     elif card_composition is not None:
         # A disagreement between the raw participants and the effective result
