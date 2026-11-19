@@ -980,7 +980,9 @@ is intersected before the Agent Card is written.
 
 A permitted user-owned resource family also contributes a discovery container
 such as **My MCP connectors** and the owner's matching exact connector
-resources. The container is not itself submitted as Card authority. Connected
+resources. On this hosted Agent Card the container is not itself submitted
+as Card authority; a connected app or client card, whose caller enters through
+the route, keeps the route as its own authority row. Connected
 accounts and connector credentials remain owned by the user's Agent Card. Only
 a platform administrator may read or mutate the descriptor Control Card;
 direct access by an ordinary user is denied without returning its authority

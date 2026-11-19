@@ -102,9 +102,13 @@ read every card.
 - **A selection route owns its service hierarchy.** The `remote_mcp_proxy`
   transport route appears as **My MCP connectors**. Selecting it exposes the
   owner's configured MCP servers directly beneath it, and each server row
-  owns its exact tools and permissions. The hierarchy explains reachability;
-  the saved card keeps the route and every selected server as separate
-  authority rows.
+  owns its exact tools and permissions. The hierarchy explains reachability.
+  What the save stores depends on the card kind: a connected app or client
+  card keeps the route and every selected server as separate authority rows,
+  because its caller enters through the route; a hosted Agent Card keeps only
+  the selected servers, and the route is the discovery container its
+  resource family contributes (see
+  [Delegated Cards](../../package/delegated-cards.md)).
 - **A Card's personal MCP servers change only by its owner.** The Hub refuses
   a non-owner's addition or change of a connector on any Save and allows
   removing one whole (`owner_only_connectors.py`). So for a viewer whose
