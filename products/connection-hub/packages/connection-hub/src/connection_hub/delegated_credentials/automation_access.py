@@ -601,6 +601,17 @@ def _is_platform_admin(user: Mapping[str, Any]) -> bool:
     return authority_has_platform_privilege(_as_list(user.get("roles")))
 
 
+def _is_descriptor_control_record(record: AutomationAccessRecord) -> bool:
+    """A Control Card a descriptor issues: only a platform administrator opens it."""
+
+    if record.issuer_kind == AGENT_DESCRIPTOR_ISSUER_KIND:
+        return True
+    try:
+        return descriptor_control(record.properties) is not None
+    except AgentCapabilityPolicyError:
+        return True
+
+
 def _bounded_ttl(value: Any) -> int:
     try:
         ttl = int(value or AUTOMATION_ACCESS_DEFAULT_TTL_SECONDS)
@@ -2285,12 +2296,29 @@ class AutomationAccessService:
     async def _effective_control_view(
         self,
         record: AutomationAccessRecord,
+        *,
+        viewer: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Owner-facing explanation of the authority currently in force."""
 
         binding = record.control_card
         if binding is None:
             return {"state": "not_controlled"}
+        view = await self._effective_control_view_body(record, binding)
+        if viewer is not None:
+            # kdcube#270 D2: whether this viewer may open the linked Control
+            # itself; a descriptor Control opens only for an administrator.
+            view["viewer_may_open"] = (
+                binding.issuer_kind != AGENT_DESCRIPTOR_ISSUER_KIND
+                or _is_platform_admin(viewer)
+            )
+        return view
+
+    async def _effective_control_view_body(
+        self,
+        record: AutomationAccessRecord,
+        binding: Any,
+    ) -> dict[str, Any]:
         try:
             hierarchy = await self._control_hierarchy(record)
             control, composed = (
@@ -4890,7 +4918,7 @@ class AutomationAccessService:
         # W419: each Card's control view is its own read; read them together,
         # a few at a time, instead of one after another.
         control_views = await bounded_gather(
-            [self._effective_control_view(record) for record in records_found]
+            [self._effective_control_view(record, viewer=user) for record in records_found]
         )
         records = []
         for record, effective_control in zip(records_found, control_views):
@@ -8061,7 +8089,7 @@ class AutomationAccessService:
         if record is None or record.grantor_subject != grantor_subject:
             return {"ok": False, "error": "delegated_access_not_found", "status": 404}
         view = await self._card_view(record)
-        effective_control = await self._effective_control_view(record)
+        effective_control = await self._effective_control_view(record, viewer=user)
         return {
             "ok": True,
             "card": view.to_dict(),
@@ -8325,6 +8353,13 @@ class AutomationAccessService:
         record = loaded[0] if loaded is not None else None
         if record is None or not _record_is_credentialless(record):
             return {"ok": False, "error": "control_card_not_found", "status": 404}
+        # kdcube#270 D2: a descriptor Control Card is the administrator's; an
+        # ordinary user reading it directly is refused without its authority
+        # payload, as editing it already is.
+        if _is_descriptor_control_record(record) and not (
+            _is_platform_admin(user) if _platform_admin is None else bool(_platform_admin)
+        ):
+            return {"ok": False, "error": "platform_admin_required", "status": 403}
         state = loaded[1]
         if state == CARD_STATE_ACTIVE:
             try:
@@ -9487,7 +9522,7 @@ class AutomationAccessService:
                     "ok": True,
                     "attached": False,
                     "access": record.to_public_dict(),
-                    "control_card": await self._effective_control_view(record),
+                    "control_card": await self._effective_control_view(record, viewer=user),
                 }
             refusal = self._managed_project_binding_refused(record) or _held_binding_refusal(
                 record, caller_is_project=bool(_clean(_control_holder)))
@@ -9587,7 +9622,7 @@ class AutomationAccessService:
             "replaced": bool(expected_previous_control_id),
             "previous_control_id": expected_previous_control_id,
             "access": updated.to_public_dict(),
-            "control_card": await self._effective_control_view(updated),
+            "control_card": await self._effective_control_view(updated, viewer=user),
         }
 
     async def control_card_revoke(

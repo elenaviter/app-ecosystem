@@ -235,6 +235,9 @@ export interface DelegatedAgentSyncRefusal {
 
 export interface DelegatedControlCardView {
   state: 'not_controlled' | 'active' | 'unavailable' | string;
+  /** kdcube#270 D2: false when this viewer may not open the linked Control
+   *  itself (a descriptor Control opens only for a platform administrator). */
+  viewer_may_open?: boolean;
   outside_control?: DelegatedOutsideControl;
   agent_sync_refusal?: DelegatedAgentSyncRefusal;
   fail_closed?: boolean;

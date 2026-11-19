@@ -5356,7 +5356,7 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
               ? ' The linked card applies at every guarded operation.'
               : ' Operations governed by this link are closed.'}</small>
           </span>
-          {binding.control_id ? (
+          {binding.control_id && control.viewer_may_open !== false ? (
             <button
               type="button"
               className="btn btn-ghost control-card-composition__open"
