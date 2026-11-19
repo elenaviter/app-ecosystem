@@ -2834,7 +2834,13 @@ class AutomationAccessService:
         config = await self._catalog_config(active, owner_subject=record.grantor_subject)
         selected = normalize_selection(record, selection, config=config)
         if properties is not None:
-            selected["properties"] = checked_properties(record, properties, own_my=kind == "person_my")
+            selected["properties"] = checked_properties(
+                record, properties, own_my=kind == "person_my",
+                # The owner's own Card that no Control governs (an OAuth or
+                # automation caller Card) may change its conversation
+                # applications; a managed or Control-bound Card may not.
+                own_conversation_targets=kind == "caller_card" and record.control_card is None,
+            )
         candidate = replace_fields(record, resource_operations=selected.get(
             "resource_operations", record.resource_operations))
         modes = added_invocation_modes(original=record, candidate=candidate, config=config,
@@ -6882,7 +6888,13 @@ class AutomationAccessService:
                         if value is not None}, properties=properties, label=label, composition_mode=composition_mode,
                     accepted_operations=accepted_operations, invocation_modes=invocation_modes)
             except ManagedCardEditError as exc:
-                return exc.to_dict()
+                refused = exc.to_dict()
+                if not exc.message:
+                    # This Save is the Hub's own transaction, not a project's:
+                    # say so instead of the forwarded-edit wording.
+                    refused["message"] = (
+                        f"Connection Hub did not save this Card change ({exc.reason}). Your draft is kept.")
+                return refused
             if unchanged_save:
                 return {"ok": True, "unchanged": True}
             if getattr(self, "_card_coordinator", None) is None:
