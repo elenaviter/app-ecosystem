@@ -5118,6 +5118,48 @@ class AutomationAccessService:
             }
         return {resource: [] for resource in resource_grants}
 
+    async def _add_bridges_for_requested_operations(
+        self,
+        existing: AutomationAccessRecord,
+        selected_resource_operations: Mapping[str, Any],
+        *,
+        requested: Mapping[str, Any],
+        config: Any,
+    ) -> dict[str, tuple[str, ...]]:
+        """The bridge tools the requested named-service operations need (W34 C)."""
+        from connection_hub.delegated_credentials.agent_capability_sync import (
+            _named_service_outer_operations,
+        )
+
+        result = {resource: tuple(values) for resource, values in selected_resource_operations.items()}
+        control_operations: Mapping[str, Any] | None = None
+        if existing.control_card is not None:
+            try:
+                control, _composed = await self._compose_with_control(existing)
+            except Exception:
+                control = None
+            if control is None:
+                return result
+            control_operations = control.resource_operations
+        for resource, namespaces in requested.items():
+            if not isinstance(namespaces, Mapping) or resource not in result:
+                continue
+            configured = self._configured_resource(resource, config=config)
+            tools = [tool.name for tool in (getattr(configured, "tools", None) or ())]
+            inner = {
+                str(operation)
+                for operations in namespaces.values()
+                if isinstance(operations, (list, tuple, set, frozenset))
+                for operation in operations
+            }
+            bridges = _named_service_outer_operations(inner, tools)
+            if control_operations is not None:
+                bridges &= set(control_operations.get(resource, ()))
+            missing = [bridge for bridge in sorted(bridges) if bridge not in result[resource]]
+            if missing:
+                result[resource] = (*result[resource], *missing)
+        return result
+
     async def create_access(
         self,
         user: Mapping[str, Any],
@@ -5607,6 +5649,24 @@ class AutomationAccessService:
             default_all=default_all,
             config=catalog_config,
         )
+        if (
+            existing is not None
+            and merge_existing
+            and is_resident_client_id(_clean(client_id))
+            and isinstance(named_service_operations, Mapping)
+        ):
+            # W34 C: a consent that adds a named-service operation also adds the
+            # MCP bridge tool the agent calls it with, when the Card lacks it.
+            # A passive sync never re-creates a bridge the owner removed, so
+            # without this the agent held the operation and nothing to call it
+            # with. Only the bridges the requested operations need, and only
+            # those the linked Control allows.
+            selected_resource_operations = await self._add_bridges_for_requested_operations(
+                existing,
+                selected_resource_operations,
+                requested=named_service_operations,
+                config=catalog_config,
+            )
         selected_operations = list(operation_union(selected_resource_operations))
         selected_properties = (
             copy.deepcopy(dict(existing.properties or {}))

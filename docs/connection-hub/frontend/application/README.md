@@ -233,6 +233,82 @@ scope, no event is authored (logged as
 `sdk_completion_without_account_scope`): a scope-blind match would close a
 demand whose account is still unbound. The approval itself still commits.
 
+#### More access in the same consent
+
+Under the request, a closed section **Give this agent more access (optional)**
+offers everything the agent's Control allows, not only what was asked:
+
+- the named-service operations of every catalog resource, one group per
+  service (namespace);
+- its permissions (claims), one group per service prefix (`slack`, `docs`);
+- its tools;
+- every connected account's provider permissions, one group per provider.
+
+Every group opens on its own; its head shows how many entries are requested,
+selected, can be added and are already on the Card. **All** and **None** on a
+group select or clear its addable entries only: never what the Card holds,
+what the Control does not allow, or what the agent asked for. What the agent
+asked for also appears in its group, selected, fixed and marked
+**requested**.
+
+The selection rules:
+
+- nothing beyond the request is preselected;
+- entries the Card holds are shown ticked and cannot be changed;
+- entries outside the Control are shown disabled with the reason and are
+  never sent.
+
+The review only adds to the Card. Removing access is done in the Card's own
+Edit (`replace`).
+
+The agent's request is answered first. What the agent asked for (its service
+operation or tool) is shown selected and cannot be removed in the review.
+While an account the request asks for is not chosen, or an asked once/always
+choice is not made, **Approve on this Card** stays disabled, whatever else is
+selected: the extras are saved only together with the answered request. When
+the Card already holds everything asked for, the review says so and only the
+extras remain to approve.
+
+An operation added here may need a provider permission on an account (for
+example `sheets:write` for a spreadsheet write). Until such a permission is
+bound on an account in this review, the review names it with the operations
+that need it and **Approve on this Card** stays disabled; Connection Hub would
+refuse the operation otherwise.
+
+An operation brings the door grants it needs. Provider permissions that the
+Card's held or selected operations need are marked **needed** on each account
+that can hold them; they are never ticked for the owner.
+
+One **Approve on this Card** writes, in order:
+
+1. the request's own grant, carrying the Card-wide `account_scope` and
+   whatever was added on the requested resource, so both commit together (a
+   focused once/always grant stays exactly that operation and is not merged);
+2. one merge `delegated_agent_grant_create` per further resource the selection
+   touches.
+
+Each write uses the revision the previous write returned. A refusal stops the
+sequence and is shown.
+
+A provider permission that this consent needs and no connected account holds
+gets a button: one the request itself asks for, or one an operation selected
+here needs. What the Card already held before this consent is not offered
+there.
+
+- Once the request is answered, the button is **Save and request in
+  <provider>** (**Save and connect a <provider> account** when none is
+  connected). It first saves the answered request and everything selected that
+  does not depend on the permission being requested, as Approve does, and
+  only then opens that provider's consent on the Accounts tab with the agent
+  hand-off (`agent_client_id`, `agent_resource`). Operations that need that
+  permission are chosen again after the provider grants it. A refused save
+  stays on the review.
+- While the request cannot be answered (no account can do what it asks), the
+  button only opens the provider (**Request in <provider>**, **Connect a
+  <provider> account**) and saves nothing. After the provider approves, **Continue -
+grant it to <agent>** returns to this review for the new permission. Nothing
+selected is held in the browser across that step: it is already on the Card.
+
 ## Delegated automation and provider-backed named services
 
 The generic named-services MCP resource has two authorization layers and may
