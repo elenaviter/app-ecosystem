@@ -139,7 +139,8 @@ async def test_foreign_forged_or_stale_descriptor_binding_never_authorizes_save(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("case", ["missing", "stale", "marker", "invalid_marker", "foreign_owner", "foreign_deployment"])
+# W41 (F1): a newer Control is not a refusal; the owner's write re-pins to it (test_descriptor_agent_card_transaction).
+@pytest.mark.parametrize("case", ["missing", "marker", "invalid_marker", "foreign_owner", "foreign_deployment"])
 async def test_bad_stored_descriptor_control_refuses_before_choosing_local_route(case):
     service, resident, control = await _descriptor_pair()
     service._card_coordinator = (None, None, None, 60)
@@ -149,7 +150,6 @@ async def test_bad_stored_descriptor_control_refuses_before_choosing_local_route
     else:
         _, handles = persistence.records[control.access_id]
         changes = {
-            "stale": {"card_revision": control.card_revision + 1},
             "marker": {"properties": {}},
             "invalid_marker": {"properties": {"kdcube.agent_descriptor_control": {"schema": "invalid"}}},
             "foreign_owner": {"grantor_subject": "another-user"},

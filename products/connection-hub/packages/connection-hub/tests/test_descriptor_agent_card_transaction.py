@@ -160,25 +160,65 @@ async def test_group_renew_cannot_renew_control_or_bypass_resident_issuance(tmp_
                                     actor_subject=OWNER, actor_kind="caller")
 
 
-@pytest.mark.asyncio
-async def test_control_moving_between_validation_and_prepare_aborts_owner_save(tmp_path, monkeypatch):
-    service, store, decisions, resident, control, card_service, _ = await _world(tmp_path)
+def _mover(service, card_service, control, *, times):
+    """Publish a newer shared Control (under its holder) just before the owner's write commits."""
     write = service._coordinated_write
+    state = {"control": control, "moves": 0}
 
     async def race(*args, **kwargs):
-        moved = replace(control, card_revision=control.card_revision + 1, label="Concurrent Control edit")
-        await card_service.commit(moved, subject_hash=subject_hash_for(OWNER),
-                                  expected_revision=control.card_revision, now=int(time.time()))
+        if state["moves"] < times:
+            current = state["control"]
+            moved = replace(current, card_revision=current.card_revision + 1, label="Concurrent Control edit")
+            await card_service.commit(moved, subject_hash=subject_hash_for(current.grantor_subject),
+                                      expected_revision=current.card_revision, now=int(time.time()))
+            state["control"], state["moves"] = moved, state["moves"] + 1
         return await write(*args, **kwargs)
 
+    return race, state
+
+
+@pytest.mark.asyncio
+async def test_t6b_a_control_moving_during_the_owner_save_is_retried_once_and_re_pinned(tmp_path, monkeypatch):
+    service, store, decisions, resident, control, card_service, _ = await _world(tmp_path)
+    race, state = _mover(service, card_service, control, times=1)
     monkeypatch.setattr(service, "_coordinated_write", race)
+
     answer = await _save(service, resident)
-    assert answer["ok"] is False and answer["retryable"] is True
-    # W41: the shared Control's revision is a dependency of the owner's Save;
-    # its move refuses the Save before or at the decision, never commits it.
-    assert decisions.decisions in ([], ["aborted"])
+
+    assert answer["ok"], answer
+    saved = await _current(store, resident)
+    assert saved.card_revision == resident.card_revision + 1
+    # Checked against, and pinned to, the Control that moved under the first attempt.
+    assert saved.control_card.control_revision == state["control"].card_revision == control.card_revision + 1
+    assert decisions.decisions[-1] == "committed" and service._persistence.direct == []
+
+
+@pytest.mark.asyncio
+async def test_t6b_a_control_that_keeps_moving_refuses_after_one_retry(tmp_path, monkeypatch):
+    service, store, decisions, resident, control, card_service, _ = await _world(tmp_path)
+    race, state = _mover(service, card_service, control, times=2)
+    monkeypatch.setattr(service, "_coordinated_write", race)
+
+    answer = await _save(service, resident)
+
+    assert answer["ok"] is False and answer["retryable"] is True, answer
+    assert state["moves"] == 2
     assert await _current(store, resident) == resident
-    assert service._persistence.direct == []
+    assert "committed" not in decisions.decisions and service._persistence.direct == []
+
+
+@pytest.mark.asyncio
+async def test_t6b_an_owner_save_after_a_publication_re_pins_instead_of_refusing(tmp_path):
+    service, store, decisions, resident, control, card_service, _ = await _world(tmp_path)
+    published = replace(control, card_revision=control.card_revision + 1, label="Published later")
+    await card_service.commit(published, subject_hash=subject_hash_for(control.grantor_subject),
+                              expected_revision=control.card_revision, now=int(time.time()))
+
+    answer = await _save(service, resident)
+
+    assert answer["ok"], answer
+    saved = await _current(store, resident)
+    assert saved.control_card.control_revision == published.card_revision
 
 
 @pytest.mark.asyncio

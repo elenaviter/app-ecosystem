@@ -3660,7 +3660,10 @@ class AutomationAccessService:
         control = loaded[0]
         if control.access_token or control.refresh_token or control.session_id:
             raise DescriptorAgentCardRefused("agent_capability_control_identity_conflict")
-        validate_descriptor_agent_control(resident, card_authority_from_record(control), tenant=self._tenant,
+        # W41: a stale pin is not a refusal here; the write re-pins to this Control.
+        from .descriptor_agent_lifecycle import _prior_binding
+        validate_descriptor_agent_control(_prior_binding(resident, card_authority_from_record(control)),
+                                          card_authority_from_record(control), tenant=self._tenant,
                                           project=self._project, grantor_subject=grantor_subject)
         return control
 
@@ -3669,26 +3672,72 @@ class AutomationAccessService:
         control: AutomationAccessRecord, active_catalog: Any, actor_subject: str,
         request_id: str = "", before_commit: Callable[[], Awaitable[None]] | None = None,
         expected_issuer_digest: str = "", effects: Sequence[Mapping[str, Any]] = (),
-    ) -> None:
+    ) -> AutomationAccessRecord:
         """One owner edit, with the stored Control and catalog held through the Hub decision.
 
         This does not exempt a Card from the generic direct-write guard. Only
         this validated existing-Card operation can take the local transaction;
         creation and credential changes require their own enlisted lifecycle.
+
+        W41 (design F1, decided 2026-11-20): the shared Control changes for
+        everyone, so the edit is checked against the live Control and re-pins
+        the Card to it. A Control that moves between the read and the commit
+        aborts the attempt (its revision is reserved); the server then re-reads
+        the Control and retries once, the owner's intent unchanged. Returns the
+        record committed.
         """
+        from .descriptor_agent_card import DescriptorAgentCardRefused
+
+        try:
+            return await self._persist_descriptor_agent_edit_once(
+                original, record, control=control, active_catalog=active_catalog, actor_subject=actor_subject,
+                request_id=request_id, before_commit=before_commit, expected_issuer_digest=expected_issuer_digest,
+                effects=effects)
+        except (CardConflict, DescriptorAgentCardRefused) as exc:
+            if isinstance(exc, DescriptorAgentCardRefused) and not exc.retryable:
+                raise
+            binding = original.control_card
+            current = await self._load_record_any_state(
+                control.access_id, grantor_subject=(binding.holder_subject if binding else "") or control.grantor_subject)
+            if (current is None or current[1] != CARD_STATE_ACTIVE
+                    or current[0].card_revision == control.card_revision):
+                raise
+            # The Control moved: one retry against it. An issuer or caller gate
+            # decided the first candidate, so a gated write is not retried.
+            if before_commit is not None or expected_issuer_digest:
+                raise
+            return await self._persist_descriptor_agent_edit_once(
+                original, record, control=current[0], active_catalog=await self._active_catalog(),
+                actor_subject=actor_subject, request_id=request_id, effects=effects)
+
+    async def _persist_descriptor_agent_edit_once(
+        self, original: AutomationAccessRecord, record: AutomationAccessRecord, *,
+        control: AutomationAccessRecord, active_catalog: Any, actor_subject: str,
+        request_id: str = "", before_commit: Callable[[], Awaitable[None]] | None = None,
+        expected_issuer_digest: str = "", effects: Sequence[Mapping[str, Any]] = (),
+    ) -> AutomationAccessRecord:
         from .caller_writer_gate import candidate_shape_refusal
         from .catalog.reservations import catalog_version_digest
         from .descriptor_agent_card import (
-            DescriptorAgentCardRefused, validate_descriptor_agent_additions, validate_descriptor_agent_control,
+            DescriptorAgentCardRefused, rebinds_to_shared_control, validate_descriptor_agent_additions,
+            validate_descriptor_agent_control,
         )
+        from .descriptor_agent_lifecycle import _prior_binding
+
+        control_authority = card_authority_from_record(control)
+        # W41: re-pin the edit to the live shared Control it is checked against.
+        if record.control_card is not None and record.control_card.control_revision != control.card_revision:
+            record = dataclasses.replace(record, control_card=dataclasses.replace(
+                record.control_card, control_revision=control.card_revision))
         before, candidate = card_authority_from_record(original), card_authority_from_record(record)
         catalog_version = _clean(getattr(active_catalog, "version", ""))
         catalog_digest = catalog_version_digest(catalog_version, _clean(getattr(active_catalog, "content_hash", "")))
-        control_authority = card_authority_from_record(control)
         if actor_subject != original.grantor_subject:
             raise DescriptorAgentCardRefused("agent_capability_card_not_owned", status=403)
-        validate_descriptor_agent_control(before, control_authority, tenant=self._tenant,
-                                          project=self._project, grantor_subject=actor_subject)
+        if not rebinds_to_shared_control(before, control_authority):
+            validate_descriptor_agent_control(_prior_binding(before, control_authority), control_authority,
+                                              tenant=self._tenant, project=self._project,
+                                              grantor_subject=actor_subject)
         validate_descriptor_agent_control(candidate, control_authority, tenant=self._tenant,
                                           project=self._project, grantor_subject=actor_subject)
         if candidate_shape_refusal("update", before.to_dict(), candidate.to_dict()) is not None:
@@ -3735,6 +3784,7 @@ class AutomationAccessService:
             raise
         await caller_write_outcome(getattr(self, "_caller_writers", None), enlisted_request,
                                    state="committed", card_revision=record.card_revision)
+        return record
 
     async def _persist_record(
         self, record: AutomationAccessRecord, *, expected_revision: int,

@@ -229,3 +229,24 @@ def test_control_refusal_details_are_bounded_catalog_coordinates_only(caplog):
     rendered = repr(details) + " ".join(record.getMessage() for record in caplog.records)
     assert "private-account" not in rendered and "private free text" not in rendered
     assert "secret with whitespace" not in rendered
+
+
+@pytest.mark.asyncio
+async def test_t6b_consent_after_a_publication_re_pins_instead_of_refusing(tmp_path):
+    """W41 (F1): the shared Control moved for everyone; this user's consent still commits."""
+    import time
+    from dataclasses import replace
+
+    from connection_hub.delegated_credentials.cards.store import subject_hash_for
+
+    service, store, decisions, resident, control, card_service, _ = await _consent_world(tmp_path)
+    published = replace(control, card_revision=control.card_revision + 1, label="Published later")
+    await card_service.commit(published, subject_hash=subject_hash_for(control.grantor_subject),
+                              expected_revision=control.card_revision, now=int(time.time()))
+
+    answer = await _consent(service, resident)
+
+    assert answer["ok"], answer
+    saved = await _current(store, resident)
+    assert POST in saved.named_service_operations.operations[NAMED_RESOURCE]["slack"]
+    assert saved.control_card.control_revision == published.card_revision
