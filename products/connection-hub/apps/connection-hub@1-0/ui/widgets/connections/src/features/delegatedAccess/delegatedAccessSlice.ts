@@ -102,17 +102,18 @@ export const loadDelegatedAccess = createAsyncThunk<DelegatedAccessListResult, v
 
 export const loadControlCard = createAsyncThunk<
   ControlCardGetResult,
-  { controlId: string; projectRef?: string; targetSubject?: string; invitationRef?: string },
+  { controlId: string; projectRef?: string; targetSubject?: string; invitationRef?: string; holderSubject?: string },
   { rejectValue: string }
 >(
   'delegatedAccess/loadControlCard',
-  async ({ controlId, projectRef, targetSubject, invitationRef }, { rejectWithValue }) => {
+  async ({ controlId, projectRef, targetSubject, invitationRef, holderSubject }, { rejectWithValue }) => {
     try {
       const request = controlCardGetRequest({
         controlId,
         projectRef,
         targetSubject,
         invitationRef,
+        holderSubject,
       });
       const res = await postOp<ControlCardGetResult>(
         request.operation,
@@ -227,6 +228,8 @@ export const grantAgentAccess = createAsyncThunk<
 
 export interface UpdateDelegatedAccessArgs {
   accessId: string;
+  /** W41: the application holding a shared descriptor Control being saved. */
+  holderSubject?: string;
   label: string;
   resourceGrants: Record<string, string[]>;
   resourceOperations: DelegatedAccessResourceOperations;
@@ -289,6 +292,7 @@ export const updateDelegatedAccess = createAsyncThunk<
       projectAgentCard,
       projectControlCard,
       invocationModes,
+      holderSubject,
     },
     { rejectWithValue },
   ) => {
@@ -319,7 +323,7 @@ export const updateDelegatedAccess = createAsyncThunk<
                   invitation_ref: projectPersonControl.invitationRef,
                   control_id: accessId,
                 }
-            : { access_id: accessId }),
+            : { access_id: accessId, ...(holderSubject ? { holder_subject: holderSubject } : {}) }),
           label,
           resource_grants: resourceGrants || {},
           resource_operations: resourceOperations || {},
@@ -411,14 +415,15 @@ export const updateAgentCapabilitySelection = createAsyncThunk<
  *  descriptor. The next sync of the agent seeds it from the descriptor. */
 export const returnControlToDescriptor = createAsyncThunk<
   DelegatedAccessCreateResult,
-  { accessId: string; expectedCardRevision: number; expectedCatalogVersion?: string },
+  { accessId: string; expectedCardRevision: number; expectedCatalogVersion?: string; holderSubject?: string },
   { rejectValue: string }
 >(
   'delegatedAccess/returnControlToDescriptor',
-  async ({ accessId, expectedCardRevision, expectedCatalogVersion }, { rejectWithValue }) => {
+  async ({ accessId, expectedCardRevision, expectedCatalogVersion, holderSubject }, { rejectWithValue }) => {
     try {
       const res = await postOp<DelegatedAccessCreateResult>('delegated_access_update', {
         access_id: accessId,
+        ...(holderSubject ? { holder_subject: holderSubject } : {}),
         return_to_descriptor: true,
         expected_card_revision: expectedCardRevision,
         ...(expectedCatalogVersion ? { expected_catalog_version: expectedCatalogVersion } : {}),

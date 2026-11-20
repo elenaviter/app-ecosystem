@@ -204,6 +204,7 @@ import {
 import {
   linkedControlOpenTarget,
   projectPersonControlCoordinates,
+  applicationHolder,
 } from './projectPersonControl';
 import {
   agentOnlyOnPersonCard, catalogDriftForPersonCard, hiddenHeldGrants, namedServicesShownOnPersonCard, namedServicesShownOnPersonMyCard,
@@ -1923,6 +1924,7 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
   const [confirmRenew, setConfirmRenew] = useState<{ accessId: string; mode: 'prolong' | 'reissue' } | null>(null);
   const [confirmReturnToDescriptor, setConfirmReturnToDescriptor] = useState<{
     accessId: string;
+    holderSubject?: string;
     cardRevision: number;
     catalogVersion: string;
     label: string;
@@ -1950,6 +1952,7 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
       const projectControl = projectControlCardUpdateTarget(item);
       void dispatch(loadControlCard({
         controlId: item.access_id,
+        holderSubject: applicationHolder(item) || undefined,
         projectRef: projectPersonControl?.projectRef || projectControl?.projectRef,
         targetSubject: projectPersonControl?.kind === 'person'
           ? projectPersonControl.targetSubject : undefined,
@@ -2494,6 +2497,7 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
         const projectControl = projectControlCardUpdateTarget(item);
         const result = await dispatch(loadControlCard({
           controlId: item.access_id,
+          holderSubject: applicationHolder(item) || undefined,
           projectRef: personControl?.projectRef || projectControl?.projectRef,
           targetSubject: personControl?.kind === 'person' ? personControl.targetSubject : undefined,
           invitationRef: personControl?.kind === 'invitation' ? personControl.invitationRef : undefined,
@@ -3216,6 +3220,7 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
     try {
       const result = await dispatch(returnControlToDescriptor({
         accessId: pending.accessId,
+        holderSubject: pending.holderSubject,
         expectedCardRevision: pending.cardRevision,
         expectedCatalogVersion: pending.catalogVersion,
       })).unwrap();
@@ -3621,6 +3626,8 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
     const projectControlCard = projectControlCardUpdateTarget(item);
     const baseArgs = {
       accessId: item.access_id,
+      // W41: an application's shared descriptor Control is saved for its holder.
+      holderSubject: applicationHolder(item) || undefined,
       label: editLabel.trim() || item.label || 'Automation access',
       resourceGrants: routedKept,
       resourceOperations: savedResourceOperations,
@@ -5853,6 +5860,7 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
                       disabled={busy || typeof record.card_revision !== 'number'}
                       onClick={() => setConfirmReturnToDescriptor({
                         accessId: record.access_id,
+                        holderSubject: applicationHolder(record) || undefined,
                         cardRevision: record.card_revision as number,
                         catalogVersion: record.catalog_version || '',
                         label: cardTitle(record),
