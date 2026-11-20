@@ -52,7 +52,7 @@ async def test_explicit_selection_uses_local_control_and_catalog_reservations(tm
         AgentCapabilityPolicy.from_property(_policy_with_named_operations(READ, POST)))
     row = next(iter(decisions.rows.values()))
     reads = row.intent.payload["participant_inputs"][PARTICIPANT]["dependency_revisions"]
-    assert reads[f"card:{subject_hash_for(OWNER)}:{control.access_id}"] == control.card_revision
+    assert reads[f"card:{subject_hash_for(control.grantor_subject)}:{control.access_id}"] == control.card_revision
     assert any(key.startswith("catalog-active:") for key in reads)
     assert await _current(store, control) == control and service._persistence.direct == []
 
@@ -109,22 +109,29 @@ async def test_unknown_named_selection_is_preserved_on_sync_and_requires_review_
     assert saved.resource_grants == unknown.resource_grants and saved.named_services == unknown.named_services
 
 
+async def _publish(service, arguments):
+    """W41: the deployment publishes the shared Control; no Agent Card is written."""
+    return await service.publish_agent_descriptor_control({"bundle_id": arguments["application"]}, **arguments)
+
+
 @pytest.mark.asyncio
-async def test_control_withdrawal_and_resident_binding_commit_as_one_group(tmp_path):
+async def test_a_publication_withdraws_for_everyone_and_the_users_sync_repins_alone(tmp_path):
     service, store, decisions, resident, control, _, _ = await _consent_world(tmp_path)
     assert (await _consent(service, resident))["ok"]
     saved = await _current(store, resident)
-    answer = await service.sync_agent_capability_control({"user_id": OWNER}, **_refresh_arguments(allow_post=False))
-    assert answer["ok"], answer
-    updated_control, updated_resident = await _current(store, control), await _current(store, resident)
+    published = await _publish(service, _refresh_arguments(allow_post=False))
+    assert published["ok"] and published["control_changed"], published
+    updated_control = await _current(store, control)
     assert updated_control.card_revision == control.card_revision + 1
+    # The publication touched no Agent Card.
+    assert await _current(store, resident) == saved
+    answer = await service.user_sync_only({"user_id": OWNER}, **_refresh_arguments(allow_post=False))
+    assert answer["ok"] and answer["control_changed"] is False, answer
+    updated_resident = await _current(store, resident)
     assert updated_resident.card_revision == saved.card_revision + 1
     assert updated_resident.control_card.control_revision == updated_control.card_revision
     assert f"slack/{POST}" not in answer["projection"]["capabilities"]["named_service_operations"]
-    rows = list(decisions.rows.values())
-    assert len(rows) == 2 and all(row.state == "committed" for row in rows)
-    group = rows[-1].intent.payload["participant_inputs"][PARTICIPANT]
-    assert group["binding_kind"] == "connection-hub.card-group"
+    assert set(decisions.decisions) == {"committed"}
     assert service._persistence.direct == []
 
 
@@ -160,16 +167,17 @@ async def test_group_keeps_configured_control_issuer_and_registered_resident_gat
     callers = CallerWriterRegistry()
     callers.register(AGENT_DESCRIPTOR_ISSUER_KIND, policy)
     service.bind_caller_writers(callers)
-    answer = await service.sync_agent_capability_control({"user_id": OWNER}, **_refresh_arguments())
+    # W41: the configured issuer governs the deployment's publication of the shared Control.
+    answer = await _publish(service, _refresh_arguments())
     assert answer["ok"] is not refuse, answer
     assert issuer.calls.count("decide") == 2
-    assert ("revalidate", "update") in policy.calls
+    assert await _current(store, resident) == resident
     if refuse:
         assert answer["reason"] == "synthetic_descriptor_refused" and answer["retryable"] is False
-        assert await _current(store, control) == control and await _current(store, resident) == resident
-        assert decisions.decisions == ["aborted"] and "refused" in issuer.calls
+        assert await _current(store, control) == control
+        assert decisions.decisions in ([], ["aborted"]) and "refused" in issuer.calls
     else:
-        assert decisions.decisions == ["committed"] and "committed" in issuer.calls
+        assert set(decisions.decisions) <= {"committed"} and "committed" in issuer.calls
     assert service._persistence.direct == [] and await tx.list_in_doubt(store) == []
 
 
@@ -180,7 +188,7 @@ async def test_a_registered_but_unavailable_issuer_refuses_without_an_owner_bypa
     registry.register(_Issuer())
     registry._adapters.clear()  # lost configured adapter still remains required
     service.bind_issuer_registry(registry, actor_subject=OWNER)
-    answer = await service.sync_agent_capability_control({"user_id": OWNER}, **_refresh_arguments())
+    answer = await _publish(service, _refresh_arguments())
     assert answer["error"] == "issuer_managed_card" and answer["retryable"] is False
     assert await _current(store, control) == control and await _current(store, resident) == resident
     assert decisions.rows == {} and service._persistence.direct == []
@@ -191,12 +199,13 @@ async def test_control_admin_edit_provenance_survives_descriptor_group_refresh(t
     service, store, _, resident, control, card_service, _ = await _consent_world(tmp_path)
     edited = replace(control, label="Admin's preset", card_revision=control.card_revision + 1,
                      provenance={AGENT_DESCRIPTOR_CARD_EDIT_PROVENANCE_KEY: True})
-    await card_service.commit(edited, subject_hash=subject_hash_for(OWNER),
+    await card_service.commit(edited, subject_hash=subject_hash_for(control.grantor_subject),
                               expected_revision=control.card_revision, now=int(time.time()))
     answer = await service.sync_agent_capability_control({"user_id": OWNER}, **_refresh_arguments())
     assert answer["ok"], answer
     assert (await _current(store, control)).provenance[AGENT_DESCRIPTOR_CARD_EDIT_PROVENANCE_KEY] is True
     assert (await _current(store, control)).label == "Admin's preset"
+    # The user's sync re-pins the Card to the refreshed shared Control.
     assert (await _current(store, resident)).control_card.control_revision == edited.card_revision + 1
 
 
@@ -236,15 +245,18 @@ async def test_expired_bearer_does_not_block_a_narrower_control_decision(tmp_pat
         raise AssertionError("Control narrowing never depends on an ordinary mint")
 
     monkeypatch.setattr(service, "_mint_card_credential", mint)
-    answer = await service.sync_agent_capability_control({"user_id": OWNER}, **_refresh_arguments(allow_post=False))
+    # W41: the narrower Control is the deployment's publication; it never
+    # depends on any user's bearer, and it narrows the expired Card at once.
+    published = await _publish(service, _refresh_arguments(allow_post=False))
+    assert published["ok"] and published["control_changed"], published
+    answer = await service.user_sync_only({"user_id": OWNER}, **_refresh_arguments(allow_post=False))
     assert answer["error"] == "resident_issuance_adapter_unavailable" and answer["retryable"]
-    assert answer["control_committed"] and answer["card_committed"]
     narrowed = await _current(store, control)
     updated = await _current(store, resident)
     projection = effective_card_authority(updated, narrowed).properties[AGENT_CAPABILITY_PROJECTION_PROPERTY]
     assert f"slack/{POST}" not in projection["capabilities"]["named_service_operations"]
     assert updated.expires_at == expired.expires_at and narrowed.card_revision == control.card_revision + 1
-    assert decisions.decisions == ["committed", "committed"] and service._persistence.direct == []
+    assert service._persistence.direct == []
 
 
 @pytest.mark.asyncio
@@ -260,10 +272,12 @@ async def test_fresh_participant_recovers_one_control_and_resident_commit_after_
     async def cut(transaction_id):
         raise CardServingUnavailable("synthetic_group_finish_cut")
 
+    assert (await _publish(service, _refresh_arguments()))["ok"]
+    published_rows = set(decisions.rows)
     monkeypatch.setattr(coordinator, "finish", cut)
-    answer = await service.sync_agent_capability_control({"user_id": OWNER}, **_refresh_arguments())
-    assert answer["ok"] is False and answer["retryable"] and decisions.decisions == ["committed"]
-    row = next(iter(decisions.rows.values()))
+    answer = await service.user_sync_only({"user_id": OWNER}, **_refresh_arguments())
+    assert answer["ok"] is False and answer["retryable"]
+    row = next(row for key, row in decisions.rows.items() if key not in published_rows)
     assert await tx.list_in_doubt(store)
     intents = LocalCardIntentSource(store, service=card_service, decisions=decisions)
     participant = HubCardParticipant(service=card_service, store=store, intents=intents, decisions=decisions)
@@ -274,4 +288,4 @@ async def test_fresh_participant_recovers_one_control_and_resident_commit_after_
     updated = await _current(store, resident)
     assert updated.card_revision == resident.card_revision + 1
     assert updated.control_card.control_revision == control.card_revision + 1
-    assert decisions.decisions == ["committed"] and await tx.list_in_doubt(store) == []
+    assert set(decisions.decisions) == {"committed"} and await tx.list_in_doubt(store) == []

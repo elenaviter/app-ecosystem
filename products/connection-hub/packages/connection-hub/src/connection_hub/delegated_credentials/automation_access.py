@@ -3652,7 +3652,9 @@ class AutomationAccessService:
         resident = card_authority_from_record(record)
         descriptor_agent_resource(resident, tenant=self._tenant, project=self._project,
                                   grantor_subject=grantor_subject)
-        loaded = await self._load_record_any_state(record.control_card.control_id, grantor_subject=grantor_subject)
+        # W41: the shared Control lives under its application holder.
+        loaded = await self._load_record_any_state(
+            record.control_card.control_id, grantor_subject=record.control_card.holder_subject or grantor_subject)
         if loaded is None or loaded[1] != CARD_STATE_ACTIVE:
             raise DescriptorAgentCardRefused("agent_capability_control_not_active")
         control = loaded[0]
@@ -6822,6 +6824,7 @@ class AutomationAccessService:
         _authorize_agent_card: Callable[[str, str], Awaitable[Any]] | None = None,
         _through_project: bool = False,
         _initial_start: bool = False,
+        holder_subject: str = "",
     ) -> dict[str, Any]:
         """Edit a card's authority IN PLACE, whatever family issued it.
 
@@ -6836,6 +6839,15 @@ class AutomationAccessService:
         the change applies to the client's existing bearer on its very next call
         — no re-mint, no re-authorization. The submitted selection REPLACES the
         record exactly."""
+        if _clean(holder_subject):
+            # W41: a platform administrator's Save of an application's shared
+            # descriptor Control, written on the application's behalf.
+            acting, refused = await self._application_holder_user(
+                user, control_id=access_id, holder_subject=holder_subject)
+            if refused is not None:
+                return refused
+            _caller_actor_subject = _caller_actor_subject or _subject_from_user(user)
+            user = acting
         grantor_subject = _subject_from_user(user)
         if not grantor_subject:
             return {"ok": False, "error": "delegated_access_requires_authenticated_user"}
@@ -7195,7 +7207,8 @@ class AutomationAccessService:
             try:
                 loaded_control = ((descriptor_control_record, CARD_STATE_ACTIVE)
                     if descriptor_control_record is not None else await self._load_record_any_state(
-                        existing.control_card.control_id, grantor_subject=grantor_subject))
+                        existing.control_card.control_id,
+                        grantor_subject=existing.control_card.holder_subject or grantor_subject))
             except CardUnavailable as exc:
                 return {
                     "ok": False,
@@ -8280,6 +8293,26 @@ class AutomationAccessService:
         )
         return result
 
+    async def publish_agent_descriptor_control(self, deployment: Mapping[str, Any], **descriptor: Any) -> dict[str, Any]:
+        """W41: the application's deployment publishes one agent's shared Control.
+
+        ``deployment`` is the caller identity the platform bound to the request:
+        the application itself (its ``bundle_id``), never a user. It must name the
+        same application as the descriptor; a user-bound call is refused.
+        """
+
+        from connection_hub.delegated_credentials.agent_capability_sync import publish_agent_descriptor_control
+
+        application = _clean(descriptor.get("application"))
+        if (
+            not isinstance(deployment, Mapping)
+            or _subject_from_user(deployment)
+            or _clean(deployment.get("bundle_id")) != application
+            or not application
+        ):
+            return {"ok": False, "error": "agent_descriptor_publication_requires_deployment", "status": 403}
+        return await publish_agent_descriptor_control(self, **descriptor)
+
     def _agent_sync_outcomes(self) -> "AgentSyncOutcomeStore":
         from connection_hub.delegated_credentials.agent_sync_outcome import AgentSyncOutcomeStore
 
@@ -8292,6 +8325,7 @@ class AutomationAccessService:
         access_id: str,
         expected_card_revision: int | None,
         expected_catalog_version: str | None = None,
+        holder_subject: str = "",
     ) -> dict[str, Any]:
         """Hand a descriptor Control back to its descriptor (W38).
 
@@ -8303,6 +8337,12 @@ class AutomationAccessService:
         synchronization, which then seeds it from the current descriptor, as
         for a new Control; the agents' Cards follow from that sync.
         """
+        administrator_subject = _subject_from_user(user)
+        acting, refused = await self._application_holder_user(
+            user, control_id=access_id, holder_subject=holder_subject)
+        if refused is not None:
+            return refused
+        user = acting or user
         grantor_subject = _subject_from_user(user)
         loaded = await self._load_record_any_state(_clean(access_id), grantor_subject=grantor_subject)
         existing = loaded[0] if loaded is not None else None
@@ -8365,6 +8405,7 @@ class AutomationAccessService:
             expected_card_revision=expected_card_revision,
             expected_catalog_version=expected_catalog_version,
             _record_transform=_follow_descriptor,
+            _caller_actor_subject=administrator_subject if acting is not None else "",
         )
 
     async def update_agent_capability_selection(
@@ -8391,11 +8432,48 @@ class AutomationAccessService:
             reset_to_control_defaults=reset_to_control_defaults,
         )
 
+    async def _application_holder_user(
+        self, user: Mapping[str, Any], *, control_id: str, holder_subject: str,
+    ) -> tuple[Mapping[str, Any] | None, dict[str, Any] | None]:
+        """W41: a platform administrator acts on a shared descriptor Control for its application.
+
+        ``holder_subject`` comes from the Agent Card's binding and is only a
+        lookup key: the stored Control must be a descriptor Control whose holder
+        and id, computed from its own issuer_ref, are exactly these. Returns the
+        user to act as (the holder, with the administrator's roles), or a refusal.
+        """
+
+        from .controls.descriptor_control import descriptor_control_coordinates, is_application_authority_subject
+
+        holder = _clean(holder_subject)
+        if not holder:
+            return None, None
+        if not is_application_authority_subject(holder):
+            return None, {"ok": False, "error": "control_card_not_found", "status": 404}
+        if not _is_platform_admin(user):
+            return None, {"ok": False, "error": "platform_admin_required", "status": 403}
+        try:
+            loaded = await self._load_record_any_state(_clean(control_id), grantor_subject=holder)
+        except CardUnavailable as exc:
+            return None, {"ok": False, "error": "control_card_unavailable", "reason": exc.reason,
+                          "retryable": True, "status": 503}
+        record = loaded[0] if loaded is not None else None
+        try:
+            coordinates = (descriptor_control_coordinates(record.issuer_ref)
+                           if record is not None and record.issuer_kind == AGENT_DESCRIPTOR_ISSUER_KIND else None)
+        except ValueError:
+            coordinates = None
+        if (record is None or not _record_is_credentialless(record) or coordinates is None
+                or (coordinates.holder_subject, coordinates.control_id) != (holder, record.access_id)):
+            return None, {"ok": False, "error": "control_card_not_found", "status": 404}
+        return {"user_id": holder, "roles": list(_as_list(user.get("roles")))}, None
+
     async def control_card_get(
         self,
         user: Mapping[str, Any],
         *,
         control_id: str,
+        holder_subject: str = "",
         _delegable_grants: Iterable[str] | None = None,
         _platform_admin: bool | None = None,
     ) -> dict[str, Any]:
@@ -8403,9 +8481,17 @@ class AutomationAccessService:
 
         ``_delegable_grants`` and ``_platform_admin`` are for the project path
         (W379): the Card is read under its creator, and what it may take is
-        offered by the reading person's own role.
+        offered by the reading person's own role. ``holder_subject`` (W41) reads
+        an application's shared descriptor Control, for a platform administrator.
         """
 
+        acting, refused = await self._application_holder_user(
+            user, control_id=control_id, holder_subject=holder_subject)
+        if refused is not None:
+            return refused
+        # A refused sync is the viewing person's own; the shared Control is read for its application.
+        viewer_subject = _subject_from_user(user)
+        user = acting or user
         grantor_subject = _subject_from_user(user)
         if not grantor_subject:
             return {"ok": False, "error": "delegated_access_requires_authenticated_user"}
@@ -8466,7 +8552,7 @@ class AutomationAccessService:
                 target = None
             if target is not None:
                 refusal = await self._agent_sync_outcomes().read(
-                    grantor_subject=grantor_subject,
+                    grantor_subject=viewer_subject,
                     application=target.application,
                     agent_id=target.agent,
                 )
@@ -8864,6 +8950,7 @@ class AutomationAccessService:
         _acting_user: Mapping[str, Any] | None = None,
         _through_project: bool = False,
         _initial_start: bool = False,
+        holder_subject: str = "",
     ) -> dict[str, Any]:
         """Edit a Control Card through the ordinary catalog-aware Card path.
 
@@ -8875,6 +8962,15 @@ class AutomationAccessService:
         # W562 F3: ``_through_project`` marks that project path and ``_initial_start`` the creation's own
         # first selection (``_start_control_card``); ``update_access`` refuses any other write to a
         # project's Control Card.
+        # W41: an application's shared descriptor Control is written on its
+        # application's behalf, the administrator recorded as the actor.
+        administrator_subject = _subject_from_user(user)
+        acting, refused = await self._application_holder_user(
+            user, control_id=control_id, holder_subject=holder_subject)
+        if refused is not None:
+            return refused
+        user = acting or user
+        caller_actor = administrator_subject if acting is not None else ""
         grantor_subject = _subject_from_user(user)
         if not grantor_subject:
             return {"ok": False, "error": "delegated_access_requires_authenticated_user"}
@@ -8951,6 +9047,7 @@ class AutomationAccessService:
             _platform_admin=_platform_admin,
             _through_project=_through_project,
             _initial_start=_initial_start,
+            _caller_actor_subject=caller_actor,
         )
         if updated.get("ok") is not True:
             return updated

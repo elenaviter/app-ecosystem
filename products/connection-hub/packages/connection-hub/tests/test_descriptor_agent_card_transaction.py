@@ -118,7 +118,7 @@ async def test_owner_save_commits_locally_with_current_control_and_no_project_ca
     row = next(iter(decisions.rows.values()))
     projection = row.intent.payload["participant_inputs"][PARTICIPANT]
     assert projection["dependency_revisions"][
-        f"card:{subject_hash_for(OWNER)}:{control.access_id}"] == control.card_revision
+        f"card:{subject_hash_for(control.grantor_subject)}:{control.access_id}"] == control.card_revision
     assert any(key.startswith("catalog-active:") for key in projection["dependency_revisions"])
     await service._card_coordinator[0].finish(row.transaction_id)
     assert decisions.decisions == ["committed"]
@@ -174,7 +174,9 @@ async def test_control_moving_between_validation_and_prepare_aborts_owner_save(t
     monkeypatch.setattr(service, "_coordinated_write", race)
     answer = await _save(service, resident)
     assert answer["ok"] is False and answer["retryable"] is True
-    assert decisions.decisions == ["aborted"]
+    # W41: the shared Control's revision is a dependency of the owner's Save;
+    # its move refuses the Save before or at the decision, never commits it.
+    assert decisions.decisions in ([], ["aborted"])
     assert await _current(store, resident) == resident
     assert service._persistence.direct == []
 
@@ -189,7 +191,7 @@ async def test_control_is_reserved_until_the_local_commit_decision(tmp_path, mon
         if decision == "committed":
             with pytest.raises((CardConflict, CardStorageError), match="card_transaction_unresolved"):
                 await card_service.commit(replace(control, card_revision=control.card_revision + 1),
-                    subject_hash=subject_hash_for(OWNER), expected_revision=control.card_revision, now=int(time.time()))
+                    subject_hash=subject_hash_for(control.grantor_subject), expected_revision=control.card_revision, now=int(time.time()))
             checked.append(True)
         return await decide(transaction_id, decision, **kwargs)
 
@@ -197,7 +199,7 @@ async def test_control_is_reserved_until_the_local_commit_decision(tmp_path, mon
     answer = await _save(service, resident)
     assert answer["ok"] and checked == [True], answer
     await card_service.commit(replace(control, card_revision=control.card_revision + 1),
-        subject_hash=subject_hash_for(OWNER), expected_revision=control.card_revision, now=int(time.time()))
+        subject_hash=subject_hash_for(control.grantor_subject), expected_revision=control.card_revision, now=int(time.time()))
 
 
 @pytest.mark.asyncio

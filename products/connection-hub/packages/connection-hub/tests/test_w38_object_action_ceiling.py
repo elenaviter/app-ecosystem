@@ -16,6 +16,7 @@ from connection_hub.delegated_credentials.agent_capability_policy import (
     CAPABILITY_ALLOWED_SELECTED,
 )
 from test_agent_capability_control_sync import (
+    HOLDER,
     AGENT, APPLICATION, NAMED_RESOURCE, OWNER, _policy_with_named_operations, _service,
 )
 
@@ -131,7 +132,7 @@ async def test_a_human_edit_of_the_descriptor_control_narrows_its_capability_cei
     assert created["ok"], created
     control_id = created["control_card"]["access_id"]
     changed = await service.update_access(
-        {"user_id": OWNER, "roles": ["kdcube:role:super-admin"]}, access_id=control_id,
+        {"user_id": OWNER, "roles": ["kdcube:role:super-admin"]}, access_id=control_id, holder_subject=HOLDER,
         resource_grants={NAMED_RESOURCE: ["named_services:use", "slack:read"]}, resource_operations={},
         named_service_operations={NAMED_RESOURCE: {"slack": [LIST]}}, account_scope={},
         expected_card_revision=created["control_card"]["card_revision"],
@@ -159,7 +160,7 @@ async def test_a_props_override_does_not_intersect_an_administrator_save():
     control_id = created["control_card"]["access_id"]
     both = {NAMED_RESOURCE: {"slack": [LIST, POST]}}
     changed = await service.update_access(
-        {"user_id": OWNER, "roles": ["kdcube:role:super-admin"]}, access_id=control_id,
+        {"user_id": OWNER, "roles": ["kdcube:role:super-admin"]}, access_id=control_id, holder_subject=HOLDER,
         resource_grants={NAMED_RESOURCE: ["named_services:use", "slack:read", "slack:post"]},
         resource_operations={}, named_service_operations=both, account_scope={},
         expected_card_revision=created["control_card"]["card_revision"],
@@ -254,7 +255,7 @@ class _FakeRedis:
 async def _administrator_keeps_only_list(service, created):
     card = created["control_card"]
     changed = await service.update_access(
-        {"user_id": OWNER, "roles": ["kdcube:role:super-admin"]}, access_id=card["access_id"],
+        {"user_id": OWNER, "roles": ["kdcube:role:super-admin"]}, access_id=card["access_id"], holder_subject=HOLDER,
         resource_grants={NAMED_RESOURCE: ["named_services:use", "slack:read"]}, resource_operations={},
         named_service_operations={NAMED_RESOURCE: {"slack": [LIST]}}, account_scope={},
         expected_card_revision=card["card_revision"], expected_catalog_version=card["catalog_version"],
@@ -295,7 +296,8 @@ async def test_a_refused_sync_is_recorded_for_the_owner_and_cleared_by_the_next_
     recorded = await store.read(grantor_subject=OWNER, application=APPLICATION, agent_id=AGENT)
     assert recorded and recorded["error"] == refused["error"]
     shown = await service.control_card_get(
-        {"user_id": OWNER, "roles": ["kdcube:role:super-admin"]}, control_id=created["control_card"]["access_id"])
+        {"user_id": OWNER, "roles": ["kdcube:role:super-admin"]}, control_id=created["control_card"]["access_id"],
+        holder_subject=HOLDER)
     assert shown["control_card"]["agent_sync_refusal"]["error"] == refused["error"]
 
     again = await _sync(service, LIST, POST)
@@ -381,7 +383,7 @@ async def test_return_to_descriptor_hands_the_control_back_to_the_descriptor():
 
     admin = {"user_id": OWNER, "roles": ["kdcube:role:super-admin"]}
     returned = await service.return_control_to_descriptor(
-        admin, access_id=control_id, expected_card_revision=control().card_revision,
+        admin, access_id=control_id, holder_subject=HOLDER, expected_card_revision=control().card_revision,
         expected_catalog_version=control().catalog_version)
     assert returned["ok"], returned
     assert AGENT_DESCRIPTOR_CARD_EDIT_PROVENANCE_KEY not in control().provenance
@@ -392,7 +394,7 @@ async def test_return_to_descriptor_hands_the_control_back_to_the_descriptor():
     assert f"slack/{POST}" in _keys(control(), AGENT_CAPABILITY_AUTHORITY_PROPERTY)
 
     twice = await service.return_control_to_descriptor(
-        admin, access_id=control_id, expected_card_revision=control().card_revision)
+        admin, access_id=control_id, holder_subject=HOLDER, expected_card_revision=control().card_revision)
     assert twice["ok"] is False and twice["error"] == "control_card_already_follows_descriptor"
 
 
@@ -404,7 +406,8 @@ async def test_only_an_administrator_returns_a_control_to_its_descriptor():
     await _administrator_keeps_only_list(service, created)
     control = persistence.records[control_id][0]
     refused = await service.return_control_to_descriptor(
-        {"user_id": OWNER}, access_id=control_id, expected_card_revision=control.card_revision)
+        {"user_id": OWNER}, access_id=control_id, expected_card_revision=control.card_revision,
+        holder_subject=HOLDER)
     assert refused["ok"] is False
     assert persistence.records[control_id][0].card_revision == control.card_revision
 
@@ -421,7 +424,7 @@ async def test_a_passive_sync_under_a_narrowed_control_is_not_refused(tmp_path):
     service, store, _decisions, resident, control, _, _ = await _consent_world(tmp_path)
     admin = {"user_id": OWNER, "roles": ["kdcube:role:super-admin"]}
     narrowed = await service.update_access(
-        admin, access_id=control.access_id,
+        admin, access_id=control.access_id, holder_subject=HOLDER,
         resource_grants={NAMED_RESOURCE: ["named_services:use", "slack:read"]},
         resource_operations={NAMED_RESOURCE: ["named_services_call"]},
         named_service_operations={NAMED_RESOURCE: {"slack": [READ]}}, account_scope={},
@@ -455,7 +458,7 @@ async def test_an_owner_save_keeps_the_choices_the_control_no_longer_allows(tmp_
     resident = await _current(store, resident)
     admin = {"user_id": OWNER, "roles": ["kdcube:role:super-admin"]}
     narrowed = await service.update_access(
-        admin, access_id=control.access_id,
+        admin, access_id=control.access_id, holder_subject=HOLDER,
         resource_grants={NAMED_RESOURCE: ["named_services:use", "slack:read"]},
         resource_operations={NAMED_RESOURCE: ["named_services_call"]},
         named_service_operations={NAMED_RESOURCE: {"slack": [READ]}}, account_scope={},
@@ -499,7 +502,7 @@ async def test_return_to_descriptor_passes_the_agent_card_transaction(tmp_path, 
     service, store, _decisions, resident, control, _, _ = await _consent_world(tmp_path)
     admin = {"user_id": OWNER, "roles": ["kdcube:role:super-admin"]}
     narrowed = await service.update_access(
-        admin, access_id=control.access_id,
+        admin, access_id=control.access_id, holder_subject=HOLDER,
         resource_grants={NAMED_RESOURCE: ["named_services:use", "slack:read"]},
         resource_operations={NAMED_RESOURCE: ["named_services_call"]},
         named_service_operations={NAMED_RESOURCE: {"slack": [READ]}}, account_scope={},
@@ -519,7 +522,7 @@ async def test_return_to_descriptor_passes_the_agent_card_transaction(tmp_path, 
             )
 
         stripped = await service.update_access(
-            admin, access_id=control.access_id,
+            admin, access_id=control.access_id, holder_subject=HOLDER,
             resource_grants={k: list(v) for k, v in control.resource_grants.items()},
             resource_operations={k: list(v) for k, v in control.resource_operations.items()},
             named_service_operations=control.named_service_operations.to_stored(), account_scope={},
@@ -528,11 +531,13 @@ async def test_return_to_descriptor_passes_the_agent_card_transaction(tmp_path, 
             _record_transform=strip)
         assert stripped["ok"], stripped
         control = await _current(store, control)
-        refused = await service.sync_agent_capability_control({"user_id": OWNER}, **_sync_arguments())
-        assert refused["ok"] is False and refused["error"] == "agent_capability_control_evidence_invalid"
+        # W41: a user's sync only reads the shared Control; without descriptor
+        # evidence it is not current, and only the next publication reseeds it.
+        refused = await service.user_sync_only({"user_id": OWNER}, **_sync_arguments())
+        assert refused["ok"] is False and refused["error"] == "agent_descriptor_control_not_current"
 
     returned = await service.return_control_to_descriptor(
-        admin, access_id=control.access_id, expected_card_revision=control.card_revision,
+        admin, access_id=control.access_id, holder_subject=HOLDER, expected_card_revision=control.card_revision,
         expected_catalog_version=control.catalog_version)
     assert returned["ok"], returned
     control = await _current(store, control)

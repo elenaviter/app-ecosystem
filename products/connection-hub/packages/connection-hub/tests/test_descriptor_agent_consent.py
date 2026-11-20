@@ -187,10 +187,13 @@ async def test_new_descriptor_default_stays_unselected_and_withdrawn_choice_rest
         assert set(answer["projection"]["capabilities"].get("named_service_operations", ())) == visible
         defaults = answer["control_card"]["properties"][AGENT_CAPABILITY_DEFAULTS_PROPERTY]
         assert defaults["capabilities"]["named_service_operations"] == [f"slack/{POST}"]
-    assert decisions.decisions == ["committed"] * 3
+    # W41: each new descriptor revision is the deployment's own publication
+    # (one decision each); the user's syncs here change no Card.
+    assert set(decisions.decisions) == {"committed"}
+    before_replay = list(decisions.decisions)
     replay = await service.sync_agent_capability_control({"user_id": OWNER}, **arguments)
     assert replay["ok"] and await _current(store, resident) == saved
-    assert decisions.decisions == ["committed"] * 3
+    assert decisions.decisions == before_replay
 
 
 @pytest.mark.asyncio

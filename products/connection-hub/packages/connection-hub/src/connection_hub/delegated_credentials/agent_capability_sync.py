@@ -93,6 +93,7 @@ from connection_hub.delegated_credentials.controls.effective import (
 from connection_hub.delegated_credentials.conversation_target_policy import (
     CONVERSATION_TARGETS_PROPERTY,
 )
+from connection_hub.delegated_credentials.controls.descriptor_control import descriptor_control_coordinates
 from connection_hub.delegated_credentials.controls.model import (
     control_card_id_for_issuer,
 )
@@ -944,6 +945,103 @@ def _fill_missing_single_choice_defaults(
     )
 
 
+async def _commit_publication(
+    service: Any, control: CardAuthority, *, existing_control: Any, resolved: Any,
+) -> dict[str, Any]:
+    """Write the shared descriptor Control alone, compare-and-set on its revision.
+
+    The caller re-read the descriptor authority under the deployment's shared
+    lock, so the publication that commits last carries the newest descriptor.
+    A concurrent publication of the same revision makes this one a no-op. The
+    write is the application's own (its holder is the actor) and meets every
+    configured issuer and caller gate, as the sync's Control write did before.
+    """
+
+    import secrets
+
+    from connection_hub.delegated_credentials.caller_writer_gate import (
+        caller_write_outcome, caller_writer_before_commit,
+    )
+
+    record = record_from_card(control)
+    holder = {"user_id": control.grantor_subject}
+    request_id = secrets.token_urlsafe(18)
+    expected = existing_control.card_revision if existing_control is not None else 0
+    issuer_request = caller_request = None
+    before_commit = None
+    try:
+        if existing_control is None:
+            if service._issuer_managed(record):
+                raise DescriptorAgentCardRefused("agent_descriptor_control_creation_authority_unsupported")
+        else:
+            before_commit, issuer_request = await service._issuer_before_commit(
+                existing_control, holder, action="update", candidate=control.to_dict(), request_id=request_id,
+                context_ref="", decision=None)
+            if before_commit is None:
+                before_commit, caller_request = await caller_writer_before_commit(
+                    getattr(service, "_caller_writers", None), card_authority_from_record(existing_control),
+                    actor_subject=control.grantor_subject, action="update", candidate=control.to_dict(),
+                    request_id=request_id, context_ref="")
+    except DescriptorAgentCardRefused as exc:
+        return _transaction_refusal(exc)
+    except (CallerWriteRefused, IssuerWriteRefused) as exc:
+        return {"retryable": False, **exc.to_dict()}
+    gate = (issuer_request or caller_request)
+
+    async def outcome(state: str, revision: int) -> None:
+        await service._issuer_outcome(issuer_request, state=state, card_revision=revision)
+        await caller_write_outcome(getattr(service, "_caller_writers", None), caller_request,
+                                   state=state, card_revision=revision)
+
+    try:
+        guard = ({"before_commit": before_commit, "expected_issuer_digest": gate.change_digest}
+                 if before_commit is not None else {})
+        await service._persist_record(record, expected_revision=expected, **guard)
+    except CardServingUnavailable as exc:
+        await outcome("committed", control.card_revision)
+        return _serving_state_unavailable(exc)
+    except (CallerWriteRefused, IssuerWriteRefused) as exc:
+        await outcome("refused", expected)
+        return {"retryable": False, **exc.to_dict()}
+    except CardConflict as exc:
+        await outcome("refused", expected)
+        current = await service._load_record_any_state(control.access_id, grantor_subject=control.grantor_subject)
+        evidence = (dict(current[0].resource_acceptance or {}).get(control.issuer_ref)
+                    if current is not None else None)
+        wanted = dict(control.resource_acceptance or {}).get(control.issuer_ref)
+        if evidence is not None and wanted is not None and (evidence.revision, evidence.digest) == (
+                wanted.revision, wanted.digest):
+            return {"ok": True, "resource": control.issuer_ref, "control_changed": False,
+                    "control_card": current[0].to_public_dict()}
+        return {"ok": False, "error": "agent_descriptor_control_publication_conflict",
+                "reason": getattr(exc, "reason", ""), "retryable": True, "status": 409}
+    except (CardUnavailable, CardCommitFailed) as exc:
+        await outcome("refused", expected)
+        return {"ok": False, "error": "agent_descriptor_control_not_committed",
+                "reason": getattr(exc, "reason", ""), "retryable": True, "status": 503}
+    await outcome("committed", control.card_revision)
+    return {"ok": True, "resource": control.issuer_ref, "control_changed": True,
+            "control_card": record.to_public_dict(),
+            "pruned": (resolved.reconciled.to_public_dict() if resolved.reconciled is not None
+                       else {"resources": [], "claims": [], "named_service_operations": []})}
+
+
+async def publish_agent_descriptor_control(service: Any, **descriptor: Any) -> dict[str, Any]:
+    """W41: publish one agent's descriptor Control for every user of the agent.
+
+    Called by the application's deployment (never on a user's behalf) with the
+    same descriptor arguments a sync carries. It writes only the shared Control
+    under the application holder; it never touches any Agent Card.
+    """
+
+    # A descriptor without its own capability_defaults seeds the Control's
+    # defaults from the default selection it carries; no Agent Card is written.
+    for key in ("replace_selection", "selected_resource_grants",
+                "selected_resource_operations", "selected_named_service_operations"):
+        descriptor.pop(key, None)
+    return await sync_agent_capability_control(service, {}, _publication=True, **descriptor)
+
+
 async def sync_agent_capability_control(
     service: Any,
     user: Mapping[str, Any],
@@ -967,6 +1065,7 @@ async def sync_agent_capability_control(
     properties: Mapping[str, Any] | None = None,
     issuer_label: str = "",
     manage_url: str = "",
+    _publication: bool = False,
 ) -> dict[str, Any]:
     """Materialize one descriptor as an administrator Control Card preset.
 
@@ -976,15 +1075,19 @@ async def sync_agent_capability_control(
     attachment or explicit replacement, so new capabilities stay unselected.
     """
 
-    grantor_subject = _subject_from_user(user)
-    if not grantor_subject:
-        return {
-            "ok": False,
-            "error": "delegated_access_requires_authenticated_user",
-        }
-    refusal = _delegate_mutation_refusal(user)
-    if refusal is not None:
-        return refusal
+    # W41: the Control is one per agent, under its application holder. Only the
+    # publication writes it; a user's sync reads it and writes only that user's
+    # Agent Card.
+    grantor_subject = "" if _publication else _subject_from_user(user)
+    if not _publication:
+        if not grantor_subject:
+            return {
+                "ok": False,
+                "error": "delegated_access_requires_authenticated_user",
+            }
+        refusal = _delegate_mutation_refusal(user)
+        if refusal is not None:
+            return refusal
     if not isinstance(descriptor_payload, Mapping):
         return {
             "ok": False,
@@ -1056,6 +1159,10 @@ async def sync_agent_capability_control(
             active,
             owner_subject=grantor_subject,
         )
+        # The shared Control never holds a user's own connectors: the descriptor's
+        # resource families admit them on the exact edge. Its ceiling therefore
+        # reads the catalog without any person's overlay.
+        control_config = await service._catalog_config(active)
         # W38: the capability ceiling, the descriptive catalog and the defaults
         # read object.action by the same rule as the standard part below.
         authority = expand_object_action_ceiling(authority, catalog_config)
@@ -1074,7 +1181,7 @@ async def sync_agent_capability_control(
         }
         descriptor_grants, descriptor_operations, descriptor_named = (
             _descriptor_standard_maps(
-                catalog_config=catalog_config,
+                catalog_config=control_config,
                 descriptor_payload=descriptor_payload,
                 selection=None,
             )
@@ -1095,7 +1202,7 @@ async def sync_agent_capability_control(
         resolved = await resolve_descriptor_control_ceiling(
             service,
             active=active,
-            owner_subject=grantor_subject,
+            owner_subject="",
             resource_grants=control_grants,
             resource_operations=control_operations,
             named_service_operations=control_named,
@@ -1109,7 +1216,7 @@ async def sync_agent_capability_control(
                 selected_resource_operations,
                 selected_named_service_operations,
             )
-        ) or requested_selection is not None:
+        ) or (requested_selection is not None and not _publication):
             default_grants, default_operations, default_named = (
                 _descriptor_standard_maps(
                     catalog_config=catalog_config,
@@ -1201,15 +1308,16 @@ async def sync_agent_capability_control(
     except AgentCapabilityPolicyError as exc:
         return {"ok": False, "error": exc.reason, "status": 400}
 
-    control_id = control_card_id_for_issuer(
-        AGENT_DESCRIPTOR_ISSUER_KIND,
-        agent_resource,
-        grantor_subject=grantor_subject,
+    coordinates = descriptor_control_coordinates(agent_resource)
+    control_holder, control_id = coordinates.holder_subject, coordinates.control_id
+    legacy_control_id = (
+        control_card_id_for_issuer(AGENT_DESCRIPTOR_ISSUER_KIND, agent_resource, grantor_subject=grantor_subject)
+        if grantor_subject else ""
     )
     try:
         loaded_control = await service._load_record_any_state(
             control_id,
-            grantor_subject=grantor_subject,
+            grantor_subject=control_holder,
         )
     except CardUnavailable as exc:
         return {
@@ -1249,6 +1357,15 @@ async def sync_agent_capability_control(
         and existing_descriptor.revision == descriptor_revision
         and existing_descriptor.digest == descriptor_evidence.digest
     )
+    if not _publication:
+        if existing_control is None:
+            return {"ok": False, "error": "agent_descriptor_control_not_published", "retryable": True, "status": 503}
+        if not descriptor_is_current:
+            return {"ok": False, "error": "agent_descriptor_control_not_current", "retryable": True, "status": 409,
+                    "control_revision": existing_control.card_revision}
+        # The stored Control is the ceiling (an administrator may have narrowed
+        # it): never the descriptor recomputed for this user.
+        resolved = _resolved_from_card(card_authority_from_record(existing_control))
     if (
         existing_control is not None
         and not descriptor_is_current
@@ -1321,7 +1438,7 @@ async def sync_agent_capability_control(
         resolved = await resolve_descriptor_control_ceiling(
             service,
             active=active,
-            owner_subject=grantor_subject,
+            owner_subject="",
             resource_grants=bounded_grants,
             resource_operations=bounded_operations,
             named_service_operations=bounded_named.to_stored(),
@@ -1350,13 +1467,17 @@ async def sync_agent_capability_control(
     if descriptor_is_current:
         control_authority = card_authority_from_record(existing_control)
         control_changed = False
+        if _publication:
+            # The same descriptor revision is already published: nothing to write.
+            return {"ok": True, "resource": agent_resource, "control_changed": False,
+                    "control_card": existing_control.to_public_dict()}
     else:
         control_changed = True
         control_acceptance = next_resource_acceptance(
             resources=resolved.resource_grants,
             row_for=lambda resource: service._configured_resource(
                 resource,
-                config=catalog_config,
+                config=control_config,
             ),
             catalog_version=catalog_version,
             selected_operations=resolved.resource_operations,
@@ -1374,7 +1495,7 @@ async def sync_agent_capability_control(
         control_authority = CardAuthority(
             access_id=control_id,
             client_id=f"control-card:{AGENT_DESCRIPTOR_ISSUER_KIND}",
-            grantor_subject=grantor_subject,
+            grantor_subject=control_holder,
             delegate_subject="",
             source=ACCESS_SOURCE_CONTROL,
             card_kind=CARD_KIND_CONTROL,
@@ -1418,6 +1539,9 @@ async def sync_agent_capability_control(
         snapshot_refusal = control_snapshot_refusal(control_authority)
         if snapshot_refusal is not None:
             return snapshot_refusal
+        if _publication:
+            return await _commit_publication(service, control_authority, existing_control=existing_control,
+                                             resolved=resolved)
         if getattr(service, "_card_coordinator", None) is None:
             try:
                 await service._persist_record(
@@ -1467,6 +1591,18 @@ async def sync_agent_capability_control(
             "status": 503,
         }
     existing_resident = loaded_resident[0] if loaded_resident is not None else None
+    control_edited = dict(getattr(control_authority, "provenance", None) or {}).get(
+        AGENT_DESCRIPTOR_CARD_EDIT_PROVENANCE_KEY) is True
+    # W41: the shared Control is current for everyone once published, so "this
+    # descriptor revision is already applied" is now a fact of this user's own
+    # Agent Card: its descriptor evidence equals the Control's.
+    resident_evidence = (dict(existing_resident.resource_acceptance or {}).get(agent_resource)
+                         if existing_resident is not None else None)
+    descriptor_applied = (
+        resident_evidence is not None
+        and (resident_evidence.revision, resident_evidence.digest)
+        == (descriptor_evidence.revision, descriptor_evidence.digest)
+    )
     if loaded_resident is not None and loaded_resident[1] != CARD_STATE_ACTIVE:
         return {
             "ok": False,
@@ -1482,10 +1618,19 @@ async def sync_agent_capability_control(
             "error": "agent_capability_card_identity_conflict",
             "status": 409,
         }
+    # W41: a Card still bound to its owner's legacy per-user copy is rebound to
+    # the shared Control here (migration's fallback); any other Control is a conflict.
+    rebinding = (
+        existing_resident is not None
+        and existing_resident.control_card is not None
+        and existing_resident.control_card.control_id == legacy_control_id
+        and existing_resident.control_card.holder_subject in ("", grantor_subject)
+    )
     if (
         existing_resident is not None
         and existing_resident.control_card is not None
         and existing_resident.control_card.control_id != control_id
+        and not rebinding
     ):
         return {
             "ok": False,
@@ -1506,8 +1651,11 @@ async def sync_agent_capability_control(
             AgentCapabilityPolicy.from_property(raw_current_selection)
             if raw_current_selection is not None
             else (
+                # W41: a new Agent Card starts from the runtime's seed (the
+                # descriptor default with the user's own earlier picks), unless an
+                # administrator edited the shared Control: then from its defaults.
                 requested_selection
-                if requested_selection is not None and not descriptor_is_current
+                if requested_selection is not None and existing_resident is None and not control_edited
                 else defaults
                 if existing_resident is None
                 else AgentCapabilityPolicy.empty(agent_resource)
@@ -1546,7 +1694,7 @@ async def sync_agent_capability_control(
 
     binding = (
         existing_resident.control_card
-        if existing_resident is not None and existing_resident.control_card is not None
+        if existing_resident is not None and existing_resident.control_card is not None and not rebinding
         else ControlCardBinding(
             control_id=control_id,
             issuer_ref=agent_resource,
@@ -1554,6 +1702,7 @@ async def sync_agent_capability_control(
             issuer_label=_clean(issuer_label),
             manage_url=_clean(manage_url),
             control_revision=control_authority.card_revision,
+            holder_subject=control_holder,
         )
     )
     if getattr(service, "_card_coordinator", None) is not None:
@@ -1625,7 +1774,7 @@ async def sync_agent_capability_control(
         reconciled_standard
         if reconciled_standard is not None
         else _resolved_from_card(control_authority)
-        if descriptor_is_current
+        if descriptor_applied
         else (selected_standard or resolved)
     )
     if existing_resident is None:
@@ -1849,7 +1998,7 @@ async def sync_agent_capability_control(
                     original_control=existing_control, control=record_from_card(control_authority), active_catalog=active)
                 if isinstance(issued_or_pending, DescriptorAgentCardRefused):
                     saved_resident = await service._load_record_any_state(resident_id, grantor_subject=grantor_subject)
-                    saved_control = await service._load_record_any_state(control_id, grantor_subject=grantor_subject)
+                    saved_control = await service._load_record_any_state(control_id, grantor_subject=control_holder)
                     return {**_transaction_refusal(issued_or_pending),
                         "control_committed": control_changed, "card_committed": True,
                         "control_card": saved_control[0].to_public_dict(),
@@ -1857,7 +2006,7 @@ async def sync_agent_capability_control(
                 resident = issued_or_pending
                 credential_issued = (existing_resident is None or resident.session_id != existing_resident.session_id
                                      or resident.access_token != existing_resident.access_token)
-                current_control = await service._load_record_any_state(control_id, grantor_subject=grantor_subject)
+                current_control = await service._load_record_any_state(control_id, grantor_subject=control_holder)
                 if current_control is None or current_control[1] != CARD_STATE_ACTIVE:
                     raise DescriptorAgentCardRefused("agent_capability_control_not_active")
                 control_authority = card_authority_from_record(current_control[0])
@@ -2018,7 +2167,7 @@ async def update_agent_capability_selection(
     try:
         loaded_control = await service._load_record_any_state(
             control_id,
-            grantor_subject=grantor_subject,
+            grantor_subject=resident.control_card.holder_subject or grantor_subject,
         )
     except CardUnavailable as exc:
         return {
@@ -2254,6 +2403,7 @@ __all__ = [
     "AGENT_CAPABILITY_CARD_LEASE_SECONDS",
     "resolve_agent_card_standard_authority",
     "resolve_descriptor_control_ceiling",
+    "publish_agent_descriptor_control",
     "sync_agent_capability_control",
     "update_agent_capability_selection",
 ]

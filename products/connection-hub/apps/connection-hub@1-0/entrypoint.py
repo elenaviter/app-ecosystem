@@ -49,6 +49,7 @@ from kdcube_ai_app.apps.chat.sdk.solutions.named_services_providers import (
 )
 from kdcube_ai_app.infra.plugin.bundle_loader import api, bundle_entrypoint, bundle_id, cron, mcp, ui_widget
 from kdcube_ai_app.infra.secrets import ephemeral_secret_store
+from connection_hub.delegated_credentials.controls.descriptor_control import is_application_authority_subject
 from connection_hub.delegated_credentials.cards.cache import DelegatedCardRuntimeCache
 from connection_hub.delegated_credentials.cards.composition import (
     CardTransactionsUnavailable,
@@ -903,6 +904,10 @@ def _platform_admin_denied(entrypoint: Any) -> Dict[str, Any] | None:
 def _platform_user_payload(entrypoint: Any, *, user_id: Optional[str] = None) -> Dict[str, Any]:
     platform_user_id = _platform_user_id(entrypoint, user_id=user_id)
     if not platform_user_id:
+        return {}
+    if is_application_authority_subject(platform_user_id):
+        # W41: an application's synthetic holder is never a person; no request
+        # authenticates as it (the Hub alone acts for it, after its own checks).
         return {}
     roles, permissions = _entrypoint_user_roles_permissions(entrypoint)
     principal = resolve_principal_roles(
@@ -5827,6 +5832,7 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
         return await (await _automation_access_service(self, request)).control_card_get(
             user,
             control_id=str(payload.get("control_id") or "").strip(),
+            holder_subject=str(payload.get("holder_subject") or "").strip(),
         )
 
     @api(
@@ -5892,6 +5898,7 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
         return await (await _automation_access_service(self, request)).control_card_update(
             user,
             control_id=str(payload.get("control_id") or "").strip(),
+            holder_subject=str(payload.get("holder_subject") or "").strip(),
             _screen_save=True,
             **_control_card_changes(payload),
         )
@@ -7267,6 +7274,8 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
                 _result = await access_service.return_control_to_descriptor(
                     user,
                     access_id=_access_id_for_log,
+                    # W41: an application's shared descriptor Control (verified by the Hub).
+                    holder_subject=str(payload.get("holder_subject") or "").strip(),
                     expected_card_revision=_expected_card_revision(payload),
                     expected_catalog_version=str(payload.get("expected_catalog_version") or "").strip() or None,
                 )
@@ -7303,6 +7312,7 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
                 _result = await access_service.update_access(
                     user,
                     access_id=_access_id_for_log,
+                    holder_subject=str(payload.get("holder_subject") or "").strip(),
                     _authorize_agent_card=authorize_agent_card,
                     # W737: omitted stays omitted (an Accept-only save changes no selection).
                     resource_grants=(

@@ -29,7 +29,8 @@ from .cards.service import CardConflict
 from .cards.transaction_store import CardTransactionRefused
 from .cards.version_link import planned_link, pointer_link, staging_tag, write_hidden_version
 from .descriptor_agent_card import (
-    DescriptorAgentCardRefused, validate_descriptor_agent_additions, validate_descriptor_agent_control,
+    DescriptorAgentCardRefused, rebinds_to_shared_control, validate_descriptor_agent_additions,
+    validate_descriptor_agent_control,
 )
 from .oauth.grants import integration_subject
 from .issuer_gate import IssuerWriteRefused, change_digest
@@ -233,8 +234,9 @@ async def begin_descriptor_resident_issuance(service: Any, user: Mapping[str, An
     if before is not None:
         if prior_control is None:
             raise IssuanceRefused("agent_capability_control_not_active")
-        validate_descriptor_agent_control(_prior_binding(before, prior_control), prior_control,
-            tenant=service._tenant, project=service._project, grantor_subject=actor)
+        if not rebinds_to_shared_control(before, prior_control):
+            validate_descriptor_agent_control(_prior_binding(before, prior_control), prior_control,
+                tenant=service._tenant, project=service._project, grantor_subject=actor)
     if prior_control is None and service._issuer_managed(control):
         raise DescriptorAgentCardRefused("agent_descriptor_control_creation_authority_unsupported")
     catalog = catalog_version_digest(active_catalog.version, active_catalog.content_hash)

@@ -177,7 +177,7 @@ async def test_descriptor_control_owner_edit_still_requires_platform_admin():
     answer = await service.update_access(
         {"user_id": OWNER}, access_id=control.access_id, resource_grants=control.resource_grants,
         resource_operations=control.resource_operations, expected_card_revision=control.card_revision,
-        label="Owner must not change administrator Control")
+        label="Owner must not change administrator Control", holder_subject=control.grantor_subject)
     assert answer["ok"] is False and answer["error"] == "platform_admin_required"
 
 
