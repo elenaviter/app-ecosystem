@@ -45,6 +45,10 @@ AGENT_GRANT_CHECK = "agent_grant.check"
 # intentionally local-only; callers outside the host cannot assert descriptor
 # provenance.
 AGENT_CAPABILITY_SYNC = "agent_capability.sync"
+# W41: the application's deployment publishes one agent's shared descriptor
+# Control. Local-only, like the sync: the host binds the calling application,
+# and only that application's deployment may publish its agents' Controls.
+AGENT_CAPABILITY_PUBLISH = "agent_capability.publish"
 
 CONNECTION_OPERATIONS = (
     CONNECTION_CATALOG,
@@ -55,7 +59,13 @@ CONNECTION_OPERATIONS = (
     AGENT_GRANT_GET_TOKEN,
     AGENT_GRANT_CHECK,
     AGENT_CAPABILITY_SYNC,
+    AGENT_CAPABILITY_PUBLISH,
 )
+
+
+# Descriptor provenance is asserted by the host's binding of the calling app;
+# these operations are never exposed over a remote transport.
+LOCAL_ONLY_OPERATIONS = frozenset({AGENT_CAPABILITY_SYNC, AGENT_CAPABILITY_PUBLISH})
 
 
 @dataclass(frozen=True)
@@ -100,7 +110,7 @@ def build_connection_operations(
     return {
         op: ConnectionOperationSpec(
             operation=op,
-            transports=(TRANSPORT_LOCAL,) if op == AGENT_CAPABILITY_SYNC else selected,
+            transports=(TRANSPORT_LOCAL,) if op in LOCAL_ONLY_OPERATIONS else selected,
         )
         for op in CONNECTION_OPERATIONS
     }
@@ -323,6 +333,7 @@ __all__ = [
     "OAUTH_START",
     "AGENT_GRANT_GET_TOKEN",
     "AGENT_GRANT_CHECK",
+    "AGENT_CAPABILITY_PUBLISH",
     "AGENT_CAPABILITY_SYNC",
     "CONNECTION_OPERATIONS",
     "ConnectionOperationSpec",

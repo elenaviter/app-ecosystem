@@ -8,6 +8,7 @@ from __future__ import annotations
 from typing import Any, Protocol
 
 from connection_hub.contract import (
+    AGENT_CAPABILITY_PUBLISH,
     AGENT_CAPABILITY_SYNC,
     AGENT_GRANT_CHECK,
     AGENT_GRANT_GET_TOKEN,
@@ -131,6 +132,15 @@ class ConnectionsClient:
         """Synchronize a trusted runtime's resident-agent descriptor ceiling."""
 
         response = await self._call(AGENT_CAPABILITY_SYNC, **dict(payload))
+        return dict(getattr(response, "object", None) or {})
+
+    async def publish_agent_capabilities(
+        self,
+        payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        """W41: the application's deployment publishes one agent's shared descriptor Control."""
+
+        response = await self._call(AGENT_CAPABILITY_PUBLISH, **dict(payload))
         return dict(getattr(response, "object", None) or {})
 
     async def disconnect(self, provider: str, account_id: str) -> dict[str, Any]:
