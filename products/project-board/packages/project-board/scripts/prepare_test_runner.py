@@ -38,7 +38,7 @@ OVERLAY_RUNTIME_REQUIREMENTS = (
     "json5>=0.12,<1",
     "jwcrypto>=1.5.6,<2",
     "keyring>=25,<26",
-    "mcp==2.0.0",
+    "mcp==2.3.0",
     "packaging>=23,<27",
     "platformdirs>=4,<5",
     "readchar>=4.0.5",

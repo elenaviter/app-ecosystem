@@ -23,11 +23,11 @@ dependencies = [
     "app-foundation[mcp,native-secrets]>=2026.11.07.0535,<2027",
     "connection-hub[client]>=2026.11.07.0535,<2027",
     "filelock>=3.16,<4",
-    "httpx2>=2.5,<3",
+    "httpx2>=2.12,<3",
     "json5>=0.12,<1",
     "kdcube-cli>=2026.10.25.0130,<2027",
     "keyring>=25,<26",
-    "mcp==2.0.0",
+    "mcp==2.3.0",
     "platformdirs>=4,<5",
     "PyYAML>=6,<7",
 ]

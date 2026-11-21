@@ -41,9 +41,9 @@ oidc = [
 client = [
     "app-foundation[mcp,native-secrets]>=2026.11.07.0535,<2027",
     "filelock>=3.16,<4",
-    "httpx2>=2.5,<3",
+    "httpx2>=2.12,<3",
     "keyring>=25,<26",
-    "mcp==2.0.0",
+    "mcp==2.3.0",
     "platformdirs>=4,<5",
 ]
 # The tests cover the caller layer too, so they need the client extra's
@@ -54,9 +54,9 @@ test = [
     "pytest-asyncio>=0.23,<2",
     "app-foundation[mcp,native-secrets]>=2026.11.07.0535,<2027",
     "filelock>=3.16,<4",
-    "httpx2>=2.5,<3",
+    "httpx2>=2.12,<3",
     "keyring>=25,<26",
-    "mcp==2.0.0",
+    "mcp==2.3.0",
     "platformdirs>=4,<5",
 ]
 
