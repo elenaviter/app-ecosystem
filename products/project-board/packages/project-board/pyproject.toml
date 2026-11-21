@@ -19,7 +19,7 @@ dependencies = [
     "aiohttp>=3.9,<4",
     "app-foundation[data-bus]>=2026.11.07.0535,<2027",
     "connection-hub[client]>=2026.11.07.0535,<2027",
-    "mcp==2.0.0",
+    "mcp==2.3.0",
     "packaging>=23,<27",
     "PyYAML>=6,<7",
     "service-foundation>=2026.11.07.0535,<2027",
