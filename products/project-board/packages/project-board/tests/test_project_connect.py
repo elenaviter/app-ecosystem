@@ -2,11 +2,10 @@
 
 Once the operator adds an agent to a project, the agent sets up every
 repository on the project card in one command. What this machine reaches is
-cloned or fast-forwarded. A GitHub repository it does not reach gets this
-machine's deploy key, made as add-a-worker-host step 7 makes it, and a grant
-the person adds on GitHub. A second agent of the same Linux user reuses that
-key; a key or SSH block that differs is named, never overwritten. The workspace
-report follows, with the commit identity set.
+cloned or fast-forwarded. A GitHub repository goes only through the project
+owner's GitHub key over HTTPS; one the key does not serve is named with the
+key's answer, and no deploy key, SSH route or host gh login is ever used (W942).
+The workspace report follows, with the commit identity set.
 
 github.com is played by local bare repositories behind a fake runner; ssh-keygen
 and ``ssh -G`` are the real ones, on a temporary SSH folder.
@@ -148,45 +147,34 @@ def test_what_this_machine_reaches_is_cloned_or_fast_forwarded_and_never_forced(
     assert "needs_key" not in next_step([held]) and "left unchanged" in next_step([held])
 
 
-def test_an_unreached_github_repository_gets_this_machines_key_and_a_grant_then_clones_once_added(tmp_path):
-    github = GitHub({"kdcube/applications": _remote(tmp_path / "remotes", "applications")})
+def test_a_github_repository_without_the_owners_key_is_named_and_never_set_up_another_way(tmp_path):
+    """W942 (operator, 2026-10-23): "only github defined in operator card should be used"."""
+    github = KeyedGitHub({"kdcube/applications": _remote(tmp_path / "remotes", "applications")})
+    github.open.add("kdcube/applications")  # this machine could reach it over SSH: that is never used
+    github.granted.add("kdcube/applications")
     workspace = tmp_path / "workspace"
     workspace.mkdir()
-    machine = _machine(tmp_path)
     listed = {"alias": "applications", "url": "git@github.com:kdcube/applications.git", "role": "work"}
+    issued: list[str] = []
 
-    first = Connector(machine, workspace, run=github).connect(listed)
-    assert first["state"] == "needs_key" and first["reason"] == NEEDS_KEY_REASON
-    grant = first["grant"]
-    public = (tmp_path / "ssh" / "deploy_applications.pub").read_text(encoding="utf-8").strip()
-    assert grant == {
-        "alias": "applications",
-        "repository": "kdcube/applications",
-        "page": "https://github.com/kdcube/applications/settings/keys",
-        "title": "host-two agents",
-        "allow_write_access": "yes",
-        "key": public,
-    }
-    # The key is add-a-worker-host step 7's: ed25519, its comment naming the host, alias and repository.
-    assert public.startswith("ssh-ed25519 ") and public.endswith("host-two deploy key: applications kdcube/applications")
-    config = (tmp_path / "ssh" / "config").read_text(encoding="utf-8")
-    assert "Host github-applications\n  HostName github.com\n  User git\n" in config
-    assert f"IdentityFile {tmp_path / 'ssh' / 'deploy_applications'}" in config
-    assert not (workspace / "applications").exists()
-    assert "Add deploy key" in next_step([first]) and "connect-project` again" in next_step([first])
+    for connector in (
+        Connector(_machine(tmp_path), workspace, run=github),
+        Connector(_machine(tmp_path), workspace, run=github, github_key=_key(github, issued), helper=HELPER),
+    ):
+        row = connector.connect(listed)
+        assert row["state"] == "needs_key" and row["report_reason"] == NEEDS_KEY_REASON
+        assert "kdcube/applications" in row["reason"] and "project owner's Card" in row["reason"]
+        assert "grant" not in row
+    assert "Your owner has not connected GitHub on this project." in row["reason"]
+    assert not (workspace / "applications").exists() and not (tmp_path / "ssh").exists()
+    step = next_step([row])
+    assert "project owner's Card" in step and "connect-project` again" in step and "deploy key" not in step
 
-    # A second agent of this Linux user reuses the key and the block.
-    second = Connector(machine, workspace / "other-agent", run=github).connect(listed)
-    assert second["state"] == "needs_key" and second["grant"]["key"] == public
-    assert (tmp_path / "ssh" / "config").read_text(encoding="utf-8") == config
-
-    # The person adds the key: the next run clones through github-applications.
-    github.granted.add("kdcube/applications")
-    done = Connector(machine, workspace, run=github).connect(listed)
-    assert done["state"] == "reachable" and done["action"] == "cloned"
-    origin = _GIT_ORIGIN(workspace / "applications")
-    assert origin == "github-applications:kdcube/applications.git"
-    assert Connector(machine, workspace, run=github).connect(listed)["action"] == "updated"
+    # The operator links it: the next run clones over HTTPS with the key.
+    github.keyed.add("kdcube/applications")
+    done = Connector(_machine(tmp_path), workspace, run=github, github_key=_key(github, issued), helper=HELPER).connect(listed)
+    assert done["state"] == "reachable" and done["action"] == "cloned" and done["route"] == "github_key"
+    assert _GIT_ORIGIN(workspace / "applications") == "https://github.com/kdcube/applications.git"
 
 
 def _GIT_ORIGIN(folder: Path) -> str:  # noqa: N802 - reads like a constant lookup in the asserts
@@ -195,48 +183,42 @@ def _GIT_ORIGIN(folder: Path) -> str:  # noqa: N802 - reads like a constant look
     ).stdout.strip()
 
 
-def test_a_repository_this_machine_already_reaches_gets_no_key(tmp_path):
-    github = GitHub({"kdcube/applications": _remote(tmp_path / "remotes", "applications")})
-    github.open.add("kdcube/applications")
+def test_an_existing_ssh_clone_without_the_owners_key_is_not_fetched(tmp_path):
+    """W942: no plain fetch over SSH either; the clone is left as it is and named."""
+    github = KeyedGitHub({"kdcube/applications": _remote(tmp_path / "remotes", "applications")})
     workspace = tmp_path / "workspace"
     workspace.mkdir()
-    row = Connector(_machine(tmp_path), workspace, run=github).connect(
+    clone = workspace / "applications"
+    _git("clone", "-q", str(github.repositories["kdcube/applications"]), str(clone), cwd=tmp_path)
+    _git("remote", "set-url", "origin", "git@github.com:kdcube/applications.git", cwd=clone)
+    seen: list[list[str]] = []
+
+    def recording(argv, cwd, timeout, env):
+        seen.append(list(argv))
+        return github(argv, cwd, timeout, env)
+
+    row = Connector(_machine(tmp_path), workspace, run=recording).connect(
         {"alias": "applications", "url": "git@github.com:kdcube/applications.git"}
     )
-    assert row["state"] == "reachable" and row["action"] == "cloned" and "grant" not in row
-    assert not (tmp_path / "ssh").exists()
-    assert _GIT_ORIGIN(workspace / "applications") == "git@github.com:kdcube/applications.git"
+    assert row["state"] == "needs_key"
+    assert not [argv for argv in seen if "fetch" in argv or "clone" in argv or "ls-remote" in argv]
+    assert _GIT_ORIGIN(clone) == "git@github.com:kdcube/applications.git"
 
 
-def test_a_key_or_block_that_differs_is_named_and_never_overwritten(tmp_path):
-    github = GitHub({"kdcube/applications": _remote(tmp_path / "remotes", "applications")})
+def test_an_existing_deploy_key_and_ssh_block_are_never_used_or_touched(tmp_path):
+    github = KeyedGitHub({"kdcube/applications": _remote(tmp_path / "remotes", "applications")})
+    github.granted.add("kdcube/applications")
     workspace = tmp_path / "workspace"
     workspace.mkdir()
     machine = _machine(tmp_path)
-    listed = {"alias": "applications", "url": "git@github.com:kdcube/applications.git"}
     machine.ssh_dir.mkdir()
-
-    # A key this alias was given for another repository: step 7 retires it, not this command.
-    subprocess.run(
-        ["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-C", "host-two deploy key: applications kdcube/old",
-         "-f", str(machine.key("applications"))],
-        check=True, stdin=subprocess.DEVNULL,
+    machine.ssh_config.write_text("Host github-applications\n  HostName github.com\n", encoding="utf-8")
+    row = Connector(machine, workspace, run=github).connect(
+        {"alias": "applications", "url": "git@github.com:kdcube/applications.git"}
     )
-    before = machine.key("applications").with_suffix(".pub").read_text(encoding="utf-8")
-    row = Connector(machine, workspace, run=github).connect(listed)
-    assert row["state"] == "unreachable" and "was made for kdcube/old" in row["reason"] and "step 7" in row["reason"]
-    assert str(machine.key("applications")) + ".pub" in row["reason"]
-    assert machine.key("applications").with_suffix(".pub").read_text(encoding="utf-8") == before
-    assert not machine.ssh_config.exists()
-
-    # A github-<alias> block that resolves elsewhere.
-    for path in machine.ssh_dir.iterdir():
-        path.unlink()
-    machine.ssh_config.write_text("Host github-applications\n  HostName example.org\n", encoding="utf-8")
-    row = Connector(machine, workspace, run=github).connect(listed)
-    assert row["state"] == "unreachable"
-    assert f"github-applications in {machine.ssh_config} resolves to example.org" in row["reason"]
-    assert machine.ssh_config.read_text(encoding="utf-8") == "Host github-applications\n  HostName example.org\n"
+    assert row["state"] == "needs_key" and not (workspace / "applications").exists()
+    assert machine.ssh_config.read_text(encoding="utf-8") == "Host github-applications\n  HostName github.com\n"
+    assert sorted(path.name for path in machine.ssh_dir.iterdir()) == ["config"]
 
 
 class GitHubBoard(IdentityBoard):
@@ -257,20 +239,26 @@ def test_the_command_connects_sets_the_identity_and_reports_needs_key_to_the_boa
     monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
     identity, field, config, workspace = _host(tmp_path, monkeypatch)
     remote = _remote(tmp_path / "remotes", "applications")
-    github = GitHub({"kdcube/kdcube": _remote(tmp_path / "remotes", "kdcube")})
+    github = KeyedGitHub({"kdcube/kdcube": _remote(tmp_path / "remotes", "kdcube")})
+    github.granted.add("kdcube/kdcube")  # a deploy key this machine has: never used (W942)
     monkeypatch.setattr(project_connect, "_run", github)
+
+    class OwnerKey:
+        """The owner's key as connect-project asks it: this session's helper, and a token per repository."""
+
+        def __init__(self, args):
+            self.token = _key(github, [])
+
+        def helper(self):
+            return HELPER
+
+    monkeypatch.setattr(cli, "_GitHubKeySession", OwnerKey)
     ssh_dir = tmp_path / "ssh"
-    # The workspace report asks the same GitHub, and reads github-<alias> from the same SSH config.
     report = cli.build_workspace_report
     monkeypatch.setattr(
         cli,
         "build_workspace_report",
-        functools.partial(
-            report,
-            git=lambda args, cwd, timeout: github(["git", *args], cwd, timeout, None),
-            resolve_host=lambda host: Connector(_machine(tmp_path), workspace)._resolve(host[len("github-"):])[0]  # noqa: SLF001
-            if host.startswith("github-") else host,
-        ),
+        functools.partial(report, git=lambda args, cwd, timeout: github(["git", *args], cwd, timeout, None)),
     )
     board = GitHubBoard(identity.worker_name, remote)
     adapter = relay.ProblemBoardHostRelayAdapter(config=config, field=field, client=board)
@@ -281,24 +269,23 @@ def test_the_command_connects_sets_the_identity_and_reports_needs_key_to_the_boa
         ("applications", "reachable"),
         ("kdcube", "needs_key"),
     ]
-    assert [grant["page"] for grant in result["grants"]] == ["https://github.com/kdcube/kdcube/settings/keys"]
-    assert result["grants"][0]["title"].endswith(" agents") and result["host_id"] in result["grants"][0]["title"]
-    assert result["commit_identity"] == {"name": ALIAS, "email": EMAIL}
-    assert [(row["alias"], row["state"], row["reason"], row.get("identity")) for row in result["workspace_report"]["repositories"]] == [
-        ("applications", "verified", "", "matches"),
-        ("kdcube", "unreachable", NEEDS_KEY_REASON, None),
+    assert result["grants"] == [] and not ssh_dir.exists()
+    assert "project owner's Card" in result["next"]
+    assert result["commit_identity"]["name"] == ALIAS
+    assert [(row["alias"], row["state"], row["reason"]) for row in result["workspace_report"]["repositories"]] == [
+        ("applications", "verified", ""),
+        ("kdcube", "unreachable", NEEDS_KEY_REASON),
     ]
-    assert _config(workspace / "applications", "user.email") == EMAIL
 
     asyncio.run(adapter.poll_attendances_once())
     carried = _heartbeats(board)[-1]["workspace_report"]
     assert [row["reason"] for row in carried["repositories"]] == ["", NEEDS_KEY_REASON]
 
-    # The person adds the key; the same command, run again, clones it.
-    github.granted.add("kdcube/kdcube")
+    # The operator links GitHub on the owner's Card; the same command, run again, clones it over HTTPS.
+    github.keyed.add("kdcube/kdcube")
     again = _cli(identity, "connect-project", "--ssh-dir", str(ssh_dir))
     assert [row["state"] for row in again["connected"]] == ["reachable", "reachable"] and again["grants"] == []
-    assert [(row["state"], row["reason"]) for row in again["workspace_report"]["repositories"]] == [("verified", ""), ("verified", "")]
+    assert _GIT_ORIGIN(workspace / "kdcube") == "https://github.com/kdcube/kdcube.git"
     assert _config(workspace / "kdcube", "user.name") == ALIAS
     assert again["next"].startswith("Every repository is reachable")
 
@@ -335,11 +322,11 @@ def test_a_local_repository_is_cloned_when_it_is_here_and_named_when_it_is_on_an
     assert not (tmp_path / "ssh").exists()
 
 
-def test_every_git_call_is_batch_without_a_terminal_and_alias_calls_read_this_ssh_config(tmp_path):
+def test_every_git_call_is_batch_without_a_terminal_and_none_uses_an_ssh_alias(tmp_path):
     """W304 finding 21: a config that requests a terminal must not print "Pseudo-terminal will not be allocated"."""
 
-    github = GitHub({"kdcube/applications": _remote(tmp_path / "remotes", "applications")})
-    github.granted.add("kdcube/applications")
+    github = KeyedGitHub({"kdcube/applications": _remote(tmp_path / "remotes", "applications")})
+    github.keyed.add("kdcube/applications")
     seen: list[tuple[list[str], str]] = []
 
     def recording(argv, cwd, timeout, env):
@@ -349,53 +336,44 @@ def test_every_git_call_is_batch_without_a_terminal_and_alias_calls_read_this_ss
 
     workspace = tmp_path / "workspace"
     workspace.mkdir()
-    machine = _machine(tmp_path)
-    connector = Connector(machine, workspace, run=recording)
-    # The key is made, the person had already added it, so it clones through github-applications, and updates.
-    assert connector.connect({"alias": "applications", "url": "git@github.com:kdcube/applications.git"})["action"] == "cloned"
-    assert connector.connect({"alias": "applications", "url": "git@github.com:kdcube/applications.git"})["action"] == "updated"
+    connector = Connector(_machine(tmp_path), workspace, run=recording, github_key=_key(github, []), helper=HELPER)
+    listed = {"alias": "applications", "url": "git@github.com:kdcube/applications.git"}
+    assert connector.connect(listed)["action"] == "cloned"
+    assert connector.connect(listed)["action"] == "updated"
     assert seen
     for argv, ssh in seen:
         assert "-T" in ssh.split() and "BatchMode=yes" in ssh
-    through_alias = [ssh for argv, ssh in seen if any(arg.startswith("github-applications:") for arg in argv)]
-    assert through_alias and all(f"-F {machine.ssh_config}" in ssh for ssh in through_alias)
+    assert not [argv for argv, _ssh in seen if any(arg.startswith(("github-", "git@github.com:")) for arg in argv)]
 
 
-def test_each_github_repository_says_whether_this_agent_can_open_pull_requests(tmp_path):
-    """W304 finding 23: a deploy-key host pushes, but pull requests need gh signed in with write access."""
+def test_pull_requests_are_ready_only_through_the_owners_key_never_the_hosts_gh(tmp_path):
+    """W304 finding 23; W942: pull requests go through `pb worker gh` with the owner's key, never the host's gh."""
 
-    github = GitHub({
+    github = KeyedGitHub({
         "kdcube/applications": _remote(tmp_path / "remotes", "applications"),
         "kdcube/kdcube": _remote(tmp_path / "remotes", "kdcube"),
     })
-    github.open.update({"kdcube/applications", "kdcube/kdcube"})
+    github.keyed.add("kdcube/applications")
+    github.gh_signed_in = True
+    github.permissions = {"kdcube/applications": "WRITE", "kdcube/kdcube": "WRITE"}
     local = _remote(tmp_path / "remotes", "journal")
-    listed = [
-        {"alias": "applications", "url": "git@github.com:kdcube/applications.git"},
-        {"alias": "kdcube", "url": "https://github.com/kdcube/kdcube"},
-        {"alias": "journal", "url": str(local)},
-    ]
+    ran: list[list[str]] = []
 
-    def states(**gh: Any) -> list[tuple[str, str]]:
-        for key, value in gh.items():
-            setattr(github, key, value)
-        workspace = tmp_path / f"workspace-{len(list(tmp_path.glob('workspace-*')))}"
-        workspace.mkdir()
-        rows = connect_repositories(Connector(_machine(tmp_path), workspace, run=github), listed)
-        assert [row["state"] for row in rows] == ["reachable"] * 3
-        return [(row["pull_requests"]["state"], row["pull_requests"]["reason"]) for row in rows]
+    def recording(argv, cwd, timeout, env):
+        ran.append(list(argv))
+        return github(argv, cwd, timeout, env)
 
-    # The new-machine walk on 2026-09-27: no gh at all. The local journal has no pull requests to open.
-    assert states() == [
-        ("missing", "gh is not installed on this machine"),
-        ("missing", "gh is not installed on this machine"),
-        ("not_applicable", ""),
-    ]
-    assert states(gh_signed_in=False)[0] == ("missing", "gh is not signed in on this machine")
-    rows = states(gh_signed_in=True, permissions={"kdcube/applications": "WRITE", "kdcube/kdcube": "READ"})
-    assert rows[0] == ("ready", "") and rows[1][0] == "missing" and "READ access to kdcube/kdcube" in rows[1][1]
-    assert "coordinator to open the pull request" in next_step([{"state": "reachable", "pull_requests": {"state": "missing"}}])
-    assert "coordinator" not in next_step([{"state": "reachable", "pull_requests": {"state": "ready"}}])
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    connector = Connector(_machine(tmp_path), workspace, run=recording, github_key=_key(github, []), helper=HELPER)
+    assert connector.pull_requests("git@github.com:kdcube/applications.git") == {
+        "state": "ready", "reason": "", "via": "pb worker gh"}
+    missing = connector.pull_requests("https://github.com/kdcube/kdcube")
+    assert missing["state"] == "missing" and "kdcube/kdcube" in missing["reason"]
+    assert connector.pull_requests(str(local)) == {"state": "not_applicable", "reason": ""}
+    assert not [argv for argv in ran if argv[0] == "gh"], "the host's gh is never asked"
+    assert "project owner's Card" in next_step([{"state": "reachable", "pull_requests": {"state": "missing"}}])
+    assert "Card" not in next_step([{"state": "reachable", "pull_requests": {"state": "ready"}}])
 
 
 # The board panel's words (kdcube/applications services/connect_machine.py), agreed word for word.
@@ -437,16 +415,15 @@ def test_readme_and_first_run_carry_the_panels_words_for_part_2_and_both_start_l
         for piece in (PART_ONE_DONE, CONNECT_PROJECT_SENTENCE, *PART_TWO_TITLES, *PART_TWO_NOTES, WORKER_INTRO, WORKER_TAB,
                       "At the machine: a terminal tab", "Over ssh: in tmux"):
             assert piece in text, piece
-    assert project_connect.GRANT_STEPS in PART_TWO_NOTES[0]
     assert "pb worker connect-project" in first_run and "local to another machine" in first_run
     # W304 finding 22: the second install comes before the bootstrap is deleted.
     assert "before the temporary bootstrap is deleted" in first_run and "claude_code_settings.changes" in first_run
     step7 = " ".join((source_package_path().parent / "add-a-worker-host.md").read_text(encoding="utf-8").split())
     assert "pb worker connect-project" in step7 and "Revoking stays with the script below" in step7
-    assert 'GIT_SSH_COMMAND="ssh -T -F $SSH_CONFIG"' in step7
+    assert "GRANT" not in step7, "W942: step 7 only revokes"
 
 
-# --- W371: the owner's GitHub key comes first; the deploy key when it is refused ---
+# --- W371, W942: the owner's GitHub key, and nothing else ---
 
 from project_board.client.github_key import GitHubKeyRefused, GitHubToken, helper_command  # noqa: E402
 
@@ -535,8 +512,9 @@ def test_a_repository_the_owners_key_serves_is_cloned_over_https_with_no_deploy_
     assert issued == ["example-org/app-ecosystem"], "asked once per repository per run"
 
 
-def test_a_refused_key_is_named_and_the_deploy_key_path_runs_as_before(tmp_path):
+def test_a_refused_key_is_named_and_nothing_else_is_tried(tmp_path):
     github = KeyedGitHub({"example-org/applications": _remote(tmp_path / "remotes", "applications")})
+    github.open.add("example-org/applications")
     workspace = tmp_path / "workspace"
     workspace.mkdir()
     connector = Connector(
@@ -545,32 +523,32 @@ def test_a_refused_key_is_named_and_the_deploy_key_path_runs_as_before(tmp_path)
 
     row = connector.connect({"alias": "applications", "url": "git@github.com:example-org/applications.git"})
 
-    assert row["state"] == "needs_key" and row["reason"] == NEEDS_KEY_REASON
+    assert row["state"] == "needs_key" and row["report_reason"] == NEEDS_KEY_REASON
     assert row["github_key"] == "Your owner has not connected GitHub on this project."
-    assert row["grant"]["repository"] == "example-org/applications"
+    assert "grant" not in row and not (tmp_path / "ssh").exists()
+    assert not (workspace / "applications").exists()
     assert connector.commit_email == ""
 
 
-def test_an_existing_clone_moves_to_https_with_the_key_and_ssh_stays_without_it(tmp_path):
-    """W371 review: the helper answers https://github.com only, so an SSH origin
-    kept pushing with the deploy key. With the owner's key ready, origin goes
-    over HTTPS (fetch and push); without it, the clone keeps its SSH origin."""
+def test_an_existing_clone_moves_to_https_with_the_key_and_is_left_alone_without_it(tmp_path):
+    """W371 review, W942: with the owner's key ready, origin (fetch and push) goes over HTTPS; without it the
+    clone is named and left as it is, never fetched over SSH."""
 
     github = KeyedGitHub({"example-org/app-ecosystem": _remote(tmp_path / "remotes", "app-ecosystem")})
-    github.open.add("example-org/app-ecosystem")
     workspace = tmp_path / "workspace"
     workspace.mkdir()
     listed = {"alias": "app-ecosystem", "url": "git@github.com:example-org/app-ecosystem.git"}
-    assert Connector(_machine(tmp_path), workspace, run=github).connect(listed)["action"] == "cloned"
     clone = workspace / "app-ecosystem"
+    _git("clone", "-q", str(github.repositories["example-org/app-ecosystem"]), str(clone), cwd=tmp_path)
+    _git("remote", "set-url", "origin", "git@github.com:example-org/app-ecosystem.git", cwd=clone)
     subprocess.run(["git", "config", "remote.origin.pushurl", "git@github.com:example-org/app-ecosystem.git"],
                    cwd=str(clone), check=True)
 
-    # The key does not answer: nothing moves.
+    # The key does not answer: nothing moves, nothing is fetched.
     unkeyed = Connector(
         _machine(tmp_path), workspace, run=github, github_key=_key(github, []), helper=HELPER, alias_name=ALIAS
     ).connect(listed)
-    assert unkeyed["state"] == "reachable" and "origin_switched" not in unkeyed
+    assert unkeyed["state"] == "needs_key" and "origin_switched" not in unkeyed
     assert _GIT_ORIGIN(clone) == "git@github.com:example-org/app-ecosystem.git"
 
     github.keyed.add("example-org/app-ecosystem")
@@ -590,24 +568,23 @@ def test_an_existing_clone_moves_to_https_with_the_key_and_ssh_stays_without_it(
     assert again["state"] == "reachable" and "origin_switched" not in again, "the second run has nothing to move"
 
 
-
-def test_the_ssh_route_is_kept_as_the_deploykey_remote_when_origin_moves_to_https(tmp_path):
+def test_no_deploykey_remote_is_added_when_origin_moves_to_https(tmp_path):
+    """W942: the SSH route is not kept aside; pushes go with the owner's key or not at all."""
     github = KeyedGitHub({"example-org/app-ecosystem": _remote(tmp_path / "remotes", "app-ecosystem")})
-    github.open.add("example-org/app-ecosystem")
+    github.keyed.add("example-org/app-ecosystem")
     workspace = tmp_path / "workspace"
     workspace.mkdir()
-    listed = {"alias": "app-ecosystem", "url": "git@github.com:example-org/app-ecosystem.git"}
-    Connector(_machine(tmp_path), workspace, run=github).connect(listed)
-    github.keyed.add("example-org/app-ecosystem")
+    clone = workspace / "app-ecosystem"
+    _git("clone", "-q", str(github.repositories["example-org/app-ecosystem"]), str(clone), cwd=tmp_path)
+    _git("remote", "set-url", "origin", "git@github.com:example-org/app-ecosystem.git", cwd=clone)
 
     Connector(
         _machine(tmp_path), workspace, run=github, github_key=_key(github, []), helper=HELPER, alias_name=ALIAS
-    ).connect(listed)
+    ).connect({"alias": "app-ecosystem", "url": "git@github.com:example-org/app-ecosystem.git"})
 
-    clone = workspace / "app-ecosystem"
     assert _GIT_ORIGIN(clone) == "https://github.com/example-org/app-ecosystem.git"
-    kept = subprocess.run(["git", "remote", "get-url", "deploykey"], cwd=str(clone), capture_output=True, text=True, check=True)
-    assert kept.stdout.strip() == "git@github.com:example-org/app-ecosystem.git"
+    remotes = subprocess.run(["git", "remote"], cwd=str(clone), capture_output=True, text=True, check=True)
+    assert remotes.stdout.split() == ["origin"]
 
 
 def _slow(step: str, *, lock: bool = True):

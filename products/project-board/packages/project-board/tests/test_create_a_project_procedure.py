@@ -49,8 +49,8 @@ def test_each_step_names_who_does_it_and_nothing_is_invented() -> None:
     words = " ".join(text.split())
     assert "The agent never invents a value the person owns" in words
     assert "Nothing changes until they say yes." in words
-    for piece in ("New project", "Project", "Repositories", "add-a-worker-host.md) step 7",
-                  "Allow write access", "pb worker workspace-report", "pb worker authorize <profile> --device",
+    for piece in ("New project", "Project", "Repositories", "there is no fallback (W942",
+                  "pb worker workspace-report", "pb worker authorize <profile> --device",
                   "Team > Agents > Add agent", "role **worker**"):
         assert piece in words, piece
 

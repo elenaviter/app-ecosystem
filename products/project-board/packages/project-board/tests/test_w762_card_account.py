@@ -288,10 +288,25 @@ def test_a_plain_push_from_a_card_managed_clone_is_checked_too(tmp_path, monkeyp
     assert "pushes over HTTPS only" in capsys.readouterr().err and pushed == []
 
 
-def test_a_clone_outside_any_card_route_keeps_its_plain_push(tmp_path, monkeypatch):
+def test_a_clone_outside_any_card_route_is_refused_not_pushed_with_the_machines_key(tmp_path, monkeypatch, capsys):
+    """W942 (operator, 2026-10-23): "only github defined in operator card should be used", "this is prohibited
+    to use on-host github". An SSH-only clone used to plain-push with this machine's deploy key."""
     clone = _clone(tmp_path, origin="git@github.com:example-org/deploy-only.git", helper="")
     pushed: list[list[str]] = []
     monkeypatch.setattr(cli.subprocess, "call", lambda argv, *a, **k: pushed.append(list(argv)) or 0)
     monkeypatch.chdir(clone)
-    assert cli._push_command(SimpleNamespace(git_args=["--", "origin", "main"])) == 0  # noqa: SLF001
-    assert pushed == [["git", "push", "origin", "main"]]
+    assert cli._push_command(SimpleNamespace(git_args=["--", "origin", "main"])) == 2  # noqa: SLF001
+    assert pushed == []
+    err = capsys.readouterr().err
+    assert "push_remote_not_owner_key" in err and "pb worker connect-project" in err
+
+
+def test_an_https_clone_without_the_card_account_is_refused(tmp_path, monkeypatch, capsys):
+    """An HTTPS origin answered by the host's own GitHub login is not the owner's key either (W942)."""
+    clone = _clone(tmp_path, origin=f"https://github.com/{REPO}.git", helper="!gh auth git-credential")
+    pushed: list[list[str]] = []
+    monkeypatch.setattr(cli.subprocess, "call", lambda argv, *a, **k: pushed.append(list(argv)) or 0)
+    monkeypatch.chdir(clone)
+    assert cli._push_command(SimpleNamespace(git_args=["--", "origin", "main"])) == 2  # noqa: SLF001
+    assert pushed == []
+    assert "clone_unstamped" in capsys.readouterr().err

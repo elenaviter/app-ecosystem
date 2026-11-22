@@ -111,15 +111,15 @@ def test_15_repositories_and_deploy_keys_come_from_the_project_card():
     assert "Repositories are not a host decision." in step0
     assert "repositories.tsv" not in HOST
     step7 = HOST[HOST.index("## 7. "):HOST.index("## 8. ")]
-    assert "**The project card decides, in both directions**" in step7
-    assert "named by the card's `alias`" in step7
-    assert "a **revoke** block for each key this procedure made whose alias is on no attended project's card" in step7
+    # W942 (operator, 2026-10-23): "only github defined in operator card should be used". Step 7 keeps only
+    # the revoke sheet for keys made earlier; nothing makes a deploy key.
+    assert "**Deploy keys made earlier: the revoke sheet.**" in step7
+    assert "**Revoking stays with the script below**" in step7
+    assert "makes nothing" in step7 and "ssh-keygen -q -t" not in step7
     step8 = HOST[HOST.index("## 8. "):HOST.index("## 9. ")]
     assert "git clone" not in step8
     step12 = HOST[HOST.index("## 12. "):HOST.index("## 13. ")]
-    # W304 finding 19: the agent makes its project's keys itself; step 7's script keeps the revokes.
-    assert "`pb worker connect-project` makes the key and prints its grant" in step12
-    assert "Step 7's reconciliation remains for revoking keys" in step12
+    assert "names it as `needs_key` with the key's answer" in step12 and "no deploy key" in step12
     assert "Repositories the agents may work in" not in GUIDE
     assert "Project the agents join: <project name>" in GUIDE
     assert "you make it on the project card, not per machine" in GUIDE
@@ -128,7 +128,7 @@ def test_15_repositories_and_deploy_keys_come_from_the_project_card():
 def test_every_step_has_an_owner_in_both_tables():
     # W304 "Who does what": both documents name an owner for every step.
     table = HOST[HOST.index("## Who does what"):HOST.index("## What you end up with")]
-    for number in (*range(0, 2), "2 to 3", *range(4, 7), "7, at 12", *range(8, 15)):
+    for number in (*range(0, 2), "2 to 3", *range(4, 15)):
         assert f"| {number} |" in table, number
     for owner in ("**operator**", "either", "**machine administrator**", "host agent"):
         assert owner in table, owner
@@ -146,238 +146,74 @@ def _step7_script() -> str:
     return step7[step7.index("```bash\n") + len("```bash\n"):step7.index("\n```", step7.index("```bash\n"))]
 
 
-def test_15_step_7_reconciles_keys_with_the_card_in_both_directions(tmp_path):
-    # ae#120 reviews (codex-ui): keys were only ever added, a removed
-    # repository kept its write key, an existing key skipped a lost SSH block
-    # forever, and reconciling one project revoked a key another attended
-    # project still needed (keys are shared by every agent of the user). The
-    # published script is run as written, with a fake pb (two attending
-    # agents, two cards) and a fake git (no network).
+def test_15_step_7_only_prints_revoke_blocks_and_makes_nothing(tmp_path):
+    """W942: the step 7 script lists every deploy key made earlier for the operator to delete, and makes none."""
     import shutil
     import subprocess
-
-    import pytest
-
-    if not (shutil.which("ssh-keygen") and shutil.which("ssh") and shutil.which("bash")):
-        pytest.skip("needs ssh-keygen, ssh and bash")
-    keys = tmp_path / "keys"
-    keys.mkdir(mode=0o700)
-    bin_dir = tmp_path / "bin"
-    bin_dir.mkdir()
-    (tmp_path / "list").write_text(
-        "OK\n--- a@host (claude-code-aaa)\nruntime claude-code · pool active\nattends: work:project:alpha\n"
-        "--- b@host (codex-bbb)\nruntime codex · pool active\nattends: work:project:beta\n"
-        "--- idle@host (claude-code-ccc)\nruntime claude-code · pool active\n",
-        encoding="utf-8",
-    )
-    (tmp_path / "alpha").write_text(
-        "OK\nproject_on_this_host = True\nrepositories[0].alias = applications\nrepositories[0].url = git@github.com:kdcube/applications.git\n"
-        "repositories[1].alias = reachable\nrepositories[1].url = git@github.com:owner/reachable.git\n"
-        "repositories[2].alias = clash\nrepositories[2].url = git@github.com:owner/clash-a.git\n",
-        encoding="utf-8",
-    )
-    (tmp_path / "beta").write_text(
-        "OK\nproject_on_this_host = True\nrepositories[0].alias = kdcube\nrepositories[0].url = https://github.com/kdcube/kdcube\n"
-        "repositories[1].alias = betaonly\nrepositories[1].url = git@github.com:owner/betaonly.git\n"
-        "repositories[2].alias = clash\nrepositories[2].url = git@github.com:owner/clash-b.git\n",
-        encoding="utf-8",
-    )
-    (bin_dir / "pb").write_text(
-        "#!/bin/sh\n"
-        f"case \"$2\" in list) cat {tmp_path / 'list'};; context) case \"$*\" in "
-        f"*work:project:alpha*) cat {tmp_path / 'alpha'};; *work:project:beta*) cat {tmp_path / 'beta'};; esac;; esac\n",
-        encoding="utf-8",
-    )
-    (bin_dir / "git").write_text(
-        "#!/bin/sh\n[ \"$1\" = ls-remote ] && case \"$2\" in github-reachable:*) exit 0;; esac\nexit 1\n",
-        encoding="utf-8",
-    )
-    # W346: macOS's realpath refuses GNU's -m, and the second run then
-    # reported every existing key block as a CONFLICT on the macOS host only.
-    # The script needs no realpath at all, so this one refuses every call, on
-    # every platform.
-    (bin_dir / "realpath").write_text(
-        "#!/bin/sh\necho \"realpath is not portable: $*\" >&2\nexit 64\n", encoding="utf-8"
-    )
-    for tool in ("pb", "git", "realpath"):
-        (bin_dir / tool).chmod(0o755)
-    keygen = lambda name, comment: subprocess.run(  # noqa: E731
-        ["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-C", comment, "-f", str(keys / name)], check=True
-    )
-    keygen("deploy_removed", "host deploy key: removed owner/removed")  # on no attended card
-    keygen("deploy_betaonly", "host deploy key: betaonly owner/betaonly")  # only project beta needs it
-    keygen("deploy_applications", "old")  # the SSH block was lost
-    (keys / "deploy_applications.pub").unlink()  # and so was the public half
-    (keys / "config").write_text(
-        "Host github-kdcube\n  HostName example.com\n  IdentityFile /elsewhere\n"
-        # A hand-written block for this key, spelled with ~/ as ssh -G prints it (W346 review).
-        "Host github-reachable\n  HostName github.com\n  IdentityFile ~/keys/deploy_reachable\n",
-        encoding="utf-8",
-    )
-    env = {
-        "PATH": f"{bin_dir}:/usr/bin:/bin:/usr/local/bin:/opt/homebrew/bin",
-        "HOME": str(tmp_path), "KEYS": str(keys), "SSH_CONFIG": str(keys / "config"), "HOST_ID": "host",
-    }
-
-    def run() -> str:
-        done = subprocess.run(["bash", "-c", _step7_script()], env=env, capture_output=True, text=True, timeout=60)
-        return done.stdout + done.stderr
-
-    first = run()
-    assert "### GRANT applications" in first and "Page: https://github.com/kdcube/applications/settings/keys" in first
-    assert "ok reachable" in first and "CONFLICT github-reachable" not in first
-    assert "CONFLICT github-kdcube" in first and "Left unchanged." in first
-    assert "CONFLICT alias clash names different repositories" in first
-    assert "### REVOKE removed (on no attended project's card)" in first and "Repository: owner/removed" in first
-    # A key only the other attended project needs is kept.
-    assert "REVOKE betaonly" not in first and "### GRANT betaonly" in first
-    config = (keys / "config").read_text(encoding="utf-8")
-    assert config.count("Host github-applications") == 1 and "HostName example.com" in config
-    assert (keys / "deploy_applications.pub").read_text(encoding="utf-8").endswith("host deploy key: applications kdcube/applications\n")
-    second = run()
-    assert (keys / "config").read_text(encoding="utf-8").count("Host github-applications") == 1
-    assert "### GRANT applications" in second and "### REVOKE removed" in second and "REVOKE betaonly" not in second
-    # The block the first run wrote is recognised as this key's, not a conflict.
-    assert "CONFLICT github-applications" not in second and "CONFLICT github-betaonly" not in second
-    assert "ok reachable" in second
-    assert "realpath is not portable" not in first + second
-
-
-
-def _stopped_run(tmp_path, pb_script: str) -> tuple[int, str]:
-    import subprocess
-
-    bin_dir = tmp_path / "bin"
-    bin_dir.mkdir(exist_ok=True)
-    keys = tmp_path / "keys"
-    keys.mkdir(exist_ok=True, mode=0o700)
-    subprocess.run(["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-C", "host deploy key: needed owner/needed",
-                    "-f", str(keys / "deploy_needed")], check=True)
-    (bin_dir / "pb").write_text(pb_script, encoding="utf-8")
-    (bin_dir / "pb").chmod(0o755)
-    env = {"PATH": f"{bin_dir}:/usr/bin:/bin:/usr/local/bin:/opt/homebrew/bin", "HOME": str(tmp_path),
-           "KEYS": str(keys), "SSH_CONFIG": str(keys / "config"), "HOST_ID": "host"}
-    done = subprocess.run(["bash", "-c", _step7_script()], env=env, capture_output=True, text=True, timeout=60)
-    return done.returncode, done.stdout + done.stderr
-
-
-def test_15_step_7_stops_before_any_grant_or_revoke_when_collection_fails(tmp_path):
-    # ae#120 review (codex-ui): without fail-closed collection a failed list,
-    # or one failed context of two, left an empty or partial card and the
-    # script revoked keys valid projects still needed.
-    import shutil
 
     import pytest
 
     if not (shutil.which("ssh-keygen") and shutil.which("bash")):
         pytest.skip("needs ssh-keygen and bash")
-    (tmp_path / "list").write_text(
-        "OK\n--- a@host (claude-code-aaa)\nruntime claude-code · pool active\nattends: work:project:alpha\n"
-        "--- b@host (codex-bbb)\nruntime codex · pool active\nattends: work:project:beta\n",
-        encoding="utf-8",
-    )
-    (tmp_path / "card").write_text(
-        "OK\nproject_on_this_host = True\nrepositories[0].alias = needed\nrepositories[0].url = git@github.com:owner/needed.git\n",
-        encoding="utf-8",
-    )
-    (tmp_path / "absent").write_text("OK\nproject_on_this_host = False\n", encoding="utf-8")
-    two = f"case \"$2\" in list) cat {tmp_path / 'list'};; context) case \"$*\" in *work:project:alpha*) cat {tmp_path / 'card'};; *) "
-    cases = {
-        "list fails": "#!/bin/sh\n[ \"$2\" = list ] && exit 1\nexit 0\n",
-        "one context of two fails": "#!/bin/sh\n" + two + "exit 3;; esac;; esac\n",
-        "a project not on the host yet": "#!/bin/sh\n" + two + f"cat {tmp_path / 'absent'};; esac;; esac\n",
-    }
-    for index, (name, script) in enumerate(cases.items()):
-        case_dir = tmp_path / f"case{index}"
-        case_dir.mkdir()
-        code, output = _stopped_run(case_dir, script)
-        assert code != 0, name
-        assert "STOP:" in output and "Nothing granted or revoked." in output, (name, output)
-        assert "REVOKE" not in output and "GRANT" not in output, (name, output)
-def test_15_step_7_retires_a_moved_alias_and_reads_host_blocks_through_ssh(tmp_path):
-    # ae#120 review (codex-ui): an alias retargeted to another repository left
-    # the old repository's key authorized, and an exact-line match missed a
-    # valid Host block written with several names or another case.
-    import shutil
-    import subprocess
-
-    import pytest
-
-    if not (shutil.which("ssh-keygen") and shutil.which("ssh") and shutil.which("bash")):
-        pytest.skip("needs ssh-keygen, ssh and bash")
     keys = tmp_path / "keys"
     keys.mkdir(mode=0o700)
-    bin_dir = tmp_path / "bin"
-    bin_dir.mkdir()
-    (tmp_path / "list").write_text(
-        "OK\n--- a@host (claude-code-aaa)\nruntime claude-code · pool active\nattends: work:project:alpha\n",
-        encoding="utf-8",
+    keygen = lambda name, comment: subprocess.run(  # noqa: E731
+        ["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-C", comment, "-f", str(keys / name)], check=True
     )
-    (tmp_path / "alpha").write_text(
-        "OK\nproject_on_this_host = True\n"
-        "repositories[0].alias = moved\nrepositories[0].url = git@github.com:owner/new-home.git\n"
-        "repositories[1].alias = multi\nrepositories[1].url = git@github.com:owner/multi.git\n"
-        "repositories[2].alias = bad\nrepositories[2].url = git@github.com:owner/bad.git\n",
-        encoding="utf-8",
-    )
-    (bin_dir / "pb").write_text(
-        f"#!/bin/sh\ncase \"$2\" in list) cat {tmp_path / 'list'};; context) cat {tmp_path / 'alpha'};; esac\n",
-        encoding="utf-8",
-    )
-    (bin_dir / "git").write_text("#!/bin/sh\nexit 1\n", encoding="utf-8")
-    for tool in ("pb", "git"):
-        (bin_dir / tool).chmod(0o755)
-    for name, comment in (("deploy_moved", "host deploy key: moved owner/old-home"), ("deploy_multi", "host deploy key: multi owner/multi")):
-        subprocess.run(["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-C", comment, "-f", str(keys / name)], check=True)
-    old_fingerprint = subprocess.run(
-        ["ssh-keygen", "-lf", str(keys / "deploy_moved.pub")], capture_output=True, text=True, check=True
-    ).stdout.split()[1]
-    (keys / "config").write_text(
-        f"host github-multi github-other\n    hostname github.com\n    identityfile {keys / 'deploy_multi'}\n\n"
-        "Host github-b*\n  HostName gitlab.com\n",
-        encoding="utf-8",
-    )
-    env = {
-        "PATH": f"{bin_dir}:/usr/bin:/bin:/usr/local/bin:/opt/homebrew/bin",
-        "HOME": str(tmp_path), "KEYS": str(keys), "SSH_CONFIG": str(keys / "config"), "HOST_ID": "host",
-    }
+    keygen("deploy_applications", "host deploy key: applications kdcube/applications")
+    keygen("retired_moved_20261001T000000Z", "host deploy key: moved owner/old-home")
+    config = "Host github-applications\n  HostName github.com\n  IdentityFile ~/keys/deploy_applications\n"
+    (keys / "config").write_text(config, encoding="utf-8")
+    before = sorted(path.name for path in keys.iterdir())
+    env = {"PATH": "/usr/bin:/bin:/usr/local/bin:/opt/homebrew/bin", "HOME": str(tmp_path), "KEYS": str(keys),
+           "SSH_CONFIG": str(keys / "config"), "HOST_ID": "host"}
 
-    def run() -> str:
-        done = subprocess.run(["bash", "-c", _step7_script()], env=env, capture_output=True, text=True, timeout=60)
-        return done.stdout + done.stderr
+    done = subprocess.run(["bash", "-c", _step7_script()], env=env, capture_output=True, text=True, timeout=60)
 
-    first = run()
-    # The moved alias: the old pair is retired and revoked on the old repository,
-    # and a new pair is granted on the new one.
-    assert "### REVOKE moved (the card moved this alias to another repository)" in first
-    assert "Repository: owner/old-home" in first and old_fingerprint in first
-    assert "### GRANT moved" in first and "https://github.com/owner/new-home/settings/keys" in first
-    assert list(keys.glob("retired_moved_*.pub"))
-    new_fingerprint = subprocess.run(
-        ["ssh-keygen", "-lf", str(keys / "deploy_moved.pub")], capture_output=True, text=True, check=True
-    ).stdout.split()[1]
-    assert new_fingerprint != old_fingerprint
-    # A lower-case, several-name block is ours: nothing is appended for it.
-    config = (keys / "config").read_text(encoding="utf-8")
-    assert "Host github-multi\n" not in config
-    # A pattern block that sends the alias elsewhere is refused.
-    assert "CONFLICT github-bad" in first and "resolves to gitlab.com" in first
-    # The retired key keeps being named until its files are removed.
-    assert "### REVOKE moved (the card moved this alias to another repository)" in run()
+    out = done.stdout + done.stderr
+    assert done.returncode == 0, out
+    assert "### REVOKE applications (deploy keys are not used (W942))" in out
+    assert "Repository: kdcube/applications" in out and 'titled "host agents"' in out
+    assert '"Host github-applications" block' in out
+    assert "### REVOKE moved (a retired key)" in out and "Repository: owner/old-home" in out
+    assert "GRANT" not in out
+    assert sorted(path.name for path in keys.iterdir()) == before, "nothing is made or removed"
+    assert (keys / "config").read_text(encoding="utf-8") == config
+
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    none = subprocess.run(["bash", "-c", _step7_script()], env={**env, "KEYS": str(empty)},
+                          capture_output=True, text=True, timeout=60)
+    assert none.returncode == 0 and "ok: this host has no deploy key made by this procedure" in none.stdout
+    assert list(empty.iterdir()) == []
+
+
+def test_the_procedures_never_make_or_grant_a_deploy_key():
+    """W942 sweep: no procedure tells anyone to make, add or grant a deploy key. The connect-machine panel words
+    in first-run (Part 2, step 5) wait for the operator's wording and are the one named exception."""
+    panel = "references/first-run.md"
+    for path in sorted(PROCEDURES.rglob("*.md")):
+        text = path.read_text(encoding="utf-8")
+        if path.relative_to(PROCEDURES).as_posix().endswith(panel):
+            start = text.index("5. **Add this machine's keys on GitHub**")
+            text = text[:start] + text[text.index("\n", start):]
+        for phrase in ("Add deploy key", "### GRANT", "GRANT block", "makes the key", "ssh-keygen -q -t",
+                       "grant sheet", "deploy keys are the fallback", "pushed with the deploy key"):
+            assert phrase not in text, (path.name, phrase)
 
 
 def test_u5_gh_is_signed_in_per_user_with_the_operators_chosen_identity():
     # W304 U5 (2026-09-25): agents open their own PRs and post verdicts with gh.
-    # W371 (2026-09-28): under their owner's GitHub key; a machine account's
-    # token login stays as the fallback for an owner with no key.
+    # W371 (2026-09-28): under their owner's GitHub key. W942 (operator,
+    # 2026-10-23): "this is prohibited to use on-host github", so no machine
+    # account is signed in to gh and no deploy key stands in for the key.
     words = " ".join(HOST.split())
     assert "| **GitHub access** |" in HOST
     assert "### GitHub CLI for pull requests and review verdicts" in HOST
     assert "`gh` only has to be installed" in words and "Nothing is signed in" in words
-    assert "**Fallback, only for an owner with no GitHub key:**" in HOST
-    assert "read -rs T && printf '%s\\n' \"$T\" | gh auth login --with-token; unset T" in HOST
-    assert "never in a file or an environment variable" in words
-    assert "| 7 | **operator**, fallback only |" in HOST
+    assert "**No other GitHub route (W942).**" in HOST
+    assert "gh auth login" not in HOST
+    assert "| 7 | **operator**, fallback only |" not in HOST
     assert "command -v gh ||" in HOST
 
 
@@ -488,67 +324,6 @@ def test_u4_move_keeps_conversation_memory_and_worktrees_and_rolls_back(tmp_path
     assert (projects / enc(old) / "memory" / "MEMORY.md").exists() and not (projects / enc(new)).exists()
     assert run("git", "-C", str(old / "repo"), "rev-parse", "--abbrev-ref", "HEAD").stdout.strip() == "a"
     assert str(new) not in run("git", "-C", str(shared), "worktree", "list").stdout
-
-
-def test_15_step_7_matches_a_home_relative_identity_file_and_still_reports_another_key(tmp_path):
-    # W350: `ssh -G` prints IdentityFile as written, so a hand-written block
-    # spelled ~/, $HOME/ or ${HOME}/ never matched the absolute key path and was
-    # a CONFLICT on every run. The same block naming another key still is one.
-    import shutil
-    import subprocess
-
-    import pytest
-
-    if not (shutil.which("ssh-keygen") and shutil.which("ssh") and shutil.which("bash")):
-        pytest.skip("needs ssh-keygen, ssh and bash")
-    keys = tmp_path / "keys"
-    keys.mkdir(mode=0o700)
-    bin_dir = tmp_path / "bin"
-    bin_dir.mkdir()
-    (tmp_path / "list").write_text(
-        "OK\n--- a@host (claude-code-aaa)\nruntime claude-code · pool active\nattends: work:project:alpha\n",
-        encoding="utf-8",
-    )
-    aliases = ("tilde", "home", "braced", "other")
-    (tmp_path / "alpha").write_text(
-        "OK\nproject_on_this_host = True\n"
-        + "".join(
-            f"repositories[{index}].alias = {alias}\nrepositories[{index}].url = git@github.com:owner/{alias}.git\n"
-            for index, alias in enumerate(aliases)
-        ),
-        encoding="utf-8",
-    )
-    (bin_dir / "pb").write_text(
-        f"#!/bin/sh\ncase \"$2\" in list) cat {tmp_path / 'list'};; context) cat {tmp_path / 'alpha'};; esac\n",
-        encoding="utf-8",
-    )
-    (bin_dir / "git").write_text("#!/bin/sh\n[ \"$1\" = ls-remote ] && exit 0\nexit 1\n", encoding="utf-8")
-    (bin_dir / "realpath").write_text("#!/bin/sh\nexit 64\n", encoding="utf-8")
-    for tool in ("pb", "git", "realpath"):
-        (bin_dir / tool).chmod(0o755)
-    spelled = {
-        "tilde": "~/keys/deploy_tilde",
-        "home": "$HOME/keys/deploy_home",
-        "braced": "${HOME}/keys/deploy_braced",
-        "other": "~/keys/some_other_key",
-    }
-    (keys / "config").write_text(
-        "".join(f"Host github-{alias}\n  HostName github.com\n  IdentityFile {path}\n" for alias, path in spelled.items()),
-        encoding="utf-8",
-    )
-    env = {
-        "PATH": f"{bin_dir}:/usr/bin:/bin:/usr/local/bin:/opt/homebrew/bin",
-        "HOME": str(tmp_path), "KEYS": str(keys), "SSH_CONFIG": str(keys / "config"), "HOST_ID": "host",
-    }
-    done = subprocess.run(["bash", "-c", _step7_script()], env=env, capture_output=True, text=True, timeout=60)
-    output = done.stdout + done.stderr
-
-    for alias in ("tilde", "home", "braced"):
-        assert f"ok {alias}" in output, (alias, output)
-        assert f"CONFLICT github-{alias}" not in output, (alias, output)
-    assert "CONFLICT github-other" in output and "ok other" not in output
-    config = (keys / "config").read_text(encoding="utf-8")
-    assert all(config.count(f"Host github-{alias}") == 1 for alias in aliases)
 
 
 def test_u2_a_new_host_can_install_a_published_release():

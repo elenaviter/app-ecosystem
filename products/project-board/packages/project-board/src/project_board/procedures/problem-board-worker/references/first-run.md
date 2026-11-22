@@ -381,30 +381,21 @@ things, each refused by name when missing:
 - the repository is on the project card (`repository_not_on_card`) and the
   GitHub App is installed on it (the My Card coverage names the link).
 
-Tell your owner the refusal's words. Until the key answers, deploy keys are
-the fallback:
+Tell your owner the refusal's words. There is no other route (W942, the
+operator: "only github defined in operator card should be used"):
 
-- `reachable`: this machine reaches it; it is cloned, or fetched and
-  fast-forwarded. A repository this machine already reaches gets no key.
-- `needs_key`: a GitHub repository this machine does not reach yet. The
-  command made this machine's deploy key and its `github-<alias>` SSH block,
-  as add-a-worker-host step 7 makes them, or reused the ones another agent of
-  this Linux user made. Show the person each entry of `grants[]` exactly:
-
-  ```text
-  Page: <page>
-  Title: <title>                  # "<host-id> agents"
-  Allow write access: yes
-  Key: <key>
-  ```
-
-  with the panel's step 4 sentence. When they say the keys are added, run the
-  command again.
+- `reachable`: it is cloned over HTTPS with your owner's key, or fetched and
+  fast-forwarded. A repository that is not on GitHub (a local path, another
+  host) is reached as before.
+- `needs_key`: a GitHub repository your owner's key does not serve yet. The
+  row names the key's answer. Nothing is made or cloned another way: no
+  deploy key, no SSH route, no host gh login, and an existing SSH clone is
+  left as it is. Tell your owner the reason: they link GitHub on their Card
+  with access to the repository. When they say it is done, run the command
+  again.
 - `unreachable`: with its reason. A local repository (a folder path or
   `file://`) whose folder is not on this machine reads "local to another
-  machine"; a key or SSH block that differs from what the command would make
-  is named with its path and never overwritten; a remote that is not on
-  GitHub needs the operator's access.
+  machine"; a remote that is not on GitHub needs the operator's access.
 - `left_unchanged`: the folder holds another repository, uncommitted work, or
   a history that does not fast-forward. Nothing is forced; tell the
   coordinator.
@@ -418,13 +409,12 @@ profile).
 
 It then sets the project's commit identity in each clone and reports the
 workspace, so the panel shows each repository as reachable, or "not reachable
-yet" with the reason ("needs this machine's deploy key"). Each GitHub
+yet" with the reason ("needs the project owner's GitHub key"). Each GitHub
 repository also says whether you can open pull requests there
 (`pull_requests`): `ready`, `missing` with the reason, or `not_applicable`.
 With your owner's key it reads `ready` via `pb worker gh`. When it is
-`missing`, the key has not answered: tell your owner the `github_key` reason,
-and until then push your branch and ask the coordinator to open the pull
-request, with the branch, base and title.
+`missing`, the key does not serve the repository: tell your owner the
+`github_key` reason; nothing is pushed or opened there until it does.
 
 ## `session_reconnecting`
 
