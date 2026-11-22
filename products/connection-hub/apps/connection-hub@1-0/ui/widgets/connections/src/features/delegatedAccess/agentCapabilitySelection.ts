@@ -209,3 +209,35 @@ export function agentCapabilitySelectionFromMap(
     ),
   });
 }
+
+
+/** W38: on a descriptor Control, the namespaces whose descriptor allows every
+ *  action (`object.action`), and whether an administrator edit is in force. */
+export interface DescriptorOpenActions {
+  namespaces: string[];
+  overridden: boolean;
+}
+
+export function descriptorOpenActions(
+  record: { source?: string; properties?: Record<string, unknown>; provenance?: Record<string, unknown> } | null | undefined,
+): DescriptorOpenActions | null {
+  if (!record || record.source !== 'control' || !isAgentDescriptorControl(record.properties)) return null;
+  const raw = record.properties?.[AGENT_CAPABILITY_AUTHORITY_PROPERTY];
+  if (!isRecord(raw) || !isRecord(raw.capabilities)) return null;
+  const values = raw.capabilities.named_service_operations;
+  if (!Array.isArray(values)) return null;
+  const namespaces = values
+    .filter((value): value is string => typeof value === 'string')
+    .map((value) => {
+      const at = value.indexOf('/');
+      return at > 0 && decodeURIComponent(value.slice(at + 1)) === 'object.action'
+        ? decodeURIComponent(value.slice(0, at))
+        : '';
+    })
+    .filter(Boolean);
+  if (!namespaces.length) return null;
+  return {
+    namespaces: Array.from(new Set(namespaces)).sort(),
+    overridden: record.provenance?.agent_descriptor_card_edited === true,
+  };
+}

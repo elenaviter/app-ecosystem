@@ -524,7 +524,9 @@ class RemoteMCPConnectorService:
                     expected_revision=expected_revision,
                 )
                 old_ref = current.credential_ref
-                old_credential = await self._credential(current)
+                # Reconnect replaces a lost credential too; the old one only
+                # feeds the optional upstream revocation.
+                old_credential = await self._credential_if_held(current)
                 endpoint = await self._endpoint_policy.validate(current.endpoint)
                 headers = await self._transport_headers(
                     connector_id=current.connector_id,
@@ -630,15 +632,20 @@ class RemoteMCPConnectorService:
                 expected_revision=expected_revision,
             )
             old_ref = current.credential_ref
-            credential = await self._credential(current)
-            await self._best_effort_revoke(
-                connector_id=current.connector_id,
-                endpoint=current.endpoint,
-                transport=current.transport,
-                owner_subject=current.owner_subject,
-                credential=credential,
-                credential_ref=current.credential_ref,
-            )
+            # The stored credential is needed only for the optional upstream
+            # revocation. A connector whose credential is already gone must
+            # still be removable (live 2026-11-19: Remove answered
+            # connector_credential_unavailable and kept the connector).
+            credential = await self._credential_if_held(current)
+            if credential is not None:
+                await self._best_effort_revoke(
+                    connector_id=current.connector_id,
+                    endpoint=current.endpoint,
+                    transport=current.transport,
+                    owner_subject=current.owner_subject,
+                    credential=credential,
+                    credential_ref=current.credential_ref,
+                )
             deleted = replace(
                 current,
                 revision=current.revision + 1,
@@ -716,6 +723,18 @@ class RemoteMCPConnectorService:
             header=connector.credential_header,
             value=value,
         )
+
+    async def _credential_if_held(
+        self, connector: RemoteMCPConnector
+    ) -> RemoteMCPCredential | None:
+        """The stored credential, or None when it is no longer held."""
+
+        try:
+            return await self._credential(connector)
+        except RemoteMCPConnectorConflict as exc:
+            if exc.reason != "connector_credential_unavailable":
+                raise
+            return None
 
     async def _best_effort_revoke(
         self,

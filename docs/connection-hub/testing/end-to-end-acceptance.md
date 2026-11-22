@@ -5,7 +5,7 @@ summary: "Human-runnable acceptance for resident-agent capability Cards, project
 status: current
 tags: ["testing", "connection-hub", "delegated-access", "control-card", "agent-card", "project-invitation", "conversation-selection", "mcp", "proxy", "admission", "invocation-policy", "consent", "claude-code"]
 keywords: ["Connection Hub acceptance", "agent capability Control Card", "project invitation Control Card", "full initial My Card", "Agent Card defaults", "conversation override", "live descriptor ceiling", "delegated card test", "allow once", "allow always", "external MCP proxy", "delegated MCP gateway", "one resident card", "multi-resource card", "direct admission", "descriptor drift", "live consent", "operation-only consent", "resource_operations", "named services MCP", "Claude Code OAuth", "revocation test"]
-updated_at: 2026-09-24
+updated_at: 2026-11-17
 see_also:
   - ../connection-hub-architecture.md
   - ../macos-user-presence-helper.md
@@ -311,23 +311,21 @@ overwrites a chosen value. An explicit Agent Card selection replacement does
 not fill during that replacement; a later synchronization fills a singleton
 left empty. Removed authority is unavailable to every Card and conversation.
 
-### Control Card to descriptor write-through
+### Control Card save stays in the Card
 
 1. As administrator, edit the Control Card's default model, instruction,
    selected skills/tools, Slack action allowance and custom-MCP allowance.
-2. Save. Confirm the administrator-only bundle-properties request succeeds
-   before the Card revision changes; a forced host-write refusal must leave the
-   Card revision and descriptor unchanged.
-3. Inspect the active authoritative application descriptor and confirm the
-   exact agent entry under
-   `agent_capability_control_overrides` contains the reviewed defaults,
-   resource operations and named-service operations.
-4. Restart/reload the runtime, reopen the Control Card, and create a fresh
-   user's Agent Card and conversation.
+2. Save. Confirm the Save is one Card update: the Card revision advances and
+   no bundle-properties request is made; a refused Save leaves the Card
+   revision unchanged.
+3. Confirm the active application descriptor is unchanged (no
+   `agent_capability_control_overrides` entry is written).
+4. Restart/reload the runtime and apply a descriptor revision, reopen the
+   Control Card, and create a fresh user's Agent Card and conversation.
 
-Expected result: success means the descriptor write completed, not only a Card
-or Redis write. The Control Card retains the edit after restart/refresh, and
-the fresh Agent Card/conversation receives the saved defaults.
+Expected result: the Control Card retains the edit after restart, refresh and
+the descriptor revision, bounded by the refreshed descriptor ceiling, and the
+fresh Agent Card/conversation receives the saved defaults.
 
 ### Latest descriptor revokes old conversations
 

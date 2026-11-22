@@ -1,4 +1,5 @@
 import { FormEvent, Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { controlNarrowingRows, controlNarrowingSource } from './controlNarrowing';
 import { CONNECTORS_OWNER_ONLY_NOTE, connectorsOwnerOnly, isConnectorResource } from './connectorOwnership';
 import { useAppDispatch, useAppSelector } from '../../app/hooks';
 import { PaneGroup } from '../../components/Pane';
@@ -34,6 +35,7 @@ import {
   cardAgentCapabilityMetadata,
   cardAgentCapabilitySelection,
   isAgentDescriptorControl,
+  descriptorOpenActions,
   type AgentCapabilitySelection,
 } from './agentCapabilitySelection';
 import { AgentCapabilityPolicyView } from './AgentCapabilityPolicyView';
@@ -139,6 +141,8 @@ import type {
   DelegatedAccessResourceOperations,
   DelegatedAccessStoredNamedServices,
   DelegatedCatalogDrift,
+  DelegatedOutsideControl,
+  DelegatedAgentSyncRefusal,
   DelegatedControlCardAuthority,
   DelegatedControlCardBinding,
   DelegatedInvocationPolicy,
@@ -156,6 +160,7 @@ import {
   renewDelegatedAccess,
   revokeDelegatedAccess,
   updateAgentCapabilitySelection,
+  returnControlToDescriptor,
   updateDelegatedAccess,
   loadProjectAgentCard,
 } from './delegatedAccessSlice';
@@ -1020,9 +1025,12 @@ function driftLabel(row: { resource: string; namespace?: string; claim?: string;
 function DriftCatalogRow({
   row,
   removed,
+  caption,
 }: {
   row: { resource: string; namespace?: string; claim?: string; operation?: string };
   removed: boolean;
+  /** W38: a row outside the Control says what happens to it instead. */
+  caption?: string;
 }) {
   const kind = row.claim ? 'Permission' : row.namespace ? 'Service action' : row.operation ? 'Tool' : 'Service';
   const subject = readableIdentifier(row.claim || row.operation || doorAlias(row.resource) || row.resource);
@@ -1035,7 +1043,7 @@ function DriftCatalogRow({
         {subject || 'Unnamed capability'}
       </span>
       <InfoMark text={`Exact catalog identifier: ${driftLabel(row)}`} />
-      <small>{removed ? 'Unavailable now; saving removes it from the card.' : 'Available now; it remains ungranted until selected.'}</small>
+      <small>{caption || (removed ? 'Unavailable now; saving removes it from the card.' : 'Available now; it remains ungranted until selected.')}</small>
     </li>
   );
 }
@@ -1101,6 +1109,56 @@ function CatalogDriftNotice({ drift }: { drift?: DelegatedCatalogDrift }) {
           </div>
         ) : null}
       </details>
+    </div>
+  );
+}
+
+/** W38: choices this Card keeps that its Control no longer allows, and a
+ *  refused descriptor sync. Both come from the server; the panel only renders. */
+function ControlNarrowingNotice({
+  outside,
+  refusal,
+}: {
+  outside?: DelegatedOutsideControl;
+  refusal?: DelegatedAgentSyncRefusal;
+}) {
+  const rows = controlNarrowingRows(outside);
+  if (!rows.length && !refusal) return null;
+  const narrowedBy = controlNarrowingSource(outside);
+  return (
+    <div className="notice control-narrowing-notice" style={{ marginTop: 10, marginBottom: 10 }}>
+      {refusal ? (
+        <div className="control-sync-refusal">
+          <strong>The last update from this agent's descriptor was refused</strong>
+          <div>
+            Nothing on this Card changed. Reason: <code>{refusal.error}</code>
+            {refusal.at ? ` (${new Date(refusal.at * 1000).toLocaleString()})` : ''}.
+            {refusal.retryable ? ' It is retried with the next message.' : ''}
+          </div>
+        </div>
+      ) : null}
+      {rows.length ? (
+        <div>
+          <strong>Not in this agent's Control</strong>
+          <div>
+            {narrowedBy} no longer allows these choices. They stay on this Card, grant
+            nothing, and apply again once the Control allows them.
+          </div>
+          <details>
+            <summary>{rows.length === 1 ? '1 choice' : `${rows.length} choices`}</summary>
+            <ul className="catalog-drift-list">
+              {rows.map((row) => (
+                <DriftCatalogRow
+                  key={`outside-${driftLabel(row)}`}
+                  row={row}
+                  removed
+                  caption="Inactive now; it stays on this Card when you save and applies again once the Control allows it."
+                />
+              ))}
+            </ul>
+          </details>
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -1859,6 +1917,12 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
   // button arms a "Revoke? Confirm / Cancel" row on the same spot.
   const [confirmRevokeId, setConfirmRevokeId] = useState<string | null>(null);
   const [confirmRenew, setConfirmRenew] = useState<{ accessId: string; mode: 'prolong' | 'reissue' } | null>(null);
+  const [confirmReturnToDescriptor, setConfirmReturnToDescriptor] = useState<{
+    accessId: string;
+    cardRevision: number;
+    catalogVersion: string;
+    label: string;
+  } | null>(null);
   const [confirmAgentReset, setConfirmAgentReset] = useState<{
     accessId: string;
     cardRevision: number;
@@ -3118,6 +3182,44 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
     }
   };
 
+  const returnToDescriptor = async () => {
+    const pending = confirmReturnToDescriptor;
+    if (!pending) return;
+    setConfirmReturnToDescriptor(null);
+    setEditActionError('');
+    try {
+      const result = await dispatch(returnControlToDescriptor({
+        accessId: pending.accessId,
+        expectedCardRevision: pending.cardRevision,
+        expectedCatalogVersion: pending.catalogVersion,
+      })).unwrap();
+      if (!result || result.ok === false) {
+        setEditActionError(
+          result?.status === 409
+            ? 'This Control changed while the dialog was open. Review the current Control and try again.'
+            : `The Control was not returned to its descriptor: ${result?.error || 'request refused'}`,
+        );
+        void dispatch(loadDelegatedAccess());
+        return;
+      }
+      clearEditState();
+      void dispatch(loadDelegatedAccess());
+    } catch (error) {
+      setEditActionError(`The Control was not returned to its descriptor: ${String(error || 'request refused')}`);
+    }
+  };
+
+  const renderReturnToDescriptorDialog = () => (
+    <ConfirmDialog
+      open={confirmReturnToDescriptor !== null}
+      title={`Return ${confirmReturnToDescriptor?.label || 'this Control'} to its descriptor?`}
+      body="Your explicit list stops applying. At the agent's next synchronization the Control is seeded from the current descriptor again, and later descriptor changes, additions included, reach it. Choices people kept on their Agent Cards apply again where the descriptor allows them."
+      confirmLabel="Return to descriptor"
+      onCancel={() => setConfirmReturnToDescriptor(null)}
+      onConfirm={() => { void returnToDescriptor(); }}
+    />
+  );
+
   const renderAgentResetDialog = () => (
     <ConfirmDialog
       open={confirmAgentReset !== null}
@@ -4365,6 +4467,7 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
     selectionParent = '',
     composition?: EffectiveCompositionView,
     resourceFamilyRoot = false,
+    controlBound?: EffectiveCompositionView,
   ) => {
     const resourceOption = catalogRowFor(
       resources, resource, (key) => (item.catalog_row_by_resource || {})[key] || key,
@@ -4770,6 +4873,7 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
           <DelegatedResourceCatalog
             resource={shownResourceOption || resourceOption}
             heldManagedOperations={heldManagedNamedOperations}
+            openActions={descriptorOpenActions(item)}
             selectedGrants={editedGrants}
             selectedOperations={editNamedServiceOperations[resource] || {}}
             onOperationChange={(namespace, operation, operationGrants, checked) => {
@@ -4780,6 +4884,16 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
             }}
             providers={providers}
             accounts={accounts}
+            controlBound={controlBound ? {
+              mode: controlBound.mode,
+              controlOperations: (
+                controlBound.control.effective_named_service_operations?.[resource]
+                || (controlBound.control.named_service_operations !== '*'
+                  ? controlBound.control.named_service_operations?.[resource]
+                  : undefined)
+                || {}
+              ),
+            } : undefined}
             composition={composition ? {
               mode: composition.mode,
               controlLabel,
@@ -4834,6 +4948,7 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
   const renderEditResourceSections = (
     item: DelegatedAccessRecord,
     composition?: EffectiveCompositionView,
+    controlBound?: EffectiveCompositionView,
   ) => {
     const problems = editSaveProblems(item);
     const secretOffer = (item.resource_offers || []).find(
@@ -4903,6 +5018,7 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
         parent,
         composition,
         resourceFamilyRoots.has(resource),
+        controlBound,
       )
     );
     return (
@@ -5240,7 +5356,7 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
               ? ' The linked card applies at every guarded operation.'
               : ' Operations governed by this link are closed.'}</small>
           </span>
-          {binding.control_id ? (
+          {binding.control_id && control.viewer_may_open !== false ? (
             <button
               type="button"
               className="btn btn-ghost control-card-composition__open"
@@ -5497,6 +5613,16 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
       ? 'or'
       : 'and';
     const callerDraft = pendingCallerAuthority(record);
+    // The Control bounds what the Card may hold in either view (kdcube#270 D4);
+    // only the diff markers follow the Effective Card view.
+    const controlBound: EffectiveCompositionView | undefined = linkedControl?.control_authority
+      ? {
+          mode: compositionMode,
+          control: linkedControl.control_authority,
+          effective: linkedControl.control_authority,
+          controlLabel,
+        }
+      : undefined;
     const effectiveComposition: EffectiveCompositionView | undefined = showingEffective
       && linkedControl?.control_authority
       ? {
@@ -5607,6 +5733,10 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
             </div>
           ) : null}
           <CatalogDriftNotice drift={cardCatalogDrift(record)} />
+          <ControlNarrowingNotice
+            outside={linkedControlCard(record)?.outside_control}
+            refusal={record.agent_sync_refusal || linkedControlCard(record)?.agent_sync_refusal}
+          />
           {/* W681: the My Card's GitHub link stays in view while the Card is edited; Edit never hides it. */}
           {isMyCard(record)
             ? <MyCardGithubSection projectRef={myCardProjectRef(record)} openParams={openParams} />
@@ -5663,6 +5793,34 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
                   </div>
                 )}
               </Field>
+              {descriptorCapabilityControl && (
+                record.provenance?.agent_descriptor_card_edited === true
+                // A Control the first build of this button left without descriptor
+                // evidence: every sync refuses until it is returned again.
+                || !Object.values(record.resource_acceptance || {}).some((item) => item?.kind === 'kdcube_agent_descriptor')
+              ) ? (
+                <Field label="Explicit list" wide>
+                  <div className="control-return-to-descriptor">
+                    <small>
+                      An administrator saved this Control, so descriptor changes only narrow it and
+                      actions added later do not reach it.
+                    </small>
+                    <button
+                      className="btn btn-ghost"
+                      type="button"
+                      disabled={busy || typeof record.card_revision !== 'number'}
+                      onClick={() => setConfirmReturnToDescriptor({
+                        accessId: record.access_id,
+                        cardRevision: record.card_revision as number,
+                        catalogVersion: record.catalog_version || '',
+                        label: cardTitle(record),
+                      })}
+                    >
+                      Return to descriptor
+                    </button>
+                  </div>
+                </Field>
+              ) : null}
             </div>
           ) : null}
           {record.source !== 'agent' && !descriptorCapabilityControl ? (
@@ -5706,7 +5864,7 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
           {(record.source === 'agent'
             || record.source === 'control'
             || Object.keys(record.resource_grants || {}).length)
-            ? renderEditResourceSections(record, effectiveComposition)
+            ? renderEditResourceSections(record, effectiveComposition, controlBound)
             : null}
           {renderAccountScopePicker(
               editAccountScope,
@@ -6026,6 +6184,10 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
                         </div>
                       ) : null}
                       <CatalogDriftNotice drift={cardCatalogDrift(item)} />
+                      <ControlNarrowingNotice
+                        outside={linkedControlCard(item)?.outside_control}
+                        refusal={item.agent_sync_refusal}
+                      />
                       {isMyCard(item)
                         ? <MyCardGithubSection projectRef={myCardProjectRef(item)} openParams={openParams} />
                         : null}
@@ -6199,6 +6361,7 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
     <section className="card">
       {renderRenewDialog()}
       {renderAgentResetDialog()}
+      {renderReturnToDescriptorDialog()}
 
       {accessCardFocus && accessCardFocusState === 'loading' ? (
         <div className="notice" role="status">Opening the requested Card...</div>

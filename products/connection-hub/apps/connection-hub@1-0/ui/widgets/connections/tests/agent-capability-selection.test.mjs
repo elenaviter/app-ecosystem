@@ -153,7 +153,7 @@ test('Agent Cards use the ordinary Card workbench plus KDCube metadata', () => {
   assert.match(panel, /title="KDCube agent defaults"/)
   assert.match(panel, /title="KDCube administrator preset"/)
   assert.match(panel, /renderCardComposition\(record, \{ editing: true \}\)/)
-  assert.match(panel, /renderEditResourceSections\(record, effectiveComposition\)/)
+  assert.match(panel, /renderEditResourceSections\(record, effectiveComposition, controlBound\)/)
   assert.match(panel, /renderAccountScopePicker\(/)
   assert.match(panel, /updateDelegatedAccess\(\{/)
   assert.match(panel, /changedEditorCardProperties/)
@@ -164,6 +164,8 @@ test('Agent Cards use the ordinary Card workbench plus KDCube metadata', () => {
   assert.match(panel, /descriptorCapabilityDefaults/)
   assert.match(panel, /title="KDCube administrator preset"[\s\S]*editable[\s\S]*singleChoiceCategories/)
   assert.doesNotMatch(panel, /mergeBundleProps\(/)
+  // W38: a Control Save writes only the Card; no bundle-props writer is left to call.
+  assert.doesNotMatch(readFileSync(new URL('../src/api/client.ts', import.meta.url), 'utf8'), /bundles\/\$\{[^}]*\}\/props|mergeBundleProps/)
   assert.match(panel, /Reset to Control defaults/)
   assert.match(panel, /resetToControlDefaults: true/)
   assert.match(panel, /Connected accounts and custom MCP servers stay on this card/)

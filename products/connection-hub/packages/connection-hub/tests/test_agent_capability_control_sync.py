@@ -675,7 +675,6 @@ async def test_agent_card_reset_uses_live_control_defaults_and_keeps_user_state(
     }
     descriptor_payload = {
         "revision": "descriptor-r1",
-        "standard_authority_overridden": True,
         "standard_authority": {
             "resources": [{
                 "server_id": "review",
@@ -1270,7 +1269,6 @@ async def test_existing_selection_repairs_control_managed_authority_only() -> No
     }
     descriptor_payload = {
         "revision": "descriptor-r1",
-        "standard_authority_overridden": True,
         "standard_authority": {
             "resources": [{
                 "server_id": "review",
@@ -1900,3 +1898,53 @@ async def test_metadata_only_agent_card_still_uses_the_standard_save() -> None:
         "tool.new"
     )
     assert RESOURCE in updated.resource_acceptance
+
+
+@pytest.mark.asyncio
+async def test_an_ordinary_user_cannot_read_a_descriptor_control_card() -> None:
+    """kdcube#270 D2: the read is refused without the authority payload."""
+
+    service, _persistence = _service()
+    created = await _sync(
+        service,
+        revision="descriptor-r1",
+        authority=("tool.old",),
+        catalog=("tool.old",),
+        selection=("tool.old",),
+    )
+    control_id = created["control_card"]["access_id"]
+
+    refused = await service.control_card_get(
+        {"user_id": OWNER, "roles": ["kdcube:role:registered"]},
+        control_id=control_id,
+    )
+    assert refused == {"ok": False, "error": "platform_admin_required", "status": 403}
+
+    shown = await service.control_card_get(
+        {"user_id": OWNER, "roles": ["kdcube:role:super-admin"]},
+        control_id=control_id,
+    )
+    assert shown["ok"] is True
+    assert shown["access"]["access_id"] == control_id
+
+
+@pytest.mark.asyncio
+async def test_the_agent_card_offers_its_descriptor_control_only_to_an_administrator() -> None:
+    """kdcube#270 D2: the owner's Agent Card says whether its Control opens."""
+
+    service, _persistence = _service()
+    created = await _sync(
+        service,
+        revision="descriptor-r1",
+        authority=("tool.old",),
+        catalog=("tool.old",),
+        selection=("tool.old",),
+    )
+    agent_id = created["card"]["access_id"]
+
+    async def _opens(roles):
+        described = await service.describe_card({"user_id": OWNER, "roles": roles}, access_id=agent_id)
+        return described["control_card"].get("viewer_may_open")
+
+    assert await _opens(["kdcube:role:registered"]) is False
+    assert await _opens(["kdcube:role:super-admin"]) is True

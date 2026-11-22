@@ -206,13 +206,45 @@ def same_selection(original: Any, selection: Mapping[str, Any], *, label: Any = 
             and (composition_mode is None or (composition_mode or "and") == (original.composition_mode or "and")))
 
 
-def checked_properties(original: Any, submitted: Any, *, own_my: bool) -> dict[str, Any]:
+def checked_properties(
+    original: Any, submitted: Any, *, own_my: bool, own_conversation_targets: bool = False,
+) -> dict[str, Any]:
+    """The properties a whole-Card Save may carry.
+
+    ``own_conversation_targets``: the owner's Save of their own Card that no
+    Control governs may change exactly ``kdcube.conversation_targets`` (the
+    applications whose conversation history the Card permits). Every other
+    property stays as stored.
+    """
     if own_my:
         from .my_card_person_properties_plan import whole_person_properties_patch
         try:
             whole_person_properties_patch(dict(original.properties or {}), submitted)
         except ValueError:
             raise WholeCardSaveRefused("project_person_my_card_property_invalid", 400) from None
-    elif submitted != dict(original.properties or {}):
+        return copy.deepcopy(dict(submitted))
+    stored = dict(original.properties or {})
+    if submitted == stored:
+        return copy.deepcopy(dict(submitted))
+    if not own_conversation_targets or not isinstance(submitted, Mapping):
         raise WholeCardSaveRefused("managed_card_edit_fields_unsupported")
-    return copy.deepcopy(dict(submitted))
+    fixed = ("Only this Card's conversation applications can change in this Save; "
+             "its other settings stay as stored. Nothing was saved.")
+    from .conversation_target_policy import CONVERSATION_TARGETS_PROPERTY, conversation_targets
+    changed = {key for key in set(stored) | set(submitted) if stored.get(key) != submitted.get(key)}
+    if changed != {CONVERSATION_TARGETS_PROPERTY}:
+        raise WholeCardSaveRefused("managed_card_edit_fields_unsupported", message=fixed)
+    raw = submitted.get(CONVERSATION_TARGETS_PROPERTY)
+    if raw is None:
+        targets: tuple[str, ...] = ()
+    else:
+        targets = conversation_targets(submitted)
+        if not isinstance(raw, (list, tuple)) or len(targets) != len(set(raw)):
+            raise WholeCardSaveRefused("conversation_targets_invalid", 400, message=(
+                "A conversation application in this Save is not a valid application id. Nothing was saved."))
+    out = copy.deepcopy(stored)
+    if targets:
+        out[CONVERSATION_TARGETS_PROPERTY] = list(targets)
+    else:
+        out.pop(CONVERSATION_TARGETS_PROPERTY, None)
+    return out

@@ -4454,3 +4454,16 @@ fieldset.resource-edit-section__body { border: 0; margin: 0; min-width: 0; }
 .operation-group:first-child > .operation-group__label {
   margin-top: 0;
 }
+
+/* W38: a descriptor Control whose descriptor allows every action of a service. */
+.resource-boundaries-open-actions {
+  margin: 8px 0;
+  padding: 10px 12px;
+  border: 1px solid var(--warn-line, #e8c66b);
+  border-radius: 8px;
+  background: var(--warn-surface, #fdf6e3);
+}
+
+.resource-boundaries-open-actions p {
+  margin: 4px 0 0;
+}

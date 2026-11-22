@@ -12,6 +12,7 @@ import { operationHelpText } from './resourceEditing';
 import {
   compositionRowState,
   type ControlCompositionMode,
+  operationOutsideControl,
 } from './controlCardPreview';
 import { InfoMark } from '../../components/InfoMark';
 import { MANAGED_OPERATION_NOTE } from './managedGrants';
@@ -47,8 +48,16 @@ interface DelegatedResourceCatalogProps {
     controlLabel: string;
     controlOperations: Record<string, string[]>;
   };
+  /** kdcube#270 D4: the linked Control's operations, in either Card view; what
+   *  it does not hold is shown, not offered. `composition` is only the diff view. */
+  controlBound?: {
+    mode: ControlCompositionMode;
+    controlOperations: Record<string, string[]>;
+  };
   /** W739: per namespace, the managed operations the Card holds (drawn ticked); '*' when it holds every one. */
   heldManagedOperations?: Record<string, string[]> | '*';
+  /** W38: on a descriptor Control, the services whose descriptor allows every action. */
+  openActions?: { namespaces: string[]; overridden: boolean } | null;
 }
 
 const CONSENT_ACTION_LABEL: Record<Exclude<ConsentPlanAction, 'done'>, string> = {
@@ -56,6 +65,13 @@ const CONSENT_ACTION_LABEL: Record<Exclude<ConsentPlanAction, 'done'>, string> =
   reconnect: 'Reconnect account',
   approve: 'Approve access',
 };
+
+function namesText(names: string[], namespaces: { namespace: string; label?: string }[]): string {
+  return names
+    .filter((name) => namespaces.some((row) => row.namespace === name))
+    .map((name) => namespaces.find((row) => row.namespace === name)?.label || name)
+    .join(', ');
+}
 
 function strings(value: unknown): string[] {
   if (!Array.isArray(value)) return [];
@@ -212,7 +228,9 @@ export function DelegatedResourceCatalog({
   providers,
   accounts,
   composition,
+  controlBound,
   heldManagedOperations,
+  openActions,
 }: DelegatedResourceCatalogProps) {
   const namespaces = resource.named_services || [];
   const [open, setOpen] = useState(false);
@@ -240,10 +258,16 @@ export function DelegatedResourceCatalog({
     : selectedCount;
   const removedCount = compositionStates.filter((state) => state === 'removed').length;
   const addedCount = compositionStates.filter((state) => state === 'added').length;
+  // W38 / kdcube#270 D4: under an AND Control an operation outside it can never
+  // take effect, and the Card save refuses it; it is shown, not offered.
+  const outsideControl = (namespace: string, operation: string): boolean => (
+    operationOutsideControl(controlBound ?? composition, namespace, operation)
+  );
   const setEveryOperation = (checked: boolean) => {
     offeredRows.forEach(({ namespace, row }) => {
       const held = new Set(selectedOperations[namespace] || []);
       if (held.has(row.operation) === checked) return;
+      if (checked && outsideControl(namespace, row.operation)) return;
       onOperationChange(namespace, row.operation, row.grants, checked);
     });
   };
@@ -255,6 +279,7 @@ export function DelegatedResourceCatalog({
     const held = new Set(selectedOperations[namespace] || []);
     rows.forEach((row) => {
       if (held.has(row.operation) === checked) return;
+      if (checked && outsideControl(namespace, row.operation)) return;
       onOperationChange(namespace, row.operation, row.grants, checked);
     });
   };
@@ -305,6 +330,18 @@ export function DelegatedResourceCatalog({
             </button>
           </span>
         </div>
+        {openActions && openActions.namespaces.some((name) => namespaces.some((row) => row.namespace === name)) ? (
+          <div className="resource-boundaries-open-actions" role="note" data-testid="control-open-actions-notice">
+            <strong>
+              {openActions.overridden ? 'Explicit list in force' : 'Every action is included automatically'}
+            </strong>
+            <p>
+              {openActions.overridden
+                ? <>The app descriptor allows every action of {namesText(openActions.namespaces, namespaces)}, but this Control Card holds an explicit list. Actions these services add later are not included until you select them and save again.</>
+                : <>The app descriptor allows every action of {namesText(openActions.namespaces, namespaces)} (<code>object.action</code>), so the default ceiling includes every action these services offer, and actions they add later. To limit it to an explicit list, select the actions here and save this Control Card.</>}
+            </p>
+          </div>
+        ) : null}
         {offeredRows.length && !selectedCount ? (
           <p className="resource-boundaries-empty">
             No service actions selected. Open a service below to choose what this card may do.
@@ -350,7 +387,9 @@ export function DelegatedResourceCatalog({
               <span className="namespace-boundary__quick">
                 <button
                   type="button"
-                  disabled={includedRows.length >= rows.length}
+                  disabled={rows.every((row) => (
+                    includedRows.includes(row) || outsideControl(namespace.namespace, row.operation)
+                  ))}
                   title={`Grant every operation of ${namespace.label || namespace.namespace}`}
                   onClick={(event) => {
                     event.preventDefault();
@@ -400,6 +439,7 @@ export function DelegatedResourceCatalog({
                 const included = includedRows.includes(row);
                 const controlSelected = (composition?.controlOperations[namespace.namespace] || [])
                   .some((operation) => operation === '*' || operation === row.operation);
+                const notOffered = !included && outsideControl(namespace.namespace, row.operation);
                 const diffState = composition
                   ? compositionRowState(included, controlSelected, composition.mode)
                   : 'absent';
@@ -417,6 +457,7 @@ export function DelegatedResourceCatalog({
                     className={[
                       'namespace-operation',
                       included ? 'namespace-operation-included' : '',
+                      notOffered ? 'namespace-operation-outside' : '',
                       diffState === 'added' ? 'authority-diff-added' : '',
                       diffState === 'removed' ? 'authority-diff-removed' : '',
                     ].filter(Boolean).join(' ')}
@@ -425,6 +466,7 @@ export function DelegatedResourceCatalog({
                     <input
                       type="checkbox"
                       checked={included}
+                      disabled={notOffered}
                       onChange={(event) => onOperationChange(
                         namespace.namespace,
                         row.operation,
@@ -440,6 +482,9 @@ export function DelegatedResourceCatalog({
                         ) : null}
                         {diffState === 'removed' ? (
                           <span className="badge badge-error">removed by {composition?.controlLabel}</span>
+                        ) : null}
+                        {notOffered ? (
+                          <span className="badge badge-error">not in this agent&apos;s Control</span>
                         ) : null}
                         {row.label !== row.operation ? (
                           <code className="operation-id">{row.operation}</code>
