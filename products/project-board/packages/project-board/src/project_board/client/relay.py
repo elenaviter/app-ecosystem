@@ -11,7 +11,7 @@ import shutil
 import threading
 import time
 from concurrent.futures import Executor, Future, ThreadPoolExecutor
-from contextlib import AbstractAsyncContextManager, AsyncExitStack
+from contextlib import AbstractAsyncContextManager, AsyncExitStack, nullcontext
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
@@ -92,6 +92,7 @@ from .credential_refusal import credential_refused
 from .relay_pacing import HANDSHAKE_TIMEOUT_REASON, PACING_FILENAME, RelayPacing, connection_hub_failure_code
 from .relay_logging import relay_log_owner
 from .relay_trace import DiagnosticWriter, RelayActivityTrace, record_outbox_send
+from .wake_trace import record as record_wake, WakeTrace
 from .relay_admission import is_namespace_handshake_timeout, is_runtime_unavailable
 from .session_delivery import (
     WAKE_EVENT_KINDS,
@@ -1816,9 +1817,28 @@ class ProblemBoardHostRelayAdapter:
             return None
         try:
             self.field.sync_worker_attendances(self.config.worker_name, board_refs)
-            return self.field.materialize_control(item)
+            return self._materialize_control_traced(item)
         except DomainError:
             return None
+
+    def _materialize_control_traced(self, item: Mapping[str, Any]) -> dict[str, Any]:
+        """Observe a completed store call on its existing executor, not an inferred arrival."""
+        started = time.monotonic()
+        receipt = self.field.materialize_control(item)
+        payload = item.get("payload") or {}
+        mail = payload.get("mail") if isinstance(payload, Mapping) else None
+        record_wake(
+            getattr(self, "_trace", None),
+            "mail_replayed" if receipt.get("replayed") else "mail_materialized",
+            str(item.get("recipient") or ""),
+            reason="replayed_store_returned" if receipt.get("replayed") else "local_store_returned",
+            control_ref=item.get("ref") or item.get("command_ref"),
+            message_ref=receipt.get("message_ref"),
+            source_message_ref=mail.get("source_message_ref") if isinstance(mail, Mapping) else None,
+            remote_created_at=item.get("created_at"), delivery_status=receipt.get("delivery_status"),
+            seconds=time.monotonic() - started,
+        )
+        return receipt
 
     async def _read_attendance_for_deferred_control(self) -> str:
         """Read attendance immediately after a cached not-linked result.
@@ -2758,6 +2778,8 @@ class ProblemBoardHostRelayAdapter:
                 continue
             command_ref = str(item.get("ref") or item.get("command_ref") or "")
             kind = str(item.get("kind") or "")
+            record_wake(getattr(self, "_trace", None), "control_received", str(item.get("recipient") or ""),
+                        control_ref=command_ref, remote_created_at=item.get("created_at"))
             if not isinstance(item.get("payload"), Mapping):
                 await self._refuse_malformed_control(
                     command_ref=command_ref,
@@ -3000,7 +3022,7 @@ class ProblemBoardHostRelayAdapter:
             try:
                 await self._fetch_attachments(item)
                 receipt = await run_off_loop(
-                    self.field.materialize_control, item, executor=self._store_thread()
+                    self._materialize_control_traced, item, executor=self._store_thread()
                 )
                 self._attendance_cache.get("not_linked_deferrals", {}).pop(command_ref, None)
             except DomainError as exc:
@@ -6121,6 +6143,7 @@ class ProblemBoardRelaySupervisor:
         log_owner = relay_log_owner()
         self._trace = trace or RelayActivityTrace(
             log=logger,
+            wake_submit=log_owner.submit_line if log_owner is not None else None,
             writer=(
                 DiagnosticWriter(submit=log_owner.submit_line)
                 if log_owner is not None
@@ -6360,6 +6383,10 @@ class ProblemBoardRelaySupervisor:
         )
         if return_signals:
             wake_provenance["return_reconciliation"] = return_signals
+        queue_started = time.monotonic()
+        record_wake(self._trace, "queue_started", channel.worker_name,
+                    wake_id=delivery_wake_id, message_refs=message_refs,
+                    message_count=len(message_refs), retried=retried)
         result = dict(
             await asyncio.to_thread(
                 self.session_notifier,
@@ -6371,6 +6398,11 @@ class ProblemBoardRelaySupervisor:
         )
         result.setdefault("event_kind", "queue.reconcile")
         result.setdefault("delivered", False)
+        record_wake(self._trace, "queue_finished", channel.worker_name,
+                    reason="queued" if result.get("delivered") else "unconfirmed",
+                    wake_id=delivery_wake_id, submission_id=result.get("queued_submission_id"),
+                    admission_seen=bool(result.get("admission_seen")), error_code=result.get("reason"),
+                    retried=retried, seconds=time.monotonic() - queue_started)
         # A pushed wake leaves a line. A Claude Code channel records an attempt
         # every cycle by design (its session-owned watch is the path), so that
         # case stays at debug and a Codex push or any delivery is information.
@@ -6577,9 +6609,17 @@ class ProblemBoardRelaySupervisor:
             and recorded.get("account_email_sha256") != fingerprint):
             self._codex_quota_refresh_at.pop(channel.worker_name, None)
         if time.monotonic() < self._codex_quota_refresh_at.get(channel.worker_name, 0):
-            return merge_codex_quota(base_state, recorded, runtime_session_id=channel.runtime_session_id,
-                                     now=now, use_credits=worker_use_credits(field.worker_board_record(channel.worker_name))), self._codex_quota_errors.get(channel.worker_name, "")
+            cached = merge_codex_quota(base_state, recorded, runtime_session_id=channel.runtime_session_id,
+                                      now=now, use_credits=worker_use_credits(field.worker_board_record(channel.worker_name)))
+            error = self._codex_quota_errors.get(channel.worker_name, "")
+            record_wake(self._trace, "quota_cache", channel.worker_name, repeat=True,
+                        reason="cache_error" if error else "cache_ok", error_code=error,
+                        kind=(cached or {}).get("kind"), source=(cached or {}).get("source"),
+                        quota_observed_at=recorded.get("observed_at"))
+            return cached, error
         self._codex_quota_refresh_at[channel.worker_name] = time.monotonic() + QUOTA_REFRESH_SECONDS
+        read_started = time.monotonic()
+        record_wake(self._trace, "quota_read_started", channel.worker_name)
         try:
             observation = await self._codex_quota_reader(
                 expected_email=email, runtime_session_id=channel.runtime_session_id,
@@ -6598,9 +6638,14 @@ class ProblemBoardRelaySupervisor:
             self._codex_quota_errors.pop(channel.worker_name, None)
         except DomainError as exc:
             self._codex_quota_errors[channel.worker_name] = exc.code
+            record_wake(self._trace, "quota_read_finished", channel.worker_name,
+                        reason="read_error", error_code=exc.code, seconds=time.monotonic() - read_started)
             return state, exc.code
         except Exception:  # a failed reader is unavailable, never permission to spend a turn
             self._codex_quota_errors[channel.worker_name] = "work_codex_quota_unavailable"
+            record_wake(self._trace, "quota_read_finished", channel.worker_name,
+                        reason="read_error", error_code="work_codex_quota_unavailable",
+                        seconds=time.monotonic() - read_started)
             return state, "work_codex_quota_unavailable"
         merged = merge_codex_quota(base_state, observation, runtime_session_id=channel.runtime_session_id,
                                    now=utc_now(), use_credits=worker_use_credits(field.worker_board_record(channel.worker_name)))
@@ -6608,7 +6653,14 @@ class ProblemBoardRelaySupervisor:
             or not merged or (merged.get("source") == SOURCE_CODEX_APP_SERVER and merged.get("kind") == "unknown")
             or (observation.get("kind") == "ok" and merged.get("source") != SOURCE_CODEX_APP_SERVER)):
             self._codex_quota_errors[channel.worker_name] = "work_codex_quota_unmeasured"
+            record_wake(self._trace, "quota_read_finished", channel.worker_name,
+                        reason="read_unmeasured", error_code="work_codex_quota_unmeasured",
+                        seconds=time.monotonic() - read_started)
             return merged, "work_codex_quota_unmeasured"
+        record_wake(self._trace, "quota_read_finished", channel.worker_name,
+                    reason="read_ok", seconds=time.monotonic() - read_started,
+                    kind=(merged or {}).get("kind"), source=(merged or {}).get("source"),
+                    quota_observed_at=observation.get("observed_at"))
         return merged, ""
 
     async def _pending_for_wake(
@@ -6642,8 +6694,40 @@ class ProblemBoardRelaySupervisor:
         return pending_refs, listener, True
 
     async def _notify_available_input(
+        self,
+        host: HostRelayConfig,
+        channel: WorkerChannelConfig,
+        *,
+        lock_wait: tuple[str, float] | None = None,
+    ) -> dict[str, Any] | None:
+        observer = getattr(self._trace, "wakes", None)
+        check = observer.check(channel.worker_name) if isinstance(observer, WakeTrace) else nullcontext()
+        with check:
+            started = time.monotonic()
+            if lock_wait is not None:
+                reason, seconds = lock_wait
+                record_wake(self._trace, "notify_lock", channel.worker_name, repeat=True,
+                            reason=reason, seconds=seconds)
+            outcome = "succeeded"
+            try:
+                return await self._notify_available_input_body(host, channel)
+            except asyncio.CancelledError:
+                outcome = "cancelled"
+                raise
+            except Exception:
+                outcome = "error"
+                raise
+            finally:
+                record_wake(self._trace, "check_finished", channel.worker_name, repeat=True,
+                            reason=outcome, seconds=time.monotonic() - started)
+
+    async def _notify_available_input_body(
         self, host: HostRelayConfig, channel: WorkerChannelConfig
     ) -> dict[str, Any] | None:
+        def decision(reason: str, **fields: Any) -> None:
+            record_wake(self._trace, "decision", channel.worker_name, repeat=True,
+                        reason=reason, **fields)
+
         field = await self._channel_off_loop(channel, SharedFieldStore, host.field_root)
         try:
             listener = await self._channel_off_loop(
@@ -6653,11 +6737,19 @@ class ProblemBoardRelaySupervisor:
             if exc.code != "field_record_not_found":
                 raise
             await self._channel_off_loop(channel, field.clear_wake_hold, channel.worker_name)
+            decision("no_listener")
             return None
         if not listener or listener.get("state") == "detached":
             # Nobody to wake: no hold, so a later attach starts a fresh one (W334 review).
             await self._channel_off_loop(channel, field.clear_wake_hold, channel.worker_name)
+            decision("detached")
             return None
+        observed_subscription = listener.get("subscription")
+        receipt = observed_subscription.get("last_wake_receipt") if isinstance(observed_subscription, Mapping) else None
+        if isinstance(receipt, Mapping) and receipt.get("wake_id"):
+            record_wake(self._trace, "ack_observed", channel.worker_name, repeat=True,
+                        reason=receipt.get("state"), wake_id=receipt.get("wake_id"),
+                        recorded_at=receipt.get("recorded_at"))
         queue_reconciliation = await self._reconcile_session_queue(
             host, channel, listener
         )
@@ -6667,10 +6759,12 @@ class ProblemBoardRelaySupervisor:
             if exc.code != "field_record_not_found":
                 raise
             await self._channel_off_loop(channel, field.clear_wake_hold, channel.worker_name)
+            decision("no_listener")
             return queue_reconciliation
         if not pending_refs or not listener or listener.get("state") == "detached":
             # Nothing to wake for, or nobody to wake: no hold (W334).
             await self._channel_off_loop(channel, field.clear_wake_hold, channel.worker_name)
+            decision("empty" if not pending_refs else "detached", pending=len(pending_refs or ()))
             return queue_reconciliation
         # W563 (Q2): only notices that need no action are pending: they wake
         # no turn and are received with the next wake or receive. Each message
@@ -6692,6 +6786,7 @@ class ProblemBoardRelaySupervisor:
             del known[ref]
         if all(known.get(ref) for ref in pending_refs):
             await self._channel_off_loop(channel, field.clear_wake_hold, channel.worker_name)
+            decision("quiet", pending=len(pending_refs))
             return queue_reconciliation
 
         def wake_refs() -> list[str]:
@@ -6712,7 +6807,10 @@ class ProblemBoardRelaySupervisor:
             refs = wake_refs()
             if not refs:
                 await self._channel_off_loop(channel, field.clear_wake_hold, channel.worker_name)
+                decision("empty", pending=0)
                 return queue_reconciliation
+            decision("eligible", pending=len(refs), message_refs=refs,
+                     wake_id=kwargs.get("wake_id"), retried=bool(kwargs.get("retried")))
             return await self._notify_session(
                 host, channel, event_kind="input.available", message_refs=refs, **kwargs,
             )
@@ -6733,6 +6831,8 @@ class ProblemBoardRelaySupervisor:
                         raise
                     pending_refs = []
                 mailbox_read = True
+            if not pending_refs:
+                decision("empty", pending=0)
             return not pending_refs
         # W26: a wake to an agent the runtime says is out of tokens or rate
         # limited only piles up turns it cannot take. It waits for the reset
@@ -6766,9 +6866,11 @@ class ProblemBoardRelaySupervisor:
             if exc.code != "field_record_not_found":
                 raise
             await self._channel_off_loop(channel, field.clear_wake_hold, channel.worker_name)
+            decision("no_listener")
             return queue_reconciliation
         if not pending_refs or not listener or listener.get("state") == "detached":
             await self._channel_off_loop(channel, field.clear_wake_hold, channel.worker_name)
+            decision("after_quota_empty" if not pending_refs else "detached", pending=len(pending_refs or ()))
             return queue_reconciliation
         if quota_error or (limit_state and limit_state.get("source") == SOURCE_CODEX_APP_SERVER
                            and limit_state.get("kind") in {"rate_limited", "out_of_tokens"}
@@ -6792,6 +6894,11 @@ class ProblemBoardRelaySupervisor:
                                    "kind": str((limit_state or {}).get("kind") or ""),
                                    "source": str((limit_state or {}).get("source") or "unknown")},
                 )
+            decision("quota_error" if quota_error else "quota_hold", pending=len(pending_refs),
+                     message_refs=pending_refs, mailbox_read=mailbox_read,
+                     error_code=quota_error, retry_at=retry_at, kind=(limit_state or {}).get("kind"),
+                     source=(limit_state or {}).get("source"),
+                     quota_observed_at=(limit_state or {}).get("observed_at"))
             return {"wake_deferred": True, "wake_deferred_until": retry_at,
                     "reason": quota_error or "agent_rate_limited"}
         deferred_until = wake_deferred_until(limit_state, now=now)
@@ -6821,6 +6928,10 @@ class ProblemBoardRelaySupervisor:
                     deferred_until,
                     len(pending_refs),
                 )
+            decision("quota_hold", pending=len(pending_refs), retry_at=deferred_until,
+                     message_refs=pending_refs, mailbox_read=mailbox_read,
+                     kind=(limit_state or {}).get("kind"), source=(limit_state or {}).get("source"),
+                     quota_observed_at=(limit_state or {}).get("observed_at"))
             return {
                 **(queue_reconciliation or {}),
                 "wake_deferred": True,
@@ -6838,6 +6949,7 @@ class ProblemBoardRelaySupervisor:
             # is no native wake to attempt, so none is recorded, and inspect
             # no longer reads "wake delivery failed" (rehearsal, 2026-09-26).
             await self._channel_off_loop(channel, field.clear_wake_hold, channel.worker_name)
+            decision("session_watch", pending=len(pending_refs))
             return None
         withheld = wake_withheld_by_reconciliation(queue_reconciliation, subscription)
         if withheld and await mailbox_empty():
@@ -6855,6 +6967,9 @@ class ProblemBoardRelaySupervisor:
             # Every withheld wake is said out loud. On 2026-09-23 Codex
             # sessions sat without a wake for minutes and the log had no line
             # about it, so the cause could only be read from the queue database.
+            decision("queue_withheld", pending=len(pending_refs),
+                     message_refs=pending_refs, mailbox_read=mailbox_read,
+                     wake_id=subscription.get("outstanding_wake_id"))
             logger.warning(
                 "Problem Board wake withheld worker=%s reason=%s detail=%s "
                 "prior_wake=%s prior_state=%s pending=%d",
@@ -6965,6 +7080,8 @@ class ProblemBoardRelaySupervisor:
                     retried=True,
                 )
             wake_state = str(subscription.get("wake_delivery_state") or "")
+            decision("coalesced", pending=len(pending_refs), wake_id=outstanding_wake_id,
+                     message_refs=pending_refs, retry_at=deadline, mailbox_read=mailbox_read)
             logger.info(
                 "Problem Board wake deduplicated worker=%s wake_id=%s state=%s "
                 "retry_at=%s pending=%d mailbox=%s",
@@ -9463,14 +9580,18 @@ class ProblemBoardRelaySupervisor:
         lock = self._notify_lock(channel.worker_name)
         if lock.locked():
             return None
+        lock_started = time.monotonic()
         try:
             async with lock:
+                lock_seconds = time.monotonic() - lock_started
                 with self._trace.stage(
                     "session.notify",
                     channel=channel.worker_name,
                     operation=operation,
                 ):
-                    return await self._notify_available_input(host, channel)
+                    return await self._notify_available_input(
+                        host, channel, lock_wait=("beside_turn", lock_seconds),
+                    )
         except Exception:  # noqa: BLE001 - a local wake never blocks the cycle
             logger.warning(
                 "Problem Board session wake failed worker=%s", channel.worker_name,
@@ -9510,12 +9631,14 @@ class ProblemBoardRelaySupervisor:
             )
             return outcome
 
+        lock_started = time.monotonic()
         async with self._trace.timed_lock(
             self._notify_lock(channel.worker_name),
             "session.notify_lock_wait",
             channel=channel.worker_name,
             operation="input.available",
         ):
+            lock_seconds = time.monotonic() - lock_started
             # Local mail and the native session wake do not depend on a healthy
             # Data Bus reconciliation. A poisoned outbox or remote operation
             # refusal must not make an already-running coding session deaf.
@@ -9526,7 +9649,9 @@ class ProblemBoardRelaySupervisor:
                     channel=channel.worker_name,
                     operation="input.available",
                 ):
-                    delivery = await self._notify_available_input(host, channel)
+                    delivery = await self._notify_available_input(
+                        host, channel, lock_wait=("normal", lock_seconds),
+                    )
             except Exception as exc:  # noqa: BLE001
                 failure = staged_failure(
                     exc, operation="session.notify", target=channel.worker_name,

@@ -20,6 +20,7 @@ from dataclasses import dataclass, field
 from typing import Any, AsyncIterator, Callable, Iterator
 
 from .off_loop import HOLDER_MIN_WAIT_SECONDS, OFF_LOOP_OBSERVER
+from .wake_trace import WakeTrace
 
 
 SLOW_RELAY_SECONDS = 5.0
@@ -1161,6 +1162,7 @@ class RelayActivityTrace:
         wall_clock: Callable[[], float] = time.time,
         log: logging.Logger | None = None,
         writer: DiagnosticWriter | None = None,
+        wake_submit: Callable[[str], Any] | None = None,
     ) -> None:
         self.slow_seconds = max(0.001, float(slow_seconds))
         self._monotonic = monotonic
@@ -1193,6 +1195,8 @@ class RelayActivityTrace:
             monotonic=monotonic,
             wall_clock=wall_clock,
         )
+        self.wakes = WakeTrace(submit=wake_submit, process_id=self.accounting.process_id,
+                               monotonic=monotonic, wall_clock=wall_clock)
 
     def _paging_log_fields(self) -> str:
         current = major_faults()
