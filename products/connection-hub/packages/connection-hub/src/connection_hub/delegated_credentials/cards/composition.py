@@ -124,10 +124,13 @@ def card_transaction_coordinator(*, persistence: Any, decisions: Any, grant_stor
                          credential_handles=credential_handles, decisions=decisions,
                          resident_credentials=resident_credentials,
                          # W40: conversation slices live beside the Cards they narrow.
-                         slices=_slice_store(card_store))
+                         slices=(slices := _slice_store(card_store)))
     intents = LocalCardIntentSource(card_store, service=card_service, decisions=decisions)
     participant = HubCardParticipant(service=card_service, store=card_store, intents=intents, decisions=decisions)
-    return Coordinator(decisions, {PARTICIPANT: participant}, HubLocalReceiptVerifier(card_store)), intents
+    coordinator = Coordinator(decisions, {PARTICIPANT: participant}, HubLocalReceiptVerifier(card_store))
+    if slices is not None:
+        slices.bind_settler(slice_marker_settler(coordinator, intents, card_store))
+    return coordinator, intents
 
 
 def bind_card_transactions(service: Any, *, persistence: Any, decisions: Any, grant_store: Any,
@@ -223,3 +226,44 @@ def _slice_store(card_store: Any) -> Any:
         return None
     from connection_hub.delegated_credentials.slices.store import BundleStorageConversationSliceStore
     return BundleStorageConversationSliceStore(root)
+
+
+def slice_marker_settler(coordinator: Any, intents: Any, card_store: Any) -> Any:
+    """W40 review E2: finish the Hub-decided transaction that holds a slice marker.
+
+    Only a transaction this Hub decides (no caller authority) is settled here:
+    an undecided one is aborted only once its intent expired, then FINISHed,
+    which releases (ABORT) or applies (COMMIT) the slice change. A live or
+    caller-decided transaction keeps its marker; the slice stays closed.
+    """
+
+    from service_foundation.coordination.durable_decision_log import DecisionRefused
+
+    from .transaction_store import read_receipt
+
+    async def settle(member_id: str) -> bool:
+        # A marker names its member receipt; a group decides under its own id.
+        receipt = await read_receipt(card_store, member_id)
+        if not isinstance(receipt, Mapping) or receipt.get("transaction_id") != member_id:
+            return False
+        group = receipt.get("group")
+        transaction_id = group.get("transaction_id") if isinstance(group, Mapping) else member_id
+        if not isinstance(transaction_id, str) or not transaction_id:
+            return False
+        binding = await intents.binding(transaction_id)
+        if binding is None or getattr(binding, "authority", ""):
+            return False
+        record = await coordinator.store.read(transaction_id)
+        if record is None or record.intent.digest != receipt.get("intent_digest"):
+            return False
+        if not record.terminal:
+            try:
+                record = await coordinator.store.abort_expired(transaction_id)
+            except DecisionRefused as exc:
+                if str(exc) == "not_expired":
+                    return False
+                raise
+        await coordinator.finish(transaction_id)
+        return True
+
+    return settle

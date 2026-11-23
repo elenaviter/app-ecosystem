@@ -141,8 +141,28 @@ class ConversationSlice:
 class BundleStorageConversationSliceStore:
     """Slices under ``<cards root>/grantors/<subject_hash>/slices``."""
 
-    def __init__(self, root: pathlib.Path | str) -> None:
+    def __init__(self, root: pathlib.Path | str, *, settle: Any = None) -> None:
         self._root = pathlib.Path(root)
+        # Review E2: ``settle(transaction_id)`` decides an undecided transaction
+        # whose intent expired (ABORT) and FINISHes it, which releases its marker.
+        self._settle = settle
+
+    def bind_settler(self, settle: Any) -> None:
+        self._settle = settle
+
+    async def _markers(self, prepared_directory: pathlib.Path, *, own: str = "") -> list[str]:
+        """Prepared markers other than ``own``, after settling the ones that can be decided now."""
+        names = [name[:-5] for name in await list_child_names(prepared_directory) if name.endswith(".json")]
+        foreign = [name for name in names if name != own]
+        if foreign and self._settle is not None:
+            for change_id in foreign:
+                try:
+                    await self._settle(change_id.rsplit(":", 1)[0])
+                except Exception:  # noqa: BLE001 - an undecided owner keeps its marker
+                    pass
+            names = [name[:-5] for name in await list_child_names(prepared_directory) if name.endswith(".json")]
+            foreign = [name for name in names if name != own]
+        return foreign
 
     def _directory(self, grantor_subject: str, card_access_id: str, conversation_id: str) -> pathlib.Path:
         if not _ACCESS_ID.fullmatch(str(card_access_id or "")):
@@ -173,7 +193,7 @@ class BundleStorageConversationSliceStore:
 
     async def prepared_changes(self, *, grantor_subject: str, card_access_id: str, conversation_id: str) -> list[str]:
         directory = self._prepared_directory(self._directory(grantor_subject, card_access_id, conversation_id))
-        return sorted(name[:-5] for name in await list_child_names(directory) if name.endswith(".json"))
+        return sorted(await self._markers(directory))
 
     async def write(self, candidate: ConversationSlice, *, expected_revision: int,
                     _change_id: str = "") -> ConversationSlice:
@@ -183,8 +203,7 @@ class BundleStorageConversationSliceStore:
         of this slice (review E1); only that change's COMMIT may write then.
         """
         directory = self._directory(candidate.grantor_subject, candidate.card_access_id, candidate.conversation_id)
-        prepared = await list_child_names(self._prepared_directory(directory))
-        if any(name != f"{_change_id}.json" for name in prepared if name.endswith(".json")):
+        if await self._markers(self._prepared_directory(directory), own=_change_id):
             raise SlicePrepared()
         revisions = await self._revisions(directory)
         current = revisions[-1] if revisions else 0
@@ -219,7 +238,7 @@ class BundleStorageConversationSliceStore:
         if marker.exists():
             return  # replay of this same STAGE
         directory = self._directory(candidate.grantor_subject, candidate.card_access_id, candidate.conversation_id)
-        if any(name.endswith(".json") for name in await list_child_names(marker.parent)):
+        if await self._markers(marker.parent, own=change_id):
             raise SlicePrepared()
         revisions = await self._revisions(directory)
         if (revisions[-1] if revisions else 0) != int(expected_revision):

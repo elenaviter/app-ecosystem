@@ -71,6 +71,8 @@ _SAFE_TARGET_REASONS = frozenset({
     "card_effect_adapter_unavailable", "card_effect_binding_mismatch",
     "card_effect_target_revision_moved", "card_effect_custody_unavailable",
     "card_effect_policy_conflict", "card_effect_old_handle_invalid",
+    # W40: a slice another transaction holds prepared.
+    "card_effect_target_busy",
 })
 
 
@@ -472,7 +474,8 @@ class ParticipantEffectApplier:
         effect_json = _canonical({"kind": kind, "key": key, "payload": json.loads(requested)})
         binding = EffectBinding(transaction_id, kind, key, _digest(effect_json),
                                 _digest(receipt_json), receipt_json)
-        if phase != "apply" and kind not in ("invocation_policy", "account_delete", "credential_issue", "handle_binding"):
+        if phase != "apply" and kind not in ("invocation_policy", "account_delete", "credential_issue", "handle_binding",
+                                             "conversation_slice"):
             return binding.effect_digest  # validated no-op; no target state is prepared/released
         if kind == "grant_binding":
             # A merely bound callback is not proof of crash-safe SDK mint/custody.

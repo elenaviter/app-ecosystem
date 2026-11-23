@@ -5231,6 +5231,7 @@ class AutomationAccessService:
         request_id: str | None = None,
         _authorize_agent_card: Callable[[str, str], Awaitable[Any]] | None = None,
         _application_write: bool = False,
+        turn_token: str = "",
     ) -> dict[str, Any]:
         """Create a delegated-access grant the current user grants to a client.
 
@@ -5769,6 +5770,22 @@ class AutomationAccessService:
             # standard authority and durable capability selection are aligned
             # by update_access and committed together, with the same bearer.
             # First issuance/rotation belongs to the enlisted lifecycle.
+            # W40 (T7): a consent given in a conversation names it by the turn
+            # token; the conversation's slice gains exactly what was granted,
+            # in the same Card decision.
+            slice_effects: list[dict[str, Any]] = []
+            if _clean(turn_token):
+                from .descriptor_agent_card import DescriptorAgentCardRefused
+                try:
+                    slice_effects = [await self._consent_slice_effect(
+                        existing, turn_token=turn_token, granted={
+                            "resource_grants": dict(resource_grants or {}),
+                            "resource_operations": dict(resource_operations or {}),
+                            "named_service_operations": (dict(named_service_operations)
+                                                         if isinstance(named_service_operations, Mapping) else {}),
+                        })]
+                except DescriptorAgentCardRefused as exc:
+                    return exc.to_dict()
             saved = await self.update_access(
                 user, access_id=existing.access_id, resource_grants=selected_resource_grants,
                 resource_operations=selected_resource_operations,
@@ -5777,7 +5794,7 @@ class AutomationAccessService:
                 expected_card_revision=(existing.card_revision if expected_card_revision is None
                                         else expected_card_revision),
                 expected_catalog_version=catalog_version, request_id=request_id,
-                _application_write=_application_write)
+                _application_write=_application_write, _slice_effects=slice_effects)
             if saved.get("ok") is not True:
                 return saved
             current = await self._load_record_any_state(existing.access_id, grantor_subject=grantor_subject)
@@ -11502,6 +11519,30 @@ class AutomationAccessService:
     def bind_oauth_issuance_store(self, store: Any) -> None:
         """W603: the PostgreSQL OAuth authority holding issuance plans and reservations (composition only)."""
         self._oauth_issuance_store = store
+
+    def bind_conversation_slices(self, store: Any, tokens: Any) -> None:
+        """W40: the slice store and the Hub's turn-token sealer; never supplied by an API caller."""
+        self._conversation_slices, self._turn_tokens = store, tokens
+
+    async def _consent_slice_effect(self, card: Any, *, turn_token: str,
+                                    granted: Mapping[str, Any]) -> dict[str, Any]:
+        from connection_hub.delegated_credentials.descriptor_agent_card import DescriptorAgentCardRefused
+        from connection_hub.delegated_credentials.slices.consent import conversation_slice_effect
+        from connection_hub.delegated_credentials.slices.store import SliceStoreError
+        from connection_hub.delegated_credentials.slices.turns import TurnRefused
+
+        store, tokens = getattr(self, "_conversation_slices", None), getattr(self, "_turn_tokens", None)
+        if store is None or tokens is None:
+            raise DescriptorAgentCardRefused("conversation_slices_unavailable", retryable=True, status=503)
+        try:
+            claims = tokens.verify(turn_token, card_access_id=card.access_id, now=int(time.time()))
+            granted = {key: value for key, value in granted.items() if value}
+            return await conversation_slice_effect(store, card=card, conversation_id=claims.conversation_id,
+                                                   granted=granted)
+        except TurnRefused as exc:
+            raise DescriptorAgentCardRefused(exc.reason, retryable=exc.retryable, status=exc.status) from None
+        except SliceStoreError as exc:
+            raise DescriptorAgentCardRefused(exc.reason, retryable=exc.retryable, status=409) from None
 
     def bind_resident_credentials(self, provider: Any) -> None:
         """Trusted host adapter for inactive resident originals; never supplied by an API caller."""
