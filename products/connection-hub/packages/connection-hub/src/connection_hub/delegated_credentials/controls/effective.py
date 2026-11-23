@@ -494,7 +494,7 @@ def effective_card_authority(
     if (
         holder
         and holder != card.grantor_subject
-        and binding.issuer_kind == AGENT_DESCRIPTOR_ISSUER_KIND
+        and AGENT_DESCRIPTOR_ISSUER_KIND in (binding.issuer_kind, control.issuer_kind)
         and not descriptor_edge_matches(card, control)
     ):
         # W41: an Agent Card reaches another holder's descriptor Control only

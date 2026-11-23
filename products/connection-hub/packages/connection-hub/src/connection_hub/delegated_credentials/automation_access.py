@@ -36,6 +36,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Awaitable, Callable, Iterable, Mapping, Sequence
 
 from connection_hub.concurrency import bounded_gather
+from connection_hub.delegated_credentials.controls.descriptor_control import is_application_authority_subject
 from connection_hub.delegated_credentials.managed_grants import (
     MANAGED_GRANT_NOT_EDITABLE,
     MANAGED_GRANTS_UNKNOWN,
@@ -7048,6 +7049,9 @@ class AutomationAccessService:
                 "error": "platform_admin_required",
                 "status": 403,
             }
+        if administrator_preset and not is_application_authority_subject(existing.grantor_subject):
+            # W41 (review C1): a per-user copy is migrated and revoked, never edited.
+            return {"ok": False, "error": "agent_descriptor_control_legacy_copy", "status": 409}
         if self._issuer_managed(existing) and not control_snapshot_is_exact(
             card_authority_from_record(existing)
         ):
@@ -8684,6 +8688,10 @@ class AutomationAccessService:
                 "error": "control_card_initial_selection_ambiguous",
                 "status": 400,
             }
+        if _clean(issuer_kind) == AGENT_DESCRIPTOR_ISSUER_KIND:
+            # W41 (review C1): a descriptor Control has exactly two writers, the
+            # deployment's publication and a platform administrator on the shared one.
+            return {"ok": False, "error": "agent_descriptor_control_publication_only", "status": 403}
         try:
             control_id = control_card_id_for_issuer(
                 issuer_kind,

@@ -20,7 +20,8 @@ from .cards.card_participant import PARTICIPANT, CardGroupIntent, CardGroupMembe
 from .cards.store import subject_hash_for
 from .cards.transaction_store import CardTransactionRefused
 from .descriptor_agent_card import (
-    DescriptorAgentCardRefused, rebinds_to_shared_control, validate_descriptor_agent_additions,
+    DescriptorAgentCardRefused, rebinds_to_shared_control, shared_control_write_refusal,
+    validate_descriptor_agent_additions,
     validate_descriptor_agent_control,
 )
 from .issuer_gate import IssuerWriteRefused, change_digest
@@ -73,6 +74,9 @@ async def persist_descriptor_lifecycle(service: Any, user: Mapping[str, Any], *,
     # dedicated descriptor issuer registration is a separate policy, and its
     # update/revoke contract cannot authorize creation by pretending absence
     # was an existing Card. Keep that exceptional case fail closed.
+    refusal = shared_control_write_refusal(original_control, control)
+    if refusal is not None:
+        raise refusal
     if prior_control is None and service._issuer_managed(control):
         raise DescriptorAgentCardRefused("agent_descriptor_control_creation_authority_unsupported")
     changed_control = prior_control != ceiling

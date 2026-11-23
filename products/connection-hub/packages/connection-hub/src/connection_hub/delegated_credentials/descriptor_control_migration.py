@@ -44,6 +44,25 @@ def _is_descriptor_control(card: Any) -> bool:
     return card.source == "control" and card.issuer_kind == AGENT_DESCRIPTOR_ISSUER_KIND
 
 
+_CONNECTOR_PREFIXES = ("urn:connection-hub:remote-mcp:", "urn:connection-hub:remote-a2a:")
+
+
+def _connectors_lost(copy: Any, shared: Any | None) -> list[str]:
+    connectors = sorted(resource for resource in copy.resource_grants if resource.startswith(_CONNECTOR_PREFIXES))
+    if not connectors:
+        return []
+    from connection_hub.delegated_credentials.agent_capability_policy import (
+        AGENT_CAPABILITY_AUTHORITY_PROPERTY, AgentCapabilityPolicy,
+    )
+    try:
+        authority = AgentCapabilityPolicy.from_property(
+            dict(getattr(shared, "properties", None) or {}).get(AGENT_CAPABILITY_AUTHORITY_PROPERTY))
+        families = authority.capabilities.get("resource_families", ())
+    except Exception:
+        families = ()
+    return [] if families else connectors
+
+
 def _differs(copy: Any, shared: Any | None) -> list[str]:
     if shared is None:
         return ["shared_control_not_published"]
@@ -78,6 +97,10 @@ async def migrate_descriptor_controls(host: Any, store: Any, *, apply: bool) -> 
             "administrator_edited": dict(copy.provenance or {}).get(AGENT_DESCRIPTOR_CARD_EDIT_PROVENANCE_KEY) is True,
             "differs_from_shared": _differs(copy, target),
             "bound_agent_cards": len(bound.get(copy.access_id, ())),
+            # Review C4: the owner's own connectors this copy listed. After the
+            # move they reach the agent only through the descriptor's resource
+            # families; with none declared they are no longer admitted.
+            "own_connectors_lost": _connectors_lost(copy, target),
         }
         report.append(row)
         if not apply:

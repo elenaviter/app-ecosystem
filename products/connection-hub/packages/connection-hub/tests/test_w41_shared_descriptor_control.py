@@ -240,3 +240,26 @@ def test_t11_a_card_bound_to_a_revoked_control_is_refused() -> None:
     assert revoked.state != CARD_STATE_ACTIVE
     with pytest.raises(ControlCardMismatch, match="control_card_not_active"):
         effective_card_authority(card, revoked)
+
+
+@pytest.mark.asyncio
+async def test_c1_an_ordinary_user_cannot_create_a_descriptor_control() -> None:
+    service, persistence = _service(named_services=True)
+    for user in ({"user_id": SECOND, "roles": ["kdcube:role:registered"]}, ADMIN):
+        refused = await service.control_card_create(
+            user, issuer_kind="kdcube_agent_descriptor", issuer_ref=RESOURCE, issuer_label="forged")
+        assert refused == {"ok": False, "error": "agent_descriptor_control_publication_only", "status": 403}
+    assert persistence.records == {}
+
+
+@pytest.mark.asyncio
+async def test_c1_a_legacy_per_user_copy_is_never_edited() -> None:
+    service, persistence = _service(named_services=True)
+    published = await _publish(service, READ, POST)
+    shared = persistence.records[published["control_card"]["access_id"]]
+    legacy_id = control_card_id_for_issuer("kdcube_agent_descriptor", RESOURCE, grantor_subject=OWNER)
+    persistence.records[legacy_id] = (dataclasses.replace(shared[0], access_id=legacy_id, grantor_subject=OWNER),
+                                      shared[1])
+    refused = await service.update_access(ADMIN, access_id=legacy_id, resource_grants={},
+                                          expected_card_revision=shared[0].card_revision)
+    assert refused == {"ok": False, "error": "agent_descriptor_control_legacy_copy", "status": 409}

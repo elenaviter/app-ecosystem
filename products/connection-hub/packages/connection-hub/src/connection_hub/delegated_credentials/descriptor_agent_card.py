@@ -158,6 +158,25 @@ def rebinds_to_shared_control(before: CardAuthority, control: CardAuthority) -> 
     )
 
 
+def shared_control_write_refusal(prior_control: Any, control: Any) -> "DescriptorAgentCardRefused | None":
+    """W41: an Agent Card lifecycle never creates or changes the shared descriptor Control.
+
+    The deployment's publication and a platform administrator are its only
+    writers. A Card write reserves the stored Control; it never carries a new one.
+    """
+
+    from .controls.descriptor_control import is_application_authority_subject
+
+    if control is None or not is_application_authority_subject(getattr(control, "grantor_subject", "")):
+        return None
+    if prior_control is None:
+        return DescriptorAgentCardRefused("agent_descriptor_control_not_published", retryable=True, status=503)
+    if ((prior_control.access_id, prior_control.card_revision, prior_control.grantor_subject)
+            != (control.access_id, control.card_revision, control.grantor_subject)):
+        return DescriptorAgentCardRefused("agent_capability_control_revision_conflict", retryable=True)
+    return None
+
+
 def descriptor_control_holder(resident: CardAuthority) -> str:
     """The subject whose partition holds this Agent Card's descriptor Control."""
 

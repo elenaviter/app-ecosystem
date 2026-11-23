@@ -52,7 +52,7 @@ async def test_a_dry_run_lists_each_copy_and_changes_nothing(tmp_path):
     assert report["administrator_edited_copies"] == 1
     [row] = report["copies"]
     assert row == {"agent": RESOURCE, "owner": OWNER, "control_id": copy.access_id, "administrator_edited": True,
-                   "differs_from_shared": [], "bound_agent_cards": 1}
+                   "differs_from_shared": [], "bound_agent_cards": 1, "own_connectors_lost": []}
     assert await _current(store, card) == card and await _current(store, copy) == copy
 
 
