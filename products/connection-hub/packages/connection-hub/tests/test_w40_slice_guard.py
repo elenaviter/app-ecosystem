@@ -96,3 +96,32 @@ async def test_t6_the_guard_entry_reads_the_slice_by_the_turn_token_and_fails_cl
     await slices.write(_slice(card, {}, state=SLICE_STATE_DELETING), expected_revision=1)
     with pytest.raises(SliceGuardRefused, match="conversation_deleting"):
         await effective_for_turn(effective=card, control=control, slices=slices, tokens=tokens, turn_token=token, now=now)
+
+
+@pytest.mark.asyncio
+async def test_the_request_path_narrows_the_live_composition_and_denies_on_any_refusal(tmp_path):
+    from types import SimpleNamespace
+
+    from connection_hub.delegated_credentials.live_grant import LiveGrantCardError, ResolvedCardComposition
+    from connection_hub.delegated_credentials.slices import guard
+
+    card, control = await _pair(tmp_path)
+    composition = ResolvedCardComposition(caller_card=card, control_card=control, effective_card=card)
+    card_store = SimpleNamespace(_root=tmp_path / "cards")
+    now = int(time.time())
+    token = TurnTokens(KEY).issue(TurnClaims(card.access_id, "c1", "t1", now, now + 600))
+
+    guard.bind_turn_tokens(None)
+    with pytest.raises(LiveGrantCardError, match="conversation_slices_unavailable"):
+        await guard.narrow_live_composition_for_turn(composition, card_store=card_store, turn_token=token)
+    guard.bind_turn_tokens(TurnTokens(KEY))
+    try:
+        assert await guard.narrow_live_composition_for_turn(composition, card_store=card_store, turn_token="") is composition
+        with pytest.raises(LiveGrantCardError, match="conversation_slice_missing"):
+            await guard.narrow_live_composition_for_turn(composition, card_store=card_store, turn_token=token)
+        await BundleStorageConversationSliceStore(card_store._root).write(
+            _slice(card, {"resource_families": []}), expected_revision=0)
+        narrowed = await guard.narrow_live_composition_for_turn(composition, card_store=card_store, turn_token=token)
+        assert CONNECTOR not in narrowed.effective_card.resource_grants and narrowed.caller_card is card
+    finally:
+        guard.bind_turn_tokens(None)

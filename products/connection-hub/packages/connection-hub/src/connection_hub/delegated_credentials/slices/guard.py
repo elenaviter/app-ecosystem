@@ -107,3 +107,46 @@ async def effective_for_turn(*, effective: CardAuthority, control: CardAuthority
 
 
 __all__ = ["SliceGuardRefused", "effective_for_turn", "narrow_by_slice"]
+
+
+# -- The request path (KDCube's delegated surface guard calls this) ------------
+
+_TURN_TOKENS: Any = None
+
+
+def bind_turn_tokens(tokens: Any) -> None:
+    """Bind the Hub's turn-token sealer for this process (from the Hub's own secret, at startup)."""
+    global _TURN_TOKENS
+    _TURN_TOKENS = tokens
+
+
+async def narrow_live_composition_for_turn(composition: Any, *, card_store: Any, turn_token: str,
+                                           now: int | None = None) -> Any:
+    """The live composition with its Effective Card narrowed by the conversation the token names.
+
+    Every refusal is an authorization failure (``LiveGrantCardError``): the
+    guard denies the call, never falls back to the Card's wider authority.
+    """
+
+    import time
+
+    from connection_hub.delegated_credentials.live_grant import LiveGrantCardError
+    from connection_hub.delegated_credentials.slices.store import BundleStorageConversationSliceStore
+    from connection_hub.delegated_credentials.slices.turns import TurnRefused
+
+    if not str(turn_token or "").strip():
+        return composition
+    root = getattr(card_store, "root", None) or getattr(card_store, "_root", None)
+    if _TURN_TOKENS is None or root is None or composition.control_card is None:
+        raise LiveGrantCardError("conversation_slices_unavailable")
+    try:
+        effective = await effective_for_turn(
+            effective=composition.effective_card, control=composition.control_card,
+            slices=BundleStorageConversationSliceStore(root), tokens=_TURN_TOKENS, turn_token=turn_token,
+            now=int(time.time()) if now is None else now)
+    except (SliceGuardRefused, TurnRefused) as exc:
+        raise LiveGrantCardError(exc.reason) from None
+    return dataclasses.replace(composition, effective_card=effective)
+
+
+__all__ += ["bind_turn_tokens", "narrow_live_composition_for_turn"]
