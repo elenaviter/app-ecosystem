@@ -146,16 +146,53 @@ A Control Card is the same Card aggregate without credential handles. It uses
 the same catalog choices, revisions, current pointer, drift calculation,
 editor, update path, and revoke lifecycle. Connection Hub owns it physically
 and durably. A descriptor-controlled agent gives the Card an exact application
-and agent target. The application synchronizes the descriptor projection;
-Connection Hub stores the Card. The descriptor seeds the first Card and
-defines its maximum authority. An administrator's Save writes one new Card
+and agent target. There is one descriptor Control per agent, for every user of
+the agent (see [One descriptor Control per agent](#one-descriptor-control-per-agent)).
+The application's deployment publishes it; Connection Hub stores the Card. The
+descriptor seeds the first Card and defines its maximum authority. An administrator's Save writes one new Card
 revision; it does not also write bundle properties. A refused Save leaves both
 the Card and descriptor unchanged. The stored Card is the only place an
 administrator's narrowing lives: later descriptor synchronization keeps the
 saved selection within the current descriptor and catalog ceilings, and an
 `agent_capability_control_overrides` entry an older write-through left in
 bundle properties neither seeds nor narrows it. Without an administrator edit,
-synchronization can still adopt changed descriptor defaults.
+a publication can still adopt changed descriptor defaults.
+
+#### One descriptor Control per agent
+
+The descriptor Control is held by the application, not by a user: it lives
+under the synthetic subject `application-authority:<digest>` (the digest of
+tenant, project and application), as a project's Cards live under
+`project-authority:<digest>`. No request authenticates as that subject. Its
+Card id is the deterministic Control id for the agent and that holder. Every
+user's Agent Card binds to it with `control_card.holder_subject` set to the
+holder; the guard computes both from the binding's `issuer_ref` and refuses a
+descriptor binding that names any other holder or id
+(`descriptor_control_edge_invalid`). The descriptor's resource families (the
+user's own MCP and A2A connectors) admit resources only on that exact edge.
+
+Exactly two writers change it:
+
+| Writer | How | Recorded actor |
+| --- | --- | --- |
+| The application's deployment | `agent_capability.publish` (local-only), when the app deploys and when a user's sync finds the descriptor revision unpublished; the platform binds the calling app, which must be the descriptor's application. A publication of a revision already stored writes nothing; a concurrent one of the same revision is a no-op. It meets every configured issuer and caller gate. | the application holder |
+| A platform administrator | The Card editor and whole-Card Save on the shared Control; the editor names it by `holder_subject`, which the Hub checks against the Control's own `issuer_ref`. **Return to descriptor** takes the same route. | the administrator |
+
+A user's sync, Save or consent never writes the Control. An administrator's
+edit therefore reaches every user's next governed call at once.
+
+An Agent Card write (an owner's Save, a picker selection, a consent) is checked
+against the live Control and re-pins the Card to its revision. That revision is
+reserved through the Card decision; when the Control moves between the read and
+the commit, the attempt aborts and the Hub retries once against the new
+Control. A write an issuer or caller gate decided is not retried.
+
+`descriptor_controls_migrate` (platform administrator) moves a deployment from
+the earlier per-user copies: a dry run lists each copy, its owner, whether an
+administrator edited it and how it differs from the shared Control;
+`{"apply": true}` rebinds every Agent Card still on its owner's copy and
+revokes the copy. Copies are listed, never carried over. A Card the migration
+misses moves on its owner's next sync.
 
 ### Credential delivery and resource reach
 
@@ -922,7 +959,11 @@ grants nothing; the next message writes a renewed revision under the same
 `access_id`, preserves the selected capability base, renews the credential,
 and only then projects tools. The owner therefore keeps one legible Card and
 selection across revisions without abandoned authority remaining live
-forever.
+forever. The sync reads the shared Control and writes only the user's Agent
+Card; it answers `agent_descriptor_control_not_published` or
+`agent_descriptor_control_not_current` instead of writing the Control, and the
+runtime then publishes that descriptor revision itself (only when its
+descriptor equals the props authority's) and syncs once more.
 
 Connection Hub persists the Control and Agent Cards, their revisions, links,
 leases, and positive selections. KDCube owns the synchronization-field
@@ -1017,7 +1058,8 @@ Card records that the administrator edited its selection; from then on a
 descriptor refresh only narrows it. **Return to descriptor** on such a Control
 is the explicit way back: one revision-checked Control update, through the same
 administrator Save, clears the edited mark and the accepted descriptor
-evidence, and the agent's next synchronization seeds the Control from the
+evidence, and the next publication of the agent's descriptor (its deployment,
+or a user's sync that finds the Control not current) seeds the Control from the
 current descriptor as for a new Control. An administrator
 narrowing treats a user's Agent Card like a descriptor narrowing does: a saved
 choice the Control no longer allows stays on the Agent Card as provenance,

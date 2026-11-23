@@ -175,10 +175,15 @@ A descriptor-issued hosted Agent Card's owner edit is decided in the Hub.
 The Hub verifies the resident id and client, grantor partition, deployment,
 application and agent against the canonical stored descriptor Control. The
 Control must be active, credentialless, carry descriptor evidence and an exact
-snapshot, and match the resident binding's revision. A stale binding refuses;
-Save does not silently adopt a newer Control. The local participant reserves
-that Control revision and the active catalog's version plus content hash until
-the decision, and includes any invocation-policy effects in the same commit.
+snapshot. The Control is one per agent, held by its application (W41,
+[delegated-cards](delegated-cards.md#one-descriptor-control-per-agent)), so it
+changes for every user: the edit is checked against the live Control and re-pins
+the resident binding to its revision. The local participant reserves that
+Control revision and the active catalog's version plus content hash until the
+decision, and includes any invocation-policy effects in the same commit. When
+the Control moves between the read and the commit, the attempt aborts and the
+Hub retries once against the new Control; a write an issuer or caller gate
+decided is not retried.
 New selections outside the current Control refuse by name. Stored Control
 administrator edits and configured issuer/caller policies keep their gates.
 Project-managed Cards retain their configured project route; an unknown issuer
@@ -187,11 +192,12 @@ ordinary writer rules. Recognizing a descriptor binding does not exempt other
 writers from the direct-write guard.
 
 An edit that keeps a live resident bearer uses unchanged credential handles. A descriptor
-sync that keeps the existing live bearer reserves the unchanged Control, or
-writes a changed Control and the resident under one group decision. Sync may
-advance the resident's binding to that exact current Control; owner Save stays
-strict about a stale binding. Configured Control issuer and resident writer
-policies are revalidated before the decision. The administrator edit marker
+sync never writes the Control: it reserves the shared Control it read and
+writes only the resident, advancing the binding to that exact current Control.
+The Control is written alone by its publication (the application's deployment,
+compare-and-set on its revision) or by a platform administrator's Save, each
+through the configured Control issuer and caller gates. Configured resident
+writer policies are revalidated before the decision. The administrator edit marker
 and label survive a descriptor refresh.
 An issuance policy refusal keeps its non-retryable code after an actual ABORT;
 it is not reported as a retryable service outage. The lifecycle still finishes
@@ -233,7 +239,9 @@ slot retains its earlier activated state. A prepared original left before STAGE 
 after an actual ABORT. The bounded cleanup page acknowledges completed work
 in the existing plan row, leaving its immutable plan and real decision intact.
 
-A changed Control can still commit with the existing resident when issuance
+A user's sync no longer changes the Control, so the case below, kept for the
+issuance plan's own members, does not arise from a sync since W41. A changed
+Control can still commit with the existing resident when issuance
 fails, if the plan never began or its actual ABORT has finished. An uncertain
 or committed issuance stays fenced. This fallback advances the binding while
 retaining the resident's prior positive authority; the response identifies
