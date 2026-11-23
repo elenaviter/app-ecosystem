@@ -6876,6 +6876,7 @@ class AutomationAccessService:
         _through_project: bool = False,
         _initial_start: bool = False,
         holder_subject: str = "",
+        _slice_effects: Sequence[Mapping[str, Any]] = (),
     ) -> dict[str, Any]:
         """Edit a card's authority IN PLACE, whatever family issued it.
 
@@ -7503,9 +7504,11 @@ class AutomationAccessService:
         try:
             guard = {"before_commit": before_commit, "expected_issuer_digest": gate_digest} if before_commit is not None else {}
             if descriptor_control_record is not None:
+                # W40 (T7): a consent from a conversation also changes that
+                # conversation's slice, as an effect of this one Card decision.
                 await self._persist_descriptor_agent_edit(existing, updated, control=descriptor_control_record,
                     active_catalog=active, actor_subject=grantor_subject, request_id=request_id or "",
-                    effects=save_effects, **guard)
+                    effects=[*save_effects, *_slice_effects], **guard)
             else:
                 await self._persist_record(updated, expected_revision=existing.card_revision,
                                            effects=save_effects, require_transaction=local_whole_save, **guard)
