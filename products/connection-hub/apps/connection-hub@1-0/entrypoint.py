@@ -307,6 +307,7 @@ CSRF_PROTECTED_OPERATION_ALIASES = frozenset({
     "control_card_get",
     "control_card_create",
     "control_card_update",
+    "descriptor_controls_migrate",
     "project_control_card_get",
     "project_control_card_update",
     "project_control_card_attach",
@@ -3788,6 +3789,7 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
                             "delegated_access_create": {"visibility": {"user_types": []}},
                             "control_card_get": {"visibility": {"user_types": []}},
                             "control_card_create": {"visibility": {"user_types": []}},
+                            "descriptor_controls_migrate": {"visibility": {"user_types": []}},
                             "control_card_update": {"visibility": {"user_types": []}},
                             "project_control_card_get": {"visibility": {"user_types": []}},
                             "project_control_card_update": {"visibility": {"user_types": []}},
@@ -5902,6 +5904,48 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
             _screen_save=True,
             **_control_card_changes(payload),
         )
+
+    @api(
+        method="POST",
+        alias="descriptor_controls_migrate",
+        route="operations",
+        csrf=True,
+        **_api_visibility("descriptor_controls_migrate"),
+    )
+    async def descriptor_controls_migrate(
+        self,
+        data: Optional[Dict[str, Any]] = None,
+        request: Any = None,
+        user_id: Optional[str] = None,
+        fingerprint: Optional[str] = None,
+        **kwargs: Any,
+    ) -> Dict[str, Any]:
+        """W41: list, and with ``apply`` migrate, per-user descriptor Control copies.
+
+        A platform administrator runs it in the deployment window: first a dry
+        run (the default) whose report is reviewed, then ``{"apply": true}``.
+        Cards are written only in chat-proc.
+        """
+
+        del fingerprint
+        payload = _payload(data, **kwargs)
+        user = _platform_user_payload(self, user_id=user_id)
+        if not user:
+            return {"ok": False, "error": "delegated_access_requires_authenticated_user"}
+        if not authority_has_platform_privilege(user.get("roles") or []):
+            return {"ok": False, "error": "platform_admin_required", "status": 403}
+        apply = payload.get("apply") is True
+        from connection_hub.delegated_credentials.cards.locks import CARD_WRITER_ROLE, current_process_role
+        from connection_hub.delegated_credentials.descriptor_control_migration import migrate_descriptor_controls
+
+        if apply and current_process_role() != CARD_WRITER_ROLE:
+            return {"ok": False, "error": "card_writer_process_required", "status": 409}
+        storage_root = self.bundle_storage_root()
+        if storage_root is None:
+            return {"ok": False, "error": "card_store_unavailable", "status": 503}
+        store = _guarded_card_store(storage_root, entrypoint=self, lifecycle_lock_scope=_lifecycle_lock_scope(self))
+        host = await _automation_access_service(self, request)
+        return await migrate_descriptor_controls(host, store, apply=apply)
 
     async def _project_control_card_access(self, request: Any) -> ProjectControlCardAccess:
         """The project path to a project's Control Card (W260): the project host authorizes."""

@@ -36,3 +36,48 @@ def test_an_ordinary_user_still_authenticates(monkeypatch) -> None:
     monkeypatch.setattr(module, "_identity_config", lambda *_a: {})
 
     assert module._platform_user_payload(object())["user_id"] == "user-1"
+
+
+def _migrate_call(module, monkeypatch, roles, payload):
+    import asyncio
+
+    calls = []
+
+    async def migrate(host, store, *, apply):
+        calls.append(apply)
+        return {"ok": True, "applied": apply}
+
+    async def service(*_a, **_k):
+        return object()
+
+    import connection_hub.delegated_credentials.descriptor_control_migration as migration
+    monkeypatch.setattr(migration, "migrate_descriptor_controls", migrate)
+    monkeypatch.setattr(module, "_platform_user_payload", lambda *_a, **_k: {"user_id": "user-1", "roles": roles})
+    monkeypatch.setattr(module, "_automation_access_service", service)
+    monkeypatch.setattr(module, "_guarded_card_store", lambda *_a, **_k: object())
+    monkeypatch.setattr(module, "_lifecycle_lock_scope", lambda *_a: "scope")
+    import connection_hub.delegated_credentials.cards.locks as locks
+    monkeypatch.setattr(locks, "current_process_role", lambda: locks.CARD_WRITER_ROLE)
+    entry = object.__new__(module.ConnectionHubEntrypoint) if hasattr(module, "ConnectionHubEntrypoint") else None
+    target = entry if entry is not None else next(
+        value for value in vars(module).values()
+        if isinstance(value, type) and hasattr(value, "descriptor_controls_migrate")).__new__(next(
+        value for value in vars(module).values()
+        if isinstance(value, type) and hasattr(value, "descriptor_controls_migrate")))
+    target.bundle_storage_root = lambda: "/tmp/cards"
+    method = type(target).descriptor_controls_migrate
+    method = getattr(method, "__wrapped__", method)
+    answer = asyncio.run(method(target, data=payload))
+    return answer, calls
+
+
+def test_the_migration_is_for_a_platform_administrator_and_dry_runs_by_default(monkeypatch) -> None:
+    module = _entrypoint_module()
+    refused, calls = _migrate_call(module, monkeypatch, ["kdcube:role:registered"], {"apply": True})
+    assert refused == {"ok": False, "error": "platform_admin_required", "status": 403} and calls == []
+
+    dry, calls = _migrate_call(module, monkeypatch, ["kdcube:role:super-admin"], {})
+    assert dry == {"ok": True, "applied": False} and calls == [False]
+
+    applied, calls = _migrate_call(module, monkeypatch, ["kdcube:role:super-admin"], {"apply": True})
+    assert applied == {"ok": True, "applied": True} and calls == [True]
