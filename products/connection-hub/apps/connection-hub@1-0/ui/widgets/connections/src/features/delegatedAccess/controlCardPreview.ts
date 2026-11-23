@@ -147,6 +147,19 @@ export function authorityAllowsOuterOperation(
 }
 
 /** How one Caller/Control selection is represented in the Effective Card. */
+/** kdcube#270 D4: under an AND Control an operation the Control does not hold
+ *  can never take effect, and the Card save refuses it, so the editor shows it
+ *  without offering it. Under OR (or with no Control) every row stays offered. */
+export function operationOutsideControl(
+  composition: { mode: ControlCompositionMode; controlOperations: Record<string, string[]> } | undefined,
+  namespace: string,
+  operation: string,
+): boolean {
+  if (!composition || composition.mode !== 'and') return false;
+  return !(composition.controlOperations[namespace] || [])
+    .some((allowed) => allowed === '*' || allowed === operation);
+}
+
 export function compositionRowState(
   callerSelected: boolean,
   controlSelected: boolean,

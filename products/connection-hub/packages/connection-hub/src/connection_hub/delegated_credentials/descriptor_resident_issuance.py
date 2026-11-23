@@ -29,7 +29,9 @@ from .cards.service import CardConflict
 from .cards.transaction_store import CardTransactionRefused
 from .cards.version_link import planned_link, pointer_link, staging_tag, write_hidden_version
 from .descriptor_agent_card import (
-    DescriptorAgentCardRefused, validate_descriptor_agent_additions, validate_descriptor_agent_control,
+    DescriptorAgentCardRefused, rebinds_to_shared_control, shared_control_write_refusal,
+    validate_descriptor_agent_additions,
+    validate_descriptor_agent_control,
 )
 from .oauth.grants import integration_subject
 from .issuer_gate import IssuerWriteRefused, change_digest
@@ -233,8 +235,12 @@ async def begin_descriptor_resident_issuance(service: Any, user: Mapping[str, An
     if before is not None:
         if prior_control is None:
             raise IssuanceRefused("agent_capability_control_not_active")
-        validate_descriptor_agent_control(_prior_binding(before, prior_control), prior_control,
-            tenant=service._tenant, project=service._project, grantor_subject=actor)
+        if not rebinds_to_shared_control(before, prior_control):
+            validate_descriptor_agent_control(_prior_binding(before, prior_control), prior_control,
+                tenant=service._tenant, project=service._project, grantor_subject=actor)
+    refusal = shared_control_write_refusal(original_control, control)
+    if refusal is not None:
+        raise refusal
     if prior_control is None and service._issuer_managed(control):
         raise DescriptorAgentCardRefused("agent_descriptor_control_creation_authority_unsupported")
     catalog = catalog_version_digest(active_catalog.version, active_catalog.content_hash)
@@ -294,7 +300,9 @@ async def decide_descriptor_resident_issuance(service: Any, raw: Mapping[str, An
     control_member = next((member for member in intent.members
                            if binding is not None and member.candidate.access_id == binding.control_id), None)
     if control_member is None:
-        found = await service._load_record_any_state(binding.control_id, grantor_subject=plan.grantor_subject)
+        # W41: the shared Control lives under its application holder.
+        found = await service._load_record_any_state(
+            binding.control_id, grantor_subject=binding.holder_subject or plan.grantor_subject)
         if found is None or found[1] != "active":
             raise IssuanceRefused("agent_capability_control_not_active")
         from .automation_access import card_authority_from_record

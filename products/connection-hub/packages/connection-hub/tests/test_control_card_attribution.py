@@ -212,6 +212,11 @@ def test_control_denial_names_control_and_withholds_ungated_editor_url() -> None
         "retry_same_request": False,
         "request_user_consent": False,
         "edit_route_available": False,
+        "next_step": (
+            "This is limited by the agent's Control (set by its administrator or its "
+            "app's descriptor), not by a missing user permission. The user cannot grant "
+            "it here; tell them an administrator of this app can allow it."
+        ),
         "target_card_role": "control",
         "target_access_id": "control-card-1",
     }

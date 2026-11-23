@@ -49,6 +49,11 @@ from connection_hub.delegated_credentials.named_service_policy import (
     operation_grants,
 )
 from connection_hub.delegated_credentials.controls.account_scope_policy import keeps_caller_accounts
+from connection_hub.delegated_credentials.agent_capability_control import AGENT_DESCRIPTOR_ISSUER_KIND
+from connection_hub.delegated_credentials.controls.descriptor_control import (
+    descriptor_edge_matches,
+    descriptor_families_admitted,
+)
 from connection_hub.delegated_credentials.controls.model import (
     ProjectControlCardAuthority,
     control_card_from_legacy,
@@ -489,6 +494,15 @@ def effective_card_authority(
     if (
         holder
         and holder != card.grantor_subject
+        and AGENT_DESCRIPTOR_ISSUER_KIND in (binding.issuer_kind, control.issuer_kind)
+        and not descriptor_edge_matches(card, control)
+    ):
+        # W41: an Agent Card reaches another holder's descriptor Control only
+        # through the exact edge (holder and id computed from its issuer_ref).
+        raise ControlCardMismatch("descriptor_control_edge_invalid")
+    if (
+        holder
+        and holder != card.grantor_subject
         and control_has_union(control)
     ):
         # Another person's Control Card may only narrow this Card, never
@@ -556,7 +570,10 @@ def compose_card_authority_selection(
             tuple(control.resource_operations.get(resource, ())),
         )
     if mode != CONTROL_COMPOSITION_OR:
-        if projection is not None:
+        # W41: a descriptor family admits resources the Control does not list,
+        # so it is honoured only on the owner's own Control or the exact
+        # shared descriptor edge, never on another cross-owner edge.
+        if projection is not None and descriptor_families_admitted(card, control):
             family_grants, family_operations = _family_resource_authority(
                 card,
                 _active_resource_families(control, projection),

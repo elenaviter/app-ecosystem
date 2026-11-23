@@ -112,7 +112,11 @@ test('W1018 A: the agent Card consent review', async (t) => {
       await page.getByTestId('agent-card-consent').waitFor({ timeout: 15000 })
       const op = page.getByTestId('agent-card-consent-operation').locator('input[type=checkbox]')
       assert.equal(await op.isChecked(), true)
-      assert.equal(await op.isEnabled(), true)
+      // W34 live check: what the agent asked for is fixed on the review, answered, never unticked.
+      assert.equal(await op.isDisabled(), false, 'fixed, not greyed out')
+      assert.equal(await op.getAttribute('aria-readonly'), 'true')
+      await op.click({ force: true })
+      assert.equal(await op.isChecked(), true, 'a click does not untick what the agent asked for')
       await page.getByRole('button', { name: 'Approve on this Card' }).click()
       await page.getByText('Approved. The agent').waitFor({ timeout: 10000 })
       const [grant] = await grants(page)
@@ -155,6 +159,18 @@ test('W1018 A: the agent Card consent review', async (t) => {
       assert.equal(sent.length, 1)
       assert.equal(sent[0].access_id, 'agent-0e150a469bf4edbd')
       assert.deepEqual(sent[0].account_scope, { google: { google_acct_1: ['slides:read'] } })
+      assert.deepEqual(errors, [])
+      await page.close()
+    })
+
+    await t.test('an operation outside the Control is never reported as already allowed (W38 live finding)', async () => {
+      // The account permission is already bound, so the request adds nothing: because nothing
+      // here can grant the operation, not because the Card already allows it.
+      const { page, errors } = await open(browser, origin, 'outside-bound')
+      const section = page.getByTestId('agent-card-consent-operation')
+      assert.match(await section.innerText(), /not in this agent's Control/i)
+      await page.waitForTimeout(500)
+      assert.equal(await page.getByTestId('agent-card-consent-request-held').count(), 0)
       assert.deepEqual(errors, [])
       await page.close()
     })

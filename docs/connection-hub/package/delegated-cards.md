@@ -5,7 +5,7 @@ summary: "Canonical lifecycle of Connection Hub Cards: credential-backed callers
 status: active
 tags: ["sdk", "solutions", "connections", "connection-hub", "delegated-access", "cards", "grants", "mcp", "named-services"]
 keywords: ["Delegated by KDCube", "AutomationAccessRecord", "resource_grants", "resource_operations", "application operations", "delegated role", "named_service_operations", "account_scope", "registry_access_id", "card authority", "control card", "My Card", "project identity edge", "effective authority", "descriptor drift", "grant lifecycle", "stable resident identity", "resource_acceptance", "multi-resource card", "card read model"]
-updated_at: 2026-10-12
+updated_at: 2026-11-17
 see_also:
   - ./delegated-authority-and-admission.md
   - ./oauth-delegated-credential-protocol.md
@@ -146,15 +146,53 @@ A Control Card is the same Card aggregate without credential handles. It uses
 the same catalog choices, revisions, current pointer, drift calculation,
 editor, update path, and revoke lifecycle. Connection Hub owns it physically
 and durably. A descriptor-controlled agent gives the Card an exact application
-and agent target. The application synchronizes the descriptor projection;
-Connection Hub stores the Card. The descriptor and its bundle properties seed
-the first Card and define its maximum authority. An administrator's Save writes
-one new Card revision; it does not also write bundle properties. A refused Save
-leaves both the Card and descriptor unchanged. Later descriptor synchronization
-keeps an administrator's saved selection within the current descriptor and
-catalog ceilings, even when an older bundle-property seed remains present.
-Without an administrator edit, synchronization can still adopt changed
-descriptor defaults.
+and agent target. There is one descriptor Control per agent, for every user of
+the agent (see [One descriptor Control per agent](#one-descriptor-control-per-agent)).
+The application's deployment publishes it; Connection Hub stores the Card. The
+descriptor seeds the first Card and defines its maximum authority. An administrator's Save writes one new Card
+revision; it does not also write bundle properties. A refused Save leaves both
+the Card and descriptor unchanged. The stored Card is the only place an
+administrator's narrowing lives: later descriptor synchronization keeps the
+saved selection within the current descriptor and catalog ceilings, and an
+`agent_capability_control_overrides` entry an older write-through left in
+bundle properties neither seeds nor narrows it. Without an administrator edit,
+a publication can still adopt changed descriptor defaults.
+
+#### One descriptor Control per agent
+
+The descriptor Control is held by the application, not by a user: it lives
+under the synthetic subject `application-authority:<digest>` (the digest of
+tenant, project and application), as a project's Cards live under
+`project-authority:<digest>`. No request authenticates as that subject. Its
+Card id is the deterministic Control id for the agent and that holder. Every
+user's Agent Card binds to it with `control_card.holder_subject` set to the
+holder; the guard computes both from the binding's `issuer_ref` and refuses a
+descriptor binding that names any other holder or id
+(`descriptor_control_edge_invalid`). The descriptor's resource families (the
+user's own MCP and A2A connectors) admit resources only on that exact edge.
+
+Exactly two writers change it:
+
+| Writer | How | Recorded actor |
+| --- | --- | --- |
+| The application's deployment | `agent_capability.publish` (local-only), when the app deploys and when a user's sync finds the descriptor revision unpublished; the platform binds the calling app, which must be the descriptor's application. A publication of a revision already stored writes nothing; a concurrent one of the same revision is a no-op. It meets every configured issuer and caller gate. | the application holder |
+| A platform administrator | The Card editor and whole-Card Save on the shared Control; the editor names it by `holder_subject`, which the Hub checks against the Control's own `issuer_ref`. **Return to descriptor** takes the same route. | the administrator |
+
+A user's sync, Save or consent never writes the Control. An administrator's
+edit therefore reaches every user's next governed call at once.
+
+An Agent Card write (an owner's Save, a picker selection, a consent) is checked
+against the live Control and re-pins the Card to its revision. That revision is
+reserved through the Card decision; when the Control moves between the read and
+the commit, the attempt aborts and the Hub retries once against the new
+Control. A write an issuer or caller gate decided is not retried.
+
+`descriptor_controls_migrate` (platform administrator) moves a deployment from
+the earlier per-user copies: a dry run lists each copy, its owner, whether an
+administrator edited it and how it differs from the shared Control;
+`{"apply": true}` rebinds every Agent Card still on its owner's copy and
+revokes the copy. Copies are listed, never carried over. A Card the migration
+misses moves on its owner's next sync.
 
 ### Credential delivery and resource reach
 
@@ -921,7 +959,11 @@ grants nothing; the next message writes a renewed revision under the same
 `access_id`, preserves the selected capability base, renews the credential,
 and only then projects tools. The owner therefore keeps one legible Card and
 selection across revisions without abandoned authority remaining live
-forever.
+forever. The sync reads the shared Control and writes only the user's Agent
+Card; it answers `agent_descriptor_control_not_published` or
+`agent_descriptor_control_not_current` instead of writing the Control, and the
+runtime then publishes that descriptor revision itself (only when its
+descriptor equals the props authority's) and syncs once more.
 
 Connection Hub persists the Control and Agent Cards, their revisions, links,
 leases, and positive selections. KDCube owns the synchronization-field
@@ -948,6 +990,39 @@ on the Agent Card unchanged. The descriptor initializes and caps the Control
 Card; the Agent Card reconciles against the Control Card, not directly against
 the descriptor.
 
+The synchronization checks each named-service operation of the Agent Card by
+the same rule as a Save (see [Projection into a saved card](#projection-into-a-saved-card)):
+an operation is backed by its door grants or by provider-backed grants bound on
+the Agent Card's own `account_scope`. The descriptor Control Card is
+credentialless and has no account binding, so its ceiling is resolved from door
+grants only. The two are separate entry points
+(`resolve_descriptor_control_ceiling`, `resolve_agent_card_standard_authority`)
+over one shared check, and the agent entry point always takes the Card's
+binding, `{}` when it binds no account.
+
+#### Named-service actions on a descriptor Control
+
+A descriptor Control holds the named-service actions twice: in its standard
+part (`named_service_operations`) and in its capability ceiling
+(`kdcube.agent_capability_authority`). Both read the agent's descriptor by the
+ceiling rule that KDCube documents for `allowed`
+([capabilities README](https://github.com/kdcube/kdcube/blob/main/app/ai-app/docs/sdk/solutions/user-settings/capabilities-README.md#named-service-actions-in-the-ceiling)):
+`object.action` stands for every action the active catalog offers for the
+namespace, with or without listed actions beside it; listed actions alone are
+the ceiling as they stand. The synchronization expands the capability ceiling,
+the defaults and the requested selection from the catalog with the same code
+as the standard part, so the Card editor, the consent review, the base, the
+picker and the next synchronization offer and keep the same actions. The
+parent `object.action` stays in the ceiling while the namespace keeps any
+action.
+
+An administrator Save on a descriptor Control is an explicit list. It narrows
+the standard part and the capability ceiling alike in the same Save, and every
+later synchronization bounds the ceiling by the saved standard part. Actions a
+service adds after that Save are not included until the administrator selects
+them and saves again. The Control editor states which of these applies under
+Service actions.
+
 An MCP server with individually declared tool capabilities stores the selected
 tools. A server exposed only as one capability selects the operations declared
 for that server; it does not become an empty resource merely because no child
@@ -956,7 +1031,9 @@ is intersected before the Agent Card is written.
 
 A permitted user-owned resource family also contributes a discovery container
 such as **My MCP connectors** and the owner's matching exact connector
-resources. The container is not itself submitted as Card authority. Connected
+resources. On this hosted Agent Card the container is not itself submitted
+as Card authority; a connected app or client card, whose caller enters through
+the route, keeps the route as its own authority row. Connected
 accounts and connector credentials remain owned by the user's Agent Card. Only
 a platform administrator may read or mutate the descriptor Control Card;
 direct access by an ordinary user is denied without returning its authority
@@ -977,7 +1054,21 @@ identity, so Connection Hub refuses direct revocation; the reset action
 restores its starting selection without destroying that identity.
 
 An administrator's Save submits one revision-checked Control Card update. The
-Card records that the administrator edited its selection. Descriptor and
+Card records that the administrator edited its selection; from then on a
+descriptor refresh only narrows it. **Return to descriptor** on such a Control
+is the explicit way back: one revision-checked Control update, through the same
+administrator Save, clears the edited mark and the accepted descriptor
+evidence, and the next publication of the agent's descriptor (its deployment,
+or a user's sync that finds the Control not current) seeds the Control from the
+current descriptor as for a new Control. An administrator
+narrowing treats a user's Agent Card like a descriptor narrowing does: a saved
+choice the Control no longer allows stays on the Agent Card as provenance,
+grants nothing, and applies again once the Control allows it. The Card read
+names those choices (`control_card.outside_control`, with `by` naming the
+administrator's list or the descriptor), and the editor lists them under "Not
+in this agent's Control". A refused descriptor synchronization changes no Card;
+its code and time are kept per owner and agent (`agent_sync_refusal` on the
+Agent Card and the Control read) until the next successful synchronization. Descriptor and
 bundle properties stay unchanged; on a later descriptor revision, sync keeps
 the saved Card choice within the refreshed descriptor and catalog ceilings.
 The linked KDCube capability document remains the source for descriptor-owned
@@ -1165,7 +1256,21 @@ capability selection and `account_scope` through
 `delegated_agent_grant_create` together. There is no second normal Card Save.
 An omitted account scope preserves the stored binding; an explicit empty
 scope binds no accounts. Current provider capability and Control checks
-remain authoritative at commit and use time.
+remain authoritative at commit and use time. A consent merge that adds a named-service
+operation also adds the MCP bridge tool the agent calls it with (for example
+`named_services_action` for an `object.action.*` operation) when the Card lacks
+it and the linked Control allows it. A passive sync never re-creates a bridge
+the owner removed, so without this the agent would hold the operation and
+nothing to call it with; bridges for operations the request did not name are
+left as they are. The Card editor does the same when the owner ticks a
+named-service operation whose bridge the draft lacks and the Control allows: it
+ticks the bridge and says which operation needs it. The bridge's Once or Every
+time choice stays the owner's, as for any added permission.
+
+The review can also add more than the request, within the Control, and only
+add: one merge grant per resource touched, chained by revision. A provider
+permission no account holds is requested at its provider after a save. See
+[More access in the same consent](../frontend/application/README.md#more-access-in-the-same-consent).
 
 Hosted chat demands carry `agent_card_consent: true` and omit the direct
 resource-only `grant` shortcut. The served URL and structured scene-open

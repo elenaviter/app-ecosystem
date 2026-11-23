@@ -22,6 +22,7 @@ from .agent_capability_policy import (
 from .application_resources import ApplicationResourceError, validate_application_card_resource
 from .cards.identity import CARD_KIND_AGENT, CARD_KIND_CONTROL, resident_client_id, stable_resident_access_id
 from .cards.model import CARD_STATE_ACTIVE, CONTROL_COMPOSITION_AND, CardAuthority, authority_is_credentialless
+from .controls.descriptor_control import descriptor_control_coordinates
 from .controls.model import control_card_id_for_issuer
 from .controls.snapshot import control_snapshot_is_exact
 from .controls.effective import ControlCardMismatch, effective_card_authority
@@ -109,9 +110,7 @@ def descriptor_agent_resource(
         or resident.state != CARD_STATE_ACTIVE or resident.client_id != client
         or resident.access_id != stable_resident_access_id(grantor_subject, client)
         or resident.delegate_subject != integration_subject(grantor_subject, client_id=client)
-        or binding.holder_subject not in ("", grantor_subject)
-        or binding.control_id != control_card_id_for_issuer(
-            AGENT_DESCRIPTOR_ISSUER_KIND, resource.resource, grantor_subject=grantor_subject)
+        or not _binding_names_a_descriptor_control(binding, resource.resource, grantor_subject=grantor_subject)
     ):
         raise DescriptorAgentCardRefused("agent_capability_card_identity_conflict")
     try:
@@ -122,6 +121,67 @@ def descriptor_agent_resource(
     if selection.resource != resource.resource:
         raise DescriptorAgentCardRefused("agent_capability_selection_resource_mismatch")
     return resource.resource
+
+
+def _binding_names_a_descriptor_control(binding: Any, resource: str, *, grantor_subject: str) -> bool:
+    """W41: the shared Control at its computed holder, or the owner's own legacy copy.
+
+    The legacy per-user copy is accepted only until migration rebinds the Card.
+    """
+
+    shared = descriptor_control_coordinates(resource)
+    if (binding.holder_subject, binding.control_id) == (shared.holder_subject, shared.control_id):
+        return True
+    return binding.holder_subject in ("", grantor_subject) and binding.control_id == control_card_id_for_issuer(
+        AGENT_DESCRIPTOR_ISSUER_KIND, resource, grantor_subject=grantor_subject)
+
+
+def rebinds_to_shared_control(before: CardAuthority, control: CardAuthority) -> bool:
+    """W41 migration: ``before`` is bound to its owner's legacy copy, ``control`` is the shared one.
+
+    Such a write moves the binding; the legacy copy is not this write's
+    ceiling, so the old binding is not validated against ``control``.
+    """
+
+    binding = before.control_card
+    if binding is None or binding.issuer_kind != AGENT_DESCRIPTOR_ISSUER_KIND:
+        return False
+    try:
+        shared = descriptor_control_coordinates(binding.issuer_ref)
+    except Exception:
+        return False
+    return (
+        binding.holder_subject in ("", before.grantor_subject)
+        and binding.control_id == control_card_id_for_issuer(
+            AGENT_DESCRIPTOR_ISSUER_KIND, binding.issuer_ref, grantor_subject=before.grantor_subject)
+        and (control.grantor_subject, control.access_id) == (shared.holder_subject, shared.control_id)
+    )
+
+
+def shared_control_write_refusal(prior_control: Any, control: Any) -> "DescriptorAgentCardRefused | None":
+    """W41: an Agent Card lifecycle never creates or changes the shared descriptor Control.
+
+    The deployment's publication and a platform administrator are its only
+    writers. A Card write reserves the stored Control; it never carries a new one.
+    """
+
+    from .controls.descriptor_control import is_application_authority_subject
+
+    if control is None or not is_application_authority_subject(getattr(control, "grantor_subject", "")):
+        return None
+    if prior_control is None:
+        return DescriptorAgentCardRefused("agent_descriptor_control_not_published", retryable=True, status=503)
+    if ((prior_control.access_id, prior_control.card_revision, prior_control.grantor_subject)
+            != (control.access_id, control.card_revision, control.grantor_subject)):
+        return DescriptorAgentCardRefused("agent_capability_control_revision_conflict", retryable=True)
+    return None
+
+
+def descriptor_control_holder(resident: CardAuthority) -> str:
+    """The subject whose partition holds this Agent Card's descriptor Control."""
+
+    binding = resident.control_card
+    return (binding.holder_subject if binding is not None else "") or resident.grantor_subject
 
 
 def validate_descriptor_agent_control(
@@ -135,7 +195,7 @@ def validate_descriptor_agent_control(
     if control.state != CARD_STATE_ACTIVE:
         raise DescriptorAgentCardRefused("agent_capability_control_not_active")
     if (
-        control.access_id != binding.control_id or control.grantor_subject != grantor_subject
+        control.access_id != binding.control_id or control.grantor_subject != (binding.holder_subject or grantor_subject)
         or control.source != "control" or control.card_kind != CARD_KIND_CONTROL
         or not authority_is_credentialless(control) or control.control_card is not None
         or control.client_id != f"control-card:{AGENT_DESCRIPTOR_ISSUER_KIND}"

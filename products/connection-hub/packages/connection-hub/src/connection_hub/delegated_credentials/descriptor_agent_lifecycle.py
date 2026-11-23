@@ -20,7 +20,9 @@ from .cards.card_participant import PARTICIPANT, CardGroupIntent, CardGroupMembe
 from .cards.store import subject_hash_for
 from .cards.transaction_store import CardTransactionRefused
 from .descriptor_agent_card import (
-    DescriptorAgentCardRefused, validate_descriptor_agent_additions, validate_descriptor_agent_control,
+    DescriptorAgentCardRefused, rebinds_to_shared_control, shared_control_write_refusal,
+    validate_descriptor_agent_additions,
+    validate_descriptor_agent_control,
 )
 from .issuer_gate import IssuerWriteRefused, change_digest
 
@@ -62,8 +64,9 @@ async def persist_descriptor_lifecycle(service: Any, user: Mapping[str, Any], *,
     if before is not None:
         if prior_control is None:
             raise DescriptorAgentCardRefused("agent_capability_control_not_active")
-        validate_descriptor_agent_control(_prior_binding(before, prior_control), prior_control,
-            tenant=service._tenant, project=service._project, grantor_subject=actor)
+        if not rebinds_to_shared_control(before, prior_control):
+            validate_descriptor_agent_control(_prior_binding(before, prior_control), prior_control,
+                tenant=service._tenant, project=service._project, grantor_subject=actor)
         if candidate_shape_refusal("update", before.to_dict(), candidate.to_dict()) is not None:
             raise DescriptorAgentCardRefused("agent_capability_edit_identity_conflict")
         validate_descriptor_agent_additions(before, candidate, ceiling)
@@ -71,6 +74,9 @@ async def persist_descriptor_lifecycle(service: Any, user: Mapping[str, Any], *,
     # dedicated descriptor issuer registration is a separate policy, and its
     # update/revoke contract cannot authorize creation by pretending absence
     # was an existing Card. Keep that exceptional case fail closed.
+    refusal = shared_control_write_refusal(original_control, control)
+    if refusal is not None:
+        raise refusal
     if prior_control is None and service._issuer_managed(control):
         raise DescriptorAgentCardRefused("agent_descriptor_control_creation_authority_unsupported")
     changed_control = prior_control != ceiling
@@ -116,7 +122,8 @@ async def persist_descriptor_lifecycle(service: Any, user: Mapping[str, Any], *,
         # The common same-Control case is the already-qualified owner-edit
         # decision, after advancing only this lifecycle's old binding snapshot.
         # Passing the actual original preserves its revision/content fence.
-        if before.control_card.control_revision == ceiling.card_revision:
+        if (before.control_card.control_revision == ceiling.card_revision
+                and not rebinds_to_shared_control(before, ceiling)):
             await service._persist_descriptor_agent_edit(original, resident, control=control,
                 active_catalog=active_catalog, actor_subject=actor)
             return resident
@@ -128,7 +135,7 @@ async def persist_descriptor_lifecycle(service: Any, user: Mapping[str, Any], *,
     if changed_control:
         members.append((prior_control, ceiling))
     members.sort(key=lambda pair: (subject_hash_for(pair[1].grantor_subject), pair[1].access_id))
-    reads = () if changed_control else ({"subject_hash": subject_hash_for(actor),
+    reads = () if changed_control else ({"subject_hash": subject_hash_for(ceiling.grantor_subject),
         "access_id": ceiling.access_id, "revision": ceiling.card_revision},)
     effects = await service._handle_binding_effects(members)
     bound = getattr(service, "_card_coordinator", None)
@@ -156,7 +163,7 @@ async def persist_descriptor_lifecycle(service: Any, user: Mapping[str, Any], *,
                 context_ref="", decision=None)
         row = await decisions.begin(draft)
         await intents.record(CardGroupIntent(transaction_id=row.transaction_id, intent_digest=row.intent.digest,
-            members=tuple(CardGroupMemberIntent(subject_hash=subject_hash_for(actor), original=old, candidate=new,
+            members=tuple(CardGroupMemberIntent(subject_hash=subject_hash_for(new.grantor_subject), original=old, candidate=new,
                 action="create" if old is None else "update") for old, new in members),
             effects=tuple(effects), actor_subject=actor, actor_kind="caller", reads=reads, catalog=catalog_digest))
         await coordinator.prepare_existing(row.transaction_id)

@@ -94,6 +94,17 @@ def _error_code(parsed: Mapping[str, Any]) -> str:
     return code or flat
 
 
+def _consent_forbidden(parsed: Mapping[str, Any]) -> bool:
+    """Whether the denial says no user consent can lift it (W38)."""
+    ret = parsed.get("ret")
+    if not isinstance(ret, Mapping):
+        err = parsed.get("error") if isinstance(parsed.get("error"), Mapping) else {}
+        details = err.get("details") if isinstance(err.get("details"), Mapping) else {}
+        ret = details.get("ret") if isinstance(details.get("ret"), Mapping) else {}
+    recovery = ret.get("recovery") if isinstance(ret.get("recovery"), Mapping) else {}
+    return recovery.get("request_user_consent") is False
+
+
 def _consent_block(parsed: Mapping[str, Any]) -> Mapping[str, Any]:
     """The self-describing consent block, wherever the surface placed it —
     top-level ``consent`` or nested under ``error.details.consent``."""
@@ -121,6 +132,10 @@ async def announce_result_consent(
     try:
         code = _error_code(parsed)
         if code not in _ANNOUNCEABLE_CODES:
+            return None
+        if _consent_forbidden(parsed):
+            # W38: the surface attributed the refusal to a card no user consent
+            # can change (the agent's Control). Nothing to announce.
             return None
         block = _consent_block(parsed)
         namespace = str(block.get("namespace") or parsed.get("namespace") or "").strip()

@@ -660,7 +660,7 @@ test('linked Card editing keeps both authority views and dialogs use one governe
   assert.match(preview, /requires the raw credentialless Control Card authority/)
   assert.match(panel, /selected Caller Card tool/)
   assert.match(panel, /must also allow/)
-  assert.match(panel, /renderEditResourceSections\(record, effectiveComposition\)/)
+  assert.match(panel, /renderEditResourceSections\(record, effectiveComposition, controlBound\)/)
   assert.match(panel, /Caller Card editor with \{controlLabel\} applied as a row diff/)
   assert.doesNotMatch(panel, /effective-composition-guide__legend/)
   assert.match(catalog, /const removedCount = compositionStates\.filter\(\(state\) => state === 'removed'\)\.length/)

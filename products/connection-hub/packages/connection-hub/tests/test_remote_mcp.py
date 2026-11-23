@@ -826,3 +826,33 @@ async def test_endpoint_policy_rejects_any_non_global_connect_address():
         await policy.connect_addresses("rebinder.example", 443)
 
     assert denied.value.reason == "endpoint_private_network_forbidden"
+
+
+@pytest.mark.asyncio
+async def test_a_connector_whose_credential_is_gone_can_still_be_removed_or_reconnected(tmp_path):
+    """Live 2026-11-19: Remove answered connector_credential_unavailable and kept the connector."""
+
+    service, _transport, secrets = _service(tmp_path)
+    kept = await service.create(
+        owner_subject="user-1", label="Lost", endpoint="https://mcp.example.test/mcp",
+        credential_mode=AUTH_BEARER, credential_value="lost-token", now=1_788_200_000,
+    )
+    removed = await service.create(
+        owner_subject="user-1", label="Gone", endpoint="https://mcp.example.test/other",
+        credential_mode=AUTH_BEARER, credential_value="gone-token", now=1_788_200_001,
+    )
+    secrets.values.clear()
+
+    reconnected = await service.replace_credential(
+        owner_subject="user-1", connector_id=kept.connector_id, expected_revision=kept.revision,
+        credential_mode=AUTH_BEARER, credential_value="fresh-token", now=1_788_200_010,
+    )
+    assert reconnected.credential_present is True
+    assert list(secrets.values.values()) == ["fresh-token"]
+
+    deleted = await service.delete(
+        owner_subject="user-1", connector_id=removed.connector_id,
+        expected_revision=removed.revision, now=1_788_200_020,
+    )
+    assert deleted.credential_present is False
+    assert [item.connector_id for item in await service.list(owner_subject="user-1")] == [kept.connector_id]

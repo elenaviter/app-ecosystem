@@ -25,6 +25,7 @@ from connection_hub.delegated_credentials.agent_capability_policy import (
     CAPABILITY_ALLOWED_UNSELECTED,
     CAPABILITY_NOT_ALLOWED,
 )
+from connection_hub.delegated_credentials.controls.descriptor_control import application_authority_subject
 from connection_hub.delegated_credentials.application_resources import (
     application_resource,
 )
@@ -62,6 +63,8 @@ PROJECT = "project-a"
 APPLICATION = "problem-board@1-0"
 AGENT = "worker"
 OWNER = "user-1"
+# W41: the application's synthetic holder of its shared descriptor Controls.
+HOLDER = application_authority_subject(tenant=TENANT, project=PROJECT, application=APPLICATION)
 RESOURCE = application_resource(
     tenant=TENANT,
     project=PROJECT,
@@ -323,7 +326,34 @@ def _service(
         catalog_resolver=_Resolver(),
         card_persistence=persistence,
     )
+    publish_then_sync(service)
     return service, persistence
+
+
+def publish_then_sync(service: AutomationAccessService) -> None:
+    """W41: the deployment publishes each descriptor revision before a user's sync reads it.
+
+    KDCube publishes the shared Control when it deploys the application; a
+    user's sync only reads it. The tests' sync therefore publishes first, as
+    the deployment, with the same descriptor arguments.
+    """
+
+    user_sync = service.sync_agent_capability_control
+
+    async def published_sync(user, **descriptor):
+        published = await service.publish_agent_descriptor_control(
+            {"bundle_id": descriptor["application"]}, **descriptor)
+        if not published.get("ok"):
+            # A descriptor the deployment cannot publish: the user's sync then
+            # refuses (and records) on its own.
+            return await user_sync(user, **descriptor)
+        synced = await user_sync(user, **descriptor)
+        # The user's sync never changes the Control; the publication reports it.
+        assert synced.get("control_changed") in (None, False), synced
+        return {**synced, "control_changed": published["control_changed"]} if synced.get("ok") else synced
+
+    service.sync_agent_capability_control = published_sync
+    service.user_sync_only = user_sync
 
 
 async def _sync(
@@ -675,7 +705,6 @@ async def test_agent_card_reset_uses_live_control_defaults_and_keeps_user_state(
     }
     descriptor_payload = {
         "revision": "descriptor-r1",
-        "standard_authority_overridden": True,
         "standard_authority": {
             "resources": [{
                 "server_id": "review",
@@ -1270,7 +1299,6 @@ async def test_existing_selection_repairs_control_managed_authority_only() -> No
     }
     descriptor_payload = {
         "revision": "descriptor-r1",
-        "standard_authority_overridden": True,
         "standard_authority": {
             "resources": [{
                 "server_id": "review",
@@ -1409,6 +1437,8 @@ async def test_live_control_defaults_seed_a_recreated_agent_card() -> None:
             control,
             card_revision=control.card_revision + 1,
             properties=control_properties,
+            # W41: an administrator's defaults on the shared Control seed new Cards.
+            provenance={**dict(control.provenance or {}), AGENT_DESCRIPTOR_CARD_EDIT_PROVENANCE_KEY: True},
         ),
         handles,
     )
@@ -1568,6 +1598,7 @@ async def test_only_an_administrator_may_edit_a_descriptor_control_card() -> Non
     refused = await service.update_access(
         {"user_id": OWNER, "roles": ["kdcube:role:registered"]},
         access_id=created["control_card"]["access_id"],
+        holder_subject=HOLDER,
         resource_grants={},
         expected_card_revision=created["control_card"]["card_revision"],
     )
@@ -1608,6 +1639,9 @@ async def test_non_admin_grantor_may_edit_a_non_descriptor_control_card() -> Non
     }
     ordinary_control_card = dataclasses.replace(
         descriptor_control_card,
+        # An ordinary Control is its creator's own (W41 holds only descriptor
+        # Controls under the application).
+        grantor_subject=OWNER,
         issuer_kind="application",
         properties=ordinary_properties,
         resource_acceptance=ordinary_acceptance,
@@ -1668,6 +1702,7 @@ async def test_same_descriptor_sync_preserves_the_administrator_preset() -> None
     changed = await service.update_access(
         {"user_id": OWNER, "roles": ["kdcube:role:super-admin"]},
         access_id=control_id,
+        holder_subject=HOLDER,
         resource_grants={
             NAMED_RESOURCE: ["named_services:use", "slack:read"],
         },
@@ -1802,6 +1837,7 @@ async def test_cleared_control_default_stays_cleared_after_descriptor_revision()
     saved = await service.update_access(
         {"user_id": OWNER, "roles": ["kdcube:role:super-admin"]},
         access_id=control_id,
+        holder_subject=HOLDER,
         resource_grants=descriptor_grants,
         resource_operations={},
         named_service_operations=descriptor_operations,
@@ -1855,6 +1891,7 @@ async def test_descriptor_control_always_limits_the_agent_card() -> None:
     refused = await service.update_access(
         {"user_id": OWNER, "roles": ["kdcube:role:super-admin"]},
         access_id=created["control_card"]["access_id"],
+        holder_subject=HOLDER,
         resource_grants={},
         expected_card_revision=created["control_card"]["card_revision"],
         composition_mode="or",
@@ -1900,3 +1937,55 @@ async def test_metadata_only_agent_card_still_uses_the_standard_save() -> None:
         "tool.new"
     )
     assert RESOURCE in updated.resource_acceptance
+
+
+@pytest.mark.asyncio
+async def test_an_ordinary_user_cannot_read_a_descriptor_control_card() -> None:
+    """kdcube#270 D2: the read is refused without the authority payload."""
+
+    service, _persistence = _service()
+    created = await _sync(
+        service,
+        revision="descriptor-r1",
+        authority=("tool.old",),
+        catalog=("tool.old",),
+        selection=("tool.old",),
+    )
+    control_id = created["control_card"]["access_id"]
+
+    refused = await service.control_card_get(
+        {"user_id": OWNER, "roles": ["kdcube:role:registered"]},
+        control_id=control_id,
+        holder_subject=HOLDER,
+    )
+    assert refused == {"ok": False, "error": "platform_admin_required", "status": 403}
+
+    shown = await service.control_card_get(
+        {"user_id": OWNER, "roles": ["kdcube:role:super-admin"]},
+        control_id=control_id,
+        holder_subject=HOLDER,
+    )
+    assert shown["ok"] is True
+    assert shown["access"]["access_id"] == control_id
+
+
+@pytest.mark.asyncio
+async def test_the_agent_card_offers_its_descriptor_control_only_to_an_administrator() -> None:
+    """kdcube#270 D2: the owner's Agent Card says whether its Control opens."""
+
+    service, _persistence = _service()
+    created = await _sync(
+        service,
+        revision="descriptor-r1",
+        authority=("tool.old",),
+        catalog=("tool.old",),
+        selection=("tool.old",),
+    )
+    agent_id = created["card"]["access_id"]
+
+    async def _opens(roles):
+        described = await service.describe_card({"user_id": OWNER, "roles": roles}, access_id=agent_id)
+        return described["control_card"].get("viewer_may_open")
+
+    assert await _opens(["kdcube:role:registered"]) is False
+    assert await _opens(["kdcube:role:super-admin"]) is True

@@ -155,3 +155,40 @@ def test_a_denial_withholds_a_link_the_relaying_client_cannot_open():
 def test_a_denial_carries_the_recovery_link_it_has():
     consent = _denial(f"{_BASE}{_PATH_PREFIX}connections_settings?tab=x")["consent"]
     assert consent["connection_hub_url"].startswith(_BASE)
+
+
+def test_a_denial_the_control_card_blocks_never_becomes_a_consent_demand():
+    """W38: the boundary attribution said the linked Control Card excludes the
+    operation, so no user consent can satisfy it; the denial passes unchanged."""
+    from connection_hub.delegated_credentials.catalog.authorization import (
+        CAPABILITY_NAMED_SERVICE_OPERATION,
+        CapabilityRequest,
+        CardProvenance,
+        card_boundary_denial,
+    )
+
+    set_connection_hub_public_base_url(_BASE)
+    request = SimpleNamespace(
+        state=SimpleNamespace(
+            delegated_credential={
+                "credential": {"attrs": {"grants": ["named_services:use"], "resource": "*/named_services*"}},
+                "grant_record": {"client_id": "kdcube-agent:workspace:main", "grants": [],
+                                 "registry_access_id": "agent-card"},
+            }
+        )
+    )
+    blocked = card_boundary_denial(
+        provenance=CardProvenance(access_id="agent-card", card_revision=3, catalog_version="v1"),
+        request=CapabilityRequest(kind=CAPABILITY_NAMED_SERVICE_OPERATION, resource="*/named_services*",
+                                  surface="named_service", namespace="docs",
+                                  operation="object.action.insert_page_break"),
+    )
+    blocked["ret"]["recovery"] = {"action": "review_blocking_control_card", "retry_same_request": False,
+                                  "request_user_consent": False, "edit_route_available": False}
+
+    denial = card_capability_consent_denial(
+        request, blocked, namespace="docs", tool="named_services_action",
+        operation="object.action.insert_page_break", tenant="acme", project="main")
+
+    assert "consent" not in denial
+    assert denial == blocked

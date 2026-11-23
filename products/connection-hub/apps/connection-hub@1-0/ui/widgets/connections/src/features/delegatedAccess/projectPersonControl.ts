@@ -22,6 +22,20 @@ export type ProjectControlCoordinates =
   | ProjectPersonControlCoordinates
   | ProjectInvitationControlCoordinates;
 
+/** W41: an application's shared descriptor Control is held by its synthetic
+ *  application subject, never by the person editing it. Reads and saves name
+ *  that holder; the Hub checks it against the Control's own issuer. */
+export const APPLICATION_AUTHORITY_PREFIX = 'application-authority:';
+const DESCRIPTOR_ISSUER_KIND = 'kdcube_agent_descriptor';
+
+export function applicationHolder(
+  value: { issuer_kind?: string; grantor_subject?: string; holder_subject?: string } | null | undefined,
+): string {
+  const holder = clean(value?.holder_subject) || clean(value?.grantor_subject);
+  return clean(value?.issuer_kind) === DESCRIPTOR_ISSUER_KIND && holder.startsWith(APPLICATION_AUTHORITY_PREFIX)
+    ? holder : '';
+}
+
 export interface ControlCardGetRequest {
   operation: 'project_person_control_get' | 'project_control_card_get' | 'control_card_get';
   data: Record<string, string>;
@@ -32,11 +46,13 @@ export function controlCardGetRequest({
   projectRef,
   targetSubject,
   invitationRef,
+  holderSubject,
 }: {
   controlId: string;
   projectRef?: string;
   targetSubject?: string;
   invitationRef?: string;
+  holderSubject?: string;
 }): ControlCardGetRequest {
   if (projectRef && invitationRef) {
     return {
@@ -67,7 +83,7 @@ export function controlCardGetRequest({
   }
   return {
     operation: 'control_card_get',
-    data: { control_id: controlId },
+    data: { control_id: controlId, ...(holderSubject ? { holder_subject: holderSubject } : {}) },
   };
 }
 
@@ -116,6 +132,8 @@ export interface LinkedControlOpenTarget {
   controlId: string;
   projectRef?: string;
   targetSubject?: string;
+  /** W41: the application holding a shared descriptor Control. */
+  holderSubject?: string;
 }
 
 /** W424: where the "Open Control Card" button on a composed Card reads the
@@ -137,7 +155,7 @@ export interface LinkedControlOpenTarget {
  *  The displayed label or UUID never selects the Card. */
 export function linkedControlOpenTarget(
   item: Pick<DelegatedAccessRecord, 'source' | 'issuer_kind' | 'issuer_ref' | 'grantor_subject'>,
-  binding: Pick<DelegatedControlCardBinding, 'control_id' | 'issuer_ref' | 'issuer_kind'>,
+  binding: Pick<DelegatedControlCardBinding, 'control_id' | 'issuer_ref' | 'issuer_kind' | 'holder_subject'>,
 ): LinkedControlOpenTarget | null {
   const controlId = clean(binding.control_id);
   if (!controlId) return null;
@@ -154,7 +172,8 @@ export function linkedControlOpenTarget(
   // project's Control Card with issuer_kind "application" (person Controls are
   // "project"), so the project ref, not the kind, says the project holds it.
   if (projectScoped && PROJECT_CONTROL_ISSUER_KINDS.has(issuerKind)) return { controlId, projectRef };
-  return { controlId };
+  const holderSubject = applicationHolder(binding);
+  return holderSubject ? { controlId, holderSubject } : { controlId };
 }
 
 /** The Card a linked read returned is the one the binding names, or not at all. */
