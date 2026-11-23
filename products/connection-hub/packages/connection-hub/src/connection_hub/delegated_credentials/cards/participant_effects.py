@@ -49,7 +49,7 @@ from connection_hub.invocation_policy.models import InvocationAuthority, validat
 
 EFFECT_KINDS = frozenset({
     "grant_binding", "credential_lifetime", "invocation_policy", "grant_unbind", "account_delete",
-    "credential_issue", "handle_binding",
+    "credential_issue", "handle_binding", "conversation_slice",
 })
 # W585: what a created Card's decision may carry: its original credentials and the
 # consent's own invocation policies (bound by _payload to this Card's owner, access id and key).
@@ -152,6 +152,8 @@ def _payload(kind: str, key: str, value: Any, access_id: str,
         # W606: move one member Card's handle row to the committed AFTER, from its pinned identity.
         "handle_binding": {"access_id", "from_identity", "from_fingerprint", "from_revision", "from_expires_at",
                            "card_revision", "expires_at", "prepared_at"},
+        # W40: this decision's change of one conversation slice of the Card's owner.
+        "conversation_slice": {"access_id", "owner_subject", "expected_revision", "slice"},
     }[kind]
     bound_elsewhere = kind in ("invocation_policy", "handle_binding")
     if set(value) != keys or (not bound_elsewhere and value.get("access_id") != access_id):
@@ -172,6 +174,20 @@ def _payload(kind: str, key: str, value: Any, access_id: str,
             _refuse("card_effect_payload_invalid")
         if type(value["base_card_revision"]) is not int or value["base_card_revision"] != base_revision:
             _refuse("card_effect_base_revision_mismatch")
+    elif kind == "conversation_slice":
+        owner = value["owner_subject"]
+        if (type(owner) is not str or not owner
+                or hashlib.sha256(owner.encode("utf-8")).hexdigest() != subject_hash):
+            _refuse("card_effect_owner_mismatch")
+        if type(value["expected_revision"]) is not int or value["expected_revision"] < 0:
+            _refuse("card_effect_payload_invalid")
+        from connection_hub.delegated_credentials.slices.store import ConversationSlice, SliceStoreError
+        try:
+            target = ConversationSlice.from_document(value["slice"])
+        except (SliceStoreError, TypeError, ValueError):
+            _refuse("card_effect_payload_invalid")
+        if (target.grantor_subject, target.card_access_id) != (owner, access_id):
+            _refuse("card_effect_payload_binding_invalid")
     elif kind == "invocation_policy":
         owner = value["owner_subject"]
         if (type(owner) is not str or not owner or owner != owner.strip()

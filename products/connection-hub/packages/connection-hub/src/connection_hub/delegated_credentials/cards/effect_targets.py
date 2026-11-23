@@ -88,6 +88,42 @@ class CredentialLifetimeTarget:
         return binding.effect_digest
 
 
+class ConversationSliceTarget:
+    """W40: one conversation slice, prepared at STAGE and committed at COMMIT.
+
+    While prepared, the slice refuses every other writer and its turn token
+    (review E1). An ABORT, or the recovery that aborts an undecided
+    transaction whose intent expired (review E2), releases only this marker.
+    """
+
+    def __init__(self, slices: Any) -> None:
+        self._slices = slices
+
+    @staticmethod
+    def _slice(payload: Mapping[str, Any]) -> Any:
+        from connection_hub.delegated_credentials.slices.store import ConversationSlice
+        return ConversationSlice.from_document(payload["slice"])
+
+    async def prepare_once(self, binding: EffectBinding, payload: Mapping[str, Any]) -> str:
+        from connection_hub.delegated_credentials.slices.store import SliceConflict, SlicePrepared
+        try:
+            await self._slices.prepare(self._slice(payload), expected_revision=payload["expected_revision"],
+                                       change_id=_change_id(binding))
+        except SliceConflict:
+            raise ParticipantEffectRefused("card_effect_target_revision_moved") from None
+        except SlicePrepared:
+            raise ParticipantEffectRefused("card_effect_target_busy") from None
+        return binding.effect_digest
+
+    async def apply_once(self, binding: EffectBinding, payload: Mapping[str, Any]) -> str:
+        await self._slices.commit_prepared(self._slice(payload), change_id=_change_id(binding))
+        return binding.effect_digest
+
+    async def release_once(self, binding: EffectBinding, payload: Mapping[str, Any]) -> str:
+        await self._slices.release(self._slice(payload), change_id=_change_id(binding))
+        return binding.effect_digest
+
+
 class InvocationPolicyTarget:
     """The binding's invocation policy, prepared at STAGE and published at COMMIT."""
 
@@ -433,7 +469,7 @@ class HandleBindingTarget:
 def compose_card_effects(*, card_service: Any, card_store: Any, grant_store: Any,
                          policies: Any, accounts_for: Any = None, issuance_store: Any = None,
                          credential_handles: Any = None, decisions: Any = None,
-                         resident_credentials: Any = None) -> ParticipantEffectApplier:
+                         resident_credentials: Any = None, slices: Any = None) -> ParticipantEffectApplier:
     """Bind one validated applier to a Card service's effect hooks.
 
     The receipt reader is the Card store's own durable receipt; the targets are
@@ -454,6 +490,8 @@ def compose_card_effects(*, card_service: Any, card_store: Any, grant_store: Any
         "account_delete": AccountDeleteTarget(accounts_for),
         "credential_issue": issue,
         "handle_binding": HandleBindingTarget(credential_handles, card_store),
+        # W40: the conversation slice store, beside the Card store.
+        "conversation_slice": ConversationSliceTarget(slices),
     })
     card_service.bind_effect_applier(applier.apply)
     card_service.bind_effect_preparer(applier.prepare)
@@ -461,5 +499,5 @@ def compose_card_effects(*, card_service: Any, card_store: Any, grant_store: Any
     return applier
 
 
-__all__ = ["AccountDeleteTarget", "CredentialIssueTarget", "HandleBindingTarget", "CredentialLifetimeTarget", "GrantUnbindTarget", "InvocationPolicyTarget",
+__all__ = ["AccountDeleteTarget", "ConversationSliceTarget", "CredentialIssueTarget", "HandleBindingTarget", "CredentialLifetimeTarget", "GrantUnbindTarget", "InvocationPolicyTarget",
            "NO_ACTIVE_CREDENTIALS", "compose_card_effects"]

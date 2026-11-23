@@ -32,6 +32,7 @@ from connection_hub.delegated_credentials.durable_io import list_child_names, re
 
 SLICES_DIRNAME = "slices"
 REVISIONS_DIRNAME = "revisions"
+PREPARED_DIRNAME = "prepared"
 SLICE_SCHEMA = "connection-hub.conversation-slice.v1"
 SLICE_STATE_ACTIVE = "active"
 SLICE_STATE_DELETING = "deleting"
@@ -39,12 +40,21 @@ SLICE_STATES = frozenset({SLICE_STATE_ACTIVE, SLICE_STATE_DELETING})
 SELECTION_CATEGORIES = ("resource_grants", "resource_operations", "named_service_operations", "resource_families")
 _REVISION_FILE = re.compile(r"^slice_revision_([0-9]{8})\.json$")
 _ACCESS_ID = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
+_CHANGE_ID = re.compile(r"^[A-Za-z0-9_.:-]{1,200}$")
+
 
 
 class SliceStoreError(RuntimeError):
     def __init__(self, reason: str, *, retryable: bool = False) -> None:
         super().__init__(reason)
         self.reason, self.retryable = reason, retryable
+
+
+class SlicePrepared(SliceStoreError):
+    """A Card transaction prepared a change of this slice and is undecided (review E1)."""
+
+    def __init__(self) -> None:
+        super().__init__("conversation_slice_prepared", retryable=True)
 
 
 class SliceConflict(SliceStoreError):
@@ -158,9 +168,24 @@ class BundleStorageConversationSliceStore:
             raise SliceStoreError("conversation_slice_document_mismatch")
         return current
 
-    async def write(self, candidate: ConversationSlice, *, expected_revision: int) -> ConversationSlice:
-        """Commit ``candidate`` as revision ``expected_revision + 1``; exclusive create is the CAS."""
+    def _prepared_directory(self, revisions_directory: pathlib.Path) -> pathlib.Path:
+        return revisions_directory.parent / PREPARED_DIRNAME
+
+    async def prepared_changes(self, *, grantor_subject: str, card_access_id: str, conversation_id: str) -> list[str]:
+        directory = self._prepared_directory(self._directory(grantor_subject, card_access_id, conversation_id))
+        return sorted(name[:-5] for name in await list_child_names(directory) if name.endswith(".json"))
+
+    async def write(self, candidate: ConversationSlice, *, expected_revision: int,
+                    _change_id: str = "") -> ConversationSlice:
+        """Commit ``candidate`` as revision ``expected_revision + 1``; exclusive create is the CAS.
+
+        A direct write refuses while a Card transaction holds a prepared change
+        of this slice (review E1); only that change's COMMIT may write then.
+        """
         directory = self._directory(candidate.grantor_subject, candidate.card_access_id, candidate.conversation_id)
+        prepared = await list_child_names(self._prepared_directory(directory))
+        if any(name != f"{_change_id}.json" for name in prepared if name.endswith(".json")):
+            raise SlicePrepared()
         revisions = await self._revisions(directory)
         current = revisions[-1] if revisions else 0
         if current != int(expected_revision):
@@ -179,6 +204,62 @@ class BundleStorageConversationSliceStore:
         finally:
             os.close(descriptor)
         return committed
+
+    # -- Card-transaction effect (design 2026-11-23): STAGE, COMMIT, ABORT --------
+
+    def _marker(self, candidate: ConversationSlice, change_id: str) -> pathlib.Path:
+        if not _CHANGE_ID.fullmatch(str(change_id or "")):
+            raise SliceStoreError("conversation_slice_change_invalid")
+        directory = self._directory(candidate.grantor_subject, candidate.card_access_id, candidate.conversation_id)
+        return self._prepared_directory(directory) / f"{change_id}.json"
+
+    async def prepare(self, candidate: ConversationSlice, *, expected_revision: int, change_id: str) -> None:
+        """STAGE: pin the expected revision and close the slice to every other writer."""
+        marker = self._marker(candidate, change_id)
+        if marker.exists():
+            return  # replay of this same STAGE
+        directory = self._directory(candidate.grantor_subject, candidate.card_access_id, candidate.conversation_id)
+        if any(name.endswith(".json") for name in await list_child_names(marker.parent)):
+            raise SlicePrepared()
+        revisions = await self._revisions(directory)
+        if (revisions[-1] if revisions else 0) != int(expected_revision):
+            raise SliceConflict(revisions[-1] if revisions else 0)
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        document = {"expected_revision": int(expected_revision), "slice": candidate.to_document()}
+        descriptor = os.open(marker, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        try:
+            os.write(descriptor, json.dumps(document, sort_keys=True).encode("utf-8"))
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
+
+    async def commit_prepared(self, candidate: ConversationSlice, *, change_id: str) -> ConversationSlice:
+        """COMMIT: write the prepared revision once; a replay finds it written and returns it."""
+        marker = self._marker(candidate, change_id)
+        prepared = await read_json_or_none(marker)
+        current = await self.read(grantor_subject=candidate.grantor_subject, card_access_id=candidate.card_access_id,
+                                  conversation_id=candidate.conversation_id)
+        if prepared is None:
+            if current is not None and current.selection == candidate.selection and current.state == candidate.state:
+                return current  # already applied by an earlier COMMIT of this change
+            raise SliceStoreError("conversation_slice_prepare_missing")
+        expected = int(prepared["expected_revision"])
+        if current is not None and current.slice_revision == expected + 1:
+            committed = current  # written before a crash that kept the marker
+        else:
+            committed = await self.write(candidate, expected_revision=expected, _change_id=change_id)
+        try:
+            os.unlink(marker)
+        except FileNotFoundError:
+            pass
+        return committed
+
+    async def release(self, candidate: ConversationSlice, *, change_id: str) -> None:
+        """ABORT (or an expired, undecided transaction's recovery): remove only this change's marker."""
+        try:
+            os.unlink(self._marker(candidate, change_id))
+        except FileNotFoundError:
+            pass
 
     async def remove(self, *, grantor_subject: str, card_access_id: str, conversation_id: str) -> int:
         """Remove every revision of one slice (after its conversation's messages are gone)."""
@@ -200,6 +281,7 @@ __all__ = [
     "SLICE_STATE_ACTIVE",
     "SLICE_STATE_DELETING",
     "SliceConflict",
+    "SlicePrepared",
     "SliceStoreError",
     "conversation_key",
 ]

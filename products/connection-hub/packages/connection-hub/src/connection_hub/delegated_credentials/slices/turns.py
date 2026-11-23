@@ -118,6 +118,10 @@ async def begin_turn(
         if not await registry.turn_alive(owner_subject=card.grantor_subject, conversation_id=conversation_id,
                                          turn_id=turn_id):
             raise TurnRefused("turn_not_alive")
+    if await store.prepared_changes(grantor_subject=card.grantor_subject, card_access_id=card.access_id,
+                                    conversation_id=conversation_id):
+        # A Card transaction is changing this slice: closed until it is decided.
+        raise TurnRefused("conversation_slice_prepared", retryable=True, status=409)
     current = await store.read(grantor_subject=card.grantor_subject, card_access_id=card.access_id,
                                conversation_id=conversation_id)
     if current is not None and current.state == SLICE_STATE_DELETING:
