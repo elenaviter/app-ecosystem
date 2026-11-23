@@ -82,3 +82,23 @@ async def test_a_moved_slice_refuses_the_transaction_before_its_decision(tmp_pat
     await store.write(_slice({}), expected_revision=1)
     with pytest.raises(ParticipantEffectRefused, match="card_effect_target_revision_moved"):
         await ConversationSliceTarget(store).prepare_once(_binding(), _payload(expected=1))
+
+
+@pytest.mark.asyncio
+async def test_consent_builds_one_effect_that_adds_only_the_granted_choice(tmp_path):
+    from connection_hub.delegated_credentials.slices.consent import conversation_slice_effect
+
+    store = await _seeded(tmp_path)
+    effect = await conversation_slice_effect(store, card=CARD, conversation_id="c1", granted={
+        "named_service_operations": {"https://n.example/mcp": {"slack": ["object.action.post"]}}})
+    assert effect["kind"] == "conversation_slice" and effect["payload"]["expected_revision"] == 1
+    target = ConversationSliceTarget(store)
+    await target.prepare_once(_binding(), effect["payload"])
+    await target.apply_once(_binding(), effect["payload"])
+    current = await store.read(grantor_subject="user-1", card_access_id=CARD.access_id, conversation_id="c1")
+    assert current.selection == {"named_service_operations": {"https://n.example/mcp": {
+        "slack": ["object.action.post", "object.list"]}}}
+    with pytest.raises(Exception, match="conversation_slice_category_not_guarded"):
+        await conversation_slice_effect(store, card=CARD, conversation_id="c1", granted={"model": ["x"]})
+    with pytest.raises(Exception, match="conversation_slice_missing"):
+        await conversation_slice_effect(store, card=CARD, conversation_id="other", granted={})
