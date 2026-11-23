@@ -122,7 +122,9 @@ def card_transaction_coordinator(*, persistence: Any, decisions: Any, grant_stor
     compose_card_effects(card_service=card_service, card_store=card_store, grant_store=grant_store,
                          policies=policies, accounts_for=accounts_for, issuance_store=issuance_store,
                          credential_handles=credential_handles, decisions=decisions,
-                         resident_credentials=resident_credentials)
+                         resident_credentials=resident_credentials,
+                         # W40: conversation slices live beside the Cards they narrow.
+                         slices=_slice_store(card_store))
     intents = LocalCardIntentSource(card_store, service=card_service, decisions=decisions)
     participant = HubCardParticipant(service=card_service, store=card_store, intents=intents, decisions=decisions)
     return Coordinator(decisions, {PARTICIPANT: participant}, HubLocalReceiptVerifier(card_store)), intents
@@ -212,3 +214,12 @@ async def recover_card_transactions(coordinator: Coordinator, *, limit: int = 10
 
 __all__ = ["CardTransactionsUnavailable", "DECISION_SCHEMA", "bind_card_transactions", "card_transaction_coordinator",
            "card_transactions_enabled", "decision_namespace", "postgres_decision_store", "recover_card_transactions"]
+
+
+def _slice_store(card_store: Any) -> Any:
+    """The conversation slice store under the same Card root, when the Card store has one."""
+    root = getattr(card_store, "root", None) or getattr(card_store, "_root", None)
+    if root is None:
+        return None
+    from connection_hub.delegated_credentials.slices.store import BundleStorageConversationSliceStore
+    return BundleStorageConversationSliceStore(root)
