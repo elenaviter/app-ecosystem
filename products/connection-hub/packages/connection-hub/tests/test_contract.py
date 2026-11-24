@@ -3,6 +3,7 @@
 
 from connection_hub.contract import (
     AGENT_CAPABILITY_PUBLISH,
+    AGENT_CAPABILITY_TURN,
     AGENT_CAPABILITY_SYNC,
     CONNECTION_OPERATIONS,
     CatalogEntry,
@@ -19,7 +20,9 @@ def test_operation_inventory_is_attribute_and_mapping_compatible():
         assert isinstance(spec, ConnectionOperationSpec)
         assert spec.operation == operation
         # W41: the publication is local-only, as the sync is.
-        expected = ("local",) if operation in (AGENT_CAPABILITY_SYNC, AGENT_CAPABILITY_PUBLISH) else ("local", "api")
+        # W40: the turn operation is local-only too.
+        expected = ("local",) if operation in (AGENT_CAPABILITY_SYNC, AGENT_CAPABILITY_PUBLISH,
+                                               AGENT_CAPABILITY_TURN) else ("local", "api")
         assert spec.transports == expected
         assert spec["transports"] == list(expected)
         assert dict(spec)["operation"] == operation
