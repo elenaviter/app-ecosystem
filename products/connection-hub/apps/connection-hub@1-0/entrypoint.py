@@ -2064,6 +2064,16 @@ async def _automation_access_service_for(
     from connection_hub.delegated_credentials.slices.guard import bind_turn_tokens
     from connection_hub.delegated_credentials.slices.turns import turn_tokens_from_secret
     bind_turn_tokens(turn_tokens_from_secret(getattr(service, "_grantor_authority_secret", "")))
+    # W40: the Hub checks a conversation's owner and a turn's liveness in KDCube's records.
+    pg_pool = getattr(entrypoint, "pg_pool", None)
+    if pg_pool is not None:
+        from kdcube_ai_app.apps.chat.sdk.context.vector.conv_index import ConvIndex
+        from kdcube_ai_app.apps.chat.sdk.integrations.connection_hub.conversation_registry import (
+            KDCubeConversationRegistry,
+        )
+
+        service.bind_conversation_registry(KDCubeConversationRegistry(
+            conv_index=ConvIndex(pool=pg_pool), redis=redis, tenant=tenant, project=project))
     return service
 
 
