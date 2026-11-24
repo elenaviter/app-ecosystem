@@ -94,13 +94,19 @@ async def effective_for_turn(*, effective: CardAuthority, control: CardAuthority
 
     if not str(turn_token or "").strip():
         return effective
-    claims = tokens.verify(turn_token, card_access_id=effective.access_id, now=now)
+    from connection_hub.delegated_credentials.slices.turns import card_generation_of
+
+    generation = card_generation_of(effective)
+    claims = tokens.verify(turn_token, card_access_id=effective.access_id, now=now, card_generation=generation)
     scope = dict(grantor_subject=effective.grantor_subject, card_access_id=effective.access_id,
                  conversation_id=claims.conversation_id)
     conversation = await slices.read(**scope)
     if conversation is None:
         # Fail closed: a token names a conversation whose slice the token's turn seeded.
         raise SliceGuardRefused("conversation_slice_missing", retryable=True)
+    if conversation.card_generation != generation:
+        # T6: an older generation's slice is never reused; the next turn reseeds it.
+        raise SliceGuardRefused("conversation_slice_generation_stale", retryable=True)
     narrowed = narrow_by_slice(effective, control, conversation)
     # Option c (design 2026-11-24): while a Card transaction is undecided, the
     # call is never refused for it; it gets the committed slice AND every

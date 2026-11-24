@@ -39,7 +39,7 @@ async def _pair(tmp_path):
 
 def _slice(card, selection, **changes):
     return ConversationSlice(grantor_subject=OWNER, card_access_id=card.access_id, conversation_id="c1",
-                             card_generation=1, base_card_revision=card.card_revision, selection=selection, **changes)
+                             card_generation=card.created_at, base_card_revision=card.card_revision, selection=selection, **changes)
 
 
 def _slack(card):
@@ -79,7 +79,7 @@ async def test_the_family_switch_closes_the_users_connectors_in_this_conversatio
 async def test_t6_the_guard_entry_reads_the_slice_by_the_turn_token_and_fails_closed(tmp_path):
     card, control = await _pair(tmp_path)
     slices, tokens, now = BundleStorageConversationSliceStore(tmp_path / "slices"), TurnTokens(KEY), int(time.time())
-    token = tokens.issue(TurnClaims(card.access_id, "c1", "t1", now, now + 600))
+    token = tokens.issue(TurnClaims(card.access_id, "c1", "t1", now, now + 600, card.created_at))
 
     # Outside any conversation the Card's own authority applies.
     assert await effective_for_turn(effective=card, control=control, slices=slices, tokens=tokens,
@@ -109,7 +109,7 @@ async def test_the_request_path_narrows_the_live_composition_and_denies_on_any_r
     composition = ResolvedCardComposition(caller_card=card, control_card=control, effective_card=card)
     card_store = SimpleNamespace(_root=tmp_path / "cards")
     now = int(time.time())
-    token = TurnTokens(KEY).issue(TurnClaims(card.access_id, "c1", "t1", now, now + 600))
+    token = TurnTokens(KEY).issue(TurnClaims(card.access_id, "c1", "t1", now, now + 600, card.created_at))
 
     guard.bind_turn_tokens(None)
     with pytest.raises(LiveGrantCardError, match="conversation_slices_unavailable"):

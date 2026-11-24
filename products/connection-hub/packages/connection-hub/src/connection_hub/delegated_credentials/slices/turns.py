@@ -64,6 +64,14 @@ class TurnClaims:
     turn_id: str
     turn_started_at: int
     expires_at: int
+    # Review B-3: the Card access id is deterministic across revoke and
+    # re-create, so the token also names the Card's generation.
+    card_generation: int = 0
+
+
+def card_generation_of(card: Any) -> int:
+    """A Card's generation: its creation time, new only when it is revoked and created again."""
+    return int(getattr(card, "created_at", 0) or 0)
 
 
 class TurnTokens:
@@ -81,7 +89,7 @@ class TurnTokens:
         body = json.dumps(claims.__dict__, sort_keys=True, separators=(",", ":")).encode("utf-8")
         return f"{_PREFIX}{base64.urlsafe_b64encode(body).decode('ascii')}.{self._seal(body)}"
 
-    def verify(self, token: str, *, card_access_id: str, now: int) -> TurnClaims:
+    def verify(self, token: str, *, card_access_id: str, now: int, card_generation: int | None = None) -> TurnClaims:
         try:
             encoded, seal = str(token or "")[len(_PREFIX):].rsplit(".", 1)
             body = base64.urlsafe_b64decode(encoded.encode("ascii"))
@@ -93,6 +101,8 @@ class TurnTokens:
         if claims.card_access_id != card_access_id:
             # Not a bearer: it names a conversation only for the Card that holds it.
             raise TurnRefused("turn_token_card_mismatch")
+        if card_generation is not None and claims.card_generation != card_generation:
+            raise TurnRefused("turn_token_card_generation_mismatch")
         if now >= claims.expires_at:
             raise TurnRefused("turn_token_expired", retryable=True, status=401)
         return claims
@@ -109,7 +119,8 @@ async def begin_turn(
         raise TurnRefused("turn_id_required", status=400)
     started_at = now
     if existing_token:
-        previous = tokens.verify(existing_token, card_access_id=card.access_id, now=0)
+        previous = tokens.verify(existing_token, card_access_id=card.access_id, now=0,
+                                 card_generation=card_generation)
         if (previous.conversation_id, previous.turn_id) != (conversation_id, turn_id):
             raise TurnRefused("turn_token_renewal_mismatch")
         started_at = previous.turn_started_at
@@ -144,11 +155,12 @@ async def begin_turn(
             raise TurnRefused(exc.reason, retryable=True, status=409) from None
     token = tokens.issue(TurnClaims(card_access_id=card.access_id, conversation_id=conversation_id,
                                     turn_id=turn_id, turn_started_at=started_at,
-                                    expires_at=min(now + TOKEN_SECONDS, started_at + TURN_CAP_SECONDS)))
+                                    expires_at=min(now + TOKEN_SECONDS, started_at + TURN_CAP_SECONDS),
+                                    card_generation=card_generation))
     return token, current
 
 
 __all__ = [
     "ConversationRegistry", "RegisteredConversation", "TOKEN_SECONDS", "TURN_CAP_SECONDS", "TurnClaims",
-    "TurnRefused", "TurnTokens", "begin_turn",
+    "TurnRefused", "TurnTokens", "begin_turn", "card_generation_of",
 ]

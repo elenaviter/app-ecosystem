@@ -24,11 +24,11 @@ async def _conversation(service, store, resident, conversation="c1", *, selectio
         compose_card_effects(card_service=card_service, card_store=store, grant_store=service._store,
                              policies=None, slices=slices)
     await slices.write(ConversationSlice(
-        grantor_subject=OWNER, card_access_id=resident.access_id, conversation_id=conversation, card_generation=1,
+        grantor_subject=OWNER, card_access_id=resident.access_id, conversation_id=conversation, card_generation=resident.created_at,
         base_card_revision=resident.card_revision,
         selection=selection or {"named_service_operations": {NAMED_RESOURCE: {"slack": [READ]}}}), expected_revision=0)
     now = int(time.time())
-    token = TurnTokens(KEY).issue(TurnClaims(resident.access_id, conversation, "turn-1", now, now + 600))
+    token = TurnTokens(KEY).issue(TurnClaims(resident.access_id, conversation, "turn-1", now, now + 600, resident.created_at))
     return slices, token
 
 
@@ -68,12 +68,14 @@ async def test_a_consent_naming_a_foreign_or_unseeded_conversation_commits_nothi
     service, store, decisions, resident, _, _, _ = await _consent_world(tmp_path)
     await _conversation(service, store, resident)
 
-    forged = TurnTokens(b"x" * 32).issue(TurnClaims(resident.access_id, "c1", "turn-1", 0, int(time.time()) + 600))
+    forged = TurnTokens(b"x" * 32).issue(TurnClaims(resident.access_id, "c1", "turn-1", 0, int(time.time()) + 600,
+                                                    resident.created_at))
     refused = await _consent(service, resident, forged)
     assert refused["ok"] is False and refused["error"] == "turn_token_invalid", refused
 
     now = int(time.time())
-    unseeded = TurnTokens(KEY).issue(TurnClaims(resident.access_id, "never-seeded", "turn-1", now, now + 600))
+    unseeded = TurnTokens(KEY).issue(TurnClaims(resident.access_id, "never-seeded", "turn-1", now, now + 600,
+                                                 resident.created_at))
     refused = await _consent(service, resident, unseeded)
     assert refused["ok"] is False and refused["error"] == "conversation_slice_missing", refused
     assert decisions.decisions == []
@@ -126,3 +128,18 @@ async def test_a2_e2_a_crashed_consent_never_blocks_calls_and_the_recovery_cron_
     current = await slices.read(grantor_subject=OWNER, card_access_id=resident.access_id, conversation_id="c1")
     assert current.slice_revision == 1
     assert (await _current(store, resident)).card_revision == resident.card_revision
+
+
+@pytest.mark.asyncio
+async def test_b2_the_slice_gains_the_bridge_tools_of_the_consented_operation(tmp_path):
+    service, store, decisions, resident, _, card_service, _ = await _consent_world(tmp_path)
+    # This conversation had narrowed the named-service bridge away.
+    slices, token = await _conversation(service, store, resident, card_service=card_service, selection={
+        "named_service_operations": {NAMED_RESOURCE: {"slack": [READ]}},
+        "resource_operations": {NAMED_RESOURCE: []}})
+    answer = await _consent(service, resident, token)
+    assert answer["ok"], answer
+    saved = await _current(store, resident)
+    current = await slices.read(grantor_subject=OWNER, card_access_id=resident.access_id, conversation_id="c1")
+    assert set(saved.resource_operations[NAMED_RESOURCE]) <= set(current.selection["resource_operations"][NAMED_RESOURCE])
+    assert "named_services_call" in current.selection["resource_operations"][NAMED_RESOURCE]

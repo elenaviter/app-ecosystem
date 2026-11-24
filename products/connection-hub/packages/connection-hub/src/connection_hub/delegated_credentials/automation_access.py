@@ -5777,10 +5777,25 @@ class AutomationAccessService:
             if _clean(turn_token):
                 from .descriptor_agent_card import DescriptorAgentCardRefused
                 try:
+                    # Review B-2: what this consent adds to the Card, including the
+                    # W34 C bridge tools, not the raw request.
+                    def added(after: Mapping[str, Any], before: Mapping[str, Any]) -> dict[str, list[str]]:
+                        out = {resource: sorted(set(values) - set(before.get(resource, ())))
+                               for resource, values in after.items()}
+                        return {resource: values for resource, values in out.items() if values}
+
+                    operations_added = added(selected_resource_operations, existing.resource_operations)
+                    requested_named = named_service_operations if isinstance(named_service_operations, Mapping) else {}
+                    for resource in requested_named:
+                        # The conversation may lack a bridge the Card already holds:
+                        # the consented operation needs its resource's bridge tools.
+                        bridges = set(selected_resource_operations.get(resource, ()))
+                        if bridges:
+                            operations_added[resource] = sorted(bridges | set(operations_added.get(resource, ())))
                     slice_effects = [await self._consent_slice_effect(
                         existing, turn_token=turn_token, granted={
-                            "resource_grants": dict(resource_grants or {}),
-                            "resource_operations": dict(resource_operations or {}),
+                            "resource_grants": added(selected_resource_grants, existing.resource_grants),
+                            "resource_operations": operations_added,
                             "named_service_operations": (dict(named_service_operations)
                                                          if isinstance(named_service_operations, Mapping) else {}),
                         })]
@@ -11535,7 +11550,10 @@ class AutomationAccessService:
         if store is None or tokens is None:
             raise DescriptorAgentCardRefused("conversation_slices_unavailable", retryable=True, status=503)
         try:
-            claims = tokens.verify(turn_token, card_access_id=card.access_id, now=int(time.time()))
+            from connection_hub.delegated_credentials.slices.turns import card_generation_of
+
+            claims = tokens.verify(turn_token, card_access_id=card.access_id, now=int(time.time()),
+                                   card_generation=card_generation_of(card))
             granted = {key: value for key, value in granted.items() if value}
             return await conversation_slice_effect(store, card=card, conversation_id=claims.conversation_id,
                                                    granted=granted)

@@ -104,3 +104,11 @@ async def test_t6_a_deleting_slice_gets_no_token_and_a_new_card_generation_resee
     await store.write(ConversationSlice(**{**reseeded.__dict__, "state": SLICE_STATE_DELETING}), expected_revision=2)
     with pytest.raises(TurnRefused, match="conversation_deleting"):
         await _begin(tmp_path, Registry(), store=store, generation=3)
+
+
+@pytest.mark.asyncio
+async def test_b3_a_token_of_an_earlier_card_generation_is_refused(tmp_path):
+    token, _ = await _begin(tmp_path, Registry(), generation=1)
+    with pytest.raises(TurnRefused, match="turn_token_card_generation_mismatch"):
+        TurnTokens(KEY).verify(token, card_access_id=CARD.access_id, now=1001, card_generation=2)
+    assert TurnTokens(KEY).verify(token, card_access_id=CARD.access_id, now=1001, card_generation=1).card_generation == 1
