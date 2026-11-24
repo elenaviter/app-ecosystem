@@ -60,8 +60,6 @@ def test_a_slice_never_holds_what_kdcube_carries_out():
     for category in ("model", "instructions", "skills", "presentation", "cache_policy"):
         with pytest.raises(SliceStoreError, match="conversation_slice_category_not_guarded"):
             _slice(selection={category: ["x"]})
-        with pytest.raises(SliceStoreError, match="conversation_slice_category_not_guarded"):
-            _slice(pending={category: ["x"]})
 
 
 @pytest.mark.asyncio

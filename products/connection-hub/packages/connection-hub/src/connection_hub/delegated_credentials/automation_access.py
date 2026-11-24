@@ -11552,16 +11552,10 @@ class AutomationAccessService:
         return await begin_agent_turn(self, user, **turn)
 
     async def update_conversation_selection(self, user: Mapping[str, Any], **change: Any) -> dict[str, Any]:
-        """W40: the conversation picker's write (now, or deferred by the cache policy)."""
+        """W40: the conversation picker's write; it applies from the next call."""
         from connection_hub.delegated_credentials.slices.conversation_ops import update_conversation_selection
 
         return await update_conversation_selection(self, user, **change)
-
-    async def promote_conversation_pending(self, user: Mapping[str, Any], **turn: Any) -> dict[str, Any]:
-        """W40 A2: apply the stored deferred change of the conversation the turn token names."""
-        from connection_hub.delegated_credentials.slices.conversation_ops import promote_conversation_pending
-
-        return await promote_conversation_pending(self, user, **turn)
 
     async def mark_conversation_deleting(self, user: Mapping[str, Any], **conversation: Any) -> dict[str, Any]:
         """W40 A1 step 1: close the conversation's slices before its messages are deleted."""

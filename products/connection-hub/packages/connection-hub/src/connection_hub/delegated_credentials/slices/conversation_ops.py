@@ -3,10 +3,10 @@
 
 """W40: the slice writes KDCube asks for, outside any Card transaction.
 
-- the conversation picker replaces the conversation's selection, or parks it
-  as a deferred change the cache policy applies later (A2);
-- a deferred change is promoted by the runtime's trigger only: it names the
-  turn by its token and the Hub applies exactly the stored change;
+- the conversation picker replaces the conversation's selection; it applies
+  from the next call, as KDCube applies a capability change from the next
+  message and never defers one (only model and prompt may defer, KDCube
+  cec325247), so no deferred capability change exists here;
 - deleting a conversation first marks its slices deleting (no token, no
   seed), then KDCube deletes the messages, then the slices are removed (A1).
 
@@ -80,10 +80,10 @@ async def _seeded(service: Any, store: Any, card: Any, application: str, convers
 
 async def update_conversation_selection(
     service: Any, user: Mapping[str, Any], *, application: str, agent_id: str, conversation_id: str,
-    selection: Mapping[str, Any] | None = None, expected_slice_revision: int | None = None, deferred: bool = False,
+    selection: Mapping[str, Any] | None = None, expected_slice_revision: int | None = None,
     wait_seconds: float = PICKER_WAIT_SECONDS, selected_capabilities: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """The conversation picker: replace the selection now, or park it as the deferred change (A2)."""
+    """The conversation picker: replace this conversation's guarded selection."""
 
     card, refused = await _card(service, user, application, agent_id)
     if refused:
@@ -104,8 +104,7 @@ async def update_conversation_selection(
         if expected_slice_revision is not None and int(expected_slice_revision) != current.slice_revision:
             return _refusal("conversation_slice_revision_conflict", retryable=True,
                             current_revision=current.slice_revision)
-        candidate = (dataclasses.replace(current, pending=wanted, change_id="") if deferred
-                     else dataclasses.replace(current, selection=wanted, pending=None, change_id=""))
+        candidate = dataclasses.replace(current, selection=wanted, change_id="")
         written = await store.write_when_open(candidate, expected_revision=current.slice_revision,
                                               wait_seconds=wait_seconds)
     except TurnRefused as exc:
@@ -120,39 +119,7 @@ async def update_conversation_selection(
     except Exception as exc:  # noqa: BLE001 - a refusal from the conversion (Control, catalog)
         reason = getattr(exc, "reason", "") or "conversation_selection_unavailable"
         return _refusal(str(reason), retryable=bool(getattr(exc, "retryable", True)))
-    return {"ok": True, "slice_revision": written.slice_revision, "selection": dict(written.selection),
-            "pending": dict(written.pending) if written.pending is not None else None}
-
-
-async def promote_conversation_pending(service: Any, user: Mapping[str, Any], *, application: str, agent_id: str,
-                                       turn_token: str) -> dict[str, Any]:
-    """A2: the runtime only triggers; the Hub applies exactly the stored deferred change."""
-
-    card, refused = await _card(service, user, application, agent_id)
-    if refused:
-        return refused
-    store, tokens = service._conversation_slice_parts()
-    if store is None or tokens is None:
-        return _refusal("conversation_slices_unavailable", retryable=True, status=503)
-    try:
-        claims = tokens.verify(turn_token, card_access_id=card.access_id, now=int(time.time()),
-                               card_generation=card_generation_of(card))
-        current = await store.read(grantor_subject=card.grantor_subject, card_access_id=card.access_id,
-                                   conversation_id=claims.conversation_id)
-        if current is None or current.pending is None:
-            return _refusal("conversation_slice_no_pending")
-        if current.state != SLICE_STATE_ACTIVE:
-            return _refusal("conversation_deleting")
-        written = await store.write_when_open(
-            dataclasses.replace(current, selection=dict(current.pending), pending=None, change_id=""),
-            expected_revision=current.slice_revision, wait_seconds=PICKER_WAIT_SECONDS)
-    except TurnRefused as exc:
-        return exc.to_dict()
-    except SlicePrepared:
-        return _refusal("agent_authority_updating", retryable=True)
-    except SliceConflict as exc:
-        return _refusal("conversation_slice_revision_conflict", retryable=True, current_revision=exc.current_revision)
-    return {"ok": True, "slice_revision": written.slice_revision}
+    return {"ok": True, "slice_revision": written.slice_revision, "selection": dict(written.selection)}
 
 
 async def mark_conversation_deleting(service: Any, user: Mapping[str, Any], *, conversation_id: str) -> dict[str, Any]:
@@ -201,7 +168,7 @@ async def remove_conversation_slices(service: Any, user: Mapping[str, Any], *, c
     return {"ok": True, "removed_revisions": removed}
 
 
-__all__ = ["mark_conversation_deleting", "promote_conversation_pending", "remove_conversation_slices",
+__all__ = ["mark_conversation_deleting", "remove_conversation_slices", "slice_selection_from_capabilities",
            "update_conversation_selection"]
 
 

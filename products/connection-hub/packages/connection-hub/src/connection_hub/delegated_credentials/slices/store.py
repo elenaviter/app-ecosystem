@@ -91,7 +91,6 @@ class ConversationSlice:
     card_generation: int
     base_card_revision: int
     selection: Mapping[str, Any] = field(default_factory=dict)
-    pending: Mapping[str, Any] | None = None
     state: str = SLICE_STATE_ACTIVE
     slice_revision: int = 0
     # The Card-transaction change that wrote this revision ("" for a direct
@@ -107,8 +106,6 @@ class ConversationSlice:
         if self.state not in SLICE_STATES:
             raise SliceStoreError("conversation_slice_state_invalid")
         object.__setattr__(self, "selection", _clean_selection(self.selection))
-        if self.pending is not None:
-            object.__setattr__(self, "pending", _clean_selection(self.pending))
 
     def to_document(self) -> dict[str, Any]:
         return {
@@ -119,7 +116,6 @@ class ConversationSlice:
             "card_generation": int(self.card_generation),
             "base_card_revision": int(self.base_card_revision),
             "selection": dict(self.selection),
-            "pending": dict(self.pending) if self.pending is not None else None,
             "state": self.state,
             "slice_revision": int(self.slice_revision),
             "change_id": self.change_id,
@@ -136,7 +132,6 @@ class ConversationSlice:
             card_generation=int(value.get("card_generation") or 0),
             base_card_revision=int(value.get("base_card_revision") or 0),
             selection=value.get("selection") or {},
-            pending=value.get("pending"),
             state=str(value.get("state") or ""),
             slice_revision=int(value.get("slice_revision") or 0),
             change_id=str(value.get("change_id") or ""),

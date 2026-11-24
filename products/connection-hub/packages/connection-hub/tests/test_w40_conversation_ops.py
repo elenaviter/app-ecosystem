@@ -1,4 +1,4 @@
-"""W40: the picker write (T8), the deferred change (A2) and the delete order (A1)."""
+"""W40: the picker write (T8) and the delete order (A1)."""
 
 from __future__ import annotations
 
@@ -37,27 +37,6 @@ async def test_t8_a_picker_write_before_the_first_turn_seeds_then_replaces_only_
     assert stale["error"] == "conversation_slice_revision_conflict"
     refused = await service.update_conversation_selection(USER, **_picker(selection={"model": "x"}))
     assert refused["error"] == "conversation_slice_category_not_guarded"
-
-
-@pytest.mark.asyncio
-async def test_a2_a_deferred_change_is_applied_only_by_the_turn_trigger_exactly_as_stored(tmp_path):
-    service, slices, resident = await _world(tmp_path)
-    turn = await service.begin_agent_turn(USER, application=APPLICATION, agent_id=AGENT,
-                                          conversation_id="c1", turn_id="t1")
-    parked = await service.update_conversation_selection(USER, **_picker(selection=NOTHING, deferred=True))
-    assert parked["ok"] and parked["pending"] == NOTHING
-    assert parked["selection"]["named_service_operations"] == ONLY_READ["named_service_operations"]
-    promoted = await service.promote_conversation_pending(USER, application=APPLICATION, agent_id=AGENT,
-                                                          turn_token=turn["turn_token"])
-    assert promoted["ok"], promoted
-    current = await slices.read(grantor_subject=OWNER, card_access_id=resident.access_id, conversation_id="c1")
-    assert current.selection == NOTHING and current.pending is None
-    again = await service.promote_conversation_pending(USER, application=APPLICATION, agent_id=AGENT,
-                                                       turn_token=turn["turn_token"])
-    assert again["error"] == "conversation_slice_no_pending"
-    forged = await service.promote_conversation_pending(USER, application=APPLICATION, agent_id=AGENT,
-                                                        turn_token="ts1.forged.0")
-    assert forged["error"] == "turn_token_invalid"
 
 
 @pytest.mark.asyncio
