@@ -11539,6 +11539,20 @@ class AutomationAccessService:
         """W40: the slice store and the Hub's turn-token sealer; never supplied by an API caller."""
         self._conversation_slices, self._turn_tokens = store, tokens
 
+    def _conversation_slice_parts(self) -> tuple[Any, Any]:
+        """The bound parts, or the composed default: slices beside the Card store, the derived sealer."""
+        store, tokens = getattr(self, "_conversation_slices", None), getattr(self, "_turn_tokens", None)
+        if store is None:
+            card_store = getattr(getattr(self, "_persistence", None), "card_store", None)
+            root = getattr(card_store, "root", None) or getattr(card_store, "_root", None)
+            if root is not None:
+                from connection_hub.delegated_credentials.slices.store import BundleStorageConversationSliceStore
+                store = BundleStorageConversationSliceStore(root)
+        if tokens is None:
+            from connection_hub.delegated_credentials.slices.turns import turn_tokens_from_secret
+            tokens = turn_tokens_from_secret(getattr(self, "_grantor_authority_secret", ""))
+        return store, tokens
+
     async def _consent_slice_effect(self, card: Any, *, turn_token: str,
                                     granted: Mapping[str, Any]) -> dict[str, Any]:
         from connection_hub.delegated_credentials.descriptor_agent_card import DescriptorAgentCardRefused
@@ -11546,7 +11560,7 @@ class AutomationAccessService:
         from connection_hub.delegated_credentials.slices.store import SliceStoreError
         from connection_hub.delegated_credentials.slices.turns import TurnRefused
 
-        store, tokens = getattr(self, "_conversation_slices", None), getattr(self, "_turn_tokens", None)
+        store, tokens = self._conversation_slice_parts()
         if store is None or tokens is None:
             raise DescriptorAgentCardRefused("conversation_slices_unavailable", retryable=True, status=503)
         try:

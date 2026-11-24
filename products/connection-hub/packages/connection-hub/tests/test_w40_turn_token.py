@@ -112,3 +112,18 @@ async def test_b3_a_token_of_an_earlier_card_generation_is_refused(tmp_path):
     with pytest.raises(TurnRefused, match="turn_token_card_generation_mismatch"):
         TurnTokens(KEY).verify(token, card_access_id=CARD.access_id, now=1001, card_generation=2)
     assert TurnTokens(KEY).verify(token, card_access_id=CARD.access_id, now=1001, card_generation=1).card_generation == 1
+
+
+def test_the_turn_token_key_is_purpose_bound_and_needs_the_secret():
+    from connection_hub.delegated_credentials.grantor_authority_proof import _key as proof_key
+    from connection_hub.delegated_credentials.slices.turns import turn_tokens_from_secret
+
+    secret = "s" * 40
+    tokens = turn_tokens_from_secret(secret)
+    assert tokens is not None and turn_tokens_from_secret("short") is None and turn_tokens_from_secret("") is None
+    # Same secret, different purpose: the turn-token key is not the grantor-proof key.
+    assert tokens._key != proof_key(secret)
+    from connection_hub.delegated_credentials.slices.turns import TurnClaims
+    token = tokens.issue(TurnClaims("agent-1", "c1", "t1", 1, 100, 5))
+    with pytest.raises(TurnRefused, match="turn_token_invalid"):
+        turn_tokens_from_secret("t" * 40).verify(token, card_access_id="agent-1", now=2)

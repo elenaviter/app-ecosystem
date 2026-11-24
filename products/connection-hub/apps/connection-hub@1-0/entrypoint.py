@@ -2059,6 +2059,11 @@ async def _automation_access_service_for(
         actor_classification=classification, tenant=snapshot_tenant, project=snapshot_project)
     if card_transactions_enabled(connections):
         await _bind_card_transactions(entrypoint, service, persistence=card_persistence, grant_store=grant_store)
+    # W40: the delegated guard narrows a call by the conversation its turn token
+    # names; its sealer derives from the same Hub-only secret (none: it refuses).
+    from connection_hub.delegated_credentials.slices.guard import bind_turn_tokens
+    from connection_hub.delegated_credentials.slices.turns import turn_tokens_from_secret
+    bind_turn_tokens(turn_tokens_from_secret(getattr(service, "_grantor_authority_secret", "")))
     return service
 
 

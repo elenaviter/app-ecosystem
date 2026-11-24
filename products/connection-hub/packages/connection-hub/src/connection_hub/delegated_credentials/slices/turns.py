@@ -108,6 +108,22 @@ class TurnTokens:
         return claims
 
 
+TURN_TOKEN_KEY_LABEL = b"connection-hub/turn-token/v1"
+
+
+def turn_tokens_from_secret(secret: str) -> "TurnTokens | None":
+    """The turn-token sealer from the Hub's own grantor-authority secret (design 2026-11-24, point 8).
+
+    A purpose-bound key, as ``grantor_authority_proof._key`` derives its own, so
+    neither protocol's tag can verify as the other's. None without the secret:
+    the conversation path then refuses.
+    """
+    raw = str(secret or "").encode("utf-8")
+    if len(raw) < 32:
+        return None
+    return TurnTokens(hmac.new(raw, TURN_TOKEN_KEY_LABEL, hashlib.sha256).digest())
+
+
 async def begin_turn(
     *, store: BundleStorageConversationSliceStore, registry: ConversationRegistry, tokens: TurnTokens,
     card: Any, application: str, conversation_id: str, turn_id: str, seed_selection: Mapping[str, Any],
@@ -162,5 +178,5 @@ async def begin_turn(
 
 __all__ = [
     "ConversationRegistry", "RegisteredConversation", "TOKEN_SECONDS", "TURN_CAP_SECONDS", "TurnClaims",
-    "TurnRefused", "TurnTokens", "begin_turn", "card_generation_of",
+    "TurnRefused", "TurnTokens", "begin_turn", "card_generation_of", "turn_tokens_from_secret",
 ]
