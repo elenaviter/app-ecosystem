@@ -11541,6 +11541,16 @@ class AutomationAccessService:
         """W40: the slice store and the Hub's turn-token sealer; never supplied by an API caller."""
         self._conversation_slices, self._turn_tokens = store, tokens
 
+    def bind_conversation_registry(self, registry: Any) -> None:
+        """W40: KDCube's conversation registry (owner, application, turn liveness), bound by the host."""
+        self._conversation_registry = registry
+
+    async def begin_agent_turn(self, user: Mapping[str, Any], **turn: Any) -> dict[str, Any]:
+        """``agent_capability.turn``: the token naming this turn's conversation (local-only)."""
+        from connection_hub.delegated_credentials.slices.turn_operation import begin_agent_turn
+
+        return await begin_agent_turn(self, user, **turn)
+
     def _conversation_slice_parts(self) -> tuple[Any, Any]:
         """The bound parts, or the composed default: slices beside the Card store, the derived sealer."""
         store, tokens = getattr(self, "_conversation_slices", None), getattr(self, "_turn_tokens", None)

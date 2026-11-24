@@ -9,6 +9,7 @@ from typing import Any, Protocol
 
 from connection_hub.contract import (
     AGENT_CAPABILITY_PUBLISH,
+    AGENT_CAPABILITY_TURN,
     AGENT_CAPABILITY_SYNC,
     AGENT_GRANT_CHECK,
     AGENT_GRANT_GET_TOKEN,
@@ -141,6 +142,12 @@ class ConnectionsClient:
         """W41: the application's deployment publishes one agent's shared descriptor Control."""
 
         response = await self._call(AGENT_CAPABILITY_PUBLISH, **dict(payload))
+        return dict(getattr(response, "object", None) or {})
+
+    async def begin_agent_turn(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """W40: the token naming this turn's conversation (application, agent_id, conversation_id, turn_id)."""
+
+        response = await self._call(AGENT_CAPABILITY_TURN, **dict(payload))
         return dict(getattr(response, "object", None) or {})
 
     async def disconnect(self, provider: str, account_id: str) -> dict[str, Any]:
