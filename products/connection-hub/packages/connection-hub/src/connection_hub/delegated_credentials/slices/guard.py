@@ -111,8 +111,16 @@ def narrow_by_selection(effective: CardAuthority, control: CardAuthority, select
     return narrowed
 
 
+async def _verify(tokens: Any, token: str, **expected: Any) -> Any:
+    """A ``TurnTokens`` sealer, or a ``TurnTokenSource`` (cached key, reread on a failed seal)."""
+    import inspect
+
+    verified = tokens.verify(token, **expected)
+    return await verified if inspect.isawaitable(verified) else verified
+
+
 async def effective_for_turn(*, effective: CardAuthority, control: CardAuthority, slices: Any, tokens: Any,
-                             turn_token: str, now: int) -> CardAuthority:
+                             turn_token: str, now: int, registry: Any = None) -> CardAuthority:
     """The guard's entry: no token keeps the Card's authority (a call outside any conversation)."""
 
     if not str(turn_token or "").strip():
@@ -123,7 +131,19 @@ async def effective_for_turn(*, effective: CardAuthority, control: CardAuthority
     from connection_hub.delegated_credentials.slices.turns import card_generation_of
 
     generation = card_generation_of(effective)
-    claims = tokens.verify(turn_token, card_access_id=effective.access_id, now=now, card_generation=generation)
+    claims = await _verify(tokens, turn_token, card_access_id=effective.access_id, now=now, card_generation=generation)
+    if claims.mode == "per_call":
+        # A fixed-header runtime's token lives up to the turn cap; it admits a call
+        # only while that turn is alive (state row in_progress for it AND the lock held).
+        if registry is None:
+            raise SliceGuardRefused("conversation_registry_unavailable", retryable=True)
+        try:
+            alive = await registry.turn_alive(owner_subject=effective.grantor_subject,
+                                              conversation_id=claims.conversation_id, turn_id=claims.turn_id)
+        except Exception:  # noqa: BLE001 - an unreadable registry refuses, retryably
+            raise SliceGuardRefused("conversation_registry_unavailable", retryable=True) from None
+        if not alive:
+            raise SliceGuardRefused("turn_not_alive")
     scope = dict(grantor_subject=effective.grantor_subject, card_access_id=effective.access_id,
                  conversation_id=claims.conversation_id)
     conversation = await slices.read(**scope)
@@ -153,17 +173,9 @@ __all__ = ["SliceGuardRefused", "card_default_selection", "effective_for_turn", 
 
 # -- The request path (KDCube's delegated surface guard calls this) ------------
 
-_TURN_TOKENS: Any = None
-
-
-def bind_turn_tokens(tokens: Any) -> None:
-    """Bind the Hub's turn-token sealer for this process (from the Hub's own secret, at startup)."""
-    global _TURN_TOKENS
-    _TURN_TOKENS = tokens
-
 
 async def narrow_live_composition_for_turn(composition: Any, *, card_store: Any, turn_token: str,
-                                           now: int | None = None) -> Any:
+                                           resolvers: Any = None, now: int | None = None) -> Any:
     """The live composition with its Effective Card narrowed by the conversation the token names.
 
     Every refusal is an authorization failure (``LiveGrantCardError``): the
@@ -183,16 +195,18 @@ async def narrow_live_composition_for_turn(composition: Any, *, card_store: Any,
         effective = await effective_for_turn(effective=composition.effective_card, control=composition.control_card,
                                              slices=None, tokens=None, turn_token="", now=0)
         return dataclasses.replace(composition, effective_card=effective)
-    if _TURN_TOKENS is None or root is None or composition.control_card is None:
+    tokens = getattr(resolvers, "turn_tokens", None)
+    registry = getattr(resolvers, "conversation_registry", None)
+    if tokens is None or root is None or composition.control_card is None:
         raise LiveGrantCardError("conversation_slices_unavailable")
     try:
         effective = await effective_for_turn(
             effective=composition.effective_card, control=composition.control_card,
-            slices=BundleStorageConversationSliceStore(root), tokens=_TURN_TOKENS, turn_token=turn_token,
-            now=int(time.time()) if now is None else now)
+            slices=BundleStorageConversationSliceStore(root), tokens=tokens, turn_token=turn_token,
+            now=int(time.time()) if now is None else now, registry=registry)
     except (SliceGuardRefused, TurnRefused) as exc:
         raise LiveGrantCardError(exc.reason) from None
     return dataclasses.replace(composition, effective_card=effective)
 
 
-__all__ += ["bind_turn_tokens", "narrow_live_composition_for_turn"]
+__all__ += ["narrow_live_composition_for_turn"]

@@ -127,3 +127,21 @@ def test_the_turn_token_key_is_purpose_bound_and_needs_the_secret():
     token = tokens.issue(TurnClaims("agent-1", "c1", "t1", 1, 100, 5))
     with pytest.raises(TurnRefused, match="turn_token_invalid"):
         turn_tokens_from_secret("t" * 40).verify(token, card_access_id="agent-1", now=2)
+
+
+@pytest.mark.asyncio
+async def test_a_per_call_token_lives_to_the_turn_cap_and_is_never_renewed(tmp_path):
+    store = BundleStorageConversationSliceStore(tmp_path)
+    token, _ = await begin_turn(store=store, registry=Registry(), tokens=TurnTokens(KEY), card=CARD,
+                                application="app@1-0", conversation_id="c1", turn_id="t1", seed_selection=SEED,
+                                card_generation=1, now=1000, mode="per_call")
+    claims = TurnTokens(KEY).verify(token, card_access_id=CARD.access_id, now=1001)
+    assert claims.mode == "per_call" and claims.expires_at == 1000 + TURN_CAP_SECONDS
+    with pytest.raises(TurnRefused, match="turn_token_not_renewable"):
+        await begin_turn(store=store, registry=Registry(), tokens=TurnTokens(KEY), card=CARD, application="app@1-0",
+                         conversation_id="c1", turn_id="t1", seed_selection=SEED, card_generation=1, now=1100,
+                         existing_token=token)
+    with pytest.raises(TurnRefused, match="turn_token_mode_invalid"):
+        await begin_turn(store=store, registry=Registry(), tokens=TurnTokens(KEY), card=CARD, application="app@1-0",
+                         conversation_id="c1", turn_id="t2", seed_selection=SEED, card_generation=1, now=1100,
+                         mode="forever")

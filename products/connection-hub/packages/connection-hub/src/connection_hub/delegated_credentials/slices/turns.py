@@ -67,6 +67,13 @@ class TurnClaims:
     # Review B-3: the Card access id is deterministic across revoke and
     # re-create, so the token also names the Card's generation.
     card_generation: int = 0
+    # "renew": ten minutes, renewed for the same live turn (a runtime that sets
+    # headers per call). "per_call": up to the turn cap, for a runtime whose
+    # headers are fixed for the turn; the guard checks liveness on every call.
+    mode: str = "renew"
+
+
+TOKEN_MODES = frozenset({"renew", "per_call"})
 
 
 def card_generation_of(card: Any) -> int:
@@ -127,18 +134,22 @@ def turn_tokens_from_secret(secret: str) -> "TurnTokens | None":
 async def begin_turn(
     *, store: BundleStorageConversationSliceStore, registry: ConversationRegistry, tokens: TurnTokens,
     card: Any, application: str, conversation_id: str, turn_id: str, seed_selection: Mapping[str, Any],
-    card_generation: int, now: int, existing_token: str = "",
+    card_generation: int, now: int, existing_token: str = "", mode: str = "renew",
 ) -> tuple[str, ConversationSlice]:
     """Issue or renew the turn token, seeding the slice once after the registry check."""
 
     if not str(turn_id or "").strip():
         raise TurnRefused("turn_id_required", status=400)
+    if mode not in TOKEN_MODES:
+        raise TurnRefused("turn_token_mode_invalid", status=400)
     started_at = now
     if existing_token:
         previous = tokens.verify(existing_token, card_access_id=card.access_id, now=0,
                                  card_generation=card_generation)
         if (previous.conversation_id, previous.turn_id) != (conversation_id, turn_id):
             raise TurnRefused("turn_token_renewal_mismatch")
+        if previous.mode != "renew" or mode != "renew":
+            raise TurnRefused("turn_token_not_renewable")
         started_at = previous.turn_started_at
         if now - started_at >= TURN_CAP_SECONDS:
             raise TurnRefused("turn_token_cap_reached")
@@ -171,8 +182,9 @@ async def begin_turn(
             raise TurnRefused(exc.reason, retryable=True, status=409) from None
     token = tokens.issue(TurnClaims(card_access_id=card.access_id, conversation_id=conversation_id,
                                     turn_id=turn_id, turn_started_at=started_at,
-                                    expires_at=min(now + TOKEN_SECONDS, started_at + TURN_CAP_SECONDS),
-                                    card_generation=card_generation))
+                                    expires_at=(started_at + TURN_CAP_SECONDS if mode == "per_call"
+                                                else min(now + TOKEN_SECONDS, started_at + TURN_CAP_SECONDS)),
+                                    card_generation=card_generation, mode=mode))
     return token, current
 
 

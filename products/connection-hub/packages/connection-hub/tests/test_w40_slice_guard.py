@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import dataclasses
+from types import SimpleNamespace
 import time
 
 import pytest
@@ -111,20 +112,20 @@ async def test_the_request_path_narrows_the_live_composition_and_denies_on_any_r
     now = int(time.time())
     token = TurnTokens(KEY).issue(TurnClaims(card.access_id, "c1", "t1", now, now + 600, card.created_at))
 
-    guard.bind_turn_tokens(None)
     with pytest.raises(LiveGrantCardError, match="conversation_slices_unavailable"):
-        await guard.narrow_live_composition_for_turn(composition, card_store=card_store, turn_token=token)
-    guard.bind_turn_tokens(TurnTokens(KEY))
-    try:
-        assert await guard.narrow_live_composition_for_turn(composition, card_store=card_store, turn_token="") is composition
-        with pytest.raises(LiveGrantCardError, match="conversation_slice_missing"):
-            await guard.narrow_live_composition_for_turn(composition, card_store=card_store, turn_token=token)
-        await BundleStorageConversationSliceStore(card_store._root).write(
-            _slice(card, {"resource_families": []}), expected_revision=0)
-        narrowed = await guard.narrow_live_composition_for_turn(composition, card_store=card_store, turn_token=token)
-        assert CONNECTOR not in narrowed.effective_card.resource_grants and narrowed.caller_card is card
-    finally:
-        guard.bind_turn_tokens(None)
+        await guard.narrow_live_composition_for_turn(composition, card_store=card_store, turn_token=token,
+                                                     resolvers=SimpleNamespace(turn_tokens=None))
+    readers = SimpleNamespace(turn_tokens=TurnTokens(KEY), conversation_registry=None)
+    assert await guard.narrow_live_composition_for_turn(composition, card_store=card_store, turn_token="",
+                                                        resolvers=readers) is composition
+    with pytest.raises(LiveGrantCardError, match="conversation_slice_missing"):
+        await guard.narrow_live_composition_for_turn(composition, card_store=card_store, turn_token=token,
+                                                     resolvers=readers)
+    await BundleStorageConversationSliceStore(card_store._root).write(
+        _slice(card, {"resource_families": []}), expected_revision=0)
+    narrowed = await guard.narrow_live_composition_for_turn(composition, card_store=card_store, turn_token=token,
+                                                            resolvers=readers)
+    assert CONNECTOR not in narrowed.effective_card.resource_grants and narrowed.caller_card is card
 
 
 @pytest.mark.asyncio
@@ -154,3 +155,55 @@ def test_the_fence_reasons_answer_one_retryable_authority_update_reason():
         assert authority_update_reason(reason) == AUTHORITY_UPDATING
     for reason in ("source_invalid", "access_id_mismatch", ""):
         assert authority_update_reason(reason) is None
+
+
+@pytest.mark.asyncio
+async def test_alpha_2_a_rotation_with_a_warm_cache_still_verifies_a_token_of_the_new_key():
+    from connection_hub.delegated_credentials.slices.serving_parts import TurnTokenSource
+    from connection_hub.delegated_credentials.slices.turns import turn_tokens_from_secret
+
+    secret, clock = {"value": "a" * 40}, {"now": 0.0}
+
+    async def read():
+        return secret["value"]
+
+    source = TurnTokenSource(read, ttl_seconds=300, reread_seconds=30, clock=lambda: clock["now"])
+    old = turn_tokens_from_secret("a" * 40).issue(TurnClaims("agent-1", "c1", "t1", 0, 999, 0))
+    assert (await source.verify(old, card_access_id="agent-1", now=1)).turn_id == "t1"
+    secret["value"] = "b" * 40  # rotated; ingress's cache still holds the old key
+    new = turn_tokens_from_secret("b" * 40).issue(TurnClaims("agent-1", "c1", "t2", 0, 999, 0))
+    clock["now"] = 31.0
+    assert (await source.verify(new, card_access_id="agent-1", now=1)).turn_id == "t2"
+    assert not hasattr(source, "_secret") and "b" * 40 not in repr(vars(source))
+
+
+@pytest.mark.asyncio
+async def test_alpha_3_a_per_call_token_is_refused_once_the_turn_ended_within_five_seconds(tmp_path):
+    from connection_hub.delegated_credentials.slices.serving_parts import LivenessCache
+
+    card, control = await _pair(tmp_path)
+    slices, tokens, clock = BundleStorageConversationSliceStore(tmp_path / "s"), TurnTokens(KEY), {"now": 0.0}
+    await slices.write(_slice(card, {"named_service_operations": {NAMED_RESOURCE: {"slack": [READ]}}}),
+                       expected_revision=0)
+    now = int(time.time())
+    token = tokens.issue(TurnClaims(card.access_id, "c1", "t1", now, now + 7200, card.created_at, "per_call"))
+    state = {"alive": True, "reads": 0}
+
+    class Registry:
+        async def turn_alive(self, **_):
+            state["reads"] += 1
+            return state["alive"]
+
+    registry = LivenessCache(Registry(), ttl_seconds=5, clock=lambda: clock["now"])
+    call = dict(effective=card, control=control, slices=slices, tokens=tokens, turn_token=token, now=now,
+                registry=registry)
+    await effective_for_turn(**call)
+    clock["now"] = 2.0
+    await effective_for_turn(**call)
+    assert state["reads"] == 1  # a positive answer is cached briefly
+    state["alive"] = False  # the turn ended: its lock was released
+    clock["now"] = 6.0
+    with pytest.raises(SliceGuardRefused, match="turn_not_alive"):
+        await effective_for_turn(**call)
+    with pytest.raises(SliceGuardRefused, match="conversation_registry_unavailable"):
+        await effective_for_turn(**{**call, "registry": None})

@@ -50,6 +50,11 @@ class DelegatedServingResolvers:
 
     catalog: DelegatedCatalogResolver
     cards: BundleStorageDelegatedCardStore
+    # W40: the turn-token key (a TurnTokenSource over the Hub's secret) and
+    # KDCube's conversation registry (liveness cached positively, briefly).
+    # Absent: a call carrying a turn token is refused.
+    turn_tokens: Any = None
+    conversation_registry: Any = None
 
 
 def connection_hub_app_id(
@@ -68,6 +73,8 @@ async def build_delegated_serving_resolvers(
     app_id_resolver: ConnectionHubAppIdResolver | None = None,
     storage_root_resolver: StorageRootResolver | None = None,
     bundle_props_loader: BundlePropsLoader | None = None,
+    turn_secret_reader: Callable[[], Awaitable[str]] | None = None,
+    conversation_registry: Any = None,
 ) -> DelegatedServingResolvers | None:
     """Compose the readers over the publishing bundle's shared storage.
 
@@ -112,7 +119,25 @@ async def build_delegated_serving_resolvers(
             settings=settings,
         ),
         cards=BundleStorageDelegatedCardStore(storage_root),
+        turn_tokens=_turn_token_source(turn_secret_reader),
+        conversation_registry=_liveness_cached(conversation_registry),
     )
+
+
+def _turn_token_source(reader: Callable[[], Awaitable[str]] | None) -> Any:
+    if reader is None:
+        return None
+    from connection_hub.delegated_credentials.slices.serving_parts import TurnTokenSource
+
+    return TurnTokenSource(reader)
+
+
+def _liveness_cached(registry: Any) -> Any:
+    if registry is None:
+        return None
+    from connection_hub.delegated_credentials.slices.serving_parts import LivenessCache
+
+    return LivenessCache(registry)
 
 
 async def _cache_settings(
@@ -154,6 +179,8 @@ async def install_delegated_serving_resolvers(
     app_id_resolver: ConnectionHubAppIdResolver | None = None,
     storage_root_resolver: StorageRootResolver | None = None,
     bundle_props_loader: BundlePropsLoader | None = None,
+    turn_secret_reader: Callable[[], Awaitable[str]] | None = None,
+    conversation_registry: Any = None,
 ) -> bool:
     """Bind the readers onto an application for its whole lifetime.
 
@@ -167,6 +194,8 @@ async def install_delegated_serving_resolvers(
         app_id_resolver=app_id_resolver,
         storage_root_resolver=storage_root_resolver,
         bundle_props_loader=bundle_props_loader,
+        turn_secret_reader=turn_secret_reader,
+        conversation_registry=conversation_registry,
     )
     state = getattr(app, "state", None)
     if resolvers is None or state is None:

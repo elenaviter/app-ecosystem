@@ -108,14 +108,14 @@ async def test_a2_e2_a_crashed_consent_never_blocks_calls_and_the_recovery_cron_
     from connection_hub.delegated_credentials.cards.store import CardStorageError
     with pytest.raises(CardStorageError, match="card_transaction_undecided"):
         await _current(store, resident)
-    guard.bind_turn_tokens(TurnTokens(KEY))
-    try:
+    from types import SimpleNamespace
+    readers = SimpleNamespace(turn_tokens=TurnTokens(KEY), conversation_registry=None)
+    if True:
         card = resident
         composition = ResolvedCardComposition(caller_card=card, control_card=control, effective_card=card)
-        narrowed = await guard.narrow_live_composition_for_turn(composition, card_store=store, turn_token=token)
+        narrowed = await guard.narrow_live_composition_for_turn(composition, card_store=store, turn_token=token,
+                                                                resolvers=readers)
         assert set(narrowed.effective_card.named_service_operations.operations[NAMED_RESOURCE]["slack"]) == {READ}
-    finally:
-        guard.bind_turn_tokens(None)
 
     # E2: the Hub's recovery cron presumes ABORT (the test store's expiry CAS) and
     # FINISH releases the slice marker; neither the Card nor the slice moved.
