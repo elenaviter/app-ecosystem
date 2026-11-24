@@ -80,8 +80,8 @@ async def _seeded(service: Any, store: Any, card: Any, application: str, convers
 
 async def update_conversation_selection(
     service: Any, user: Mapping[str, Any], *, application: str, agent_id: str, conversation_id: str,
-    selection: Mapping[str, Any], expected_slice_revision: int | None = None, deferred: bool = False,
-    wait_seconds: float = PICKER_WAIT_SECONDS,
+    selection: Mapping[str, Any] | None = None, expected_slice_revision: int | None = None, deferred: bool = False,
+    wait_seconds: float = PICKER_WAIT_SECONDS, selected_capabilities: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """The conversation picker: replace the selection now, or park it as the deferred change (A2)."""
 
@@ -92,6 +92,11 @@ async def update_conversation_selection(
     if store is None:
         return _refusal("conversation_slices_unavailable", retryable=True, status=503)
     try:
+        if selection is None and selected_capabilities is None:
+            return _refusal("conversation_selection_required", status=400)
+        if selected_capabilities is not None:
+            # The picker sends KDCube's capability selection; the Hub converts it.
+            selection = await slice_selection_from_capabilities(service, card, selected_capabilities)
         wanted = _guarded(selection)
         current = await _seeded(service, store, card, application, conversation_id)
         if current.state != SLICE_STATE_ACTIVE:
@@ -112,6 +117,9 @@ async def update_conversation_selection(
         return _refusal("conversation_slice_revision_conflict", retryable=True, current_revision=exc.current_revision)
     except SliceStoreError as exc:
         return _refusal(exc.reason, retryable=exc.retryable)
+    except Exception as exc:  # noqa: BLE001 - a refusal from the conversion (Control, catalog)
+        reason = getattr(exc, "reason", "") or "conversation_selection_unavailable"
+        return _refusal(str(reason), retryable=bool(getattr(exc, "retryable", True)))
     return {"ok": True, "slice_revision": written.slice_revision, "selection": dict(written.selection),
             "pending": dict(written.pending) if written.pending is not None else None}
 
@@ -195,3 +203,37 @@ async def remove_conversation_slices(service: Any, user: Mapping[str, Any], *, c
 
 __all__ = ["mark_conversation_deleting", "promote_conversation_pending", "remove_conversation_slices",
            "update_conversation_selection"]
+
+
+async def slice_selection_from_capabilities(service: Any, card: Any, selected_capabilities: Mapping[str, Any]) -> dict:
+    """The conversation picker's capability selection (KDCube's format) as guarded slice categories.
+
+    The same conversion the Agent Card picker uses (``selected_standard_maps``):
+    the live shared Control's authority bounds the visible choices; resource
+    families come from the selection itself.
+    """
+    from connection_hub.delegated_credentials.agent_capability_policy import (
+        AGENT_CAPABILITY_AUTHORITY_PROPERTY, AgentCapabilityPolicy,
+    )
+    from connection_hub.delegated_credentials.automation_access import record_from_card
+    from connection_hub.delegated_credentials.descriptor_agent_selection import selected_standard_maps
+
+    record = record_from_card(card) if not hasattr(card, "access_token") else card
+    control = await service._descriptor_control_for_resident(record, grantor_subject=card.grantor_subject)
+    authority = AgentCapabilityPolicy.from_property(dict(control.properties or {}).get(AGENT_CAPABILITY_AUTHORITY_PROPERTY))
+    selected = AgentCapabilityPolicy.from_property(dict(selected_capabilities)).intersection(authority)
+    active = await service._active_catalog()
+    config = await service._catalog_config(active, owner_subject=card.grantor_subject)
+    grants, operations, named = selected_standard_maps(resident=record, control=control, authority=authority,
+                                                       selected=selected, config=config)
+    out: dict[str, Any] = {
+        "resource_grants": {key: sorted(values) for key, values in grants.items()},
+        "resource_operations": {key: sorted(values) for key, values in operations.items()},
+    }
+    stored = named.to_stored()
+    if isinstance(stored, Mapping):
+        out["named_service_operations"] = dict(stored)
+    families = selected.capabilities.get("resource_families")
+    if families is not None:
+        out["resource_families"] = sorted(families)
+    return out

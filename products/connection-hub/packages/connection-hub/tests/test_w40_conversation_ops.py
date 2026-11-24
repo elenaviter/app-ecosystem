@@ -78,3 +78,21 @@ async def test_a1_delete_marks_first_closes_the_conversation_and_removes_only_af
     removed = await service.remove_conversation_slices(USER, conversation_id="c1")
     assert removed["ok"] and removed["removed_revisions"] == 2
     assert await slices.read(grantor_subject=OWNER, card_access_id=resident.access_id, conversation_id="c1") is None
+
+
+@pytest.mark.asyncio
+async def test_the_picker_may_send_kdcubes_capability_selection_and_the_hub_converts_it(tmp_path):
+    from test_agent_capability_control_sync import _policy_with_named_operations
+
+    service, slices, resident = await _world(tmp_path)
+    answer = await service.update_conversation_selection(
+        USER, **_picker(selected_capabilities=_policy_with_named_operations(READ)))
+    assert answer["ok"], answer
+    assert answer["selection"]["named_service_operations"][NAMED_RESOURCE]["slack"] == [READ]
+    # A choice outside the shared Control's authority never enters the slice.
+    wider = await service.update_conversation_selection(
+        USER, **_picker(selected_capabilities=_policy_with_named_operations(READ, "object.action.delete_message")))
+    assert wider["ok"], wider
+    assert "object.action.delete_message" not in str(wider["selection"])
+    missing = await service.update_conversation_selection(USER, **_picker())
+    assert missing["error"] == "conversation_selection_required"
