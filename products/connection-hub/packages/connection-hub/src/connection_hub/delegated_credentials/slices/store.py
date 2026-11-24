@@ -307,6 +307,16 @@ class BundleStorageConversationSliceStore:
         except FileNotFoundError:
             pass
 
+    async def cards_with_conversation(self, *, grantor_subject: str, conversation_id: str) -> list[str]:
+        """The Agent Cards of this owner that hold a slice of the conversation (A1 delete)."""
+        base = self._root / "grantors" / subject_hash_for(grantor_subject) / SLICES_DIRNAME
+        key = conversation_key(conversation_id)
+        out = []
+        for card_access_id in await list_child_names(base):
+            if _ACCESS_ID.fullmatch(card_access_id) and key in await list_child_names(base / card_access_id):
+                out.append(card_access_id)
+        return sorted(out)
+
     async def remove(self, *, grantor_subject: str, card_access_id: str, conversation_id: str) -> int:
         """Remove every revision of one slice (after its conversation's messages are gone)."""
         directory = self._directory(grantor_subject, card_access_id, conversation_id)

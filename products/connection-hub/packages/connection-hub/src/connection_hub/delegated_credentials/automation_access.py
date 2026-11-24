@@ -11551,6 +11551,30 @@ class AutomationAccessService:
 
         return await begin_agent_turn(self, user, **turn)
 
+    async def update_conversation_selection(self, user: Mapping[str, Any], **change: Any) -> dict[str, Any]:
+        """W40: the conversation picker's write (now, or deferred by the cache policy)."""
+        from connection_hub.delegated_credentials.slices.conversation_ops import update_conversation_selection
+
+        return await update_conversation_selection(self, user, **change)
+
+    async def promote_conversation_pending(self, user: Mapping[str, Any], **turn: Any) -> dict[str, Any]:
+        """W40 A2: apply the stored deferred change of the conversation the turn token names."""
+        from connection_hub.delegated_credentials.slices.conversation_ops import promote_conversation_pending
+
+        return await promote_conversation_pending(self, user, **turn)
+
+    async def mark_conversation_deleting(self, user: Mapping[str, Any], **conversation: Any) -> dict[str, Any]:
+        """W40 A1 step 1: close the conversation's slices before its messages are deleted."""
+        from connection_hub.delegated_credentials.slices.conversation_ops import mark_conversation_deleting
+
+        return await mark_conversation_deleting(self, user, **conversation)
+
+    async def remove_conversation_slices(self, user: Mapping[str, Any], **conversation: Any) -> dict[str, Any]:
+        """W40 A1 step 3: remove the deleting slices once the messages are gone."""
+        from connection_hub.delegated_credentials.slices.conversation_ops import remove_conversation_slices
+
+        return await remove_conversation_slices(self, user, **conversation)
+
     def _conversation_slice_parts(self) -> tuple[Any, Any]:
         """The bound parts, or the composed default: slices beside the Card store, the derived sealer."""
         store, tokens = getattr(self, "_conversation_slices", None), getattr(self, "_turn_tokens", None)

@@ -1,0 +1,80 @@
+"""W40: the picker write (T8), the deferred change (A2) and the delete order (A1)."""
+
+from __future__ import annotations
+
+import pytest
+
+from connection_hub.delegated_credentials.slices.store import BundleStorageConversationSliceStore, SLICE_STATE_DELETING
+from connection_hub.delegated_credentials.slices.turns import TurnTokens
+from test_agent_capability_control_sync import AGENT, APPLICATION, NAMED_RESOURCE, OWNER
+from test_descriptor_agent_consent import POST, READ, _consent_world
+from test_w40_turn_token import Registry
+
+KEY = b"p" * 32
+USER = {"user_id": OWNER}
+ONLY_READ = {"named_service_operations": {NAMED_RESOURCE: {"slack": [READ]}}}
+NOTHING = {"named_service_operations": {NAMED_RESOURCE: {"slack": []}}}
+
+
+async def _world(tmp_path):
+    service, store, decisions, resident, _, _, _ = await _consent_world(tmp_path)
+    slices = BundleStorageConversationSliceStore(store._root)
+    service.bind_conversation_slices(slices, TurnTokens(KEY))
+    service.bind_conversation_registry(Registry(owner=OWNER, application=APPLICATION))
+    return service, slices, resident
+
+
+def _picker(**change):
+    return dict(application=APPLICATION, agent_id=AGENT, conversation_id="c1", **change)
+
+
+@pytest.mark.asyncio
+async def test_t8_a_picker_write_before_the_first_turn_seeds_then_replaces_only_this_conversation(tmp_path):
+    service, slices, resident = await _world(tmp_path)
+    answer = await service.update_conversation_selection(USER, **_picker(selection=NOTHING))
+    assert answer["ok"] and answer["slice_revision"] == 2, answer  # seeded (1), then the pick (2)
+    stale = await service.update_conversation_selection(USER, **_picker(selection=ONLY_READ, expected_slice_revision=1))
+    assert stale["error"] == "conversation_slice_revision_conflict"
+    refused = await service.update_conversation_selection(USER, **_picker(selection={"model": "x"}))
+    assert refused["error"] == "conversation_slice_category_not_guarded"
+
+
+@pytest.mark.asyncio
+async def test_a2_a_deferred_change_is_applied_only_by_the_turn_trigger_exactly_as_stored(tmp_path):
+    service, slices, resident = await _world(tmp_path)
+    turn = await service.begin_agent_turn(USER, application=APPLICATION, agent_id=AGENT,
+                                          conversation_id="c1", turn_id="t1")
+    parked = await service.update_conversation_selection(USER, **_picker(selection=NOTHING, deferred=True))
+    assert parked["ok"] and parked["pending"] == NOTHING
+    assert parked["selection"]["named_service_operations"] == ONLY_READ["named_service_operations"]
+    promoted = await service.promote_conversation_pending(USER, application=APPLICATION, agent_id=AGENT,
+                                                          turn_token=turn["turn_token"])
+    assert promoted["ok"], promoted
+    current = await slices.read(grantor_subject=OWNER, card_access_id=resident.access_id, conversation_id="c1")
+    assert current.selection == NOTHING and current.pending is None
+    again = await service.promote_conversation_pending(USER, application=APPLICATION, agent_id=AGENT,
+                                                       turn_token=turn["turn_token"])
+    assert again["error"] == "conversation_slice_no_pending"
+    forged = await service.promote_conversation_pending(USER, application=APPLICATION, agent_id=AGENT,
+                                                        turn_token="ts1.forged.0")
+    assert forged["error"] == "turn_token_invalid"
+
+
+@pytest.mark.asyncio
+async def test_a1_delete_marks_first_closes_the_conversation_and_removes_only_after(tmp_path):
+    service, slices, resident = await _world(tmp_path)
+    await service.begin_agent_turn(USER, application=APPLICATION, agent_id=AGENT, conversation_id="c1", turn_id="t1")
+    early = await service.remove_conversation_slices(USER, conversation_id="c1")
+    assert early["error"] == "conversation_not_marked_deleting"
+    assert (await service.mark_conversation_deleting(USER, conversation_id="c1")) == {"ok": True, "marked": 1}
+    current = await slices.read(grantor_subject=OWNER, card_access_id=resident.access_id, conversation_id="c1")
+    assert current.state == SLICE_STATE_DELETING
+    # Frozen: no token, no picker write, never reseeded.
+    refused = await service.begin_agent_turn(USER, application=APPLICATION, agent_id=AGENT,
+                                             conversation_id="c1", turn_id="t2")
+    assert refused["error"] == "conversation_deleting"
+    assert (await service.update_conversation_selection(USER, **_picker(selection=ONLY_READ)))["error"] == \
+        "conversation_deleting"
+    removed = await service.remove_conversation_slices(USER, conversation_id="c1")
+    assert removed["ok"] and removed["removed_revisions"] == 2
+    assert await slices.read(grantor_subject=OWNER, card_access_id=resident.access_id, conversation_id="c1") is None
