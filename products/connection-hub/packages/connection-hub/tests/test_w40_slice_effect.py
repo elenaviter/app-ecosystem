@@ -44,12 +44,16 @@ async def test_t7_stage_closes_the_slice_and_commit_applies_it_once(tmp_path):
     target = ConversationSliceTarget(store)
     await target.prepare_once(_binding(), _payload())
 
-    # E1: a picker-only write and a turn token both refuse while it is prepared.
+    # E1: a picker-only write refuses while it is prepared (and a bounded wait gives up).
     with pytest.raises(SlicePrepared):
         await store.write(_slice({}), expected_revision=1)
-    with pytest.raises(TurnRefused, match="conversation_slice_prepared"):
-        await begin_turn(store=store, registry=Registry(), tokens=TurnTokens(KEY), card=CARD, application="app@1-0",
-                         conversation_id="c1", turn_id="t1", seed_selection=SEED, card_generation=1, now=10)
+    with pytest.raises(SlicePrepared):
+        await store.write_when_open(_slice({}), expected_revision=1, wait_seconds=0.05, poll_seconds=0.01)
+    # Option c: a turn is not blocked; it keeps the committed slice.
+    _, kept = await begin_turn(store=store, registry=Registry(), tokens=TurnTokens(KEY), card=CARD,
+                               application="app@1-0", conversation_id="c1", turn_id="t1", seed_selection=SEED,
+                               card_generation=1, now=10)
+    assert kept.slice_revision == 1 and kept.selection == SEED
 
     await target.apply_once(_binding(), _payload())
     await target.apply_once(_binding(), _payload())  # FINISH replay
@@ -102,3 +106,44 @@ async def test_consent_builds_one_effect_that_adds_only_the_granted_choice(tmp_p
         await conversation_slice_effect(store, card=CARD, conversation_id="c1", granted={"model": ["x"]})
     with pytest.raises(Exception, match="conversation_slice_missing"):
         await conversation_slice_effect(store, card=CARD, conversation_id="other", granted={})
+
+
+@pytest.mark.asyncio
+async def test_w582_a_replayed_commit_finds_its_own_revision_after_a_later_picker_write(tmp_path):
+    store = await _seeded(tmp_path)
+    target = ConversationSliceTarget(store)
+    await target.prepare_once(_binding(), _payload())
+    await target.apply_once(_binding(), _payload())
+    # The marker is gone, so a picker write lands before FINISH records the effect.
+    await store.write(_slice({}), expected_revision=2)
+    # FINISH replays COMMIT: it finds the revision its change wrote, not the newest content.
+    await target.apply_once(_binding(), _payload())
+    current = await store.read(grantor_subject="user-1", card_access_id=CARD.access_id, conversation_id="c1")
+    assert current.slice_revision == 3 and current.selection == {}
+
+
+@pytest.mark.asyncio
+async def test_a_bounded_picker_write_lands_once_the_transaction_is_decided(tmp_path):
+    import asyncio
+
+    store = await _seeded(tmp_path)
+    target = ConversationSliceTarget(store)
+    await target.prepare_once(_binding(), _payload())
+
+    async def decide_later():
+        await asyncio.sleep(0.05)
+        await target.release_once(_binding(), _payload())
+
+    waiting = asyncio.create_task(store.write_when_open(_slice({}), expected_revision=1, wait_seconds=2,
+                                                        poll_seconds=0.01))
+    await decide_later()
+    assert (await waiting).slice_revision == 2
+
+
+def test_w873_card_version_never_carries_a_conversation_slice_effect():
+    from connection_hub.delegated_credentials.cards import participant_card_version
+
+    # CardVersion's Hub effects are a closed set (W661 section 4a); its recovery
+    # proof is not the legacy decision log, so a slice marker there would stay forever.
+    source = open(participant_card_version.__file__, encoding="utf-8").read()
+    assert "conversation_slice" not in source

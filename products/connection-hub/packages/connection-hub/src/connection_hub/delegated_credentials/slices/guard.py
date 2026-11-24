@@ -95,15 +95,24 @@ async def effective_for_turn(*, effective: CardAuthority, control: CardAuthority
     if not str(turn_token or "").strip():
         return effective
     claims = tokens.verify(turn_token, card_access_id=effective.access_id, now=now)
-    if await slices.prepared_changes(grantor_subject=effective.grantor_subject, card_access_id=effective.access_id,
-                                     conversation_id=claims.conversation_id):
-        raise SliceGuardRefused("conversation_slice_prepared", retryable=True)
-    conversation = await slices.read(grantor_subject=effective.grantor_subject, card_access_id=effective.access_id,
-                                     conversation_id=claims.conversation_id)
+    scope = dict(grantor_subject=effective.grantor_subject, card_access_id=effective.access_id,
+                 conversation_id=claims.conversation_id)
+    conversation = await slices.read(**scope)
     if conversation is None:
         # Fail closed: a token names a conversation whose slice the token's turn seeded.
         raise SliceGuardRefused("conversation_slice_missing", retryable=True)
-    return narrow_by_slice(effective, control, conversation)
+    narrowed = narrow_by_slice(effective, control, conversation)
+    # Option c (design 2026-11-24): while a Card transaction is undecided, the
+    # call is never refused for it; it gets the committed slice AND every
+    # prepared one, so a consent (widening) applies only once committed and a
+    # narrowing applies at once. A prepared deleting slice refuses.
+    try:
+        prepared = await slices.prepared_candidates(**scope)
+    except Exception as exc:  # noqa: BLE001 - an unreadable marker fails closed
+        raise SliceGuardRefused(getattr(exc, "reason", "conversation_slice_marker_unreadable"), retryable=True) from None
+    for candidate in prepared:
+        narrowed = narrow_by_slice(narrowed, control, candidate)
+    return narrowed
 
 
 __all__ = ["SliceGuardRefused", "effective_for_turn", "narrow_by_slice"]

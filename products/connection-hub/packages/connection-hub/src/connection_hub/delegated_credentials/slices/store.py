@@ -94,6 +94,9 @@ class ConversationSlice:
     pending: Mapping[str, Any] | None = None
     state: str = SLICE_STATE_ACTIVE
     slice_revision: int = 0
+    # The Card-transaction change that wrote this revision ("" for a direct
+    # write), so a replayed COMMIT finds its own revision exactly (W582).
+    change_id: str = ""
 
     def __post_init__(self) -> None:
         if not str(self.grantor_subject or "").strip():
@@ -119,6 +122,7 @@ class ConversationSlice:
             "pending": dict(self.pending) if self.pending is not None else None,
             "state": self.state,
             "slice_revision": int(self.slice_revision),
+            "change_id": self.change_id,
         }
 
     @classmethod
@@ -135,34 +139,23 @@ class ConversationSlice:
             pending=value.get("pending"),
             state=str(value.get("state") or ""),
             slice_revision=int(value.get("slice_revision") or 0),
+            change_id=str(value.get("change_id") or ""),
         )
 
 
 class BundleStorageConversationSliceStore:
     """Slices under ``<cards root>/grantors/<subject_hash>/slices``."""
 
-    def __init__(self, root: pathlib.Path | str, *, settle: Any = None) -> None:
+    def __init__(self, root: pathlib.Path | str) -> None:
+        # A marker of a crashed transaction is released by the Hub's existing
+        # recovery cron (card-transaction-recover), whose FINISH applies or
+        # releases this effect (design 2026-11-24, point 4); never here.
         self._root = pathlib.Path(root)
-        # Review E2: ``settle(transaction_id)`` decides an undecided transaction
-        # whose intent expired (ABORT) and FINISHes it, which releases its marker.
-        self._settle = settle
-
-    def bind_settler(self, settle: Any) -> None:
-        self._settle = settle
 
     async def _markers(self, prepared_directory: pathlib.Path, *, own: str = "") -> list[str]:
-        """Prepared markers other than ``own``, after settling the ones that can be decided now."""
+        """Prepared markers other than ``own``."""
         names = [name[:-5] for name in await list_child_names(prepared_directory) if name.endswith(".json")]
-        foreign = [name for name in names if name != own]
-        if foreign and self._settle is not None:
-            for change_id in foreign:
-                try:
-                    await self._settle(change_id.rsplit(":", 1)[0])
-                except Exception:  # noqa: BLE001 - an undecided owner keeps its marker
-                    pass
-            names = [name[:-5] for name in await list_child_names(prepared_directory) if name.endswith(".json")]
-            foreign = [name for name in names if name != own]
-        return foreign
+        return [name for name in names if name != own]
 
     def _directory(self, grantor_subject: str, card_access_id: str, conversation_id: str) -> pathlib.Path:
         if not _ACCESS_ID.fullmatch(str(card_access_id or "")):
@@ -195,6 +188,33 @@ class BundleStorageConversationSliceStore:
         directory = self._prepared_directory(self._directory(grantor_subject, card_access_id, conversation_id))
         return sorted(await self._markers(directory))
 
+    async def prepared_candidates(self, *, grantor_subject: str, card_access_id: str,
+                                  conversation_id: str) -> list[ConversationSlice]:
+        """The slices undecided Card transactions prepared (option c reads them; an unreadable one refuses)."""
+        directory = self._prepared_directory(self._directory(grantor_subject, card_access_id, conversation_id))
+        out = []
+        for change_id in sorted(await self._markers(directory)):
+            document = await read_json_or_none(directory / f"{change_id}.json")
+            if not isinstance(document, Mapping):
+                raise SliceStoreError("conversation_slice_marker_unreadable", retryable=True)
+            out.append(ConversationSlice.from_document(document.get("slice")))
+        return out
+
+    async def write_when_open(self, candidate: ConversationSlice, *, expected_revision: int,
+                              wait_seconds: float = 60.0, poll_seconds: float = 0.25) -> ConversationSlice:
+        """A direct write that waits, bounded, for an undecided transaction's marker (design point 3)."""
+        import asyncio
+        import time
+
+        deadline = time.monotonic() + max(0.0, wait_seconds)
+        while True:
+            try:
+                return await self.write(candidate, expected_revision=expected_revision)
+            except SlicePrepared:
+                if time.monotonic() >= deadline:
+                    raise
+                await asyncio.sleep(poll_seconds)
+
     async def write(self, candidate: ConversationSlice, *, expected_revision: int,
                     _change_id: str = "") -> ConversationSlice:
         """Commit ``candidate`` as revision ``expected_revision + 1``; exclusive create is the CAS.
@@ -209,7 +229,8 @@ class BundleStorageConversationSliceStore:
         current = revisions[-1] if revisions else 0
         if current != int(expected_revision):
             raise SliceConflict(current)
-        committed = ConversationSlice(**{**candidate.__dict__, "slice_revision": current + 1})
+        committed = ConversationSlice(**{**candidate.__dict__, "slice_revision": current + 1,
+                                         "change_id": _change_id})
         directory.mkdir(parents=True, exist_ok=True)
         path = directory / f"slice_revision_{current + 1:08d}.json"
         payload = json.dumps(committed.to_document(), sort_keys=True).encode("utf-8")
@@ -256,22 +277,28 @@ class BundleStorageConversationSliceStore:
         """COMMIT: write the prepared revision once; a replay finds it written and returns it."""
         marker = self._marker(candidate, change_id)
         prepared = await read_json_or_none(marker)
-        current = await self.read(grantor_subject=candidate.grantor_subject, card_access_id=candidate.card_access_id,
-                                  conversation_id=candidate.conversation_id)
-        if prepared is None:
-            if current is not None and current.selection == candidate.selection and current.state == candidate.state:
-                return current  # already applied by an earlier COMMIT of this change
+        written = await self._revision_written_by(candidate, change_id)
+        if written is not None:
+            committed = written  # an earlier COMMIT of this change wrote it (W582 exact replay)
+        elif prepared is None:
             raise SliceStoreError("conversation_slice_prepare_missing")
-        expected = int(prepared["expected_revision"])
-        if current is not None and current.slice_revision == expected + 1:
-            committed = current  # written before a crash that kept the marker
         else:
-            committed = await self.write(candidate, expected_revision=expected, _change_id=change_id)
+            committed = await self.write(candidate, expected_revision=int(prepared["expected_revision"]),
+                                         _change_id=change_id)
         try:
             os.unlink(marker)
         except FileNotFoundError:
             pass
         return committed
+
+    async def _revision_written_by(self, candidate: ConversationSlice, change_id: str) -> ConversationSlice | None:
+        directory = self._directory(candidate.grantor_subject, candidate.card_access_id, candidate.conversation_id)
+        # Newest first, bounded: a COMMIT is replayed soon after it wrote.
+        for revision in reversed((await self._revisions(directory))[-64:]):
+            document = await read_json_or_none(directory / f"slice_revision_{revision:08d}.json")
+            if isinstance(document, Mapping) and document.get("change_id") == change_id:
+                return ConversationSlice.from_document(document)
+        return None
 
     async def release(self, candidate: ConversationSlice, *, change_id: str) -> None:
         """ABORT (or an expired, undecided transaction's recovery): remove only this change's marker."""

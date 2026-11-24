@@ -78,3 +78,51 @@ async def test_a_consent_naming_a_foreign_or_unseeded_conversation_commits_nothi
     assert refused["ok"] is False and refused["error"] == "conversation_slice_missing", refused
     assert decisions.decisions == []
     assert (await _current(store, resident)).card_revision == resident.card_revision
+
+
+@pytest.mark.asyncio
+async def test_a2_e2_a_crashed_consent_never_blocks_calls_and_the_recovery_cron_releases_it(tmp_path):
+    from connection_hub.delegated_credentials.live_grant import ResolvedCardComposition
+    from connection_hub.delegated_credentials.slices import guard
+
+    service, store, decisions, resident, control, card_service, _ = await _consent_world(tmp_path)
+    slices, token = await _conversation(service, store, resident, card_service=card_service)
+    decide = decisions.decide
+
+    async def crash(*args, **kwargs):
+        raise RuntimeError("process died before the decision")
+
+    decisions.decide = crash
+    with pytest.raises(RuntimeError, match="process died"):
+        await _consent(service, resident, token)
+    assert await slices.prepared_changes(grantor_subject=OWNER, card_access_id=resident.access_id,
+                                         conversation_id="c1")
+
+    # A-2: a call meanwhile is not refused; it gets committed AND prepared (the
+    # consent widens, so the committed READ-only slice applies).
+    # The undecided transaction also fences the Agent Card itself (W582: pending
+    # effects keep read resolution fenced), as for any Card transaction; the
+    # guard's own composition is checked here on the last committed Card.
+    from connection_hub.delegated_credentials.cards.store import CardStorageError
+    with pytest.raises(CardStorageError, match="card_transaction_undecided"):
+        await _current(store, resident)
+    guard.bind_turn_tokens(TurnTokens(KEY))
+    try:
+        card = resident
+        composition = ResolvedCardComposition(caller_card=card, control_card=control, effective_card=card)
+        narrowed = await guard.narrow_live_composition_for_turn(composition, card_store=store, turn_token=token)
+        assert set(narrowed.effective_card.named_service_operations.operations[NAMED_RESOURCE]["slack"]) == {READ}
+    finally:
+        guard.bind_turn_tokens(None)
+
+    # E2: the Hub's recovery cron presumes ABORT (the test store's expiry CAS) and
+    # FINISH releases the slice marker; neither the Card nor the slice moved.
+    decisions.decide = decide
+    # The cron's recover_card_transactions pages the production store; this test
+    # store has no paging, so it drives the same recovery rows (_recover_rows).
+    await service._card_coordinator[0].recover(limit=10)
+    assert await slices.prepared_changes(grantor_subject=OWNER, card_access_id=resident.access_id,
+                                         conversation_id="c1") == []
+    current = await slices.read(grantor_subject=OWNER, card_access_id=resident.access_id, conversation_id="c1")
+    assert current.slice_revision == 1
+    assert (await _current(store, resident)).card_revision == resident.card_revision
