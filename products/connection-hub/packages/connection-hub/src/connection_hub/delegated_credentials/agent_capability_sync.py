@@ -1956,6 +1956,44 @@ async def sync_agent_capability_control(
                 account_scope=resident.account_scope)
             if aligned.error is not None:
                 return {"retryable": False, **aligned.error}
+            from .agent_capability_policy import AGENT_CAPABILITY_DEFAULT_STANDARD_PROPERTY
+
+            # D5 option a: the defaults' standard authority is kept on the Card for the
+            # guard (a call outside any conversation, the seed of a new one).
+            default_standard = {
+                "resource_grants": {key: sorted(values) for key, values in aligned.resource_grants.items()},
+                "resource_operations": {key: sorted(values) for key, values in aligned.resource_operations.items()},
+                "named_service_operations": aligned.named_service_operations.to_stored(),
+            }
+            if existing_resident is not None:
+                # Neither a sync nor a defaults save narrows what was consented: the
+                # Card keeps the union, so an older conversation keeps its choice
+                # (D5). Only the explicit revoke narrows grants.
+                union = _ordered_union
+
+                kept_named = existing_resident.named_service_operations
+                named_union = aligned.named_service_operations.to_stored()
+                if not kept_named.is_unknown and isinstance(named_union, Mapping):
+                    stored = kept_named.to_stored()
+                    if isinstance(stored, Mapping):
+                        named_union = {resource: {namespace: _ordered_values(stored.get(resource, {}).get(namespace, ()),
+                                                                              named_union.get(resource, {}).get(namespace, ()))
+                                                  for namespace in set(stored.get(resource, {}))
+                                                  | set(named_union.get(resource, {}))}
+                                       for resource in set(stored) | set(named_union)}
+                kept = await resolve_agent_card_standard_authority(service, active=active,
+                    owner_subject=grantor_subject,
+                    resource_grants=union(existing_resident.resource_grants, aligned.resource_grants),
+                    resource_operations=union(existing_resident.resource_operations, aligned.resource_operations),
+                    named_service_operations=named_union, properties=resident.properties,
+                    account_scope=resident.account_scope)
+                if kept.error is None:
+                    aligned = kept
+            if replace_selection or existing_resident is None:
+                # Written by a defaults save or a creation only; a passive sync
+                # leaves the Card as it is (a Card without it is legacy: no narrowing).
+                resident = dataclasses.replace(resident, properties={
+                    **dict(resident.properties or {}), AGENT_CAPABILITY_DEFAULT_STANDARD_PROPERTY: default_standard})
             resident = dataclasses.replace(resident,
                 resource_grants={key: tuple(values) for key, values in aligned.resource_grants.items()},
                 resource_operations={key: tuple(values) for key, values in aligned.resource_operations.items()},
@@ -2077,8 +2115,15 @@ async def update_agent_capability_selection(
     selected_capabilities: Mapping[str, Any] | None,
     expected_card_revision: int | None,
     reset_to_control_defaults: bool = False,
+    revoke: bool = False,
 ) -> dict[str, Any]:
     """Replace one resident Agent Card's visible descriptor selection.
+
+    W40, D5 option a: this changes the Card's defaults for new conversations
+    (and for calls outside any conversation); it never narrows what was
+    consented, so an older conversation keeps its choice. ``revoke`` is the
+    explicit "revoke permission" action: the Card's grants then become the
+    selection, which every conversation loses at once.
 
     The current linked Control Card supplies the editable ceiling. An explicit
     reset uses that Control Card's current defaults. A normal edit retains
@@ -2243,6 +2288,7 @@ async def update_agent_capability_selection(
 
     standard_replacement: dict[str, Any] = {}
     standard_materialized = False
+    default_standard: Any = None
     if transactional:
         from .descriptor_agent_selection import selected_standard_maps
 
@@ -2257,6 +2303,33 @@ async def update_agent_capability_selection(
                 properties=resident_selection_properties(resident.properties, selection=selected))
             if resolved.error is not None:
                 return {"retryable": False, **resolved.error}
+            from .agent_capability_policy import AGENT_CAPABILITY_DEFAULT_STANDARD_PROPERTY
+
+            default_standard = {
+                "resource_grants": {key: sorted(value) for key, value in resolved.resource_grants.items()},
+                "resource_operations": {key: sorted(value) for key, value in resolved.resource_operations.items()},
+                "named_service_operations": resolved.named_service_operations.to_stored(),
+            }
+            if not revoke and not reset_to_control_defaults:
+                union = _ordered_union
+
+                named_union = default_standard["named_service_operations"]
+                kept_named = resident.named_service_operations.to_stored() \
+                    if not resident.named_service_operations.is_unknown else None
+                if isinstance(kept_named, Mapping) and isinstance(named_union, Mapping):
+                    named_union = {resource: {namespace: _ordered_values(kept_named.get(resource, {}).get(namespace, ()),
+                                                                          named_union.get(resource, {}).get(namespace, ()))
+                                              for namespace in set(kept_named.get(resource, {}))
+                                              | set(named_union.get(resource, {}))}
+                                   for resource in set(kept_named) | set(named_union)}
+                kept = await service._resolve_card_authority(user=user, existing=resident, active=active,
+                    resource_grants=union(resident.resource_grants, resolved.resource_grants),
+                    resource_operations=union(resident.resource_operations, resolved.resource_operations),
+                    operations=(), named_service_operations=named_union, account_scope=resident.account_scope,
+                    properties=resident_selection_properties(resident.properties, selection=selected))
+                if kept.error is not None:
+                    return {"retryable": False, **kept.error}
+                resolved = kept
             standard_replacement = {"resource_grants": {key: tuple(value) for key, value in resolved.resource_grants.items()},
                 "resource_operations": {key: tuple(value) for key, value in resolved.resource_operations.items()},
                 "operations": tuple(resolved.operations), "named_service_operations": resolved.named_service_operations,
@@ -2293,10 +2366,10 @@ async def update_agent_capability_selection(
         card_revision=resident.card_revision + 1,
         catalog_version=control.catalog_version,
         resource_acceptance=acceptance,
-        properties=resident_selection_properties(
+        properties=_with_default_standard(resident_selection_properties(
             resident.properties,
             selection=selected,
-        ),
+        ), default_standard if standard_materialized and transactional else None),
         **{
             key: value
             for key, value in standard_replacement.items()
@@ -2407,3 +2480,24 @@ __all__ = [
     "sync_agent_capability_control",
     "update_agent_capability_selection",
 ]
+
+
+def _with_default_standard(properties: Mapping[str, Any], default_standard: Any) -> dict[str, Any]:
+    from .agent_capability_policy import AGENT_CAPABILITY_DEFAULT_STANDARD_PROPERTY
+
+    out = dict(properties or {})
+    if default_standard is not None:
+        out[AGENT_CAPABILITY_DEFAULT_STANDARD_PROPERTY] = default_standard
+    return out
+
+
+def _ordered_values(kept: Any, added: Any) -> list[str]:
+    """``kept`` in its stored order, then what ``added`` brings: unchanged sets never reorder."""
+    out = list(dict.fromkeys(kept or ()))
+    out.extend(value for value in (added or ()) if value not in out)
+    return out
+
+
+def _ordered_union(left: Mapping[str, Any], right: Mapping[str, Any]) -> dict[str, list[str]]:
+    keys = list(dict.fromkeys([*left, *right]))
+    return {key: _ordered_values(left.get(key, ()), right.get(key, ())) for key in keys}

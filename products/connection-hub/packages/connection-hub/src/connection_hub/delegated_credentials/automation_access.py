@@ -8505,6 +8505,7 @@ class AutomationAccessService:
         selected_capabilities: Mapping[str, Any] | None,
         expected_card_revision: int | None,
         reset_to_control_defaults: bool = False,
+        revoke: bool = False,
     ) -> dict[str, Any]:
         """Replace the visible selection on one resident Agent Card."""
 
@@ -8519,6 +8520,7 @@ class AutomationAccessService:
             selected_capabilities=selected_capabilities,
             expected_card_revision=expected_card_revision,
             reset_to_control_defaults=reset_to_control_defaults,
+            revoke=revoke,
         )
 
     async def _application_holder_user(

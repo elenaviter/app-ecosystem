@@ -66,14 +66,38 @@ async def test_new_selection_above_ceiling_returns_nonretryable_code_before_a_de
 
 
 @pytest.mark.asyncio
-async def test_deselection_removes_standard_post_authority_and_sync_preserves_the_choice(tmp_path):
+async def test_d5_deselection_changes_only_the_defaults_and_keeps_the_consented_grant(tmp_path):
+    from connection_hub.delegated_credentials.agent_capability_policy import AGENT_CAPABILITY_DEFAULT_STANDARD_PROPERTY
+    from test_descriptor_agent_consent import NAMED_RESOURCE, _sync_arguments
+
     service, store, decisions, resident, _, _, _ = await _consent_world(tmp_path)
     assert (await _consent(service, resident))["ok"]
     held = await _current(store, resident)
     assert (await _select(service, held, READ))["ok"]
-    narrowed = await _current(store, resident)
+    unticked = await _current(store, resident)
+    # W40 D5 option a: an older conversation keeps POST, so the Card keeps the grant ...
+    assert POST in unticked.named_service_operations.operations[NAMED_RESOURCE]["slack"]
+    assert "slack:post" in unticked.resource_grants[NAMED_RESOURCE]
+    # ... while the defaults (new conversations, calls outside one) no longer select it.
+    defaults = unticked.properties[AGENT_CAPABILITY_DEFAULT_STANDARD_PROPERTY]
+    assert defaults["named_service_operations"][NAMED_RESOURCE]["slack"] == [READ]
+    answer = await service.sync_agent_capability_control({"user_id": OWNER}, **_sync_arguments())
+    assert answer["ok"] and await _current(store, resident) == unticked
+
+
+@pytest.mark.asyncio
+async def test_d5_revoke_removes_the_standard_post_authority_and_sync_preserves_the_choice(tmp_path):
     from test_descriptor_agent_consent import NAMED_RESOURCE, _sync_arguments
 
+    service, store, decisions, resident, _, _, _ = await _consent_world(tmp_path)
+    assert (await _consent(service, resident))["ok"]
+    held = await _current(store, resident)
+    answer = await service.update_agent_capability_selection(
+        {"user_id": OWNER, "roles": ["kdcube:role:super-admin"]}, access_id=held.access_id,
+        selected_capabilities=_policy_with_named_operations(READ), expected_card_revision=held.card_revision,
+        revoke=True)
+    assert answer["ok"], answer
+    narrowed = await _current(store, resident)
     assert POST not in narrowed.named_service_operations.operations[NAMED_RESOURCE]["slack"]
     assert "slack:post" not in narrowed.resource_grants[NAMED_RESOURCE]
     answer = await service.sync_agent_capability_control({"user_id": OWNER}, **_sync_arguments())

@@ -51,7 +51,30 @@ def narrow_by_slice(effective: CardAuthority, control: CardAuthority, conversati
         raise SliceGuardRefused("conversation_deleting")
     if conversation.card_access_id != effective.access_id or conversation.grantor_subject != effective.grantor_subject:
         raise SliceGuardRefused("conversation_slice_card_mismatch")
-    selection = conversation.selection
+    return narrow_by_selection(effective, control, conversation.selection)
+
+
+def card_default_selection(card: CardAuthority) -> Mapping[str, Any] | None:
+    """The Card's defaults as a selection (D5 option a), or None for a legacy Card."""
+    from connection_hub.delegated_credentials.agent_capability_policy import (
+        AGENT_CAPABILITY_DEFAULT_STANDARD_PROPERTY, AGENT_CAPABILITY_SELECTION_PROPERTY,
+    )
+
+    properties = dict(card.properties or {})
+    standard = properties.get(AGENT_CAPABILITY_DEFAULT_STANDARD_PROPERTY)
+    if not isinstance(standard, Mapping):
+        return None
+    selection = {key: standard[key] for key in ("resource_grants", "resource_operations", "named_service_operations")
+                 if isinstance(standard.get(key), Mapping)}
+    chosen = properties.get(AGENT_CAPABILITY_SELECTION_PROPERTY)
+    capabilities = chosen.get("capabilities") if isinstance(chosen, Mapping) else None
+    if isinstance(capabilities, Mapping) and isinstance(capabilities.get("resource_families"), (list, tuple)):
+        selection["resource_families"] = list(capabilities["resource_families"])
+    return selection
+
+
+def narrow_by_selection(effective: CardAuthority, control: CardAuthority, selection: Mapping[str, Any]) -> CardAuthority:
+    """``effective`` narrowed by a guarded selection (a slice's, or the Card's defaults)."""
     families = _family_patterns(control)
     allowed_families = set(selection.get("resource_families", families.keys()))
 
@@ -93,7 +116,10 @@ async def effective_for_turn(*, effective: CardAuthority, control: CardAuthority
     """The guard's entry: no token keeps the Card's authority (a call outside any conversation)."""
 
     if not str(turn_token or "").strip():
-        return effective
+        # A-1 (D5 option a): a call outside any conversation gets the Card's
+        # defaults, not every grant it was ever given. A legacy Card has none.
+        defaults = card_default_selection(effective)
+        return effective if defaults is None else narrow_by_selection(effective, control, defaults)
     from connection_hub.delegated_credentials.slices.turns import card_generation_of
 
     generation = card_generation_of(effective)
@@ -121,7 +147,8 @@ async def effective_for_turn(*, effective: CardAuthority, control: CardAuthority
     return narrowed
 
 
-__all__ = ["SliceGuardRefused", "effective_for_turn", "narrow_by_slice"]
+__all__ = ["SliceGuardRefused", "card_default_selection", "effective_for_turn", "narrow_by_selection",
+           "narrow_by_slice"]
 
 
 # -- The request path (KDCube's delegated surface guard calls this) ------------
@@ -149,9 +176,13 @@ async def narrow_live_composition_for_turn(composition: Any, *, card_store: Any,
     from connection_hub.delegated_credentials.slices.store import BundleStorageConversationSliceStore
     from connection_hub.delegated_credentials.slices.turns import TurnRefused
 
-    if not str(turn_token or "").strip():
-        return composition
     root = getattr(card_store, "root", None) or getattr(card_store, "_root", None)
+    if not str(turn_token or "").strip():
+        if composition.control_card is None or card_default_selection(composition.effective_card) is None:
+            return composition
+        effective = await effective_for_turn(effective=composition.effective_card, control=composition.control_card,
+                                             slices=None, tokens=None, turn_token="", now=0)
+        return dataclasses.replace(composition, effective_card=effective)
     if _TURN_TOKENS is None or root is None or composition.control_card is None:
         raise LiveGrantCardError("conversation_slices_unavailable")
     try:

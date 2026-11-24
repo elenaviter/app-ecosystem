@@ -125,3 +125,23 @@ async def test_the_request_path_narrows_the_live_composition_and_denies_on_any_r
         assert CONNECTOR not in narrowed.effective_card.resource_grants and narrowed.caller_card is card
     finally:
         guard.bind_turn_tokens(None)
+
+
+@pytest.mark.asyncio
+async def test_a1_a_call_outside_any_conversation_gets_the_cards_defaults_not_every_grant(tmp_path):
+    from connection_hub.delegated_credentials.agent_capability_policy import AGENT_CAPABILITY_DEFAULT_STANDARD_PROPERTY
+
+    card, control = await _pair(tmp_path)
+    card = dataclasses.replace(card, named_service_operations=type(card.named_service_operations).exact(
+        {NAMED_RESOURCE: {"slack": [READ, POST]}}))
+    slices, tokens = BundleStorageConversationSliceStore(tmp_path / "slices"), TurnTokens(KEY)
+    # A legacy Card (no defaults recorded) keeps its authority.
+    assert await effective_for_turn(effective=card, control=control, slices=slices, tokens=tokens,
+                                    turn_token="", now=0) == card
+    defaulted = dataclasses.replace(card, properties={**card.properties, AGENT_CAPABILITY_DEFAULT_STANDARD_PROPERTY: {
+        "resource_grants": {NAMED_RESOURCE: ["named_services:use", "slack:post", "slack:read"]},
+        "resource_operations": {NAMED_RESOURCE: list(card.resource_operations.get(NAMED_RESOURCE, ()))},
+        "named_service_operations": {NAMED_RESOURCE: {"slack": [READ]}}}})
+    headless = await effective_for_turn(effective=defaulted, control=control, slices=slices, tokens=tokens,
+                                        turn_token="", now=0)
+    assert _slack(headless) == {READ}

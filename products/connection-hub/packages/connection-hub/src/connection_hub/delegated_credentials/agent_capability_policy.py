@@ -24,6 +24,10 @@ AGENT_CAPABILITY_DEFAULTS_PROPERTY = "kdcube.agent_capability_defaults"
 AGENT_CAPABILITY_SELECTION_PROPERTY = "kdcube.agent_capability_selection"
 AGENT_CAPABILITY_METADATA_PROPERTY = "kdcube.agent_capability_metadata"
 AGENT_CAPABILITY_PROJECTION_PROPERTY = "kdcube.agent_capability_projection"
+# W40, D5 option a: the standard authority the Agent Card's defaults select
+# (resource_grants, resource_operations, named_service_operations). The Card's
+# own grants are what was ever consented; a defaults save never narrows them.
+AGENT_CAPABILITY_DEFAULT_STANDARD_PROPERTY = "kdcube.agent_capability_default_standard"
 AGENT_DESCRIPTOR_CONTROL_PROPERTY = "kdcube.agent_descriptor_control"
 
 CAPABILITY_ALLOWED_SELECTED = "allowed_selected"
