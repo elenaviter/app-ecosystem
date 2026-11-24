@@ -145,3 +145,12 @@ async def test_a1_a_call_outside_any_conversation_gets_the_cards_defaults_not_ev
     headless = await effective_for_turn(effective=defaulted, control=control, slices=slices, tokens=tokens,
                                         turn_token="", now=0)
     assert _slack(headless) == {READ}
+
+
+def test_the_fence_reasons_answer_one_retryable_authority_update_reason():
+    from connection_hub.delegated_credentials.live_grant import AUTHORITY_UPDATING, authority_update_reason
+
+    for reason in ("card_updating", "control_card_updating", "card_transaction_undecided", "card_effects_pending"):
+        assert authority_update_reason(reason) == AUTHORITY_UPDATING
+    for reason in ("source_invalid", "access_id_mismatch", ""):
+        assert authority_update_reason(reason) is None

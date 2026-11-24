@@ -38,6 +38,24 @@ from connection_hub.delegated_credentials.credential_view import (
 ACCESS_SOURCES = ("manual", "oauth", "agent")
 
 
+# W40 (design 2026-11-24, UX of the authority-update window): the reasons that
+# mean "a Card or its Control is being changed by a transaction right now",
+# answered to people and models as one retryable reason.
+AUTHORITY_UPDATING = "agent_authority_updating"
+AUTHORITY_UPDATE_REASONS = frozenset({
+    "card_updating", "control_card_updating", "card_projection_reconciling",
+    "card_transaction_undecided", "card_effects_pending", "conversation_slice_prepared",
+})
+# The longest a crashed transaction can keep a Card fenced: its 60 s intent
+# lifetime plus one run of the per-minute recovery cron.
+AUTHORITY_UPDATE_RETRY_SECONDS = 120
+
+
+def authority_update_reason(reason: str) -> str | None:
+    """``agent_authority_updating`` for a fence reason, None for anything else."""
+    return AUTHORITY_UPDATING if str(reason or "") in AUTHORITY_UPDATE_REASONS else None
+
+
 class LiveGrantCardError(RuntimeError):
     """The current registry card could not be trusted as authorization state."""
 
