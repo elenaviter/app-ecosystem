@@ -25,6 +25,7 @@ from .journal_receipt_identity import (
     receipt_identity_conflict_error,
     update_stale_error,
 )
+from .journal_receipt_precondition import receipt_precondition_allows
 
 
 def _entry_publication(entry: Mapping[str, Any]) -> tuple[ContentChain | None, dict[str, Any]]:
@@ -48,10 +49,13 @@ def _entry_publication(entry: Mapping[str, Any]) -> tuple[ContentChain | None, d
         chain = published_chain(root, relative, ref="HEAD")
     except DomainError:
         return None, {}
+    # Only the newest published version can be the target (pb-knowledge, slice 2
+    # finding 2): an uncommitted file that restores an older version's bytes must
+    # not roll the receipt back.
     wanted = str(entry.get("content_hash") or "")
-    for version in reversed(chain.versions):
-        if version.content_hash == wanted:
-            return chain, version.summary()
+    newest = chain.versions[-1] if chain.versions else None
+    if newest is not None and not newest.deleted and newest.content_hash == wanted:
+        return chain, newest.summary()
     return chain, {}
 from .operation_ledger import LocalOperationLedger
 from .plan_authority import await_plan_item_resolution
@@ -139,15 +143,12 @@ class JournalIndexWorkflow:
     ) -> dict[str, Any]:
         """W1031: mode, precondition and verified target for this run; {} keeps the old request shape."""
 
-        existing = self.field.read_journal_receipt(
-            project_id, entry_ref=str(entry.get("entry_ref") or "")
-        )
         chain, target = _entry_publication(entry)
         if update and not target:
             raise DomainError(
                 "journal_entry_not_published",
-                "--update indexes a published version: merge the amended entry, fetch and "
-                "fast-forward the journal clone, then run journal-index --update again.",
+                "--update indexes the newest published version: merge the amended entry, fetch and "
+                "fast-forward the journal clone (no local edits), then run journal-index --update again.",
                 status=409,
                 details={
                     "repository_journal_ref": str(entry.get("repository_journal_ref") or ""),
@@ -155,25 +156,22 @@ class JournalIndexWorkflow:
                     "history_complete": bool(chain.complete) if chain else False,
                 },
             )
-        if existing is None:
-            if update:
-                mode = "update"
-            elif chain is not None and target and len(chain.versions) > 1:
-                mode = "materialize"
-            elif target:
-                mode = "index"
-            else:
-                return {}
-            precondition: dict[str, Any] = {"kind": "absent"}
-        elif update:
-            mode = "update"
-            precondition = {
-                "kind": "hash",
-                "previous_content_hash": str(existing.get("content_hash") or ""),
-                "previous_commit": str(existing.get("commit") or ""),
-            }
-        else:
+        if not target or chain is None:
             return {}
+        # The request is derived from the publication only, never from this host's
+        # receipt, so a retry of the same publication is the same request and the
+        # same operation id (pb-knowledge, slice 2 finding 1). The receipt may
+        # advance only from a version published before the target (finding 3).
+        earlier = [
+            {"commit": version.commit, "content_hash": version.content_hash}
+            for version in chain.versions[:-1]
+            if not version.deleted
+        ]
+        if update:
+            mode = "update"
+        else:
+            mode = "materialize" if earlier else "index"
+        precondition: dict[str, Any] = {"kind": "chain", "earlier": earlier}
         if update and target and target.get("intent") != "update" and target.get("intent") != "first":
             warnings.append({
                 "code": "journal_update_intent_unrecorded",
@@ -539,11 +537,12 @@ class JournalIndexWorkflow:
         )
         precondition = dict(transition.get("precondition") or {})
         if str(transition.get("mode") or "") == "update" and fixed:
-            previous = str(precondition.get("previous_content_hash") or "")
-            if precondition.get("kind") == "hash" and str(existing.get("content_hash") or "") == previous:
+            if receipt_precondition_allows(existing, precondition):
                 return
             self._fail_receipt_step(operation_id, observation=observation, exc=update_stale_error(
-                observation, previous_content_hash=previous, operation_id=operation_id,
+                observation,
+                previous_content_hash=str(precondition.get("previous_content_hash") or ""),
+                operation_id=operation_id,
             ))
         self._raise_receipt_identity_conflict(operation_id, observation=observation)
 

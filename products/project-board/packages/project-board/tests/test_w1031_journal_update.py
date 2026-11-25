@@ -269,3 +269,80 @@ def test_a_missing_reference_explains_its_form(host):
                                             SimpleNamespace(repository_journal_ref="", project_ref=PROJECT_REF))
     assert caught.value.code == "journal_repository_ref_required"
     assert caught.value.details["example"].startswith("repo:journals/projects/project-one")
+
+
+# --- pb-knowledge's slice 2 review findings (reproduced at c0ab0087) ---------------------
+
+def test_a_retry_of_the_same_publication_is_the_same_operation(host, repo):
+    ref = _publish(host, repo, "alpha")
+    first = host.index(ref)
+    assert host.index(ref)["operation_id"] == first["operation_id"]  # unflagged first index
+    _publish(host, repo, "alpha beta", f"amend\n\n{TRAILERS}")
+    update = host.index(ref, update=True)
+    assert host.index(ref, update=True)["operation_id"] == update["operation_id"]
+    assert [op["mode"] for op in host.receipt()["local_operations"]] == ["index", "update"]
+
+
+def test_restoring_old_bytes_without_publishing_cannot_roll_the_receipt_back(host, repo):
+    ref = _publish(host, repo, "version A")
+    host.index(ref)
+    _publish(host, repo, "version B", f"amend\n\n{TRAILERS}")
+    host.index(ref, update=True)
+    b_hash = host.receipt()["content_hash"]
+    path = Path(host.workspace.context(PROJECT_REF)["local_journal_directory"]) / "running-design-record.md"
+    old = _git(repo, "show", f"HEAD~1:{path.resolve().relative_to(repo.resolve()).as_posix()}")
+    path.write_text(old + "\n", encoding="utf-8")
+    with pytest.raises(DomainError) as caught:
+        host.index(ref, update=True)
+    assert caught.value.code == "journal_entry_not_published"
+    assert host.receipt()["content_hash"] == b_hash
+
+
+def test_a_late_update_from_an_older_publication_is_stale_even_with_equal_bytes(host, repo):
+    ref = _publish(host, repo, "version A")
+    a1 = _entry(host, ref)
+    a1_commit = _git(repo, "rev-parse", "HEAD")
+    host.field.record_journal_receipt(PROJECT_ID, worker_name=WORKER, entry=a1, target_commit=a1_commit)
+    _publish(host, repo, "version B", f"b\n\n{TRAILERS}")
+    b = _entry(host, ref)
+    b_commit = _git(repo, "rev-parse", "HEAD")
+    host.field.record_journal_receipt(PROJECT_ID, worker_name=WORKER, entry=b, mode="update", target_commit=b_commit,
+                                      precondition={"kind": "chain", "earlier": [
+                                          {"commit": a1_commit, "content_hash": a1["content_hash"]}]})
+    _publish(host, repo, "version A", f"a2\n\n{TRAILERS}")
+    a2_commit = _git(repo, "rev-parse", "HEAD")
+    host.field.record_journal_receipt(PROJECT_ID, worker_name=WORKER, entry=_entry(host, ref), mode="update",
+                                      target_commit=a2_commit, precondition={"kind": "chain", "earlier": [
+                                          {"commit": a1_commit, "content_hash": a1["content_hash"]},
+                                          {"commit": b_commit, "content_hash": b["content_hash"]}]})
+    # The late operation prepared when A1 was current, targeting B: its earlier list holds only A1.
+    for late in ({"kind": "hash", "previous_content_hash": a1["content_hash"], "previous_commit": a1_commit},
+                 {"kind": "chain", "earlier": [{"commit": a1_commit, "content_hash": a1["content_hash"]}]}):
+        with pytest.raises(DomainError) as caught:
+            host.field.record_journal_receipt(PROJECT_ID, worker_name=WORKER, entry=b, mode="update",
+                                              target_commit=b_commit, precondition=late)
+        assert caught.value.code == "journal_update_stale"
+    assert host.receipt()["commit"] == a2_commit
+
+
+def test_a_hash_precondition_also_checks_the_commit(host, repo):
+    ref = _publish(host, repo, "version A")
+    a1, a1_commit = _entry(host, ref), _git(repo, "rev-parse", "HEAD")
+    host.field.record_journal_receipt(PROJECT_ID, worker_name=WORKER, entry=a1, target_commit=a1_commit)
+    _publish(host, repo, "version B", f"b\n\n{TRAILERS}")
+    b, b_commit = _entry(host, ref), _git(repo, "rev-parse", "HEAD")
+    host.field.record_journal_receipt(PROJECT_ID, worker_name=WORKER, entry=b, mode="update", target_commit=b_commit,
+                                      precondition={"kind": "hash", "previous_content_hash": a1["content_hash"],
+                                                    "previous_commit": a1_commit})
+    _publish(host, repo, "version A", f"a2\n\n{TRAILERS}")
+    a2_commit = _git(repo, "rev-parse", "HEAD")
+    host.field.record_journal_receipt(PROJECT_ID, worker_name=WORKER, entry=_entry(host, ref), mode="update",
+                                      target_commit=a2_commit,
+                                      precondition={"kind": "hash", "previous_content_hash": b["content_hash"],
+                                                    "previous_commit": b_commit})
+    with pytest.raises(DomainError) as caught:  # prepared from A1; A2 has the same bytes, another commit
+        host.field.record_journal_receipt(PROJECT_ID, worker_name=WORKER, entry=b, mode="update",
+                                          target_commit=b_commit,
+                                          precondition={"kind": "hash", "previous_content_hash": a1["content_hash"],
+                                                        "previous_commit": a1_commit})
+    assert caught.value.code == "journal_update_stale"

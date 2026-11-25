@@ -124,6 +124,7 @@ from ..contract.mail_attachments import (
 from .local_wake import notify_worker_watch
 from .mail_history import MailHistoryStore
 from .idempotency_store import IdempotencyStore
+from .journal_receipt_precondition import receipt_precondition_allows
 from .journal_receipt_store import JournalReceiptStore
 from .scope_lease_store import ScopeLeaseStore
 from .projection import build_projection
@@ -11419,7 +11420,9 @@ class SharedFieldStore:
         compare-and-advance under the same project lock. ``precondition`` is
         ``{"kind": "absent"}`` (no receipt may exist yet; a fresh host or a wiped
         cache materializes it) or ``{"kind": "hash", "previous_content_hash": h}``
-        (the receipt must still hold ``h``). An update whose precondition no longer
+        (the receipt must still hold ``h``, and its commit when named), or
+        ``{"kind": "chain", "earlier": [...]}`` (the receipt must be at a version
+        published before the target). An update whose precondition no longer
         holds is refused ``journal_update_stale``, so an older operation can never
         overwrite a newer receipt. The local operations list records what this
         host did and is labelled local; the durable content history is Git's.
@@ -11430,7 +11433,7 @@ class SharedFieldStore:
                               details={"mode": clean_mode})
         clean_precondition = dict(precondition or {})
         precondition_kind = str(clean_precondition.get("kind") or "")
-        if precondition_kind not in {"", "absent", "hash"}:
+        if precondition_kind not in {"", "absent", "hash", "chain"}:
             raise DomainError("field_journal_precondition_invalid", "precondition is absent or hash.",
                               details={"kind": precondition_kind})
         clean_project = (
@@ -11527,7 +11530,13 @@ class SharedFieldStore:
                     "repository_journal_ref": row["repository_journal_ref"],
                 }
                 identity = {**fixed, "content_hash": row["content_hash"]}
-                if _contains_identity(existing, identity):
+                same_bytes_new_commit = (
+                    clean_mode == "update"
+                    and bool(row["commit"])
+                    and bool(str(existing.get("commit") or ""))
+                    and str(existing.get("commit") or "") != row["commit"]
+                )
+                if _contains_identity(existing, identity) and not same_bytes_new_commit:
                     return dict(existing)
                 previous = str(clean_precondition.get("previous_content_hash") or "")
                 if (
@@ -11545,7 +11554,7 @@ class SharedFieldStore:
                             "repository_journal_ref": row["repository_journal_ref"],
                         },
                     )
-                if precondition_kind != "hash" or str(existing.get("content_hash") or "") != previous:
+                if not receipt_precondition_allows(existing, clean_precondition):
                     raise DomainError(
                         "journal_update_stale",
                         "The receipt changed since this update was prepared.",
