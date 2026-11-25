@@ -1160,3 +1160,12 @@ obligations, not optional checks.
 
 Turning it on, changing secrets or peer ids, and restarting are a coordinated
 runtime window, approved by the operator.
+## Prepared candidate read
+
+Project Board can read the immutable adopted Card versions before its SQL
+COMMIT. The signed peer request identifies the exact project incarnation,
+business request, set reference, transaction ID, and intent digest. The Hub
+checks the adopted manifest and version hashes before sending its signed
+answer. The read remains available for in-flight compact decisions if
+registration is disabled. FINISH uses its terminal receipts and can retire
+the file manifest.

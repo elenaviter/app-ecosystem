@@ -135,7 +135,14 @@ async def test_compact_authority_adopts_the_sealed_card_and_replays_finish(tmp_p
     verified = await decisions.verified(TX, "stage")
     assert verified.candidate_ref == ref
     assert verified.candidate == {}
+    prepared_read = dict(reference=ref, peer=PEER, project=PROJECT, incarnation=INCARNATION,
+                         request_id=REQUEST["id"], transaction_id=TX, intent_digest=pb.record.intent.digest)
+    with pytest.raises(DecisionRefused, match="candidate_custody_missing"):
+        await custody.read_prepared(**prepared_read)
     await hub.prepare(TX)
+    assert await custody.read_prepared(**prepared_read) == candidate
+    with pytest.raises(DecisionRefused, match="candidate_custody_mismatch"):
+        await custody.read_prepared(**{**prepared_read, "intent_digest": "0" * 64})
     pb.decide(state)
     finished = await hub.finish(TX, state)
     assert await hub.finish(TX, state) == finished

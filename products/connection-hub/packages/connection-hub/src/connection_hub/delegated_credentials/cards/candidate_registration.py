@@ -26,6 +26,11 @@ from .transaction_authority_v2 import card_authority_signature
 
 OPERATION = "card_candidate_set_register"
 REQUEST_SCHEMA = "card-candidate-set-register-request.v1"
+READ_OPERATION = "card_candidate_set_read_prepared"
+READ_REQUEST_SCHEMA = "card-candidate-set-read-prepared-request.v1"
+READ_ANSWER_SCHEMA = "card-candidate-set-read-prepared-answer.v1"
+READ_FIELDS = {"schema", "request_echo", "scope", "incarnation", "request_id", "candidate_ref",
+               "transaction_id", "intent_digest"}
 ANSWER_SCHEMA = "card-candidate-set-register-answer.v1"
 MAX_REQUEST_BYTES = 512 * 1024
 REQUEST_FIELDS = {"schema", "request_echo", "scope", "incarnation", "request_id", "deadline", "plan_answer",
@@ -87,31 +92,38 @@ class CandidateRegistration:
         self.nonce_prefix, self.tenant, self.app = nonce_prefix, tenant, app
         self._attestation_secret = attestation_secret
 
+    async def _authenticate(self, request, *, operation, digest):
+        proof = ServiceProof(**request["service_proof"])
+        caller = self.callers.get(proof.service_id)
+        if caller is None:
+            return None, _refuse("card_participant_caller_unknown", 403)
+        echo, schema = request["request_echo"], request["schema"]
+        verdict = verify_admission_request(
+            secret=caller.request_secret, proof=proof, delegated_token=f"{schema}:{echo}",
+            request=AdmissionRequest(resource=caller.hub_resource, operation=operation, invocation_id=echo,
+                                     request_digest=digest, approval_context={"protocol": schema}),
+            max_clock_skew_seconds=MAX_SKEW_SECONDS, now=int(self.custody.clock()),
+        )
+        if not verdict.allowed:
+            return None, _refuse("card_participant_unauthenticated", 401)
+        try:
+            fresh = await self.nonces.set(f"{self.nonce_prefix}{caller.service_id}:{proof.nonce}", "1",
+                                          ex=2 * MAX_SKEW_SECONDS, nx=True)
+        except Exception:
+            return None, _refuse("candidate_custody_unavailable", 503)
+        if not fresh:
+            return None, _refuse("card_participant_unauthenticated", 401)
+        return caller, None
+
     async def answer(self, data: Any) -> dict[str, Any]:
         request = _snapshot(data)
         if request is None:
             return _refuse("candidate_custody_request_invalid", 400)
-        proof = ServiceProof(**request["service_proof"])
-        caller = self.callers.get(proof.service_id)
-        if caller is None:
-            return _refuse("card_participant_caller_unknown", 403)
         digest = registration_digest(request)
+        caller, failure = await self._authenticate(request, operation=OPERATION, digest=digest)
+        if failure:
+            return failure
         echo = request["request_echo"]
-        verdict = verify_admission_request(
-            secret=caller.request_secret, proof=proof, delegated_token=f"{REQUEST_SCHEMA}:{echo}",
-            request=AdmissionRequest(resource=caller.hub_resource, operation=OPERATION, invocation_id=echo,
-                                     request_digest=digest, approval_context={"protocol": REQUEST_SCHEMA}),
-            max_clock_skew_seconds=MAX_SKEW_SECONDS, now=int(self.custody.clock()),
-        )
-        if not verdict.allowed:
-            return _refuse("card_participant_unauthenticated", 401)
-        try:
-            fresh = await self.nonces.set(f"{self.nonce_prefix}{caller.service_id}:{proof.nonce}", "1",
-                                          ex=2 * MAX_SKEW_SECONDS, nx=True)
-        except Exception:  # service failure, never claim a successful nonce admission
-            return _refuse("candidate_custody_unavailable", 503)
-        if not fresh:
-            return _refuse("card_participant_unauthenticated", 401)
         try:
             ref = await self._seal(request, caller)
             result = {"kind": "candidate_set", "ref": ref}
@@ -128,6 +140,55 @@ class CandidateRegistration:
                                             service_id=caller.receipt_signer_id, timestamp=timestamp,
                                             protocol=ANSWER_SCHEMA)
         return {"ok": result["kind"] == "candidate_set", "candidate_set_answer": {**unsigned, "receipt_proof": {
+            "service_id": caller.receipt_signer_id, "timestamp": timestamp, "signature": signature,
+        }}}
+
+    async def read_prepared(self, data: Any) -> dict[str, Any]:
+        try:
+            if not isinstance(data, Mapping) or set(data) != READ_FIELDS | {"service_proof"}:
+                raise ValueError
+            raw = canonical_json_bytes(dict(data))
+            if len(raw) > 8192:
+                raise ValueError
+            request = parse_canonical_json_bytes(raw)
+            proof = request["service_proof"]
+            if (request["schema"] != READ_REQUEST_SCHEMA or type(proof) is not dict
+                    or set(proof) != _PROOF_FIELDS or not all(_text(proof[key]) for key in _PROOF_FIELDS)
+                    or not all(_text(request[key]) for key in ("scope", "incarnation", "request_id", "transaction_id"))
+                    or not _text(request["request_echo"]) or not _ECHO.fullmatch(request["request_echo"])
+                    or not _text(request["intent_digest"]) or not re.fullmatch("[0-9a-f]{64}", request["intent_digest"])):
+                raise ValueError
+            from .candidate_custody import validate_candidate_ref
+
+            validate_candidate_ref(request["candidate_ref"])
+        except (WireRefused, DecisionRefused, ValueError, TypeError):
+            return _refuse("candidate_custody_request_invalid", 400)
+        original = {key: request[key] for key in READ_FIELDS}
+        digest = sha256_hex(canonical_json_bytes(original))
+        caller, failure = await self._authenticate(request, operation=READ_OPERATION, digest=digest)
+        if failure:
+            return failure
+        try:
+            if not caller.plan_scope_prefix or not request["scope"].startswith(caller.plan_scope_prefix):
+                raise DecisionRefused("candidate_custody_scope_forbidden")
+            candidate = await self.custody.read_prepared(
+                reference=request["candidate_ref"], peer=caller.service_id, project=request["scope"],
+                incarnation=request["incarnation"], request_id=request["request_id"],
+                transaction_id=request["transaction_id"], intent_digest=request["intent_digest"],
+            )
+            result = {"kind": "prepared_candidate", "candidate": candidate}
+        except DecisionRefused as exc:
+            code = str(exc)
+            result = {"kind": "refused", "code": code, "status": 503 if code.endswith("unavailable") else 409}
+        except Exception:
+            result = {"kind": "refused", "code": "candidate_custody_unavailable", "status": 503}
+        unsigned = {"schema": READ_ANSWER_SCHEMA, "audience": caller.audience, "request_digest": digest,
+                    "request_echo": original["request_echo"], "request": original, "result": result}
+        timestamp = str(int(self.custody.clock()))
+        signature = card_authority_signature(unsigned, secret=caller.receipt_secret,
+                                            service_id=caller.receipt_signer_id, timestamp=timestamp,
+                                            protocol=READ_ANSWER_SCHEMA)
+        return {"ok": result["kind"] == "prepared_candidate", "candidate_set_answer": {**unsigned, "receipt_proof": {
             "service_id": caller.receipt_signer_id, "timestamp": timestamp, "signature": signature,
         }}}
 
