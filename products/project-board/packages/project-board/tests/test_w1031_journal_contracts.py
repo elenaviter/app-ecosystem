@@ -246,3 +246,54 @@ def test_a_valid_b_rewrites_c_restores_and_appends(repo: Path):
     assert at_c.served.commit == c and at_c.observed.commit == c
     assert [item["commit"] for item in at_c.invalid] == [b]
     assert len(at_c.records) == 2
+
+
+# --- pb-knowledge's slice 1 review findings (reproduced at 61a5fdc9) ---------------------
+
+@pytest.mark.parametrize("marker", ['<!-- pb-record [] -->', '<!-- pb-record not-json -->',
+                                    '<!--pb-record {"id": "x"}-->', '  <!-- pb-record {} -->'])
+def test_any_malformed_pb_record_marker_refuses_the_text(marker):
+    with pytest.raises(DomainError) as caught:
+        parse_records(_record() + marker + "\n## h\n")
+    assert caught.value.code == "journal_record_malformed"
+    with pytest.raises(DomainError):
+        parse_records(marker + "\n")
+
+
+def test_a_first_generation_with_a_malformed_marker_is_not_served(repo: Path):
+    bad = _commit(repo, _entry("<!-- pb-record [] -->\n## h\n"), "malformed first")
+    generations = running_generations(published_chain(repo, PATH, ref="main").versions)
+    assert generations.served is None and generations.observed.commit == bad
+    assert generations.invalid == ({"commit": bad, "reason": "journal_record_malformed"},)
+
+
+def test_a_missing_blob_is_incomplete_history_not_a_deletion(repo: Path):
+    _commit(repo, _entry(_record()), "v1")
+    second = _commit(repo, _entry(_record() + _record(at="2026-11-26T08:00:00Z")), "v2")
+    blob = _git(repo, "rev-parse", f"{second}:{PATH}")
+    (repo / ".git" / "objects" / blob[:2] / blob[2:]).unlink()
+    chain = published_chain(repo, PATH, ref="main")
+    assert not chain.complete and chain.reason == "object_missing"
+    version = chain.versions[-1]
+    assert version.commit == second and not version.deleted and version.content_hash == ""
+    assert {"code": "journal_history_object_missing", "commit": second, "path": PATH} in chain.issues
+    generations = running_generations(chain.versions)
+    assert generations.invalid[-1]["reason"] == "journal_running_history_unavailable"
+
+
+def test_a_real_deletion_is_deleted_and_complete(repo: Path):
+    _commit(repo, _entry(_record()), "v1")
+    _git(repo, "rm", "-q", PATH)
+    _git(repo, "commit", "-q", "-m", "delete")
+    chain = published_chain(repo, PATH, ref="main")
+    assert chain.complete and chain.versions[-1].deleted
+
+
+def test_two_journal_update_trailers_in_one_commit_keep_intent_and_worker(repo: Path):
+    ref = "work:journal:20261101T000000Z:0123456789abcdef:journal-updates-2026-11"
+    other = "work:journal:20261101T000000Z:fedcba9876543210:other-2026-11"
+    _commit(repo, _entry(_record()), "first")
+    _commit(repo, _entry(_record() + _record(at="2026-11-26T08:00:00Z")),
+            f"two entries\n\nJournal-Update: {other}\nJournal-Update: {ref}\nJournal-Worker: claude-code-example-worker")
+    chain = published_chain(repo, PATH, ref="main")
+    assert (chain.versions[-1].intent, chain.versions[-1].worker) == ("update", "claude-code-example-worker")

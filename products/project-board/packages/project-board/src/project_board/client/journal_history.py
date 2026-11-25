@@ -42,6 +42,9 @@ WORKER_TRAILER = "Journal-Worker"
 MAX_RENAME_STEPS = 16
 _UNIT = "\x1f"
 _RECORD = "\x1e"
+# Trailer values get their own separator, distinct from the row separator
+# (pb-knowledge, slice 1 finding 3: two Journal-Update values lost both).
+_VALUE = "\x1d"
 
 GitRunner = Callable[..., "subprocess.CompletedProcess[str]"]
 
@@ -158,8 +161,8 @@ def _trailers(git: GitRunner, clone: Path, commit: str, path: str, entry_ref: st
 
     parent = git(clone, "rev-parse", "--verify", "--quiet", f"{commit}^1")
     span = [f"{parent.stdout.strip()}..{commit}"] if parent.returncode == 0 else [commit]
-    fmt = (f"--format=%H{_UNIT}%(trailers:key={UPDATE_TRAILER},valueonly,separator=%x1e)"
-           f"{_UNIT}%(trailers:key={WORKER_TRAILER},valueonly,separator=%x1e){_RECORD}")
+    fmt = (f"--format=%H{_UNIT}%(trailers:key={UPDATE_TRAILER},valueonly,separator=%x1d)"
+           f"{_UNIT}%(trailers:key={WORKER_TRAILER},valueonly,separator=%x1d){_RECORD}")
     result = git(clone, "log", fmt, *span, "--", path)
     if result.returncode != 0:
         return "unknown", "unknown"
@@ -167,8 +170,8 @@ def _trailers(git: GitRunner, clone: Path, commit: str, path: str, entry_ref: st
         parts = row.strip("\n").split(_UNIT)
         if len(parts) != 3:
             continue
-        updates = [value.strip() for value in parts[1].split(_RECORD) if value.strip()]
-        workers = [value.strip() for value in parts[2].split(_RECORD) if value.strip()]
+        updates = [value.strip() for value in parts[1].split(_VALUE) if value.strip()]
+        workers = [value.strip() for value in parts[2].split(_VALUE) if value.strip()]
         if entry_ref and entry_ref in updates and len(workers) == 1:
             return "update", workers[0]
     return "unknown", "unknown"
@@ -221,8 +224,16 @@ def published_chain(clone: Path | str, path: str, *, ref: str = INTEGRATION_REF,
         for commit, committed_at in segment_rows:
             text = _show(git, clone, commit, segment_path)
             deleted = text is None
-            if deleted and git(clone, "cat-file", "-e", f"{commit}^{{tree}}").returncode != 0:
-                complete, reason = False, reason or "object_missing"
+            if deleted:
+                # Deleted only when the commit's tree has no entry for the path. An entry
+                # whose blob cannot be read is a missing object, and the history is not
+                # complete (pb-knowledge, slice 1 finding 2).
+                listed = git(clone, "ls-tree", commit, "--", segment_path)
+                if listed.returncode != 0 or listed.stdout.strip():
+                    deleted = False  # present in the tree, unreadable: unknown, not deleted
+                    complete, reason = False, reason or "object_missing"
+                    issues.append({"code": "journal_history_object_missing", "commit": commit,
+                                   "path": segment_path})
             version_ref = _entry_ref(text or "")
             if not deleted and version_ref != entry_ref:
                 issues.append({"code": "journal_history_entry_ref_mismatch", "commit": commit,
@@ -233,7 +244,7 @@ def published_chain(clone: Path | str, path: str, *, ref: str = INTEGRATION_REF,
                 intent, worker = _trailers(git, clone, commit, segment_path, entry_ref)
             versions.append(ContentVersion(
                 commit=commit, committed_at=committed_at, path=segment_path,
-                content_hash=hashlib.sha256((text or "").encode("utf-8")).hexdigest() if not deleted else "",
+                content_hash=hashlib.sha256(text.encode("utf-8")).hexdigest() if text is not None else "",
                 entry_ref=version_ref, intent=intent, worker=worker, deleted=deleted, text=text or "",
             ))
     return ContentChain(entry_ref=entry_ref, versions=tuple(versions), complete=complete, reason=reason,
@@ -274,6 +285,9 @@ def running_generations(versions: Sequence[ContentVersion]) -> RunningGeneration
         observed = version
         if version.deleted:
             invalid.append({"commit": version.commit, "reason": "journal_running_entry_deleted"})
+            continue
+        if not version.content_hash:
+            invalid.append({"commit": version.commit, "reason": "journal_running_history_unavailable"})
             continue
         try:
             records = tuple(parse_records(version.text))

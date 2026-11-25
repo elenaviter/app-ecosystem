@@ -38,6 +38,8 @@ _MONTH = re.compile(r"^(\d{4})-(0[1-9]|1[0-2])$")
 _SEMANTIC_MAX = 64
 _MONTH_SUFFIX = len("-yyyy-mm")
 _RECORD_HEADER = re.compile(r"^<!-- pb-record (\{.*\}) -->[ \t]*$", re.MULTILINE)
+# Any line that opens a pb-record marker, well formed or not (pb-knowledge, slice 1 finding 1).
+_RECORD_MARKER_LINE = re.compile(r"^[ \t]*<!--[ \t]*pb-record\b.*$", re.MULTILINE)
 _RECORD_FIELDS = ("id", "recorded_at", "worker", "work_ref", "corrects")
 
 
@@ -214,6 +216,12 @@ def parse_records(text: str) -> list[JournalRecord]:
 
     source = str(text or "")
     matches = list(_RECORD_HEADER.finditer(source))
+    well_formed = {match.start() for match in matches}
+    for marker in _RECORD_MARKER_LINE.finditer(source):
+        if marker.start() not in well_formed:
+            raise _refused("journal_record_malformed",
+                           "A pb-record marker is not a header comment holding one JSON object.",
+                           offset=marker.start())
     records: list[JournalRecord] = []
     seen: dict[str, str] = {}
     for index, match in enumerate(matches):
