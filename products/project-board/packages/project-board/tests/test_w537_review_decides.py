@@ -25,7 +25,8 @@ def _words(path: Path) -> str:
 def test_unmet_criteria_go_back_and_a_hold_is_named_and_timed():
     collaboration = _words(PROCEDURES / "collaboration.md")
     assert "**Unmet criteria go back; a review never waits for unowned work.**" in collaboration
-    assert "A review ends in one of three decisions, and which one depends on what remains:" in collaboration
+    # W1036 added the fourth: an approved phase whose builds remain goes back to the builder.
+    assert "A review ends in one of four decisions, and which one depends on what remains:" in collaboration
     assert "- **Source rework** (a criterion the submitted source does not meet and that needs new work" in collaboration
     assert "decide `review.return` now. Name each unmet criterion, the work it needs, and who you propose does it." in collaboration
     assert "- **Unfinished verification** (your own check of the submitted source is not done" in collaboration
@@ -48,7 +49,7 @@ def test_the_finished_source_handoff_keeps_precedence():
     rule = collaboration[unmet:collaboration.index("Why: on 2026-10-04 W416 and W403", unmet)]
     held = rule[rule.index("- **Unfinished verification**"):]
     assert "merge" not in held and "operator's check" not in held
-    rework = rule[rule.index("- **Source rework**"):rule.index("- **Post-source gates**")]
+    rework = rule[rule.index("- **Source rework**"):rule.index("- **Approved phase, builds remain**")]
     assert "review.assign" not in rework and "hand the item on" not in rework
 
 

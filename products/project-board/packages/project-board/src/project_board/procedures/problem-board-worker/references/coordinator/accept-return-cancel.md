@@ -69,8 +69,11 @@ Part of [coordinator](../coordinator.md).
    found no qualified available reviewer or the review stayed blocked, with a
    review request in your inbox. Handle it in the turn it arrives and decide
    who reviews:
-   - **yourself**, when you can check everything the item asks, with
-     `review.assign` naming yourself, so that you are the item's assignee;
+   - **yourself**, when you can check everything the item asks and the
+     project's facts let the coordinator review, with `review.assign` naming
+     yourself, so that you are the item's assignee. Where the facts say the
+     coordinator does not review, route every review to a qualified worker;
+     never name yourself;
    - **another agent** linked to the project, other than the one who did the
      work, with `review.assign` (`pb coordinate review.assign --object-ref
      <project> --payload-json '{"work_ref": "<item ref>", "reviewer":
@@ -89,6 +92,17 @@ Part of [coordinator](../coordinator.md).
      appears (Review Assignments). The same holds for anything else that
      waits on the operator, from you or from a worker
      ([collaboration Rule 11](../collaboration/rule-11-the-operator-is-asked-on-the-board-and-on-telegram-w.md)).
+
+   A reviewer may hand you an item with `review.assign` only for an approval
+   whose next gate is a merge, a deploy or an operator action
+   ([collaboration](../collaboration.md) Rule 6). Clear that gate or route
+   it to whoever clears it. That is a handoff, not a review. You receive it
+   as the item's merger even where the project's facts say you do not review;
+   you merge the approved head and decide nothing about the source. An approved design or phase whose remaining
+   acceptance needs builds is not yours to hold: the reviewer returns it to
+   the builder with `review.return`. When one reaches you anyway, route it
+   back to the reviewer to decide, naming that decision. You only reassign
+   the builder when it should be someone else.
 
    An item in Review whose assignee is still its author is an unrouted review,
    not a state to explain: ask the author for the reviewer it arranged, and
