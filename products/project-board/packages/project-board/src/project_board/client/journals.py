@@ -389,22 +389,31 @@ def _declares_running(text: str) -> bool:
     return isinstance(loaded, Mapping) and loaded.get("kind") == "running"
 
 
-def _last_entry_ref(root: Path, relative: str) -> str:
-    """The entry_ref of a path's last present version on HEAD (a deleted path: before its deletion)."""
+def _last_entry_ref(root: Path, relative: str) -> str | None:
+    """The entry_ref of a path's last present version on HEAD (a deleted path: before its deletion).
+
+    None when Git cannot answer (an unreadable object): the caller fails closed.
+    "" when the readable version names no entry_ref.
+    """
 
     last = subprocess.run(["git", "-C", str(root), "log", "-1", "--format=%H", "HEAD", "--", relative],
                           capture_output=True, text=True, timeout=60)
     commit = last.stdout.strip()
     if last.returncode != 0 or not commit:
-        return ""
+        return None
     for spec in (f"{commit}:{relative}", f"{commit}^:{relative}"):
+        listed = subprocess.run(["git", "-C", str(root), "ls-tree", spec.split(":", 1)[0], "--", relative],
+                                capture_output=True, text=True, timeout=60)
+        if listed.returncode != 0 or not listed.stdout.strip():
+            continue  # the path is not in this tree
         shown = subprocess.run(["git", "-C", str(root), "show", spec], capture_output=True, text=True, timeout=60)
-        if shown.returncode == 0:
-            try:
-                return str(_frontmatter(shown.stdout)[0].get("entry_ref") or "")
-            except yaml.YAMLError:
-                return ""
-    return ""
+        if shown.returncode != 0:
+            return None  # listed but unreadable
+        try:
+            return str(_frontmatter(shown.stdout)[0].get("entry_ref") or "")
+        except yaml.YAMLError:
+            return ""
+    return None
 
 def _running_candidate(relative: PurePosixPath, text: str) -> bool:
     """Cheap test: only these files pay for the Git history check (W1031 R2)."""
@@ -1392,14 +1401,17 @@ class JournalWorkspace:
         else:
             paths = set()
             for pattern in (r"kind:.*running", r"pb-record"):
-                listed = subprocess.run(["git", "-C", str(root), "log", "--format=", "--name-only", "-G", pattern,
-                                         "HEAD", "--", scope], capture_output=True, text=True, timeout=120)
+                # -z: raw NUL-separated paths, never quoted (a non-ASCII name stays exact).
+                listed = subprocess.run(["git", "-C", str(root), "log", "--format=", "--name-only", "-z", "-G",
+                                         pattern, "HEAD", "--", scope], capture_output=True, text=True, timeout=120)
                 if listed.returncode != 0:
-                    return False
-                paths.update(line.strip() for line in listed.stdout.splitlines() if line.strip())
+                    return "unknown"  # unreadable history (e.g. a missing object): fail closed, not ordinary
+                paths.update(name.strip("\n") for name in listed.stdout.split("\0") if name.strip("\n"))
             refs: dict[str, list[str]] = {}
             for listed_path in sorted(paths):
                 ref = _last_entry_ref(root, listed_path)
+                if ref is None:
+                    return "unknown"  # a listed running path whose identity cannot be read
                 if ref:
                     refs.setdefault(ref, []).append(listed_path)
             atomic_write_json(cache_path, {"root": str(root), "head": head, "scope": scope,

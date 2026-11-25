@@ -274,3 +274,34 @@ def test_a_git_root_with_spaces_still_ties_an_undetected_rename(tmp_path):
         fresh.prepare_entry(project_ref=PROJECT_REF, repository_journal_ref=ref)
     assert caught.value.code == "journal_running_entry_rewritten"
     assert hits(workspace_for(tmp_path / "fresh2 with spaces", repo), "forbiddenword") == []
+
+
+def _strict_code(ws, name):
+    ref = f"{ws.context(PROJECT_REF)['journal_authoring']['directory_ref']}/{name}"
+    try:
+        ws.prepare_entry(project_ref=PROJECT_REF, repository_journal_ref=ref)
+    except DomainError as exc:
+        return exc.code
+    return None
+
+
+def test_a_non_ascii_path_keeps_its_running_identity(tmp_path, repo):
+    ws = workspace_for(tmp_path / "ws", repo)
+    path = other_path(ws, "café-with-accent.md")
+    publish_at(repo, path, entry_text(A))
+    publish_at(repo, path, plain_text("Stripped forbiddenword."), "strip")
+    assert _strict_code(workspace_for(tmp_path / "fresh", repo), "café-with-accent.md") == (
+        "journal_running_entry_rewritten")
+    assert hits(workspace_for(tmp_path / "fresh2", repo), "forbiddenword") == []
+
+
+def test_an_unreadable_historical_object_fails_closed(tmp_path, repo):
+    ws = workspace_for(tmp_path / "ws", repo)
+    path = other_path(ws)
+    publish_at(repo, path, entry_text(A))
+    blob = git(repo, "rev-parse", f"HEAD:{path.resolve().relative_to(repo.resolve()).as_posix()}")
+    publish_at(repo, path, plain_text("Stripped forbiddenword."), "strip")
+    (repo / ".git" / "objects" / blob[:2] / blob[2:]).unlink()  # disposable fixture only
+    assert _strict_code(workspace_for(tmp_path / "fresh", repo), "other/notes.md") == (
+        "journal_running_history_unavailable")
+    assert hits(workspace_for(tmp_path / "fresh2", repo), "forbiddenword") == []
