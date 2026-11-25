@@ -239,3 +239,18 @@ def test_an_undetected_rename_that_keeps_running_markers_cannot_reset_the_histor
     assert caught.value.code == "journal_running_entry_rewritten"
     other = workspace_for(tmp_path / "fresh2", repo)
     assert hits(other, "forbiddenword") == [] and hits(other, "Accepted") == [ENTRY]
+
+
+def test_shallow_history_that_cuts_a_stripped_entry_fails_closed(tmp_path, repo):
+    ws = workspace_for(tmp_path / "ws", repo)
+    path = other_path(ws)
+    publish_at(repo, path, entry_text(A))
+    publish_at(repo, path, plain_text("Stripped rewrite with forbiddenword."), "flip and strip")
+    shallow = tmp_path / "shallow"
+    subprocess.run(["git", "clone", "-q", "--depth", "1", f"file://{repo}", str(shallow)], check=True)
+    fresh = workspace_for(tmp_path / "fresh", shallow)
+    ref = f"{fresh.context(PROJECT_REF)['journal_authoring']['directory_ref']}/other/notes.md"
+    with pytest.raises(DomainError) as caught:
+        fresh.prepare_entry(project_ref=PROJECT_REF, repository_journal_ref=ref)
+    assert caught.value.code == "journal_running_history_unavailable"
+    assert hits(workspace_for(tmp_path / "fresh2", shallow), "forbiddenword") == []

@@ -1194,6 +1194,14 @@ class JournalWorkspace:
         # loads _running_refs, which ties undetected renames by entry_ref
         # (pb-knowledge, slice 3a companion finding).
         published_running = self._published_running_path(home, path)
+        if published_running == "unknown":
+            # Shallow history that cuts this file's past: its running status cannot
+            # be decided, so it is not served as ordinary (pb-knowledge, 3A-R2).
+            return JournalIndexExclusion(
+                code="journal_running_history_unavailable",
+                message="This journal entry's history is cut by a shallow clone; fetch the full history.",
+                details={"repository_journal_ref": repository_journal_ref, "fix": "git fetch --unshallow"},
+            )
         if published_running or _running_candidate(relative, text):
             # W1031 R2: every reader (explicit index, refresh, catalog search, browse)
             # comes through here, so a running entry's append-only history is enforced
@@ -1343,7 +1351,7 @@ class JournalWorkspace:
             supersedes_ref=str(metadata.get("supersedes_ref") or metadata.get("supersedes") or "").strip(),
         )
 
-    def _published_running_path(self, home: Path, path: Path) -> bool:
+    def _published_running_path(self, home: Path, path: Path) -> bool | str:
         """Sticky running status from Git (pb-knowledge, slice 3a finding 2).
 
         A path counts when any commit on HEAD added or removed a ``kind: ...running``
@@ -1406,8 +1414,37 @@ class JournalWorkspace:
         try:
             metadata, _ = _frontmatter(path.read_text(encoding="utf-8"))
         except (OSError, yaml.YAMLError):
+            metadata = {}
+        if str(metadata.get("entry_ref") or "") in self._running_refs:
+            return True
+        if self._history_cut(root, relative):
+            return "unknown"
+        return False
+
+    @staticmethod
+    def _history_cut(root: Path, relative: str) -> bool:
+        """In a shallow clone, whether this file's oldest visible commit is a shallow
+        boundary, so earlier versions (and any running status) are not visible."""
+
+        if (root / ".git").is_dir():
+            location = root / ".git" / "shallow"  # an ordinary clone: no subprocess
+        else:
+            shallow_file = subprocess.run(["git", "-C", str(root), "rev-parse", "--git-path", "shallow"],
+                                          capture_output=True, text=True, timeout=60)
+            if shallow_file.returncode != 0:
+                return False
+            location = Path(shallow_file.stdout.strip())
+            location = location if location.is_absolute() else root / location
+        try:
+            boundary = set(location.read_text(encoding="utf-8").split())
+        except OSError:
+            return False  # not shallow
+        if not boundary:
             return False
-        return str(metadata.get("entry_ref") or "") in self._running_refs
+        oldest = subprocess.run(["git", "-C", str(root), "log", "--format=%H", "--reverse", "HEAD", "--", relative],
+                                capture_output=True, text=True, timeout=60)
+        commits = oldest.stdout.split()
+        return oldest.returncode != 0 or not commits or commits[0] in boundary
 
     def _admit_running(
         self,
