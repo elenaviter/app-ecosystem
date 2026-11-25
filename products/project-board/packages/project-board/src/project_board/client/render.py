@@ -2625,7 +2625,7 @@ def _team_member_lines(
     alias = str(member.get("worker_alias") or "-")
     name = str(member.get("worker_name") or "-")
     lines = [
-        "--- team member {} of {}: {} ({}) · role {} · runtime {} · host {} · pool {} · presence {}".format(
+        "--- team member {} of {}: {} ({}) · role {} · runtime {} · host {} · pool {} · session {} · relay {}".format(
             index + 1,
             total,
             alias,
@@ -2634,6 +2634,7 @@ def _team_member_lines(
             member.get("runtime_kind") or "-",
             member.get("host_label") or member.get("host_id") or "-",
             member.get("pool_status") or "-",
+            member.get("model_presence") or "unknown",
             member.get("presence") or "-",
         ),
         "  " + _runtime_model_brief(member),
@@ -2710,7 +2711,8 @@ def _team_row(member: Mapping[str, Any], shared: Mapping[str, int], project_ref:
         str(member.get("role") or "worker"),
         str(member.get("runtime_kind") or "-"),
         str(member.get("host_label") or member.get("host_id") or "-"),
-        str(member.get("presence") or "-"),
+        f"session {member.get('model_presence') or 'unknown'}",
+        f"relay {member.get('presence') or 'unknown'}",
         runtime,
     ]
     state = member.get("limit_state")

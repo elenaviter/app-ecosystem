@@ -18,7 +18,7 @@ import pytest
 
 from project_board.client import host_config
 from project_board.client.resume_command import RECONSTRUCTED, build_session_resume_command
-from project_board.client.runtime_launch import Probes, capture, sanitize
+from project_board.client.runtime_launch import Probes, capture, capture_session_binding, observe_session, sanitize
 
 SESSION = "1815da0e-8302-499b-b371-ba3a3a7fe17c"
 # W763: every Claude agent runs in its account folder; the line names it.
@@ -48,6 +48,52 @@ class FakeProbes(Probes):
 
 
 CLAUDE_LINE = ["claude", "--add-dir", "/home/ana/.kdcube", "--dangerously-skip-permissions", "--disallowedTools", "AskUserQuestion"]
+
+
+class SessionProbes(FakeProbes):
+    def __init__(self, command, environment=None):
+        super().__init__({301: (200, ["sh"], ""), 200: (1, command, "")})
+        self.env = environment or {}
+        self.sample = ("boot:42", "running")
+
+    def process(self, pid):
+        return self.sample if pid == 200 else ("", "unknown")
+
+
+@pytest.mark.parametrize("runtime,command,env", [
+    ("claude-code", ["claude", "--resume", SESSION], {}),
+    ("claude-code", CLAUDE_LINE, {"CLAUDE_CODE_SESSION_ID": SESSION}),
+    ("codex", ["codex", "resume", SESSION], {}),
+    ("codex", ["codex"], {"CODEX_THREAD_ID": SESSION}),
+])
+def test_model_presence_is_bound_to_the_exact_runtime_process(runtime, command, env):
+    probes = SessionProbes(command, env)
+    binding = capture_session_binding(runtime, SESSION, probes=probes, start_pid=301)
+    assert binding["session_id"] == SESSION
+    assert binding["pid"] == 200
+    assert observe_session(binding, probes=probes) == "running"
+    probes.sample = ("boot:42", "unknown")
+    assert observe_session(binding, probes=probes) == "unknown"
+    probes.sample = ("", "absent")
+    assert observe_session(binding, probes=probes) == "absent"
+    probes.sample = ("boot:43", "running")
+    assert observe_session(binding, probes=probes) == "absent"
+    probes.sample = ("another-boot:42", "running")
+    assert observe_session(binding, probes=probes) == "absent"
+
+
+@pytest.mark.parametrize("runtime,command,env", [
+    ("codex", ["codex", "app-server"], {"CODEX_THREAD_ID": SESSION}),
+    ("codex", ["codex", "resume", "different"], {"CODEX_THREAD_ID": SESSION}),
+    ("claude-code", ["claude"], {}),
+    ("claude-code", ["claude"], {"CLAUDE_CODE_SESSION_ID": "different"}),
+    ("claude-code", ["node", "/tmp/other/cli.js"], {"CLAUDE_CODE_SESSION_ID": SESSION}),
+])
+def test_model_presence_is_unknown_without_an_exact_native_binding(runtime, command, env):
+    probes = SessionProbes(command, env)
+    binding = capture_session_binding(runtime, SESSION, probes=probes, start_pid=301)
+    assert "pid" not in binding
+    assert observe_session(binding, probes=probes) == "unknown"
 
 
 def test_listen_finds_the_runtime_above_pb_and_keeps_its_real_line():

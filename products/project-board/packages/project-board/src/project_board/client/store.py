@@ -3649,6 +3649,7 @@ class SharedFieldStore:
         worker_name: str,
         *,
         check_interval_seconds: int = 30,
+        session_binding: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
         worker = self.read_worker(worker_name)
         clean_name = str(worker.get("worker_name") or "")
@@ -3721,6 +3722,9 @@ class SharedFieldStore:
                 # Kept across listen, or an unlink between two receives is
                 # never told: every session start runs listen (rehearsal gap 7).
                 listener["observed_project_refs"] = list(previous["observed_project_refs"])
+            if session_binding is not None:
+                # This binding stays on the host, outside the listener wire view.
+                row["model_session_binding"] = dict(session_binding)
             row.update(listener=listener, updated_at=now)
             atomic_write_json(path, row)
             return self._session_with_presence(listener)
@@ -10145,6 +10149,9 @@ class SharedFieldStore:
                     "host_kind": str(member.get("host_kind") or ""),
                     "pool_status": str(member.get("pool_status") or ""),
                     "presence": str(member.get("presence") or ""),
+                    **({"model_presence": member["model_presence"]} if member.get("model_presence") in (
+                        "online", "absent", "detached", "unknown"
+                    ) else {}),
                     # W26 line 7: a teammate's usage limit as its runtime
                     # last reported it; empty means not reported.
                     "limit_state": _team_limit_state(member.get("limit_state")),

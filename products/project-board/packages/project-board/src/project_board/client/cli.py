@@ -120,7 +120,7 @@ from .github_key import (
     parse_credential_request,
 )
 from .project_connect import Connector, Machine, connect_repositories, next_step
-from .runtime_launch import capture as capture_runtime_launch
+from .runtime_launch import capture as capture_runtime_launch, capture_session_binding
 from .project_files import changed_files, files_context, files_fingerprint, missing_files
 from .workspace_report import build_workspace_report, commit_identity, report_signature
 from .limit_state import (
@@ -6277,6 +6277,9 @@ def _worker_command(args: Any) -> dict[str, Any]:
             field,
             worker_name=identity.worker_name,
             check_interval_seconds=args.check_interval,
+            session_binding=capture_session_binding(
+                identity.runtime_kind, identity.runtime_session_id
+            ),
         )
         result = {
             "config": str(path),

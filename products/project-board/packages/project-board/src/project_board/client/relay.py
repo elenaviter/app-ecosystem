@@ -51,7 +51,7 @@ from .worktree_files import (
 )
 from ..contract.errors import PERMANENT_CREDENTIAL_CODES, DomainError
 from ..contract.heartbeat_reply import (
-    SESSION_TIME_FIELDS, SESSION_TIMES_FEATURE, STORE_READS_CHANGED_FEATURE, reply_features,
+    MODEL_SESSION_TIMES_FEATURE, SESSION_TIME_FIELDS, SESSION_TIMES_FEATURE, STORE_READS_CHANGED_FEATURE, reply_features,
 )
 from ..contract.operation_identity import transport_request_hash
 from ..contract.operation_outcomes import require_successful_operation_envelope
@@ -86,6 +86,7 @@ from .host_config import (
 )
 from .authorization import PROFILE_METADATA_ABSENT, authorization_observation
 from .runtime_account import read_host_login, read_runtime_account
+from .runtime_launch import observe_session
 from .claude_profile import SessionAccount, read_session_account, resume_profile
 from .coordinate_queue import COORDINATE_LEASE_LOST, CoordinateQueue
 from .credential_refusal import credential_refused
@@ -372,6 +373,16 @@ def _heartbeat_session_projection(value: Mapping[str, Any]) -> dict[str, Any]:
         if field in subscription
     }
     return projected
+
+
+def _with_model_observation(
+    sessions: Sequence[Mapping[str, Any]], observation: Mapping[str, Any] | None,
+) -> list[dict[str, Any]]:
+    return [
+        {**row, **observation}
+        if observation and row.get("session_id") == observation["session_id"] else dict(row)
+        for row in sessions
+    ]
 
 
 # Upload answers that are the platform's decision about the file itself (too
@@ -1983,6 +1994,32 @@ class ProblemBoardHostRelayAdapter:
 
     def _record_project_heartbeat(self, project_ref: str) -> None:
         self._heartbeat_sent_at[project_ref] = self._monotonic()
+
+    def _model_session_report(
+        self, project_ref: str, sessions: Sequence[Mapping[str, Any]], cadence: int,
+    ) -> dict[str, Any] | None:
+        """Sample only when sending a heartbeat. Keep process identity on the host."""
+
+        native_id = getattr(self.config, "runtime_session_id", "")
+        if not native_id or not any(row.get("session_id") == native_id for row in sessions):
+            return None
+        worker = self.field.read_worker(self.config.worker_name)
+        binding = worker.get("model_session_binding")
+        listener = worker.get("listener")
+        if not isinstance(binding, Mapping) or binding.get("session_id") != native_id:
+            return None
+        if not isinstance(listener, Mapping):
+            return None
+        last_sent = self._heartbeat_sent_at.get(project_ref)
+        late = max(0, math.ceil(self._monotonic() - last_sent - cadence)) if last_sent is not None else 0
+        sample = {
+            "bound_at": binding.get("bound_at"),
+            "observed_at": utc_now(),
+            "state": "detached" if listener.get("state") == "detached" else observe_session(binding),
+            "cadence_seconds": cadence,
+            "jitter_seconds": min(cadence, max(5, late)),
+        }
+        return {"session_id": native_id, "model_session": sample}
 
     def request_attendance_refresh(
         self,
@@ -4988,19 +5025,28 @@ class ProblemBoardHostRelayAdapter:
             # W827 S2b: when to send is decided above and unchanged (W875);
             # only the form shrinks, and only for a Board whose last reply for
             # this project accepted it. Otherwise the full forms as before.
+            model_observation = self._model_session_report(
+                project_ref, agent_sessions, self._active_poll_interval(agent_sessions),
+            )
+            compact_model = bool(model_observation and MODEL_SESSION_TIMES_FEATURE in reply_request.features)
             if session_delta is not None:
                 times = (
                     self._session_times(project_ref=project_ref, projected=session_delta)
                     if SESSION_TIMES_FEATURE in reply_request.features else None
                 )
                 if times is not None:
-                    heartbeat_payload["agent_session_times"] = times
-                    session_form = SESSION_TIMES_FEATURE
+                    heartbeat_payload["agent_session_times"] = (
+                        _with_model_observation(times, model_observation) if compact_model else times
+                    )
+                    session_form = MODEL_SESSION_TIMES_FEATURE if compact_model else SESSION_TIMES_FEATURE
                 else:
-                    heartbeat_payload["agent_sessions"] = session_delta
+                    heartbeat_payload["agent_sessions"] = _with_model_observation(session_delta, model_observation)
                     # Until this full report is acknowledged, the Board may
                     # hold either projection: no times-only form against one.
                     self._compact_baseline_map().pop(("sessions", project_ref), None)
+            elif compact_model:
+                heartbeat_payload["agent_session_times"] = [model_observation]
+                session_form = MODEL_SESSION_TIMES_FEATURE
             if assignment_files_delta is not None:
                 heartbeat_payload["assignment_files"] = assignment_files_delta
             if store_reads_delta is not None:
@@ -5692,8 +5738,17 @@ class ProblemBoardHostRelayAdapter:
         heartbeat_payload: dict[str, Any] = {}
         if sent:
             heartbeat_payload = {"availability": "available"}
-            if discovery_session_delta is not None:
-                heartbeat_payload["agent_sessions"] = discovery_session_delta
+            cadence = (
+                self.config.idle_reconcile_ceiling_seconds
+                if self._attendance_cache.get("initialized") and not self._attendance_cache.get("items")
+                else self._active_poll_interval(sessions)
+            )
+            model_observation = self._model_session_report("", sessions, cadence)
+            if discovery_session_delta is not None or model_observation is not None:
+                rows = discovery_session_delta if discovery_session_delta is not None else [
+                    _heartbeat_session_projection(row) for row in sessions
+                ]
+                heartbeat_payload["agent_sessions"] = _with_model_observation(rows, model_observation)
             self._add_worker_info(heartbeat_payload, worker_info)
             self._add_alias_request(heartbeat_payload, alias_request)
         return discovery_session_delta, session_signature, worker_info, alias_request, sent, heartbeat_payload

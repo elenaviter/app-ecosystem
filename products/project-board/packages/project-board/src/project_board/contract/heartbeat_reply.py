@@ -29,7 +29,10 @@ _OBSERVATIONS = frozenset({
 KNOWN_DIGEST_FEATURE = "known_digest"
 STORE_READS_CHANGED_FEATURE = "store_reads_changed"
 SESSION_TIMES_FEATURE = "agent_session_times"
-REQUEST_FEATURES = frozenset({KNOWN_DIGEST_FEATURE, STORE_READS_CHANGED_FEATURE, SESSION_TIMES_FEATURE})
+MODEL_SESSION_TIMES_FEATURE = "model_session_in_times"
+REQUEST_FEATURES = frozenset({
+    KNOWN_DIGEST_FEATURE, STORE_READS_CHANGED_FEATURE, SESSION_TIMES_FEATURE, MODEL_SESSION_TIMES_FEATURE,
+})
 # The session fields a times-only report may carry; any other change is full.
 SESSION_TIME_FIELDS = ("heartbeat_at", "last_inbox_check_at")
 # Only normalized store-read summaries at the three producer-owned paths.
