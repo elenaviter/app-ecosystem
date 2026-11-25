@@ -198,7 +198,7 @@ number of operations in flight.
 | undeliverable mail | project, original recipient, message id | recipient `pending/` until its sender notice is terminal | 30 days, 100 MiB, 50,000 records | reconciliation reads pending notices only |
 | mail quarantine | project, recipient, message id | `quarantine/` | 1,000 records; overflow remains retryable and emits a bound error | listed only by the quarantine command |
 | source-scope leases | project, worker, lease id | worker `pending/` while active | 30 days, 50 MiB, 50,000 records | conflict checks active pending rows only |
-| journal receipts | project, `-`, entry id | none | 90 days, 100 MiB, 50,000 records | exact entry lookup or newest-hour listing |
+| journal receipts (the current hash and `commit`, plus at most 100 `local_operations` labelled `scope: local`; the durable content history is the entry's Git history, W1031) | project, `-`, entry id | none | 90 days, 100 MiB, 50,000 records | exact entry lookup or newest-hour listing |
 | journal-index operations | `-`, operation id; step pointers use step, field and value hash | `-/pending/` until complete | 30 days, 50 MiB, 25,000 operations | operation and status-by-outbox are exact lookups |
 | assignments | project, worker, assignment id | worker `pending/` | active projection only | observers and sync read pending assignments only |
 | agent sessions | project, worker, session id | mutable current-state rows | detached rows: 90 days; 1,000 rows per worker | bounded current-state listing |

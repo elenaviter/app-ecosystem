@@ -114,6 +114,7 @@ practice becomes a change to that project's files (operator, 2026-10-01).
   After interruption, inspect with `pb worker journal-index-status --project-ref ... --operation-id ...`, then run `pb worker journal-index-resume --operation-id ...` for the first incomplete step. Status is observation only: it does not rebuild, enqueue, or repair. Do not rerun the original command to guess what happened.
   For a pre-ledger validation use `journal-index-status --project-ref ... --outbox-id ... --repository-journal-ref ...`; it distinguishes an accepted plan revision from an absent receipt.
   Search with `pb worker journal-search --query ...` (`--project-ref ...` to name the project explicitly); legacy files remain searchable under a path-derived identity and status names compatibility issues.
+- An entry you amended under the same `entry_ref` is indexed again, after its change merged, with `pb worker journal-index ... --update`. Put `Journal-Update: <entry_ref>` and `Journal-Worker: <your stable worker name>` together in the commit message's final paragraph. A real replacement is a new entry with `supersedes_ref` instead. `pb worker journal-history --repository-journal-ref ...` shows the entry's published versions from Git ([projects, runtimes and refs](repo:app-ecosystem/products/project-board/docs/projects-runtimes-and-refs.md), "Update or supersede").
 
 ## Finding what the project already knows
 

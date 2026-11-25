@@ -201,6 +201,13 @@ def execute(args: Any) -> Any:
             summary=args.summary,
         )
     if command == "journal-index":
+        if not str(getattr(args, "repository_journal_ref", "") or "").strip():
+            raise DomainError(
+                "journal_repository_ref_required",
+                "--repository-journal-ref is required: repo:<alias>/<path to the entry>.",
+                status=400,
+                details={"form": "repo:<alias>/<path to the entry>"},
+            )
         workflow = JournalIndexWorkflow(
             field=field,
             workspace=_journal_workspace(args),
@@ -210,6 +217,7 @@ def execute(args: Any) -> Any:
             project_id=args.project_id,
             worker_name=args.worker,
             repository_journal_ref=args.repository_journal_ref,
+            update=bool(getattr(args, "update", False)),
         )
     if command == "journal-index-resume":
         workflow = JournalIndexWorkflow(

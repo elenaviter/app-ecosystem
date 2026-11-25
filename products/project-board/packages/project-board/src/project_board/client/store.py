@@ -124,6 +124,7 @@ from ..contract.mail_attachments import (
 from .local_wake import notify_worker_watch
 from .mail_history import MailHistoryStore
 from .idempotency_store import IdempotencyStore
+from .journal_receipt_precondition import receipt_precondition_allows
 from .journal_receipt_store import JournalReceiptStore
 from .scope_lease_store import ScopeLeaseStore
 from .projection import build_projection
@@ -11407,7 +11408,34 @@ class SharedFieldStore:
         *,
         worker_name: str,
         entry: Mapping[str, Any],
+        mode: str = "index",
+        precondition: Mapping[str, Any] | None = None,
+        target_commit: str = "",
+        operation_id: str = "",
     ) -> dict[str, Any]:
+        """Record, or deliberately advance, the local receipt of one journal entry.
+
+        Without ``mode="update"`` a receipt is immutable, as before: identical
+        content replays it and different content is refused. W1031 adds a
+        compare-and-advance under the same project lock. ``precondition`` is
+        ``{"kind": "absent"}`` (no receipt may exist yet; a fresh host or a wiped
+        cache materializes it) or ``{"kind": "hash", "previous_content_hash": h}``
+        (the receipt must still hold ``h``, and its commit when named), or
+        ``{"kind": "chain", "earlier": [...]}`` (the receipt must be at a version
+        published before the target). An update whose precondition no longer
+        holds is refused ``journal_update_stale``, so an older operation can never
+        overwrite a newer receipt. The local operations list records what this
+        host did and is labelled local; the durable content history is Git's.
+        """
+        clean_mode = str(mode or "index").strip().lower()
+        if clean_mode not in {"index", "update", "materialize"}:
+            raise DomainError("field_journal_mode_invalid", "mode is index, update or materialize.",
+                              details={"mode": clean_mode})
+        clean_precondition = dict(precondition or {})
+        precondition_kind = str(clean_precondition.get("kind") or "")
+        if precondition_kind not in {"", "absent", "hash", "chain"}:
+            raise DomainError("field_journal_precondition_invalid", "precondition is absent or hash.",
+                              details={"kind": precondition_kind})
         clean_project = (
             component(project_id, field="project_id")
             if str(project_id or "").strip()
@@ -11479,6 +11507,16 @@ class SharedFieldStore:
                 required=True,
             ),
             "created_at": str(entry.get("recorded_at") or utc_now()),
+            "commit": str(target_commit or ""),
+        }
+        local_operation = {
+            "operation_id": str(operation_id or ""),
+            "mode": clean_mode,
+            "content_hash": row["content_hash"],
+            "commit": row["commit"],
+            "worker_name": clean_worker,
+            "at": utc_now(),
+            "scope": "local",
         }
         with exclusive_lock(self._project_lock(clean_project)):
             existing = self._journal_receipts().read(
@@ -11486,23 +11524,111 @@ class SharedFieldStore:
                 parsed_entry.object_id,
             )
             if existing:
-                identity = {
+                fixed = {
                     "entry_ref": row["entry_ref"],
                     "project_ref": row["project_ref"],
                     "repository_journal_ref": row["repository_journal_ref"],
-                    "content_hash": row["content_hash"],
                 }
-                if not _contains_identity(existing, identity):
+                identity = {**fixed, "content_hash": row["content_hash"]}
+                existing_commit = str(existing.get("commit") or "")
+                if _contains_identity(existing, identity):
+                    # Same bytes. A replay only when the commit matches too (or the
+                    # caller names none); equal bytes at another commit are another
+                    # version (pb-knowledge, slice 2 R3).
+                    if not row["commit"] or existing_commit == row["commit"]:
+                        return dict(existing)
+                    if existing_commit and not receipt_precondition_allows(existing, clean_precondition):
+                        if clean_mode == "update" or precondition_kind == "chain":
+                            raise DomainError(
+                                "journal_update_stale",
+                                "The receipt is at another version of this entry than this operation expects.",
+                                status=409,
+                                details={
+                                    "entry_ref": row["entry_ref"],
+                                    "recorded_commit": existing_commit,
+                                    "target_commit": row["commit"],
+                                },
+                            )
+                        return dict(existing)  # an old-style caller: unchanged replay
+                    # Advance the commit only (a receipt written before W1031 is
+                    # stamped explicitly; a newer publication of equal bytes moves on).
+                    stamp = dict(existing)
+                    stamp["commit"] = row["commit"]
+                    operation = {**local_operation,
+                                 "mode": clean_mode if existing_commit else "materialize"}
+                    stamp["local_operations"] = [
+                        *list(existing.get("local_operations") or [])[-99:], operation]
+                    self._journal_receipts().write(clean_project, parsed_entry.object_id, stamp)
+                    return stamp
+                previous = str(clean_precondition.get("previous_content_hash") or "")
+                if (
+                    clean_mode != "update"
+                    or not _contains_identity(existing, fixed)
+                ):
                     raise DomainError(
                         "field_journal_receipt_conflict",
-                        "This journal identity already records different content.",
+                        "This journal identity already records different content. "
+                        "For an amended entry, rerun journal-index with --update; for a "
+                        "real replacement, create a new entry_ref that supersedes it.",
                         status=409,
                         details={
                             "entry_ref": row["entry_ref"],
                             "repository_journal_ref": row["repository_journal_ref"],
                         },
                     )
-                return dict(existing)
+                if not receipt_precondition_allows(existing, clean_precondition):
+                    raise DomainError(
+                        "journal_update_stale",
+                        "The receipt changed since this update was prepared.",
+                        status=409,
+                        details={
+                            "entry_ref": row["entry_ref"],
+                            "expected_previous_content_hash": previous,
+                            "recorded_content_hash": str(existing.get("content_hash") or ""),
+                            "target_content_hash": row["content_hash"],
+                        },
+                    )
+                operations = list(existing.get("local_operations") or [])[-99:]
+                row["created_at"] = str(existing.get("created_at") or row["created_at"])
+                row["local_operations"] = [*operations, local_operation]
+                event_suffix = f"{row['entry_ref']}\n{row['content_hash']}\n{row['commit']}"
+                event_id = (
+                    "journal-updated-"
+                    + hashlib.sha256(event_suffix.encode("utf-8")).hexdigest()[:24]
+                )
+                event = self._record_event_unlocked(
+                    clean_project,
+                    event_id=event_id,
+                    kind="journal.updated",
+                    summary=f"{clean_worker} deliberately updated a work journal entry.",
+                    actor=clean_worker,
+                    work_ref=row["work_ref"],
+                    metadata={
+                        "entry_ref": row["entry_ref"],
+                        "content_hash": row["content_hash"],
+                        "previous_content_hash": previous,
+                        "commit": row["commit"],
+                        "repository_journal_ref": row["repository_journal_ref"],
+                    },
+                )
+                row["event_ref"] = str(event.get("event_ref") or "")
+                self._journal_receipts().write(clean_project, parsed_entry.object_id, row)
+                return row
+            if precondition_kind == "hash":
+                raise DomainError(
+                    "journal_update_stale",
+                    "This update expected a receipt that is no longer on this host.",
+                    status=409,
+                    details={
+                        "entry_ref": row["entry_ref"],
+                        "expected_previous_content_hash": str(
+                            clean_precondition.get("previous_content_hash") or ""
+                        ),
+                        "recorded_content_hash": "",
+                        "target_content_hash": row["content_hash"],
+                    },
+                )
+            row["local_operations"] = [local_operation]
             event_id = (
                 "journal-indexed-"
                 + hashlib.sha256(row["entry_ref"].encode("utf-8")).hexdigest()[:24]

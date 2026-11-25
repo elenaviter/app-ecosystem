@@ -160,6 +160,29 @@ coordinator included, and for every read and write of project state:
   host's journal root in `workers/<worker-name>/`; and a journal view the
   board asks a worker's relay for is read from that clone, with its commit and
   clone state beside the result.
+- **Update or supersede (W1031).** An indexed entry whose file was amended under
+  the same `entry_ref` (a reviewed, merged change) is indexed again with
+  `pb worker journal-index ... --update`. Without the flag the command refuses
+  it with `field_journal_receipt_conflict`, naming both routes in
+  `update_action` and `required_action`. A real replacement is still a new entry
+  whose `supersedes_ref` names the old one, and the old entry stays hidden as
+  before. `--update` indexes only a published version: the commit on the clean
+  clone's HEAD whose file equals the entry. An older version restored in the
+  working tree is refused; a committed revert is a new version. The receipt
+  advances only from a version published before the target: its commit, or its
+  hash for a receipt written before this change. So an older operation never
+  overwrites a newer receipt (`journal_update_stale`). Equal bytes published
+  again at a newer commit move the receipt's commit, and a receipt without a
+  commit is stamped with one (`materialize`). Retrying the same commit
+  replays the operation, and the same text published again later at a new
+  commit is a new one. On a host with no receipt yet, an unflagged run indexes
+  the published version as before and records that host's step as
+  `materialize`. A deliberate amendment commit carries `Journal-Update:
+  <entry_ref>` and `Journal-Worker: <stable worker name>` in its message's final
+  paragraph. `pb worker journal-history --repository-journal-ref ...` pages the
+  entry's published versions from Git, and shows a version without those
+  trailers with intent and worker `unknown`. A missing `--repository-journal-ref`
+  prints its form, `repo:<alias>/<path to the entry>`.
 - **Search freshness follows the local source, not only the binding.** CLI
   journal search and ordinary relay reconciliation share a locked freshness
   check. Clone HEAD, binding revision, source identity and journal file
