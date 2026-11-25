@@ -101,7 +101,8 @@ it, what you touched (Rule 3), and what you are waiting on.
   note on the item; no coordinator acknowledgement is needed. Only when no
   qualified teammate is available, or the review stays blocked, name the
   acting coordinator's stable worker name in `--reviewer`: the item then
-  lands on the coordinator, who reviews it or routes it on. Sending work for
+  lands on the coordinator, who routes it on, and reviews it only where the
+  project's facts let the coordinator review. Sending work for
   review must never leave it on you: route it as you ask (Rule 16),
   and you never schedule your own acceptance. When an item you completed is still
   assigned to you in Review, the review is not routed: route it as above,
@@ -196,7 +197,13 @@ it, what you touched (Rule 3), and what you are waiting on.
   head on the item, then give the item to the next actor the route names,
   with the gates that remain and who clears each: the named merger when the
   next gate is a merge, else the coordinator. Route it with `review.assign`
-  naming that actor. When your Card lacks the operation, write the same handoff
+  naming that actor. `review.assign` to the coordinator is only for an
+  approval whose next gate is a merge, a deploy or an operator action, and
+  never where the project's facts say the coordinator does not review: there,
+  name the merger, or the operator once the merge and deploy evidence exists.
+  An approval whose remaining acceptance needs builds is not handed on here;
+  it goes back to the builder (the next bullet, "Approved phase, builds
+  remain"). When your Card lacks the operation, write the same handoff
   note on the item (the verdict's head, the gates, who clears each, the
   time), send the coordinator a `decision` mail naming the item, and report
   the missing operation as a Card defect ([identity and
@@ -207,7 +214,7 @@ it, what you touched (Rule 3), and what you are waiting on.
   approvals sat on their reviewers while the coordinator waited for them,
   and nobody saw the wait (W455).
 - **Unmet criteria go back; a review never waits for unowned work.** A
-  review ends in one of three decisions, and which one depends on what
+  review ends in one of four decisions, and which one depends on what
   remains:
   - **Source rework** (a criterion the submitted source does not meet and
     that needs new work: a fix, a test, a document, a disposition someone
@@ -215,6 +222,18 @@ it, what you touched (Rule 3), and what you are waiting on.
     work it needs, and who you propose does it. The item is then Working
     with an owner, and the coordinator reassigns it if the worker is not the
     right author.
+  - **Approved phase, builds remain** (you approve a design or an earlier
+    phase, and the item's remaining acceptance needs builds): decide
+    `review.return` to the item's builder now. Record the approval at the
+    exact revision or head on the item first, then name in the return the
+    approval, the next phase or slice, and its order. Never `review.accept`:
+    the acceptance is not met. Never `review.assign` to the coordinator to
+    "route the builds": the return already gives the item an owner, and the
+    coordinator reassigns the builder if needed. Each build gets its own
+    review. Why: on 2026-11-25 a design GO on W1033 was handed to the
+    coordinator with `review.assign` in a project where the coordinator does
+    not review, and the item bounced between the two until the reviewer
+    returned it to the builder (W1036).
   - **Post-source gates** (the source is approved and what remains is a
     merge, an activation or the operator's check): hand the item on under
     the bullet above. It is neither held nor returned.

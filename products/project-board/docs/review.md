@@ -310,10 +310,15 @@ their Telegram.
 A review ends in a decision, chosen by what remains. Source rework, a
 criterion the submitted source does not meet and that needs new work, is
 returned with the reason, naming each unmet criterion and who should do the
-work, so the item has an owner again. Post-source gates, a merge, an
+work, so the item has an owner again. An approved design or earlier phase
+whose remaining acceptance needs builds is also returned to the item's
+builder with `review.return`, naming the approval and the next phase; it is
+neither accepted, because the acceptance is not met, nor routed to the
+coordinator. Post-source gates, a merge, an
 activation or the operator's check after the source is approved, are neither
 held nor returned: the item is routed on with `review.assign` to whoever
-clears the next gate. Only unfinished verification may be held: the
+clears the next gate. That is the coordinator only where the project lets the
+coordinator review. Only unfinished verification may be held: the
 reviewer's own check waits on one step someone else is doing, and the hold
 lasts while that step has a named actor working on it and a due time,
 recorded on the item; past that time the reviewer decides again. The
