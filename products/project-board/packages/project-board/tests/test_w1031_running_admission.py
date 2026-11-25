@@ -254,3 +254,23 @@ def test_shallow_history_that_cuts_a_stripped_entry_fails_closed(tmp_path, repo)
         fresh.prepare_entry(project_ref=PROJECT_REF, repository_journal_ref=ref)
     assert caught.value.code == "journal_running_history_unavailable"
     assert hits(workspace_for(tmp_path / "fresh2", shallow), "forbiddenword") == []
+
+
+def test_a_git_root_with_spaces_still_ties_an_undetected_rename(tmp_path):
+    repo = tmp_path / "journal repo with spaces"
+    repo.mkdir()
+    git(repo, "init", "-q", "-b", "main")
+    git(repo, "commit", "-q", "--allow-empty", "-m", "root")
+    ws = workspace_for(tmp_path / "ws with spaces", repo)
+    publish(ws, repo, entry_text([record("2026-11-02T08:00:00Z", "Accepted old context. " * 400)]))
+    old, new = running_path(ws), other_path(ws, "moved.md")
+    new.write_text(entry_text([record("2026-11-02T08:00:00Z", "Wholly different forbiddenword.")]), encoding="utf-8")
+    git(repo, "rm", "-q", str(old))
+    git(repo, "add", "-A")
+    git(repo, "commit", "-q", "-m", "delete and add, markers kept")
+    fresh = workspace_for(tmp_path / "fresh with spaces", repo)
+    ref = f"{fresh.context(PROJECT_REF)['journal_authoring']['directory_ref']}/moved.md"
+    with pytest.raises(DomainError) as caught:
+        fresh.prepare_entry(project_ref=PROJECT_REF, repository_journal_ref=ref)
+    assert caught.value.code == "journal_running_entry_rewritten"
+    assert hits(workspace_for(tmp_path / "fresh2 with spaces", repo), "forbiddenword") == []

@@ -1369,12 +1369,15 @@ class JournalWorkspace:
         else:
             top = subprocess.run(["git", "-C", str(home), "rev-parse", "--show-toplevel", "HEAD"],
                                  capture_output=True, text=True, timeout=60)
-            lines = top.stdout.split()
-            if top.returncode != 0 or len(lines) != 2:
+            if top.returncode != 0:  # not a Git clone: ordinary entries are judged as before
                 if memo is not None:
                     memo[str(home)] = ("", "")
                 return False
-            root, head = Path(lines[0]), lines[1]
+            # One result per line: a root may contain spaces (pb-knowledge, slice 3a).
+            lines = top.stdout.splitlines()
+            if len(lines) != 2 or not lines[0] or not lines[1]:
+                return "unknown"  # a Git clone whose answer cannot be read: fail closed
+            root, head = Path(lines[0]), lines[1].strip()
             if memo is not None:
                 memo[str(home)] = (str(root), head)
         try:
