@@ -16,11 +16,43 @@ from .journal_operation_contract import (
     plan_outbox_id,
     require_operation_kind,
 )
+import subprocess
+
+from .journal_history import ContentChain, published_chain
 from .journal_operation_status import JournalIndexStatusReader
 from .journal_receipt_identity import (
     has_receipt_identity_conflict,
     receipt_identity_conflict_error,
+    update_stale_error,
 )
+
+
+def _entry_publication(entry: Mapping[str, Any]) -> tuple[ContentChain | None, dict[str, Any]]:
+    """The entry's published chain on its clone's HEAD and the version equal to its content (W1031).
+
+    Returns ``(None, {})`` when the file is not in a readable Git clone; an
+    unflagged index keeps working there, as before. ``--update`` requires a
+    published version.
+    """
+
+    local_path = Path(str(entry.get("local_path") or ""))
+    if not local_path.is_file():
+        return None, {}
+    top = subprocess.run(["git", "-C", str(local_path.parent), "rev-parse", "--show-toplevel"],
+                         capture_output=True, text=True, timeout=60)
+    if top.returncode != 0:
+        return None, {}
+    root = Path(top.stdout.strip())
+    relative = local_path.resolve().relative_to(root.resolve()).as_posix()
+    try:
+        chain = published_chain(root, relative, ref="HEAD")
+    except DomainError:
+        return None, {}
+    wanted = str(entry.get("content_hash") or "")
+    for version in reversed(chain.versions):
+        if version.content_hash == wanted:
+            return chain, version.summary()
+    return chain, {}
 from .operation_ledger import LocalOperationLedger
 from .plan_authority import await_plan_item_resolution
 
@@ -52,6 +84,7 @@ class JournalIndexWorkflow:
         project_id: str,
         worker_name: str,
         repository_journal_ref: str,
+        update: bool = False,
     ) -> dict[str, Any]:
         project = dict(self.field.read_project(project_id))
         worker = dict(self.field.read_worker(worker_name))
@@ -77,13 +110,85 @@ class JournalIndexWorkflow:
                 if key != "local_path"
             },
         }
+        warnings: list[dict[str, Any]] = []
+        transition = self._transition(project_id, entry=entry, update=update, warnings=warnings)
+        if transition:
+            # W1031 R1: the verified target commit, the precondition and the mode are
+            # part of the immutable request, so the canonical request hash (the
+            # operation id) follows publication history: a retry replays, while the
+            # same bytes published again at a later commit are a new operation.
+            request["transition"] = transition
         record = self.ledger.ensure(
             kind=JOURNAL_INDEX_OPERATION_KIND,
             request_hash=content_hash(request),
             request=request,
             steps=JOURNAL_INDEX_STEPS,
         )
-        return self._run(record, entry=entry)
+        result = self._run(record, entry=entry)
+        if warnings:
+            result["warnings"] = warnings
+        return result
+
+    def _transition(
+        self,
+        project_id: str,
+        *,
+        entry: Mapping[str, Any],
+        update: bool,
+        warnings: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        """W1031: mode, precondition and verified target for this run; {} keeps the old request shape."""
+
+        existing = self.field.read_journal_receipt(
+            project_id, entry_ref=str(entry.get("entry_ref") or "")
+        )
+        chain, target = _entry_publication(entry)
+        if update and not target:
+            raise DomainError(
+                "journal_entry_not_published",
+                "--update indexes a published version: merge the amended entry, fetch and "
+                "fast-forward the journal clone, then run journal-index --update again.",
+                status=409,
+                details={
+                    "repository_journal_ref": str(entry.get("repository_journal_ref") or ""),
+                    "content_hash": str(entry.get("content_hash") or ""),
+                    "history_complete": bool(chain.complete) if chain else False,
+                },
+            )
+        if existing is None:
+            if update:
+                mode = "update"
+            elif chain is not None and target and len(chain.versions) > 1:
+                mode = "materialize"
+            elif target:
+                mode = "index"
+            else:
+                return {}
+            precondition: dict[str, Any] = {"kind": "absent"}
+        elif update:
+            mode = "update"
+            precondition = {
+                "kind": "hash",
+                "previous_content_hash": str(existing.get("content_hash") or ""),
+                "previous_commit": str(existing.get("commit") or ""),
+            }
+        else:
+            return {}
+        if update and target and target.get("intent") != "update" and target.get("intent") != "first":
+            warnings.append({
+                "code": "journal_update_intent_unrecorded",
+                "message": (
+                    "The indexed version has no Journal-Update and Journal-Worker trailers; "
+                    "Git history will show its intent and worker as unknown."
+                ),
+                "commit": str(target.get("commit") or ""),
+            })
+        return {
+            "mode": mode,
+            "precondition": precondition,
+            "target_commit": str(target.get("commit") or ""),
+            "target_content_hash": str(entry.get("content_hash") or ""),
+        }
 
     def resume(
         self,
@@ -112,6 +217,7 @@ class JournalIndexWorkflow:
                 operation_id,
                 project_id=str(request.get("project_id") or ""),
                 entry=expected_entry,
+                transition=dict(request.get("transition") or {}),
             )
         entry = self.workspace.prepare_entry(
             project_ref=str(request.get("project_ref") or ""),
@@ -167,11 +273,13 @@ class JournalIndexWorkflow:
         project_ref = str(request.get("project_ref") or "")
         worker_name = str(request.get("worker_name") or "")
         work_ref = str(entry.get("work_ref") or "")
+        transition = dict(request.get("transition") or {})
         with self.ledger.execution(operation_id):
             self._require_receipt_identity_available(
                 operation_id,
                 project_id=project_id,
                 entry=entry,
+                transition=transition,
             )
             self._run_index_step(operation_id, entry=entry)
             self._run_plan_step(
@@ -186,6 +294,7 @@ class JournalIndexWorkflow:
                 project_id=project_id,
                 worker_name=worker_name,
                 entry=entry,
+                transition=transition,
             )
         result = self.status(operation_id)
         result["entry"] = dict(entry)
@@ -326,7 +435,9 @@ class JournalIndexWorkflow:
         project_id: str,
         worker_name: str,
         entry: Mapping[str, Any],
+        transition: Mapping[str, Any] | None = None,
     ) -> None:
+        transition = dict(transition or {})
         completed = self._completed(operation_id, "local_receipt")
         existing = self.field.read_journal_receipt(
             project_id,
@@ -344,10 +455,14 @@ class JournalIndexWorkflow:
             )
             return
         if existing is not None:
-            self._raise_receipt_identity_conflict(
-                operation_id,
-                observation=observed,
-            )
+            self._check_transition(operation_id, observation=observed, existing=existing,
+                                   transition=transition)
+        elif str(dict(transition.get("precondition") or {}).get("kind") or "") == "hash":
+            self._fail_receipt_step(operation_id, observation=observed, exc=update_stale_error(
+                observed,
+                previous_content_hash=str(dict(transition["precondition"]).get("previous_content_hash") or ""),
+                operation_id=operation_id,
+            ))
         self._begin_or_reopen_step(
             operation_id,
             "local_receipt",
@@ -360,6 +475,16 @@ class JournalIndexWorkflow:
                 project_id,
                 worker_name=worker_name,
                 entry=entry,
+                **(
+                    {
+                        "mode": str(transition.get("mode") or "index"),
+                        "precondition": dict(transition.get("precondition") or {}),
+                        "target_commit": str(transition.get("target_commit") or ""),
+                        "operation_id": operation_id,
+                    }
+                    if transition
+                    else {}
+                ),
             )
         except DomainError as exc:
             self.ledger.fail_step(
@@ -378,6 +503,7 @@ class JournalIndexWorkflow:
         *,
         project_id: str,
         entry: Mapping[str, Any],
+        transition: Mapping[str, Any] | None = None,
     ) -> None:
         existing = self.field.read_journal_receipt(
             project_id,
@@ -385,10 +511,41 @@ class JournalIndexWorkflow:
         )
         observation = self.status_reader.receipt_observation(entry, existing)
         if has_receipt_identity_conflict(observation):
-            self._raise_receipt_identity_conflict(
-                operation_id,
-                observation=observation,
-            )
+            self._check_transition(operation_id, observation=observation, existing=existing,
+                                   transition=dict(transition or {}))
+
+    def _check_transition(
+        self,
+        operation_id: str,
+        *,
+        observation: Mapping[str, Any],
+        existing: Mapping[str, Any] | None,
+        transition: Mapping[str, Any],
+    ) -> None:
+        """W1031 R1, the same rule the store applies under its lock.
+
+        Content that differs from the receipt is accepted only by an update whose
+        fixed identity (entry_ref, repository_journal_ref) matches and whose
+        precondition names the receipt's current hash. A matching identity with a
+        moved receipt is stale; anything else is the unchanged conflict.
+        """
+
+        if existing is None or not has_receipt_identity_conflict(observation):
+            return
+        fixed = (
+            str(observation.get("entry_ref") or "") == str(observation.get("expected_entry_ref") or "")
+            and str(observation.get("repository_journal_ref") or "")
+            == str(observation.get("expected_repository_journal_ref") or "")
+        )
+        precondition = dict(transition.get("precondition") or {})
+        if str(transition.get("mode") or "") == "update" and fixed:
+            previous = str(precondition.get("previous_content_hash") or "")
+            if precondition.get("kind") == "hash" and str(existing.get("content_hash") or "") == previous:
+                return
+            self._fail_receipt_step(operation_id, observation=observation, exc=update_stale_error(
+                observation, previous_content_hash=previous, operation_id=operation_id,
+            ))
+        self._raise_receipt_identity_conflict(operation_id, observation=observation)
 
     def _raise_receipt_identity_conflict(
         self,
@@ -400,6 +557,15 @@ class JournalIndexWorkflow:
             observation,
             operation_id=operation_id,
         )
+        self._fail_receipt_step(operation_id, observation=observation, exc=exc)
+
+    def _fail_receipt_step(
+        self,
+        operation_id: str,
+        *,
+        observation: Mapping[str, Any],
+        exc: DomainError,
+    ) -> NoReturn:
         record = self.ledger.read(operation_id)
         step = next(
             row

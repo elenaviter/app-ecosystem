@@ -59,6 +59,7 @@ from .journals import (
     parse_source_repositories,
     worker_journal_root,
 )
+from .journal_history import journal_entry_history
 from .journal_operations import JournalIndexWorkflow
 from .plan_authority import require_plan_item
 from .prose_arguments import (
@@ -1772,7 +1773,28 @@ def build_parser() -> argparse.ArgumentParser:
     _host_config(command)
     _agent_identity(command)
     command.add_argument("--project-ref", required=True)
-    command.add_argument("--repository-journal-ref", required=True)
+    command.add_argument(
+        "--repository-journal-ref",
+        default="",
+        help="repo:<alias>/<path to the entry>, for example repo:applications/<journal home>/journal/<file>.md.",
+    )
+    command.add_argument(
+        "--update",
+        action="store_true",
+        help="Deliberately index an amended entry under the same entry_ref (W1031); "
+        "without it a changed entry is refused as before.",
+    )
+
+    command = worker_commands.add_parser(
+        "journal-history",
+        help="Page the published content versions of one journal entry, read from Git (W1031).",
+    )
+    _host_config(command)
+    _agent_identity(command)
+    command.add_argument("--project-ref", required=True)
+    command.add_argument("--repository-journal-ref", default="")
+    command.add_argument("--cursor", default="", help="The next_cursor of the previous page.")
+    command.add_argument("--limit", type=int, default=100)
 
     command = worker_commands.add_parser(
         "journal-index-resume",
@@ -2043,7 +2065,8 @@ def build_parser() -> argparse.ArgumentParser:
     _project(command)
     _worker(command)
     _journal_workspace(command)
-    command.add_argument("--repository-journal-ref", required=True)
+    command.add_argument("--repository-journal-ref", default="")
+    command.add_argument("--update", action="store_true")
 
     command = sub.add_parser(
         "journal-index-resume",
@@ -7138,10 +7161,26 @@ def _worker_command(args: Any) -> dict[str, Any]:
                 "field_project_ref_required",
                 "Indexing a project journal entry requires a project ref.",
             )
+        _require_repository_journal_ref(workspace, args)
         return workflow.start(
             project_id=project_id,
             worker_name=identity.worker_name,
             repository_journal_ref=args.repository_journal_ref,
+            update=bool(getattr(args, "update", False)),
+        )
+    if args.worker_command == "journal-history":
+        if parsed_project is None:
+            raise DomainError(
+                "field_project_ref_required",
+                "Journal history requires a project ref.",
+            )
+        workspace = _worker_journals(config, args)
+        _require_repository_journal_ref(workspace, args)
+        return journal_entry_history(
+            workspace,
+            repository_journal_ref=args.repository_journal_ref,
+            cursor=args.cursor,
+            limit=args.limit,
         )
     if args.worker_command == "journal-index-resume":
         return workflow.resume(
@@ -7165,6 +7204,28 @@ def _worker_command(args: Any) -> dict[str, Any]:
             repository_journal_ref=args.repository_journal_ref,
         )
     raise ValueError(f"unsupported worker command: {args.worker_command}")
+
+
+def _require_repository_journal_ref(workspace: Any, args: Any) -> None:
+    """W1031 line 6: a missing --repository-journal-ref explains its form, with the bound directory."""
+
+    if str(getattr(args, "repository_journal_ref", "") or "").strip():
+        return
+    example = "repo:<alias>/<path to the entry>"
+    try:
+        context = workspace.context(str(getattr(args, "project_ref", "") or ""))
+        directory = str(dict(context.get("journal_authoring") or {}).get("directory_ref") or "")
+        if directory:
+            example = f"{directory}/<entry file>.md"
+    except (DomainError, OSError, AttributeError, TypeError):
+        pass
+    raise DomainError(
+        "journal_repository_ref_required",
+        "--repository-journal-ref is required: repo:<alias>/<path to the entry>, "
+        f"for example {example}.",
+        status=400,
+        details={"form": "repo:<alias>/<path to the entry>", "example": example},
+    )
 
 
 def _end_replaced_watch(signum: int, frame: Any) -> None:

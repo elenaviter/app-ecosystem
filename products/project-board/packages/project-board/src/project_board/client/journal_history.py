@@ -313,6 +313,25 @@ __all__ = [
     "RunningGenerations",
     "UPDATE_TRAILER",
     "WORKER_TRAILER",
+    "journal_entry_history",
     "published_chain",
     "running_generations",
 ]
+
+
+def journal_entry_history(workspace: Any, *, repository_journal_ref: str, cursor: str = "",
+                          limit: int = 100) -> dict[str, Any]:
+    """``pb worker journal-history``: one page of an entry's published versions on its clone's HEAD."""
+
+    _, local = workspace.repositories.resolve(str(repository_journal_ref), require_directory=False)
+    local = Path(local)
+    top = subprocess.run(["git", "-C", str(local.parent), "rev-parse", "--show-toplevel"],
+                         capture_output=True, text=True, timeout=60)
+    if top.returncode != 0:
+        raise DomainError("journal_history_unavailable", "The journal entry is not in a Git clone.",
+                          status=503, details={"repository_journal_ref": repository_journal_ref})
+    root = Path(top.stdout.strip())
+    relative = local.resolve().relative_to(root.resolve()).as_posix()
+    page = published_chain(root, relative, ref="HEAD").page(after=cursor, limit=limit)
+    page["repository_journal_ref"] = repository_journal_ref
+    return page
