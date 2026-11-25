@@ -16,12 +16,16 @@ earlier resume switch is dropped too, so a resumed session's line resumes once.
 
 from __future__ import annotations
 
+import ctypes
 import os
 import re
 import subprocess
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
+
+from .agent_session import RUNTIME_SESSION_ENV
 
 MAX_ARGS = 64
 MAX_ARG_BYTES = 512
@@ -97,6 +101,70 @@ class Probes:
             return ""
         result = self.run(["tmux", "display-message", "-p", "#S"])
         return (result.stdout if result and result.returncode == 0 else "").strip()[:128]
+
+    def process(self, pid: int) -> tuple[str, str]:
+        """Local start identity and state. A failed inspection is unknown."""
+
+        try:
+            if sys.platform.startswith("linux"):
+                values = (self.proc / str(pid) / "stat").read_text().rsplit(")", 1)[1].split()
+                boot_id = (self.proc / "sys/kernel/random/boot_id").read_text().strip()
+                token = f"{boot_id}:{int(values[19])}"
+                state = values[0]
+                if boot_id:
+                    return token, (
+                        "absent" if state in {"Z", "X", "x"}
+                        else "running" if state in {"R", "S", "D", "I"}
+                        else "unknown"
+                    )
+            elif sys.platform == "darwin":
+                return _darwin_process(pid)
+        except (ValueError, IndexError):
+            pass
+        except OSError:
+            return _missing_process(pid)
+        return "", "unknown"
+
+
+def _missing_process(pid: int) -> tuple[str, str]:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return "", "absent"
+    except OSError:
+        pass
+    return "", "unknown"
+
+
+class _DarwinProcessInfo(ctypes.Structure):
+    # proc_bsdinfo in the macOS SDK's sys/proc_info.h. Start time has
+    # microsecond resolution, unlike the formatted time from ps.
+    _fields_ = [
+        ("flags", ctypes.c_uint32),
+        ("status", ctypes.c_uint32),
+        ("pid_fields", ctypes.c_uint32 * 10),
+        ("names", ctypes.c_char * 48),
+        ("terminal_fields", ctypes.c_uint32 * 6),
+        ("start_seconds", ctypes.c_uint64),
+        ("start_microseconds", ctypes.c_uint64),
+    ]
+
+
+def _darwin_process(pid: int) -> tuple[str, str]:
+    info = _DarwinProcessInfo()
+    proc_pidinfo = ctypes.CDLL("/usr/lib/libproc.dylib").proc_pidinfo
+    proc_pidinfo.argtypes = (
+        ctypes.c_int, ctypes.c_int, ctypes.c_uint64, ctypes.c_void_p, ctypes.c_int,
+    )
+    size = ctypes.sizeof(info)
+    if proc_pidinfo(pid, 3, 0, ctypes.byref(info), size) != size or not info.start_seconds:
+        return _missing_process(pid)
+    token = f"{info.start_seconds}:{info.start_microseconds}"
+    if info.status == 5 or info.flags & 4:  # SZOMB or PROC_FLAG_INEXIT
+        return token, "absent"
+    if info.status in {1, 4}:  # SIDL or SSTOP
+        return token, "unknown"
+    return token, "running" if info.status in {2, 3} else "unknown"
 
 
 def _is_runtime(argv: Sequence[str], name: str) -> bool:
@@ -176,4 +244,70 @@ def capture(runtime_kind: str, *, probes: Probes | None = None, start_pid: int |
     return {}
 
 
-__all__ = ["Probes", "capture", "sanitize"]
+def _selected_native_id(runtime_kind: str, argv: Sequence[str]) -> str:
+    if runtime_kind == "codex":
+        return argv[2] if len(argv) > 2 and argv[1] == "resume" and not argv[2].startswith("-") else ""
+    for position, word in enumerate(argv[1:], start=1):
+        flag, equal, inline = word.partition("=")
+        if flag in {"--session-id", "--resume", "-r"}:
+            if equal:
+                return inline
+            if position + 1 < len(argv) and not argv[position + 1].startswith("-"):
+                return argv[position + 1]
+    return ""
+
+
+def capture_session_binding(
+    runtime_kind: str, session_id: str, *, probes: Probes | None = None, start_pid: int | None = None,
+) -> dict[str, Any]:
+    """Bind the calling native session to a dedicated local runtime process."""
+
+    binding = {
+        "session_id": session_id,
+        "bound_at": datetime.now(timezone.utc).isoformat(timespec="microseconds"),
+    }
+    name = RUNTIME_NAMES.get(runtime_kind)
+    if not name:
+        return binding
+    probes = probes or Probes()
+    inherited = {value for key in RUNTIME_SESSION_ENV[runtime_kind] if (value := probes.env.get(key))}
+    if inherited and inherited != {session_id}:
+        return binding
+    pid = start_pid if start_pid is not None else os.getppid()
+    for _ in range(MAX_WALK):
+        if pid <= 1:
+            break
+        token, state = probes.process(pid)
+        argv = probes.argv(pid)
+        if not _is_runtime(argv, name):
+            pid = probes.parent(pid)
+            continue
+        if Path(argv[0]).name in {"node", "nodejs"} and Path(argv[1]).name == "cli.js":
+            package = "@openai" if runtime_kind == "codex" else "@anthropic-ai"
+            if package not in Path(argv[1]).parts:
+                pid = probes.parent(pid)
+                continue
+        command = _without_node(argv, name)
+        # A shared server can keep running after the addressed thread closes.
+        if runtime_kind == "codex" and any(arg in {"app-server", "mcp-server", "exec", "daemon"} for arg in command[1:]):
+            break
+        selected = _selected_native_id(runtime_kind, command)
+        if (selected and selected != session_id) or (not inherited and not selected):
+            break
+        if token and state == "running" and probes.process(pid) == (token, "running"):
+            binding.update(pid=pid, start=token)
+        break
+    return binding
+
+
+def observe_session(binding: Mapping[str, Any], *, probes: Probes | None = None) -> str:
+    pid, original = binding.get("pid"), binding.get("start")
+    if type(pid) is not int or pid <= 1 or not isinstance(original, str) or not original:
+        return "unknown"
+    observed, state = (probes or Probes()).process(pid)
+    if observed and observed != original:
+        return "absent"
+    return state
+
+
+__all__ = ["Probes", "capture", "capture_session_binding", "observe_session", "sanitize"]

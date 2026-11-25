@@ -93,6 +93,11 @@ and `last_inbox_check_at` advances. While it runs, `session.inbox_check_state`
 reads `current`. A stopped watch reads `stale` with a growing
 `session.inbox_overdue_by_seconds`.
 
+At start or native resume, `pb worker listen` from the model session also
+records exact model-session presence where the host can establish it. The
+Cards and TEAM view show session, relay, and inbox status separately. A
+shared runtime without exact thread evidence shows an unknown session.
+
 Duplicate Claude watch events remain availability signals. A duplicate Codex
 queue instruction is a route-integrity failure because acknowledged and retry
 duplicates should have been removed before a turn. Run its exact receive

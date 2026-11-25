@@ -296,6 +296,23 @@ the reader never acts on, and says so where it does.
   `sha256` there is the sender's. Do not split a file into a run of inline
   messages, and do not point a reader at a path on your own machine.
 
+### Model session evidence
+
+Run `pb worker listen` from the native session at start or resume. When the
+terminal runtime owns one native session and Project Board can match the
+session ID, the host saves the process and its start identity locally. The
+existing relay heartbeat samples that binding while the model is idle or
+working. Once a process exits or a different process takes its PID, the next
+observation clears the online state. An unreadable process, shared runtime
+without thread evidence, or legacy listener projects unknown.
+
+The Board keeps the newest observation for the enrolled session and expires
+it after three times the relay's scheduled cadence plus measured scheduling
+jitter. On a 60-second cadence, the window starts at 180 seconds plus jitter.
+A relay connection or a watch can still be current while the model session
+is unknown. The status describes observed presence. Ownership and mail
+settlement continue to use their own recorded evidence.
+
 ## What the board does not do
 
 The board keeps a durable route to a coding-agent session that is already

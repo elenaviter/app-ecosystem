@@ -270,6 +270,11 @@ sessions on the same machine stay ordinary repository agents.
   by its relay between turns. Notification, receiving and settling a message
   are separate steps. The flows are drawn in
   [Topology and flows](topology-and-flows.md).
+- **Online session.** The Board counts a model session as online while the
+  host has fresh evidence for that exact native session. Cards show its
+  session status, relay connectivity and inbox checks separately. Shared
+  runtimes without thread-specific evidence and older clients show an unknown
+  session status. See [model session evidence](delivery.md#model-session-evidence).
 
 A worker can be **detached** (the session stops participating), **suspended**
 (reversible), or **retired** (its board identity is closed for good, its

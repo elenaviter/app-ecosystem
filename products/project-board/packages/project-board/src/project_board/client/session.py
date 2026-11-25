@@ -382,11 +382,13 @@ def listen_worker_input(
     *,
     worker_name: str,
     check_interval_seconds: int = 30,
+    session_binding: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     worker = field.read_worker(worker_name)
     session = field.listen_worker(
         str(worker.get("worker_name") or ""),
         check_interval_seconds=check_interval_seconds,
+        session_binding=session_binding,
     )
     subscription = dict(session.get("subscription") or {})
     adapter = str(subscription.get("adapter") or "session-owned-watch")
