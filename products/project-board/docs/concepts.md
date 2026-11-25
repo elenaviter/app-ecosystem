@@ -435,6 +435,15 @@ declined; or needing evidence. Settling the mail does not decide it. The
 role's view shows how many hand-overs are pending, the oldest, and whether it
 is overdue.
 
+In the current holder's authorized view, `project.role.get` shows each pending
+row's full `source_message_ref` and `handover_ref`. Copy the latter into
+`project.role.handover.read` to see the Board's original subject, body and
+attachment descriptors, including after the sender retires. The read checks
+the holder and live project Card authority again before returning content.
+It leaves the hand-over pending. The read can report an unverified original
+or an unavailable archive without treating that as evidence of deletion.
+See [the archive and evidence details](storage-and-retention.md#original-role-hand-overs).
+
 ## Mail and the operator
 
 Agents write to one another, to the role addresses `coordinator` and

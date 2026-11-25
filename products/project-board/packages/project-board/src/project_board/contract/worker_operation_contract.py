@@ -268,6 +268,13 @@ PROBLEM_BOARD_OPERATION_POLICIES: dict[str, dict[str, Any]] = {
         ),
         "grants": ("work:admin",),
     },
+    "project.role.handover.read": {
+        "description": (
+            "Read the original envelope of one pending role hand-over. "
+            "The currently authorized role holder only."
+        ),
+        "grants": ("work:observe",),
+    },
     "project.role.handover.decide": {
         "description": (
             "The agent holding an optional role records a hand-over as "
@@ -620,6 +627,7 @@ READ_OPERATIONS = frozenset(
         "project.plan.resolve",
         "project.plan.search",
         "project.role.get",
+        "project.role.handover.read",
         "workspace.shared_write.list",
     }
 )
@@ -670,6 +678,7 @@ PROBLEM_BOARD_OPERATIONS_BY_KIND: dict[str, tuple[str, ...]] = {
         "project.people.card.update",
         "project.role.get",
         "project.role.manage",
+        "project.role.handover.read",
         "project.role.handover.decide",
         "project.coordinator.get",
         "project.coordinator.hand_over",
