@@ -34,7 +34,8 @@ from .card_participant import (
     catalog_reservation_from_dependencies, reads_from_dependencies,
 )
 from .model import CardAuthority
-from .transaction_authority_v2 import TransactionAuthorityRefused, VerifiedCardAuthority, verify_card_authority_v2
+from .candidate_custody import CandidateCustody, INTENT_FIELD
+from .transaction_authority_v2 import TransactionAuthorityRefused, VerifiedCardAuthority, verify_card_authority
 
 # fetch(transaction_id, phase, request_echo) -> the authority's response
 # mapping; a remote refusal raises TransactionAuthorityRefused(reason).
@@ -86,7 +87,7 @@ class _AuthorityReads:
             raise
         except Exception:  # noqa: BLE001 - transport failure, by name only
             raise TransactionAuthorityRefused("authority_unavailable") from None
-        return verify_card_authority_v2(
+        return verify_card_authority(
             response, secret=self._authority.secret, service_id=self._authority.service_id,
             audience=self._authority.audience, participant=PARTICIPANT, transaction_id=transaction_id,
             phase=phase, request_echo=request_echo, now=int(self._clock()))
@@ -130,19 +131,35 @@ class AuthorityCardIntentSource(_AuthorityReads):
         self._authority_id = authority_id
         self._scope_field = scope_field
         self._local = LocalCardIntentSource(store, service=service, decisions=decisions)
+        self._custody = CandidateCustody(store=store, service=service, clock=self._clock) if service is not None else None
 
     async def load(self, transaction_id: str) -> "CardIntent | CardGroupIntent":
+        incomplete = None
         try:
             return await self._local.load(transaction_id)  # already verified and recorded once
         except DecisionRefused as exc:
-            if str(exc) != "card_intent_unknown":
+            if str(exc) == "card_intent_incomplete":
+                incomplete = exc
+            elif str(exc) != "card_intent_unknown":
                 raise
         try:
             verified = await self.verified(transaction_id, "stage")
         except TransactionAuthorityRefused as exc:
+            if incomplete is not None:
+                raise incomplete from None
             # A closed stage window with no local record: nothing was staged here.
             raise DecisionRefused("card_intent_unknown" if exc.reason == "authority_late_stage" else exc.reason) from None
         projection, value = verified.projection, verified.candidate
+        if verified.candidate_ref is not None:
+            if self._custody is None:
+                raise DecisionRefused("candidate_custody_unavailable")
+            async with self._custody.adopt(
+                reference=verified.candidate_ref, verified=verified, peer=self._authority_id,
+                project=intent_scope(verified.intent, self._scope_field),
+            ) as (candidate, links, owner):
+                return await self._load_group(transaction_id, verified, candidate_value=candidate, links=links, owner=owner)
+        if incomplete is not None:
+            raise incomplete
         if projection.get("binding_kind") == "connection-hub.card-group":
             return await self._load_group(transaction_id, verified)
         if projection.get("binding_kind") == "connection-hub.card-read-collection":
@@ -187,7 +204,16 @@ class AuthorityCardIntentSource(_AuthorityReads):
         await self._local.record(intent)
         return await self._local.load(transaction_id)
 
-    async def _load_group(self, transaction_id: str, verified: Any) -> CardGroupIntent:
+    async def retire_candidate_set(self, record: AuthorityDecisionRecord) -> None:
+        refs = record.intent.as_mapping()["payload"].get(INTENT_FIELD)
+        if refs is None:
+            return
+        if self._custody is None:
+            raise DecisionRefused("candidate_custody_unavailable")
+        await self._custody.retire_after_finish(refs[PARTICIPANT], record)
+
+    async def _load_group(self, transaction_id: str, verified: Any, *, candidate_value=None, links=None,
+                          owner: str = "") -> CardGroupIntent:
         """W578: the group intent from the VERIFIED group candidate; each original is the Hub's own Card.
 
         A present member's current Card must be exactly at its base revision;
@@ -195,9 +221,10 @@ class AuthorityCardIntentSource(_AuthorityReads):
         refuses an id with committed history). Nothing from the response
         stands in for the Hub's own state.
         """
-        projection, value = verified.projection, verified.candidate
+        projection = verified.projection
+        value = verified.candidate if candidate_value is None else candidate_value
         members = []
-        for member in value["cards"]:
+        for index, member in enumerate(value["cards"]):
             current = await self._store.read_current_authority(subject_hash=member["subject_hash"],
                                                                access_id=member["access_id"])
             if member["original_absent"]:
@@ -213,7 +240,9 @@ class AuthorityCardIntentSource(_AuthorityReads):
             except (KeyError, TypeError, ValueError):
                 raise DecisionRefused("card_intent_invalid") from None
             members.append(CardGroupMemberIntent(subject_hash=member["subject_hash"], original=original,
-                                                 candidate=candidate, action=member["action"]))
+                                                 candidate=candidate, action=member["action"],
+                                                 candidate_link=links[index] if links is not None else None,
+                                                 candidate_staging_tag=owner))
         collection = dict(value["collection"]) if isinstance(value.get("collection"), Mapping) else None
         intent = CardGroupIntent(
             transaction_id=transaction_id, intent_digest=verified.intent.digest, members=tuple(members),

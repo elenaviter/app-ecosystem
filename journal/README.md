@@ -7,6 +7,7 @@ that concern this repository so the history is discoverable from here.
 
 | Date | Entry | What it holds for this repository |
 | --- | --- | --- |
+| 2026-11-25 | Seal candidate versions for compact Card decisions | Exact hidden custody, deadline-fenced adoption and reader-first v2/v3 compatibility. |
 | 2026-11-07 | Missing deployment signers are created before Connection Hub starts | Provider-owned create-only bootstrap preserves existing refresh, management, and grantor signers; templates follow configured references. Local lifecycle source qualification is separate from cloud launcher integration and live OAuth acceptance. |
 | 2026-11-07 | A hosted agent's consent opens its own Agent Card (W1018 A) | Operator: "W1018 - A"; the pending-page account section (B) deferred: "this woyld be cleaner but this is one extra hop and can wait". Card resolved from the agent's client_id, account proposed only when capable, operations only inside the Control, one Approve in the existing Card transaction, granted events carry the resulting account scope. |
 | 2026-10-30 | A consent delta must become complete authority before resolution | External OAuth consent accumulates held named-service operations per resource and namespace, freezes the stored wildcard boundary before union, and leaves explicit replacement semantics intact. |

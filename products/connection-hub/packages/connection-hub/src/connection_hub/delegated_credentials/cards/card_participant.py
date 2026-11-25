@@ -672,6 +672,7 @@ class HubCardParticipant:
         if is_link_record(raw):
             validate_link_record(raw)
         ended = await terminal(source, transaction_id)
+        retire_set = getattr(self._intents, "retire_candidate_set", None)
         if raw is not None and raw.get("intent_digest") != record.intent.digest:
             raise DecisionRefused("card_intent_not_bound")
         if ended is not None and ended.get("intent_finished") is True:
@@ -714,9 +715,14 @@ class HubCardParticipant:
                     raise
                 result = None
             if raw is None:
+                if retire_set is not None:
+                    await retire_set(record)
                 return result  # genuinely never recorded: no binding is inferred
             finished = await retire_intent(source, transaction_id, decision)
-        return await self._receipt(finished) if "schema" in finished else await self._tombstone_receipt(record, finished)
+        receipt = await self._receipt(finished) if "schema" in finished else await self._tombstone_receipt(record, finished)
+        if retire_set is not None:
+            await retire_set(record)
+        return receipt
 
     async def _finish_loaded(self, transaction_id: str, decision: str) -> Receipt:
         try:

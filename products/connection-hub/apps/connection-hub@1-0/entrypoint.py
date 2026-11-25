@@ -396,6 +396,7 @@ CSRF_EXEMPT_PUBLIC_POST_ALIASES = frozenset({
     # nonce; the browser session is discarded (``del request``) and never
     # establishes authority (test_w502_peer_endpoints_ignore_the_browser_session).
     "card_census_read",
+    "card_candidate_set_register",
     "card_invitation_census_read",
     "card_lifecycle_plan",
     "card_read_collection_register",
@@ -2162,6 +2163,27 @@ async def _card_participant_callers(entrypoint: Any, persistence: Any) -> Any:
     return await build_participant_callers(
         _connections_config(entrypoint), resolve_secret=resolve, call=call,
         card_store=getattr(persistence, "card_store", None), card_service=getattr(persistence, "card_service", None))
+
+
+async def _candidate_attestation_secret(entrypoint: Any) -> str:
+    config = _connections_config(entrypoint)
+    options = config.get("card_transactions")
+    if (not card_transactions_enabled(config) or not isinstance(options, Mapping)
+            or options.get("candidate_registration_enabled") is not True):
+        return ""
+    reference = options.get("candidate_registration_attestation_secret_ref")
+    if type(reference) is not str or not reference.strip():
+        return ""
+    if any(reference in (descriptor.request_secret_ref, descriptor.receipt_secret_ref,
+                         descriptor.authority_secret_ref, descriptor.authority_request_secret_ref)
+           for descriptor in participant_caller_descriptors(config).values()):
+        return ""
+    try:
+        secret = await _bundle_secret_value(entrypoint, secret_path=reference,
+                                            trace_scope="candidate-set-attestation", warn_missing=False)
+    except Exception:
+        return ""
+    return secret if type(secret) is str and len(secret.encode("utf-8")) >= 32 else ""
 
 
 async def _project_authorization_service(entrypoint: Any) -> AutomationAccessService:
@@ -4507,8 +4529,16 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
             except Exception as exc:  # noqa: BLE001 - retention retries next tick; recovery's report stands
                 LOGGER.warning("[connection-hub.card-transactions] collection retention failed reason=%s",
                                type(exc).__name__)
+        candidates = None
+        if callable(getattr(card_service, "candidate_set_section", None)):
+            try:
+                from connection_hub.delegated_credentials.cards.candidate_custody import CandidateCustody
+                candidates = await CandidateCustody(store=persistence.card_store, service=card_service).sweep_unadopted()
+            except Exception as exc:
+                LOGGER.warning("[connection-hub.card-transactions] candidate custody sweep failed reason=%s",
+                               type(exc).__name__)
         return {"enabled": True, **report, "stale_catalog_marker_cleared": stale_marker_age is not None,
-                "collections": collections, "resident_originals": resident_originals}
+                "collections": collections, "candidate_sets": candidates, "resident_originals": resident_originals}
 
     # ── named-service over HTTP (serves the whole contract) ──────────────────
 
@@ -4963,6 +4993,46 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
             collection_lock=card_service.collection_section)
         return await operation.answer(payload)
 
+    @api(method="POST", alias="card_candidate_set_register", route="public")
+    @request_counters.counted("card_candidate_set_register")
+    async def card_candidate_set_register(
+        self, data: Optional[Dict[str, Any]] = None, request: Any = None, **kwargs: Any,
+    ) -> Any:
+        """Seal the exact authenticated lifecycle plan for an admitted peer."""
+        del request
+        from connection_hub.delegated_credentials.cards.candidate_custody import CandidateCustody
+        from connection_hub.delegated_credentials.cards.candidate_registration import CandidateRegistration
+
+        config = _connections_config(self)
+        options = config.get("card_transactions")
+        if (not card_transactions_enabled(config) or not isinstance(options, Mapping)
+                or options.get("candidate_registration_enabled") is not True):
+            return {"ok": False, "status": 503, "error": {"code": "candidate_custody_registration_disabled"}}
+        unavailable = {"ok": False, "status": 503, "error": {"code": "candidate_custody_unavailable"}}
+        attestation_secret = await _candidate_attestation_secret(self)
+        if not attestation_secret:
+            return unavailable
+        redis = getattr(self, "redis", None) or get_async_redis_client(get_settings().REDIS_URL)
+        persistence = await _delegated_card_persistence(self, redis)
+        if persistence is None:
+            return unavailable
+        card_service = getattr(persistence, "card_service", None)
+        if not callable(getattr(card_service, "candidate_set_section", None)):
+            return unavailable
+        try:
+            built = await _card_participant_callers(self, persistence)
+        except Exception as exc:
+            LOGGER.warning("[connection-hub.card-transactions] candidate registration unavailable reason=%s",
+                           type(exc).__name__)
+            return unavailable
+        tenant, project = _runtime_tenant_project(self)
+        operation = CandidateRegistration(
+            callers=built.callers, custody=CandidateCustody(store=persistence.card_store, service=card_service),
+            nonces=redis, nonce_prefix=f"connection-hub:{tenant}:{project}:card-candidates:nonce:",
+            tenant=tenant, app=f"{project}/connection-hub@1-0", attestation_secret=attestation_secret,
+        )
+        return await operation.answer(_payload(data, **kwargs))
+
     @api(method="POST", alias="card_lifecycle_plan", route="public")
     @request_counters.counted("card_lifecycle_plan")
     async def card_lifecycle_plan(
@@ -4996,7 +5066,8 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
         operation = CardLifecyclePlanOperation(
             callers=built.callers, authorization=None, planner=plan_card_lifecycle,
             host=await _automation_access_service(self, None), nonces=redis, clock=time.time,
-            nonce_prefix=f"connection-hub:{tenant}:{project}:card-plan:nonce:")
+            nonce_prefix=f"connection-hub:{tenant}:{project}:card-plan:nonce:",
+            candidate_attestation_secret=await _candidate_attestation_secret(self))
         # Operator, 10 Oct: the PLAN hop of a Card save is traced by the plan's own request id
         # (the project logged its pairing with the save); a refusal names the Hub's fixed code.
         from connection_hub.card_save_trace import answer_outcome, hop, trace_scope

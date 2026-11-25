@@ -587,6 +587,20 @@ class DelegatedCardService:
         return self._collection_section(collection_id)
 
     @asynccontextmanager
+    async def candidate_set_section(self, set_id: str):
+        """Serialize registration, adoption and cleanup before member sections."""
+        from ..durable_io import drain_writes_before_release
+        from .candidate_custody import candidate_set_lock_path
+
+        async with self._mutation_lock(
+            lock_path=candidate_set_lock_path(self._store, set_id),
+            resource_id=f"card-candidate-set:{set_id}", operation="card-candidate-set",
+            wait_seconds=CARD_LOCK_WAIT_SECONDS,
+        ):
+            async with drain_writes_before_release():
+                yield
+
+    @asynccontextmanager
     async def _optional_collection_section(self, collection_id: str):
         if not collection_id:
             yield

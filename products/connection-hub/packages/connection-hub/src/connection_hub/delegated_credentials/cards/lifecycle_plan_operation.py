@@ -170,7 +170,8 @@ class CardLifecyclePlanOperation:
 
     def __init__(self, *, callers: Mapping[str, ParticipantCaller], authorization: Any, planner: Planner,
                  host: Any, nonces: Any, clock: Callable[[], float],
-                 nonce_prefix: str = "connection-hub:card-plan:nonce:") -> None:
+                 nonce_prefix: str = "connection-hub:card-plan:nonce:",
+                 candidate_attestation_secret: str = "") -> None:
         self._callers = dict(callers)
         self._authorization = authorization  # LifecyclePlanAuthorizationPort (the project host's)
         self._planner = planner
@@ -178,6 +179,7 @@ class CardLifecyclePlanOperation:
         self._nonces = nonces
         self._clock = clock
         self._nonce_prefix = nonce_prefix
+        self._candidate_attestation_secret = candidate_attestation_secret
 
     async def answer(self, data: Any) -> dict[str, Any]:
         try:  # frozen before any await
@@ -270,7 +272,19 @@ class CardLifecyclePlanOperation:
         proof = sign_participant_answer(unsigned, schema=ANSWER_SCHEMA, secret=caller.receipt_secret,
                                         signer_id=caller.receipt_signer_id, timestamp=str(int(self._clock())),
                                         contract=AnswerContract.PLAN)
-        return {"ok": unsigned["result"].get("kind") != "refused", "plan_answer": {**unsigned, "receipt_proof": proof}}
+        envelope = {**unsigned, "receipt_proof": proof}
+        response = {"ok": unsigned["result"].get("kind") != "refused", "plan_answer": envelope}
+        if self._candidate_attestation_secret and unsigned["result"].get("kind") == "plan":
+            from service_foundation.coordination.durable_decision_log import DecisionRefused
+            from .candidate_registration import plan_attestation
+
+            try:
+                response["candidate_set_attestation"] = plan_attestation(
+                    envelope, caller=caller, secret=self._candidate_attestation_secret,
+                )
+            except DecisionRefused:
+                pass  # keep the non-writing planner usable if sealing is unconfigured
+        return response
 
 
 __all__ = ["ANSWER_SCHEMA", "CREATION_STEPS", "CardLifecyclePlanOperation", "OPERATION", "REQUEST_FIELDS",

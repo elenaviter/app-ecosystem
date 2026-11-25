@@ -178,6 +178,10 @@ bundles:
           operation: "project_invitation_binding_resolve"
 
       connections:
+        card_transactions:
+          candidate_registration_enabled: false
+          # A dedicated Hub-only secret provider reference. Keep it out of all peer descriptors.
+          candidate_registration_attestation_secret_ref: ""
         oauth:
             # Public base for Connection Hub browser callbacks when a flow does
             # not have a more specific public_base_url.
