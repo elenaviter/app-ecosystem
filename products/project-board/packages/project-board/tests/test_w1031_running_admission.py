@@ -305,3 +305,20 @@ def test_an_unreadable_historical_object_fails_closed(tmp_path, repo):
     assert _strict_code(workspace_for(tmp_path / "fresh", repo), "other/notes.md") == (
         "journal_running_history_unavailable")
     assert hits(workspace_for(tmp_path / "fresh2", repo), "forbiddenword") == []
+
+
+def test_fetching_the_full_history_at_the_same_head_invalidates_the_caches(tmp_path, repo):
+    ws = workspace_for(tmp_path / "ws", repo)
+    path = other_path(ws)
+    publish_at(repo, path, entry_text(A))
+    publish_at(repo, path, plain_text("Stripped forbiddenword."), "strip")
+    shallow = tmp_path / "shallow"
+    subprocess.run(["git", "clone", "-q", "--depth", "1", f"file://{repo}", str(shallow)], check=True)
+    same = workspace_for(tmp_path / "same", shallow)
+    assert _strict_code(same, "other/notes.md") == "journal_running_history_unavailable"
+    head = git(shallow, "rev-parse", "HEAD")
+    git(shallow, "fetch", "-q", "--unshallow")
+    assert git(shallow, "rev-parse", "HEAD") == head
+    assert _strict_code(same, "other/notes.md") == "journal_running_entry_rewritten"
+    same.rebuild_index()
+    assert hits(same, "forbiddenword") == [] and hits(same, "alphaword") == [ENTRY]

@@ -1396,7 +1396,9 @@ class JournalWorkspace:
         cache_path = (self.control / "running-admission"
                       / f"published-running-paths-{hashlib.sha256(scope.encode('utf-8')).hexdigest()[:16]}.json")
         cached = read_json(cache_path, required=False) or {}
-        if cached.get("root") == str(root) and cached.get("head") == head and cached.get("scope") == scope:
+        history = self._history_fingerprint(root)
+        if (cached.get("root") == str(root) and cached.get("head") == head and cached.get("scope") == scope
+                and cached.get("history") == history == "full"):
             paths = set(cached.get("paths") or [])
         else:
             paths = set()
@@ -1414,8 +1416,9 @@ class JournalWorkspace:
                     return "unknown"  # a listed running path whose identity cannot be read
                 if ref:
                     refs.setdefault(ref, []).append(listed_path)
-            atomic_write_json(cache_path, {"root": str(root), "head": head, "scope": scope,
-                                           "paths": sorted(paths), "refs": refs})
+            if history == "full":  # an incomplete or unreadable scan is never cached as proof
+                atomic_write_json(cache_path, {"root": str(root), "head": head, "scope": scope,
+                                               "history": history, "paths": sorted(paths), "refs": refs})
             cached = {"paths": sorted(paths), "refs": refs}
         self._running_refs = dict(cached.get("refs") or {})
         try:
@@ -1435,6 +1438,37 @@ class JournalWorkspace:
         if self._history_cut(root, relative):
             return "unknown"
         return False
+
+    @staticmethod
+    def _shallow_boundary(root: Path) -> set[str] | None:
+        """The clone's shallow boundary commits; an empty set for a full clone; None if unreadable."""
+
+        if (root / ".git").is_dir():
+            location = root / ".git" / "shallow"
+        else:
+            shallow_file = subprocess.run(["git", "-C", str(root), "rev-parse", "--git-path", "shallow"],
+                                          capture_output=True, text=True, timeout=60)
+            if shallow_file.returncode != 0:
+                return None
+            location = Path(shallow_file.stdout.strip())
+            location = location if location.is_absolute() else root / location
+        try:
+            return set(location.read_text(encoding="utf-8").split())
+        except FileNotFoundError:
+            return set()
+        except OSError:
+            return None
+
+    @classmethod
+    def _history_fingerprint(cls, root: Path) -> str:
+        """Part of every cache key: a fetch that changes completeness at the same HEAD
+        (for example --unshallow) invalidates the caches (pb-knowledge, slice 3a)."""
+
+        boundary = cls._shallow_boundary(root)
+        if boundary is None:
+            return "unreadable"
+        return "full" if not boundary else "shallow:" + hashlib.sha256(
+            "\n".join(sorted(boundary)).encode("utf-8")).hexdigest()[:16]
 
     @staticmethod
     def _history_cut(root: Path, relative: str) -> bool:
@@ -1495,7 +1529,8 @@ class JournalWorkspace:
         current_hash = hashlib.sha256(text.encode("utf-8")).hexdigest()
         cache_path = (self.control / "running-admission"
                       / f"{hashlib.sha256(relative_in_repo.encode('utf-8')).hexdigest()}.json")
-        cache_key = {"head": head.stdout.strip(), "content_hash": current_hash, "schema": 1}
+        cache_key = {"head": head.stdout.strip(), "content_hash": current_hash, "schema": 2,
+                     "history": self._history_fingerprint(root)}
         cached = read_json(cache_path, required=False) or {}
         verdict = dict(cached.get("verdict") or {}) if cached.get("key") == cache_key else {}
         if not verdict:
