@@ -2482,6 +2482,24 @@ __all__ = [
 ]
 
 
+def default_standard_of_selection(*, resident: Any, control: Any, authority: Any, selected: Any,
+                                  config: Any) -> dict[str, Any]:
+    """The Card defaults' standard form: the selection mapped through the live Control.
+
+    The same conversion as the conversation picker's (``selected_standard_maps``),
+    so a selection and its defaults can never disagree on what they allow.
+    """
+    from .descriptor_agent_selection import selected_standard_maps
+
+    grants, operations, named = selected_standard_maps(resident=resident, control=control, authority=authority,
+                                                       selected=selected, config=config)
+    return {
+        "resource_grants": {key: sorted(values) for key, values in grants.items()},
+        "resource_operations": {key: sorted(values) for key, values in operations.items()},
+        "named_service_operations": named.to_stored(),
+    }
+
+
 def _with_default_standard(properties: Mapping[str, Any], default_standard: Any) -> dict[str, Any]:
     from .agent_capability_policy import AGENT_CAPABILITY_DEFAULT_STANDARD_PROPERTY
 

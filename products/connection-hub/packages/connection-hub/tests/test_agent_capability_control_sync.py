@@ -1989,3 +1989,76 @@ async def test_the_agent_card_offers_its_descriptor_control_only_to_an_administr
 
     assert await _opens(["kdcube:role:registered"]) is False
     assert await _opens(["kdcube:role:super-admin"]) is True
+
+
+@pytest.mark.asyncio
+async def test_w40_an_owner_card_edit_also_moves_the_card_defaults() -> None:
+    service, persistence = _service(named_services=True)
+    operations = {
+        NAMED_RESOURCE: {
+            "slack": ["object.list", "object.action.post_message"],
+        }
+    }
+    policy = _policy_with_named_operations(
+        "object.list",
+        "object.action.post_message",
+    )
+    created = await service.sync_agent_capability_control(
+        {"user_id": OWNER},
+        application=APPLICATION,
+        agent_id=AGENT,
+        descriptor_revision="descriptor-r1",
+        descriptor_payload={"revision": "descriptor-r1"},
+        capability_authority=policy,
+        selected_capabilities=policy,
+        resource_grants={
+            NAMED_RESOURCE: [
+                "named_services:use",
+                "slack:read",
+                "slack:post",
+            ]
+        },
+        named_service_operations=operations,
+        selected_resource_grants={
+            NAMED_RESOURCE: [
+                "named_services:use",
+                "slack:read",
+                "slack:post",
+            ]
+        },
+        selected_named_service_operations=operations,
+    )
+    access_id = created["card"]["access_id"]
+
+    changed = await service.update_access(
+        {"user_id": OWNER, "roles": ["kdcube:role:super-admin"]},
+        access_id=access_id,
+        resource_grants={
+            NAMED_RESOURCE: ["named_services:use", "slack:read"],
+        },
+        resource_operations={},
+        named_service_operations={
+            NAMED_RESOURCE: {"slack": ["object.list"]},
+        },
+        account_scope={},
+        expected_card_revision=created["card"]["card_revision"],
+        expected_catalog_version=created["card"]["catalog_version"],
+        properties=created["card"]["properties"],
+    )
+
+    assert changed["ok"] is True, changed
+    updated = persistence.records[access_id][0]
+    selection = updated.properties[AGENT_CAPABILITY_SELECTION_PROPERTY]
+    assert selection["capabilities"]["named_services"] == ["slack"]
+    assert selection["capabilities"]["named_service_operations"] == [
+        "slack/object.list"
+    ]
+    assert RESOURCE in updated.resource_acceptance
+    # W40 (D5 option a): the defaults follow the edited selection, so a new
+    # conversation and a headless call start from it, never from a stale copy.
+    from connection_hub.delegated_credentials.agent_capability_policy import (
+        AGENT_CAPABILITY_DEFAULT_STANDARD_PROPERTY,
+    )
+    defaults = updated.properties[AGENT_CAPABILITY_DEFAULT_STANDARD_PROPERTY]
+    assert defaults["named_service_operations"][NAMED_RESOURCE]["slack"] == ["object.list"]
+    assert "slack:post" not in defaults["resource_grants"].get(NAMED_RESOURCE, [])

@@ -143,3 +143,19 @@ async def test_b2_the_slice_gains_the_bridge_tools_of_the_consented_operation(tm
     current = await slices.read(grantor_subject=OWNER, card_access_id=resident.access_id, conversation_id="c1")
     assert set(saved.resource_operations[NAMED_RESOURCE]) <= set(current.selection["resource_operations"][NAMED_RESOURCE])
     assert "named_services_call" in current.selection["resource_operations"][NAMED_RESOURCE]
+
+
+@pytest.mark.asyncio
+async def test_d5_a_consent_in_a_conversation_also_becomes_the_cards_default(tmp_path):
+    """Design: consent writes the Agent Card (the new default); new conversations and headless calls get it."""
+    from connection_hub.delegated_credentials.slices.guard import card_default_selection
+
+    service, store, decisions, resident, _, card_service, _ = await _consent_world(tmp_path)
+    _, token = await _conversation(service, store, resident, card_service=card_service)
+
+    answer = await _consent(service, resident, token)
+    assert answer["ok"], answer
+    saved = await _current(store, resident)
+    defaults = card_default_selection(saved)
+    assert defaults is not None
+    assert POST in defaults["named_service_operations"][NAMED_RESOURCE]["slack"]

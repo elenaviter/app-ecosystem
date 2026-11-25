@@ -7355,6 +7355,21 @@ class AutomationAccessService:
                 selected_properties,
                 selection=aligned,
             )
+            # W40 D5 option a: the Card's defaults (the seed of a new conversation and
+            # the authority of a headless call) follow its selection on every write
+            # of it: an owner's Card edit and a consent alike. Derived from the
+            # ALIGNED selection, so nothing outside the Card's authority can land in
+            # the defaults.
+            from .agent_capability_sync import default_standard_of_selection, _with_default_standard
+            from .descriptor_agent_card import DescriptorAgentCardRefused
+
+            try:
+                default_standard = default_standard_of_selection(
+                    resident=existing, control=control, authority=authority, selected=aligned,
+                    config=catalog_config)
+            except DescriptorAgentCardRefused as exc:
+                return exc.to_dict()
+            selected_properties = _with_default_standard(selected_properties, default_standard)
         if _record_is_credentialless(existing):
             candidate = dataclasses.replace(
                 card_authority_from_record(existing),
