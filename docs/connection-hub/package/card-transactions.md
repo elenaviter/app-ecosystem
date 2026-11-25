@@ -1035,6 +1035,31 @@ connections:
 A caller whose descriptor is malformed, or whose secret is missing or shorter
 than 32 bytes, is left out. Its requests are then refused as an unknown caller.
 
+## Sealing write candidates for a compact authority response
+
+The peer-only `card_candidate_set_register` operation accepts the exact
+Hub-signed result of the lifecycle planner, its Hub-only attestation, and the
+admitted peer's signed registration. Registration binds the project incarnation, business request,
+deadline and the digest of the signed plan. It returns the set ID, count and
+root under an authenticated reply. The planner still returns a proposal
+without writing Card versions. Sealing writes hidden versions only.
+
+A compact decision's `participant_candidate_sets` field names the sealed set.
+The authority response uses `card-transaction-authority.v3` and signs that
+reference together with the exact frozen intent and participant projection.
+The Hub verifies the response, set, Card versions and effects before the
+existing PREPARE path adopts the same files. Existing inline decisions use
+the v2 reader and signature frame. FINISH uses the authenticated decision and
+durable receipts. See [candidate set custody](card-version-store.md#candidate-set-custody).
+
+Registration requires `connections.card_transactions.candidate_registration_enabled`
+and the Hub-only `candidate_registration_attestation_secret_ref` in the same
+config object. The deployment's key stays in the Hub's secret provider.
+It is separate from the keys shared with callers. The planner stays usable
+when registration is disabled, which is the default.
+Production intent writers continue to write the existing inline form while
+both readers are deployed.
+
 ## Activation conditions
 
 Before `enabled: true`, every one of these must be true. They are qualification

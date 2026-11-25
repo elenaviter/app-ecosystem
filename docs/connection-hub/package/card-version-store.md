@@ -262,6 +262,26 @@ queue entry and clears it after it retires. A pointer writer reads that one file
 (`issuer_update_preparation_unresolved`, `lifecycle_preparation_unresolved`) instead of listing the
 queues. The queues remain for those flows' own crash recovery until the scope-B follow-up.
 
+## Candidate set custody
+
+For one write group, the Hub stores a bounded file manifest with exact
+original and candidate version links, canonical member digests and a sealed
+root. Card bodies reside in their immutable hidden files. The version-store
+hash binds the saved Card. The logical digests bind the Card, member
+coordinates and ordered effects.
+
+The set ID includes the admitted scope, request ID and deadline. Registration,
+adoption and cleanup take the same set section before the ordered Card
+sections. Registration records planned links before writing versions and
+keeps them across retries. PREPARE records the exact adopting transaction
+before changing markers, then reuses the local linked-intent recorder.
+
+A bounded pass on the existing recovery cron retires never-adopted staging
+after the deadline and a 15-minute grace. Each deletion checks the exact
+hidden owner and link. After a terminal FINISH, the existing durable receipt
+supports replay and adopted set metadata can retire. Published and
+historical Card versions stay in version storage.
+
 ## The Card lock and who may write (option R, with phase-1 guards)
 
 **The Card file-lock root.** It is the Hub bundle's own platform storage root plus `_card_locks`

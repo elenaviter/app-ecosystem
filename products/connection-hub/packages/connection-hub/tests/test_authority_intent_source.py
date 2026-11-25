@@ -10,6 +10,7 @@ from dataclasses import replace
 import pytest
 
 from service_foundation.coordination.durable_decision_log import DecisionRecord, DecisionRefused, IntentDraft
+from service_foundation.coordination.durable_wire import canonical_json_bytes, sha256_hex
 
 from connection_hub.delegated_credentials.cards import transaction_store as tx
 from connection_hub.delegated_credentials.cards.authority_intent_source import (
@@ -20,9 +21,11 @@ from connection_hub.delegated_credentials.cards.authority_intent_source import (
 from connection_hub.delegated_credentials.cards.card_participant import (
     PARTICIPANT, DecisionStorePort, HubCardParticipant, candidate_value, hub_participant_input,
 )
+from connection_hub.delegated_credentials.cards.candidate_custody import CandidateCustody, INTENT_FIELD
 from connection_hub.delegated_credentials.cards.transaction_authority_v2 import TransactionAuthorityRefused
 from test_card_service import SUBJECT_HASH
 from test_card_transaction_store import EFFECTS, _Applier, _setup, _visible
+from test_candidate_custody import ACTOR, INCARNATION, PEER, PROJECT, REQUEST, group_for
 
 TX = "a" * 64
 SECRET = "k" * 40
@@ -100,6 +103,47 @@ async def test_a_pb_initiated_change_stages_and_finishes_only_through_the_verifi
     assert bool(applier.applied) is (state == "committed")
     echoes = [echo for _, echo in pb.calls]
     assert len(echoes) == len(set(echoes))  # a fresh echo for every request
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("state", ["committed", "aborted"])
+async def test_compact_authority_adopts_the_sealed_card_and_replays_finish(tmp_path, state):
+    store, service, before, after = await _setup(tmp_path)
+    pb = _ProblemBoard(_apps(), before, after)
+    scope, projection, candidate = group_for(before, after)
+    custody = CandidateCustody(store=store, service=service, clock=lambda: NOW)
+    ref = await custody.seal(scope=scope, request=REQUEST, deadline=NOW + 120,
+                             projection=projection, candidate=candidate)
+    sealed = (await custody._read(ref["set_id"]))["leaves"][0]
+    pb_input = {
+        "participant": "pb", "binding_kind": "project", "binding_ref": PROJECT,
+        "target_scope": PROJECT, "target_incarnation": INCARNATION, "action": "update",
+        "before_revision": 1, "candidate_revision": 2, "actor_subject": ACTOR, "actor_kind": "human",
+        "candidate_digest": sha256_hex(canonical_json_bytes({})), "dependency_revisions": {}, "provisioning": {},
+    }
+    payload = {"project_ref": PROJECT, "participant_inputs": {PARTICIPANT: projection, "pb": pb_input},
+               INTENT_FIELD: {PARTICIPANT: ref}}
+    draft = IntentDraft(PROJECT, REQUEST["id"], NOW + 90, (PARTICIPANT, "pb"), payload)
+    pb.record = DecisionRecord(draft.bind(TX, 3), "preparing", {}, {})
+    decisions = AuthorityDecisionReader(fetch=pb.fetch, authority=AUTHORITY, clock=lambda: NOW)
+    intents = AuthorityCardIntentSource(store=store, service=service, decisions=decisions, authority_id=PEER,
+                                        scope_field="project_ref", fetch=pb.fetch, authority=AUTHORITY,
+                                        clock=lambda: NOW)
+    tx.bind_transaction_decisions(store, DecisionStorePort(decisions))
+    hub = HubCardParticipant(service=service, store=store, intents=intents, decisions=decisions)
+
+    verified = await decisions.verified(TX, "stage")
+    assert verified.candidate_ref == ref
+    assert verified.candidate == {}
+    await hub.prepare(TX)
+    pb.decide(state)
+    finished = await hub.finish(TX, state)
+    assert await hub.finish(TX, state) == finished
+    assert await _visible(store, before) == (after if state == "committed" else before)
+    if state == "committed":
+        pointer, _ = await store.read_current_authority(subject_hash=SUBJECT_HASH, access_id=after.access_id)
+        assert pointer.revision_name == sealed["revision_name"]
+    assert await custody._read(ref["set_id"]) is None
 
 
 @pytest.mark.asyncio

@@ -41,6 +41,7 @@ READ_SET_BINDING_KIND = "connection-hub.card-read-set"  # cards/card_read_set.py
 READ_COLLECTION_BINDING_KIND = "connection-hub.card-read-collection"  # W502 lane D, card_read_set.py
 
 PROTOCOL = "card-transaction-authority.v2"
+COMPACT_PROTOCOL = "card-transaction-authority.v3"
 UNSIGNED_FIELDS = frozenset({
     "schema", "phase", "request_echo", "audience", "participant", "global_intent_bytes",
     "global_intent_digest", "projection", "candidate", "decision", "decided_at",
@@ -68,6 +69,7 @@ class VerifiedCardAuthority:
     candidate: dict[str, Any]
     decision: str
     decided_at: int | None
+    candidate_ref: dict[str, Any] | None = None
 
 
 def _refuse(reason: str) -> None:
@@ -84,10 +86,10 @@ def _key(secret: str | bytes) -> bytes:
 
 
 def card_authority_signature(unsigned: Mapping[str, Any], *, secret: str | bytes, service_id: str,
-                             timestamp: str) -> str:
+                             timestamp: str, protocol: str = PROTOCOL) -> str:
     """The agreed proof: HMAC-SHA256 over the newline join, base64url without padding."""
 
-    message = "\n".join((PROTOCOL, service_id, timestamp, unsigned["request_echo"],
+    message = "\n".join((protocol, service_id, timestamp, unsigned["request_echo"],
                          sha256_hex(canonical_json_bytes(dict(unsigned))))).encode("utf-8")
     return base64.urlsafe_b64encode(hmac.new(_key(secret), message, hashlib.sha256).digest()).rstrip(b"=").decode("ascii")
 
@@ -98,20 +100,43 @@ def verify_card_authority_v2(
 ) -> VerifiedCardAuthority:
     """The verified intent, Hub projection, candidate and decision, or a named refusal."""
 
+    return _verify(response, secret=secret, service_id=service_id, audience=audience,
+                   participant=participant, transaction_id=transaction_id, phase=phase,
+                   request_echo=request_echo, now=now, max_skew=max_skew, compact=False)
+
+
+def verify_card_authority(
+    response: Mapping[str, Any], *, secret: str | bytes, service_id: str, audience: str, participant: str,
+    transaction_id: str, phase: str, request_echo: str, now: int, max_skew: int = 300,
+) -> VerifiedCardAuthority:
+    compact = isinstance(response, Mapping) and response.get("schema") == COMPACT_PROTOCOL
+    return _verify(response, secret=secret, service_id=service_id, audience=audience,
+                   participant=participant, transaction_id=transaction_id, phase=phase,
+                   request_echo=request_echo, now=now, max_skew=max_skew, compact=compact)
+
+
+def _verify(response, *, secret, service_id, audience, participant, transaction_id, phase,
+            request_echo, now, max_skew, compact):
+    from .candidate_custody import INTENT_FIELD, validate_candidate_ref, validate_compact_projection
+    from service_foundation.coordination.durable_decision_log import DecisionRefused
+
+    protocol = COMPACT_PROTOCOL if compact else PROTOCOL
+    candidate_field = "candidate_ref" if compact else "candidate"
+    fields = UNSIGNED_FIELDS - {"candidate"} | {candidate_field}
     if (phase not in ("stage", "decision") or type(request_echo) is not str or not _ECHO.fullmatch(request_echo)
             or type(now) is not int or now < 0 or type(max_skew) is not int or max_skew < 0
             or type(transaction_id) is not str or not transaction_id):
         _refuse("authority_request_invalid")
     key = _key(secret)
-    if not isinstance(response, Mapping) or set(response) != UNSIGNED_FIELDS | {"authority_proof"}:
+    if not isinstance(response, Mapping) or set(response) != fields | {"authority_proof"}:
         _refuse("authority_response_invalid")
     proof = response["authority_proof"]
     if not isinstance(proof, Mapping) or set(proof) != PROOF_FIELDS:
         _refuse("authority_proof_invalid")
-    unsigned = {name: response[name] for name in UNSIGNED_FIELDS}
+    unsigned = {name: response[name] for name in fields}
     # Bound to THIS request: an echo, phase, audience or participant that is
     # not ours is a replay or a mix-up, whatever its proof says.
-    if (unsigned["schema"] != PROTOCOL or unsigned["phase"] != phase or unsigned["request_echo"] != request_echo
+    if (unsigned["schema"] != protocol or unsigned["phase"] != phase or unsigned["request_echo"] != request_echo
             or unsigned["audience"] != audience or unsigned["participant"] != participant):
         _refuse("authority_response_mismatch")
     if proof["service_id"] != service_id:
@@ -120,7 +145,8 @@ def verify_card_authority_v2(
     if type(timestamp) is not str or not _TIMESTAMP.fullmatch(timestamp) or abs(now - int(timestamp)) > max_skew:
         _refuse("authority_proof_stale")
     try:
-        expected = card_authority_signature(unsigned, secret=key, service_id=service_id, timestamp=timestamp)
+        expected = card_authority_signature(unsigned, secret=key, service_id=service_id,
+                                            timestamp=timestamp, protocol=protocol)
     except WireRefused:
         _refuse("authority_response_invalid")
     if type(proof["signature"]) is not str or not hmac.compare_digest(proof["signature"], expected):
@@ -144,7 +170,24 @@ def verify_card_authority_v2(
     except WireRefused:
         _refuse("authority_projection_mismatch")
 
-    candidate = unsigned["candidate"]
+    payload = intent.as_mapping()["payload"]
+    if compact:
+        if ("participant_candidates" in payload or type(payload.get(INTENT_FIELD)) is not dict
+                or set(payload[INTENT_FIELD]) != {participant}
+                or len(canonical_json_bytes(payload)) > 32_768):
+            _refuse("authority_candidate_invalid")
+        try:
+            validate_compact_projection(projection)
+            reference = validate_candidate_ref(unsigned[candidate_field])
+        except DecisionRefused as exc:
+            _refuse(str(exc))
+        if canonical_json_bytes(reference) != canonical_json_bytes(payload[INTENT_FIELD][participant]):
+            _refuse("authority_candidate_mismatch")
+        decision, decided_at = _verified_phase(unsigned, phase=phase, intent=intent, now=now)
+        return VerifiedCardAuthority(intent, dict(projection), {}, decision, decided_at, candidate_ref=reference)
+    if INTENT_FIELD in payload:
+        _refuse("authority_candidate_invalid")
+    candidate = unsigned[candidate_field]
     if isinstance(projection, Mapping) and projection.get("binding_kind") == GROUP_BINDING_KIND:
         # W578: a card group. Every aggregate field is recomputed from the members
         # (binding_ref, target_scope, the fixed revisions, the digest), never trusted.
@@ -192,6 +235,12 @@ def verify_card_authority_v2(
     if digest != projection["candidate_digest"]:
         _refuse("authority_candidate_mismatch")
 
+    decision, decided_at = _verified_phase(unsigned, phase=phase, intent=intent, now=now)
+    return VerifiedCardAuthority(intent=intent, projection=dict(projection), candidate=dict(candidate),
+                                 decision=decision, decided_at=decided_at)
+
+
+def _verified_phase(unsigned, *, phase, intent, now):
     decision, decided_at = unsigned["decision"], unsigned["decided_at"]
     if phase == "stage":
         if decision != "undecided" or decided_at is not None:
@@ -200,9 +249,8 @@ def verify_card_authority_v2(
             _refuse("authority_intent_expired")
     elif decision not in ("committed", "aborted") or type(decided_at) is not int or decided_at < 0:
         _refuse("authority_decision_invalid")
-    return VerifiedCardAuthority(intent=intent, projection=dict(projection), candidate=dict(candidate),
-                                 decision=decision, decided_at=decided_at)
+    return decision, decided_at
 
 
-__all__ = ["CANDIDATE_FIELDS", "PROTOCOL", "TransactionAuthorityRefused", "UNSIGNED_FIELDS",
-           "VerifiedCardAuthority", "card_authority_signature", "verify_card_authority_v2"]
+__all__ = ["CANDIDATE_FIELDS", "COMPACT_PROTOCOL", "PROTOCOL", "TransactionAuthorityRefused", "UNSIGNED_FIELDS",
+           "VerifiedCardAuthority", "card_authority_signature", "verify_card_authority", "verify_card_authority_v2"]

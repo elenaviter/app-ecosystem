@@ -458,6 +458,14 @@ Example response:
 
 ## Request payload shapes
 
+### Peer candidate registration
+
+`POST card_candidate_set_register` uses peer admission and a single-use nonce.
+It accepts the exact signed lifecycle plan with its Hub-only attestation, a
+project incarnation, business request ID and deadline. Its authenticated
+reply carries the bounded sealed set reference. Registration defaults to
+disabled. See [Card transactions](../../../../../docs/connection-hub/package/card-transactions.md#sealing-write-candidates-for-a-compact-authority-response).
+
 `delegated_to_kdcube_start_oauth`:
 
 ```json
