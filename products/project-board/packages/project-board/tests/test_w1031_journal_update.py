@@ -346,3 +346,18 @@ def test_a_hash_precondition_also_checks_the_commit(host, repo):
                                           precondition={"kind": "hash", "previous_content_hash": a1["content_hash"],
                                                         "previous_commit": a1_commit})
     assert caught.value.code == "journal_update_stale"
+
+
+def test_a_committed_revert_to_old_bytes_is_a_new_published_version(host, repo):
+    ref = _publish(host, repo, "version A")
+    host.index(ref)
+    a_hash = host.receipt()["content_hash"]
+    _publish(host, repo, "version B", f"amend\n\n{TRAILERS}")
+    host.index(ref, update=True)
+    _git(repo, "revert", "--no-edit", "HEAD")  # published: the old bytes at a new commit
+    revert = _git(repo, "rev-parse", "HEAD")
+    result = host.index(ref, update=True)
+    receipt = host.receipt()
+    assert (receipt["content_hash"], receipt["commit"]) == (a_hash, revert)
+    assert [op["mode"] for op in receipt["local_operations"]] == ["index", "update", "update"]
+    assert [w["code"] for w in result["warnings"]] == ["journal_update_intent_unrecorded"]
