@@ -183,6 +183,20 @@ coordinator included, and for every read and write of project state:
   entry's published versions from Git, and shows a version without those
   trailers with intent and worker `unknown`. A missing `--repository-journal-ref`
   prints its form, `repo:<alias>/<path to the entry>`.
+- **Running entries are append-only for every reader (W1031).** A running
+  entry is one file per feature per UTC month at
+  `journal/features/<feature>/<YYYY-MM>.md`, holding `pb-record` sections.
+  Search, catalog browse, refresh and `journal-index` all read it through one
+  check against its Git history. Each published version must keep every record
+  of the last accepted version, byte for byte and in order, and only append. A
+  version that rewrites or removes a record is reported
+  (`journal_running_entry_rewritten`, naming the served and observed commits),
+  readers keep getting the accepted version, and `journal-index` refuses it. A
+  later commit that restores the accepted records and appends a correction is
+  accepted again. Running status is sticky: dropping `kind: running` from the
+  front matter does not lift the check. An entry whose history is shallow,
+  missing or not in Git is left out (`journal_running_history_unavailable`)
+  rather than served unverified.
 - **Search freshness follows the local source, not only the binding.** CLI
   journal search and ordinary relay reconciliation share a locked freshness
   check. Clone HEAD, binding revision, source identity and journal file
