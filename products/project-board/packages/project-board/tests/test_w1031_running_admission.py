@@ -322,3 +322,18 @@ def test_fetching_the_full_history_at_the_same_head_invalidates_the_caches(tmp_p
     assert _strict_code(same, "other/notes.md") == "journal_running_entry_rewritten"
     same.rebuild_index()
     assert hits(same, "forbiddenword") == [] and hits(same, "alphaword") == [ENTRY]
+
+
+def test_a_valid_entry_recovers_after_fetching_the_full_history(tmp_path, repo):
+    ws = workspace_for(tmp_path / "ws", repo)
+    publish(ws, repo, entry_text(A))
+    publish(ws, repo, entry_text(A + [record("2026-11-03T08:00:00Z", "Then betaword.")]))
+    shallow = tmp_path / "shallow"
+    subprocess.run(["git", "clone", "-q", "--depth", "1", f"file://{repo}", str(shallow)], check=True)
+    same = workspace_for(tmp_path / "same", shallow)
+    name = f"features/{FEATURE}/{MONTH}.md"
+    assert _strict_code(same, name) == "journal_running_history_unavailable"
+    git(shallow, "fetch", "-q", "--unshallow")
+    assert _strict_code(same, name) is None
+    same.rebuild_index()
+    assert hits(same, "betaword") == [ENTRY] and hits(same, "alphaword") == [ENTRY]
