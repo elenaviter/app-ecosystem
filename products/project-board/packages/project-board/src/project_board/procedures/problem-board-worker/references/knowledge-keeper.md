@@ -99,6 +99,24 @@ role, the keeper records that outcome on the hand-over itself with
 `project.role.handover.decide` (incorporated with the round's result, declined
 or needing evidence with the reason).
 
+Before deciding a hand-over, use `project.role.get` with `role: knowledge-keeper`
+to get the full `handover_ref` and `source_message_ref`. Copy the hand-over ref
+into the governed read. For example:
+
+```sh
+pb coordinate project.role.handover.read --object-ref <project-ref> \
+  --payload-json '{"handover_ref":"<full hand-over ref>"}'
+```
+
+The read uses your current role and live Card scope. It returns the original
+subject, body and attachment descriptors even after sender retirement when
+the Board retained the envelope. For a file, repeat the read with its exact
+`file_ref`. Use JSON output to consume the signed link in a trusted client.
+Brief output withholds the link. If the original or a required file is
+unverified or unavailable,
+record the evidence gap and preserve the item for the coordinator. No
+delivery settlement or hand-over decision is performed by the read.
+
 The reviewer checks the content against those sources and has a **separate
 agent, with no maintenance context, ask one retrieval question per changed
 concept**: the answer must rest on the new entries and state their documented

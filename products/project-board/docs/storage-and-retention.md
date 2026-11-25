@@ -620,6 +620,28 @@ place, as for events):
   A search with text still uses the platform's ranked search, which reaches
   archived turns through its own cold arm.
 
+### Original role hand-overs
+
+The current authorized holder uses `project.role.handover.read` to read one
+pending original by the role listing's full hand-over reference. The Board
+links that row to the durable mail envelope across delivery attempts and
+sender retirement. Cold originals use the same verified date-range reader
+with the original persisted timestamp and actual archive partition. The
+read leaves delivery, queue, and archive state intact.
+
+A missing verified link is reported as unverified. An indexed archive part
+that cannot be read or verified is reported as unavailable. A failed lookup
+alone does not establish permanent loss. Some originals predate durable
+worker mail. Keep a historical hand-over queued when its original is
+proven lost, with the gap recorded. Recover historical originals only when
+their identity, payload and integrity can be verified through a scoped review.
+
+Attachment descriptors record the original files. Adding the exact
+`file_ref` to the read asks the Board to verify custody and issue one download
+link after rechecking the current holder and Card. The link has a 24-hour
+token lifetime. Losing the role or Card blocks new links. An issued link is
+still governed by its existing token validation and expiration.
+
 **The way back.** Code without the mail archive cannot read archived
 messages. A rollback past it would hide them, although they stay in their
 parts and index rows. So before such a rollback, the board's

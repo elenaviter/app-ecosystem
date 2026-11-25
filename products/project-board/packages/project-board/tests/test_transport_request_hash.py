@@ -52,3 +52,15 @@ def test_the_declared_reads_are_contract_operations_named_as_reads():
     assert not operation_is_read("project.references.preview")
     assert not operation_is_read("project.control.update")
     assert not operation_is_read("")
+
+
+def test_role_handover_original_is_a_worker_read():
+    from project_board.contract.operation_shapes import PROBLEM_BOARD_OPERATION_REQUIRED
+    from project_board.contract.worker_operation_contract import (
+        PROBLEM_BOARD_OPERATION_POLICIES, operation_is_read,
+    )
+
+    operation = "project.role.handover.read"
+    assert operation_is_read(operation)
+    assert PROBLEM_BOARD_OPERATION_POLICIES[operation]["grants"] == ("work:observe",)
+    assert PROBLEM_BOARD_OPERATION_REQUIRED[operation] == ("handover_ref",)
