@@ -6833,9 +6833,7 @@ def _worker_command(args: Any) -> dict[str, Any]:
         else:
             resolution = field.resolve_mail_recipient(project_id, args.recipient)
         recipient = str(resolution["worker_name"])
-        route = str(resolution["route"])
-        if getattr(args, "attach", None):
-            route = "remote"  # Bytes use the governed board lane on every host.
+        route = "remote"  # Managed worker mail uses the Board on every host.
         if args.route != "auto" and args.route != route:
             raise DomainError(
                 "field_mail_route_mismatch",
@@ -6891,38 +6889,20 @@ def _worker_command(args: Any) -> dict[str, Any]:
             coordinator = _fresh_return_coordinator(args, field)
             return_context = reconciliation.request_context(project_ref, correlation_id, recipient, coordinator)
             payload["return_reconciliation"] = return_context
-        if route == "local":
-            result = field.send_mail(
-                project_id,
-                sender=identity.worker_name,
-                recipient=recipient,
-                kind=args.kind,
-                subject=args.subject,
-                body=body,
-                payload=payload,
-                work_ref=args.work_ref,
-                correlation_id=correlation_id,
-                reply_to=reply_to,
-                idempotency_key=args.idempotency_key,
-            )
-        else:
-            _raise_if_send_channel_reconnecting(
-                path, identity.worker_name, idempotency_key=args.idempotency_key
-            )
-            result = field.enqueue_remote_mail(
-                project_id,
-                sender=identity.worker_name,
-                recipient=recipient,
-                kind=args.kind,
-                subject=args.subject,
-                body=body,
-                payload=payload,
-                work_ref=args.work_ref,
-                correlation_id=correlation_id,
-                reply_to=reply_to,
-                idempotency_key=args.idempotency_key,
-                attachments=attachments,
-            )
+        result = field.enqueue_remote_mail(
+            project_id,
+            sender=identity.worker_name,
+            recipient=recipient,
+            kind=args.kind,
+            subject=args.subject,
+            body=body,
+            payload=payload,
+            work_ref=args.work_ref,
+            correlation_id=correlation_id,
+            reply_to=reply_to,
+            idempotency_key=args.idempotency_key,
+            attachments=attachments,
+        )
         if return_context is not None:
             reconciliation.record_request(project_ref, return_context, result)
         return result
