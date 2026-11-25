@@ -6,6 +6,7 @@ import math
 import os
 import re
 import stat
+import subprocess
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
@@ -29,6 +30,8 @@ from .io import (
     read_json,
     utc_now,
 )
+from .journal_history import published_chain, running_generations
+from .journal_running import FEATURES_DIRECTORY, check_append_only, parse_records
 from .journal_search import JournalDocument, JournalSearchIndex
 from .project_setup import PROJECT_SETUP_FILE, read_project_setup
 from .read_roots import DEFAULT_READ_REF, head_commit, read_root_lag
@@ -368,6 +371,26 @@ def _frontmatter(text: str) -> tuple[dict[str, Any], str]:
     if not isinstance(loaded, Mapping):
         return {}, text
     return dict(loaded), text[marker + 5 :]
+
+
+_RUNNING_KIND_LINE = re.compile(r"(?m)^kind:[ \t]*running[ \t]*$")
+
+
+def _declares_running(text: str) -> bool:
+    """Whether a version's front matter declares ``kind: running`` (W1031)."""
+
+    if not text.startswith("---\n"):
+        return False
+    marker = text.find("\n---\n", 4)
+    return marker > 0 and _RUNNING_KIND_LINE.search(text[4:marker]) is not None
+
+
+def _running_candidate(relative: PurePosixPath, text: str) -> bool:
+    """Cheap test: only these files pay for the Git history check (W1031 R2)."""
+
+    return (relative.as_posix().startswith(FEATURES_DIRECTORY + "/")
+            or "<!-- pb-record" in text or "<!--pb-record" in text
+            or _declares_running(text))
 
 
 def _list(value: Any) -> tuple[str, ...]:
@@ -1124,6 +1147,19 @@ class JournalWorkspace:
         relative = PurePosixPath(path.relative_to(home).as_posix())
         repository_journal_ref = self._portable_child(home_ref, relative)
         issues: list[dict[str, Any]] = []
+        if _running_candidate(relative, text):
+            # W1031 R2: every reader (explicit index, refresh, catalog search, browse)
+            # comes through here, so a running entry's append-only history is enforced
+            # once, against the last accepted generation in Git, not only by the
+            # explicit index command.
+            admitted = self._admit_running(home=home, path=path, text=text,
+                                           repository_journal_ref=repository_journal_ref,
+                                           strict=not allow_legacy)
+            if isinstance(admitted, JournalIndexExclusion):
+                return admitted
+            if admitted is not None:
+                text, admission_issues = admitted
+                issues.extend(admission_issues)
         try:
             metadata, body = _frontmatter(text)
         except yaml.YAMLError as exc:
@@ -1259,6 +1295,125 @@ class JournalWorkspace:
             index_issues=tuple(issues),
             supersedes_ref=str(metadata.get("supersedes_ref") or metadata.get("supersedes") or "").strip(),
         )
+
+    def _admit_running(
+        self,
+        *,
+        home: Path,
+        path: Path,
+        text: str,
+        repository_journal_ref: str,
+        strict: bool,
+    ) -> tuple[str, list[dict[str, Any]]] | JournalIndexExclusion | None:
+        """W1031 R2: admission of a running entry against its last accepted generation.
+
+        Returns None for an ordinary entry, ``(text to serve, issues)`` for an
+        admitted running entry, or an exclusion when its history cannot be
+        verified (fail closed). The verdict is cached per (path, HEAD, content
+        hash) in this host's disposable journal control folder.
+        """
+
+        def exclusion(code: str, message: str, **details: Any) -> JournalIndexExclusion:
+            return JournalIndexExclusion(code=code, message=message,
+                                         details={"repository_journal_ref": repository_journal_ref, **details})
+
+        def git(*args: str) -> subprocess.CompletedProcess[str]:
+            return subprocess.run(["git", "-C", str(home), *args], capture_output=True, text=True, timeout=60)
+
+        top = git("rev-parse", "--show-toplevel")
+        head = git("rev-parse", "--verify", "--quiet", "HEAD")
+        if top.returncode != 0 or head.returncode != 0:
+            return exclusion("journal_running_history_unavailable",
+                             "A running journal entry needs its Git history; the journal home is not a Git clone.")
+        root = Path(top.stdout.strip())
+        relative_in_repo = path.resolve().relative_to(root.resolve()).as_posix()
+        current_hash = hashlib.sha256(text.encode("utf-8")).hexdigest()
+        cache_path = (self.control / "running-admission"
+                      / f"{hashlib.sha256(relative_in_repo.encode('utf-8')).hexdigest()}.json")
+        cache_key = {"head": head.stdout.strip(), "content_hash": current_hash, "schema": 1}
+        cached = read_json(cache_path, required=False) or {}
+        verdict = dict(cached.get("verdict") or {}) if cached.get("key") == cache_key else {}
+        if not verdict:
+            verdict = self._running_verdict(root=root, relative=relative_in_repo, text=text,
+                                            current_hash=current_hash)
+            atomic_write_json(cache_path, {"key": cache_key, "verdict": verdict})
+        kind = verdict.get("kind")
+        if kind == "ordinary":
+            return None
+        if kind == "exclude":
+            return exclusion(str(verdict["code"]), str(verdict["message"]),
+                             **dict(verdict.get("details") or {}))
+        summary = {key: verdict.get(key) for key in ("served_commit", "observed_commit", "invalid_versions")}
+        if kind == "admit":
+            issues = ([{"code": "journal_running_entry_rewritten",
+                        "message": "A later published version was not accepted; the accepted one is served.",
+                        "details": {"repository_journal_ref": repository_journal_ref, **summary}}]
+                      if verdict.get("invalid_versions") else [])
+            return text, issues
+        # kind == "serve": the file on disk is a version that was not accepted.
+        if strict:
+            raise DomainError(
+                "journal_running_entry_rewritten",
+                "This running entry rewrites or removes an accepted record; append a correction instead.",
+                status=409,
+                details={"repository_journal_ref": repository_journal_ref, **summary},
+            )
+        served = subprocess.run(["git", "-C", str(root), "show",
+                                 f"{verdict['served_commit']}:{verdict['served_path']}"],
+                                capture_output=True, text=True, timeout=60)
+        if served.returncode != 0:
+            return exclusion("journal_running_history_unavailable",
+                             "The accepted version of this running entry cannot be read from Git.", **summary)
+        return served.stdout, [{"code": "journal_running_entry_rewritten",
+                                "message": "The file rewrites an accepted record; the accepted version is served.",
+                                "details": {"repository_journal_ref": repository_journal_ref, **summary}}]
+
+    @staticmethod
+    def _running_verdict(*, root: Path, relative: str, text: str, current_hash: str) -> dict[str, Any]:
+        try:
+            chain = published_chain(root, relative, ref="HEAD")
+        except DomainError as exc:
+            if exc.code != "journal_entry_not_published":
+                return {"kind": "exclude", "code": "journal_running_history_unavailable",
+                        "message": "The running entry's Git history cannot be read.",
+                        "details": {"error": exc.code}}
+            chain = None
+        if chain is not None and not chain.complete:
+            return {"kind": "exclude", "code": "journal_running_history_unavailable",
+                    "message": "The running entry's Git history is incomplete; fetch the full history.",
+                    "details": {"reason": chain.reason}}
+        versions = chain.versions if chain is not None else ()
+        declared = [version for version in versions if _declares_running(version.text)]
+        if not versions:
+            # Not yet published (an uncommitted file in the clone): judge the text alone.
+            if not _declares_running(text) and "<!-- pb-record" not in text:
+                return {"kind": "ordinary"}
+            try:
+                parse_records(text)
+            except DomainError as exc:
+                return {"kind": "exclude", "code": exc.code, "message": str(exc), "details": {}}
+            return {"kind": "admit", "served_commit": "", "observed_commit": "", "invalid_versions": []}
+        if not declared and not _declares_running(text) and not relative.startswith(FEATURES_DIRECTORY + "/"):
+            return {"kind": "ordinary"}  # running status is sticky: any published version that declared it
+        generations = running_generations(versions)
+        summary = generations.summary()
+        if generations.served is None:
+            return {"kind": "exclude", "code": "journal_running_entry_invalid",
+                    "message": "No published version of this running entry is valid.",
+                    "details": summary}
+        if current_hash == generations.served.content_hash:
+            return {"kind": "admit", **summary}
+        known = {version.content_hash for version in versions}
+        if current_hash not in known:
+            # Uncommitted content in the clone: a candidate checked against the accepted records.
+            try:
+                verdict = check_append_only(generations.records, parse_records(text))
+            except DomainError as exc:
+                verdict = None
+                summary = {**summary, "candidate_error": exc.code}
+            if verdict is not None and verdict.accepted:
+                return {"kind": "admit", **summary}
+        return {"kind": "serve", "served_path": generations.served.path, **summary}
 
     @staticmethod
     def _catalog_row(document: JournalDocument) -> dict[str, Any]:
