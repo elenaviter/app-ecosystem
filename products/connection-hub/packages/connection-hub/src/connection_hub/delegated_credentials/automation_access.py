@@ -5810,9 +5810,9 @@ class AutomationAccessService:
                                         else expected_card_revision),
                 expected_catalog_version=catalog_version, request_id=request_id,
                 _application_write=_application_write, _slice_effects=slice_effects,
-                # A replacing grant (`replace`) is an explicit narrowing; a merge keeps
-                # what was granted (D5 option a).
-                _narrow_grants=not merge_existing)
+                # A merging consent keeps what was granted (D5 option a); a replacing
+                # grant (`replace`) is an explicit narrowing.
+                _keep_grants=merge_existing)
             if saved.get("ok") is not True:
                 return saved
             current = await self._load_record_any_state(existing.access_id, grantor_subject=grantor_subject)
@@ -6912,7 +6912,7 @@ class AutomationAccessService:
         _initial_start: bool = False,
         holder_subject: str = "",
         _slice_effects: Sequence[Mapping[str, Any]] = (),
-        _narrow_grants: bool = False,
+        _keep_grants: bool = False,
     ) -> dict[str, Any]:
         """Edit a card's authority IN PLACE, whatever family issued it.
 
@@ -7370,18 +7370,20 @@ class AutomationAccessService:
             try:
                 default_standard = default_standard_of_selection(
                     resident=existing, control=control, authority=authority, selected=aligned,
-                    config=catalog_config)
+                    config=catalog_config, resolved=(selected_resource_grants, selected_resource_operations,
+                                                     selected_named_service_operations))
             except DescriptorAgentCardRefused as exc:
                 return exc.to_dict()
             selected_properties = _with_default_standard(selected_properties, default_standard)
-            # D5 option a: an owner's Save or a consent never narrows what was
-            # granted, so an older conversation keeps its choice. Only an explicit
-            # narrowing does: revoke (update_agent_capability_selection revoke=True)
-            # or a replacing grant (create_access merge_existing=False, `replace`).
+            # D5 option a: an owner's Save of an Agent Card and a merging consent
+            # never narrow what was granted, so an older conversation keeps its
+            # choice. Opt-in (_keep_grants), passed only by those two paths: every
+            # other caller (authorization profiles, Reset, Control and project
+            # edits, a replacing grant, revoke) writes what it submits, as before.
             # The selection above is the defaults; the grants keep the union.
             from .agent_capability_sync import _ordered_union, _ordered_values
 
-            if not _narrow_grants:
+            if _keep_grants:
                 kept_named = (existing.named_service_operations.to_stored()
                               if not existing.named_service_operations.is_unknown else None)
                 new_named = (selected_named_service_operations.to_stored()

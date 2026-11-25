@@ -7368,6 +7368,9 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
                     access_id=_access_id_for_log,
                     holder_subject=str(payload.get("holder_subject") or "").strip(),
                     _authorize_agent_card=authorize_agent_card,
+                    # W40 D5 option a: the owner's Save of an Agent Card's selection keeps
+                    # what was granted; only revoke or a replacing grant narrows.
+                    _keep_grants=True,
                     # W737: omitted stays omitted (an Accept-only save changes no selection).
                     resource_grants=(
                         dict(payload.get("resource_grants") or {})

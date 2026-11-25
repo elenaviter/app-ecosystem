@@ -1960,11 +1960,8 @@ async def sync_agent_capability_control(
 
             # D5 option a: the defaults' standard authority is kept on the Card for the
             # guard (a call outside any conversation, the seed of a new one).
-            default_standard = {
-                "resource_grants": {key: sorted(values) for key, values in aligned.resource_grants.items()},
-                "resource_operations": {key: sorted(values) for key, values in aligned.resource_operations.items()},
-                "named_service_operations": aligned.named_service_operations.to_stored(),
-            }
+            default_standard = default_standard_from_maps(
+                aligned.resource_grants, aligned.resource_operations, aligned.named_service_operations)
             if existing_resident is not None:
                 # Neither a sync nor a defaults save narrows what was consented: the
                 # Card keeps the union, so an older conversation keeps its choice
@@ -2305,11 +2302,8 @@ async def update_agent_capability_selection(
                 return {"retryable": False, **resolved.error}
             from .agent_capability_policy import AGENT_CAPABILITY_DEFAULT_STANDARD_PROPERTY
 
-            default_standard = {
-                "resource_grants": {key: sorted(value) for key, value in resolved.resource_grants.items()},
-                "resource_operations": {key: sorted(value) for key, value in resolved.resource_operations.items()},
-                "named_service_operations": resolved.named_service_operations.to_stored(),
-            }
+            default_standard = default_standard_from_maps(
+                resolved.resource_grants, resolved.resource_operations, resolved.named_service_operations)
             if not revoke and not reset_to_control_defaults:
                 union = _ordered_union
 
@@ -2482,22 +2476,49 @@ __all__ = [
 ]
 
 
+def default_standard_from_maps(grants: Mapping[str, Any], operations: Mapping[str, Any], named: Any) -> dict[str, Any]:
+    """The stored form of a Card's defaults (D5 option a), from resolved standard maps."""
+    stored_named = named.to_stored() if hasattr(named, "to_stored") else named
+    return {
+        "resource_grants": {key: sorted(values) for key, values in dict(grants or {}).items()},
+        "resource_operations": {key: sorted(values) for key, values in dict(operations or {}).items()},
+        "named_service_operations": stored_named,
+    }
+
+
+def _intersect_maps(left: Mapping[str, Any], right: Mapping[str, Any]) -> dict[str, list[str]]:
+    return {key: [value for value in left[key] if value in set(right.get(key, ()))]
+            for key in left if key in right}
+
+
 def default_standard_of_selection(*, resident: Any, control: Any, authority: Any, selected: Any,
-                                  config: Any) -> dict[str, Any]:
+                                  config: Any, resolved: tuple[Any, Any, Any] | None = None) -> dict[str, Any]:
     """The Card defaults' standard form: the selection mapped through the live Control.
 
-    The same conversion as the conversation picker's (``selected_standard_maps``),
-    so a selection and its defaults can never disagree on what they allow.
+    The same conversion as the conversation picker's (``selected_standard_maps``).
+    ``resolved`` is the authority this write resolved (after the delegable
+    filter); the defaults never exceed it, so every writer stores its defaults
+    at the same stage as ``sync_agent_capability_control`` and
+    ``update_agent_capability_selection``, which take them from the resolved
+    authority.
     """
     from .descriptor_agent_selection import selected_standard_maps
 
     grants, operations, named = selected_standard_maps(resident=resident, control=control, authority=authority,
                                                        selected=selected, config=config)
-    return {
-        "resource_grants": {key: sorted(values) for key, values in grants.items()},
-        "resource_operations": {key: sorted(values) for key, values in operations.items()},
-        "named_service_operations": named.to_stored(),
-    }
+    stored_named = named.to_stored()
+    if resolved is not None:
+        held_grants, held_operations, held_named = resolved
+        grants = _intersect_maps(grants, dict(held_grants or {}))
+        operations = _intersect_maps(operations, dict(held_operations or {}))
+        held_stored = held_named.to_stored() if hasattr(held_named, "to_stored") else held_named
+        if isinstance(stored_named, Mapping) and isinstance(held_stored, Mapping):
+            stored_named = {resource: {namespace: [op for op in ops
+                                                   if op in set(held_stored.get(resource, {}).get(namespace, ()))]
+                                       for namespace, ops in namespaces.items()
+                                       if namespace in held_stored.get(resource, {})}
+                            for resource, namespaces in stored_named.items() if resource in held_stored}
+    return default_standard_from_maps(grants, operations, stored_named)
 
 
 def _with_default_standard(properties: Mapping[str, Any], default_standard: Any) -> dict[str, Any]:

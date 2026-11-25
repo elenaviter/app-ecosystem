@@ -2044,6 +2044,7 @@ async def test_w40_an_owner_card_edit_also_moves_the_card_defaults() -> None:
         expected_card_revision=created["card"]["card_revision"],
         expected_catalog_version=created["card"]["catalog_version"],
         properties=created["card"]["properties"],
+        _keep_grants=True,  # the owner's Save (delegated_access_update) passes it
     )
 
     assert changed["ok"] is True, changed
@@ -2066,3 +2067,94 @@ async def test_w40_an_owner_card_edit_also_moves_the_card_defaults() -> None:
     # conversation that chose posting keeps it; a new one starts from the defaults.
     assert "slack:post" in updated.resource_grants[NAMED_RESOURCE]
     assert "object.action.post_message" in updated.named_service_operations.to_stored()[NAMED_RESOURCE]["slack"]
+
+
+@pytest.mark.asyncio
+async def test_w40_without_keep_grants_an_agent_card_write_narrows_as_before() -> None:
+    service, persistence = _service(named_services=True)
+    operations = {
+        NAMED_RESOURCE: {
+            "slack": ["object.list", "object.action.post_message"],
+        }
+    }
+    policy = _policy_with_named_operations(
+        "object.list",
+        "object.action.post_message",
+    )
+    created = await service.sync_agent_capability_control(
+        {"user_id": OWNER},
+        application=APPLICATION,
+        agent_id=AGENT,
+        descriptor_revision="descriptor-r1",
+        descriptor_payload={"revision": "descriptor-r1"},
+        capability_authority=policy,
+        selected_capabilities=policy,
+        resource_grants={
+            NAMED_RESOURCE: [
+                "named_services:use",
+                "slack:read",
+                "slack:post",
+            ]
+        },
+        named_service_operations=operations,
+        selected_resource_grants={
+            NAMED_RESOURCE: [
+                "named_services:use",
+                "slack:read",
+                "slack:post",
+            ]
+        },
+        selected_named_service_operations=operations,
+    )
+    access_id = created["card"]["access_id"]
+
+    changed = await service.update_access(
+        {"user_id": OWNER, "roles": ["kdcube:role:super-admin"]},
+        access_id=access_id,
+        resource_grants={
+            NAMED_RESOURCE: ["named_services:use", "slack:read"],
+        },
+        resource_operations={},
+        named_service_operations={
+            NAMED_RESOURCE: {"slack": ["object.list"]},
+        },
+        account_scope={},
+        expected_card_revision=created["card"]["card_revision"],
+        expected_catalog_version=created["card"]["catalog_version"],
+        properties=created["card"]["properties"],
+    )
+
+    assert changed["ok"] is True, changed
+    updated = persistence.records[access_id][0]
+    selection = updated.properties[AGENT_CAPABILITY_SELECTION_PROPERTY]
+    assert selection["capabilities"]["named_services"] == ["slack"]
+    assert selection["capabilities"]["named_service_operations"] == [
+        "slack/object.list"
+    ]
+    assert RESOURCE in updated.resource_acceptance
+    # W40 (D5 option a): the defaults follow the edited selection, so a new
+    # conversation and a headless call start from it, never from a stale copy.
+    from connection_hub.delegated_credentials.agent_capability_policy import (
+        AGENT_CAPABILITY_DEFAULT_STANDARD_PROPERTY,
+    )
+    defaults = updated.properties[AGENT_CAPABILITY_DEFAULT_STANDARD_PROPERTY]
+    assert defaults["named_service_operations"][NAMED_RESOURCE]["slack"] == ["object.list"]
+    assert "slack:post" not in defaults["resource_grants"].get(NAMED_RESOURCE, [])
+    # Every caller that does not opt in (authorization profiles, Reset, Control
+    # and project edits, a replacing grant) writes what it submits, as before.
+    assert "slack:post" not in updated.resource_grants[NAMED_RESOURCE]
+    assert "object.action.post_message" not in updated.named_service_operations.to_stored()[NAMED_RESOURCE]["slack"]
+
+
+def test_w40_only_the_owners_save_and_a_merging_consent_keep_the_granted_union():
+    """Review 2026-11-25: the union is opt-in; a new narrowing path cannot forget a flag."""
+    import pathlib
+    import re
+
+    package = pathlib.Path(__file__).resolve().parents[1] / "src" / "connection_hub"
+    app = pathlib.Path(__file__).resolve().parents[3] / "apps"
+    passing = {}
+    for path in [*package.rglob("*.py"), *app.rglob("entrypoint.py")]:
+        for match in re.finditer(r"_keep_grants=([^,)\n]+)", path.read_text()):
+            passing.setdefault(path.name, []).append(match.group(1).strip())
+    assert passing == {"automation_access.py": ["merge_existing"], "entrypoint.py": ["True"]}

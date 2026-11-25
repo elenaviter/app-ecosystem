@@ -313,3 +313,46 @@ async def test_fresh_participant_recovers_one_control_and_resident_commit_after_
     assert updated.card_revision == resident.card_revision + 1
     assert updated.control_card.control_revision == control.card_revision + 1
     assert set(decisions.decisions) == {"committed"} and await tx.list_in_doubt(store) == []
+
+
+@pytest.mark.asyncio
+async def test_w40_every_selection_writer_stores_the_defaults_its_selection_implies(tmp_path):
+    """Review 2026-11-25: one stage for the defaults whatever wrote the selection.
+
+    After a sync, a selection save and a merging consent, the stored defaults
+    equal the stored selection mapped through the live Control and bounded by
+    the Card's resolved authority.
+    """
+    from connection_hub.delegated_credentials.agent_capability_policy import (
+        AGENT_CAPABILITY_AUTHORITY_PROPERTY, AGENT_CAPABILITY_DEFAULT_STANDARD_PROPERTY,
+    )
+    from connection_hub.delegated_credentials.agent_capability_sync import default_standard_of_selection
+
+    service, store, _decisions, resident, control, _, _ = await _consent_world(tmp_path)
+    authority = AgentCapabilityPolicy.from_property(dict(control.properties or {}).get(AGENT_CAPABILITY_AUTHORITY_PROPERTY))
+    config = await service._catalog_config(await service._active_catalog(), owner_subject=OWNER)
+
+    async def check(step, *, required=True):
+        saved = await _current(store, resident)
+        stored = saved.properties.get(AGENT_CAPABILITY_DEFAULT_STANDARD_PROPERTY)
+        if stored is None and not required:
+            return saved  # a no-op sync writes nothing; the invariant holds on every write
+        assert stored is not None, step
+        selection = AgentCapabilityPolicy.from_property(saved.properties[AGENT_CAPABILITY_SELECTION_PROPERTY])
+        expected = default_standard_of_selection(
+            resident=saved, control=control, authority=authority, selected=selection, config=config,
+            resolved=(saved.resource_grants, saved.resource_operations, saved.named_service_operations))
+        normalize = lambda value: {key: {k: sorted(v) if isinstance(v, (list, tuple)) else v
+                                         for k, v in (value or {}).items()} for key, value in value.items()}
+        assert normalize(stored) == normalize(expected), step
+        return saved
+
+    assert (await service.sync_agent_capability_control({"user_id": OWNER}, **_sync_arguments()))["ok"]
+    resident = await check("sync", required=False)
+    assert (await _select(service, resident, READ))["ok"]
+    resident = await check("selection save")
+    assert (await _consent(service, resident))["ok"]
+    resident = await check("merging consent")
+    # A sync after the defaults exist (a new descriptor revision) rewrites them.
+    assert (await service.sync_agent_capability_control({"user_id": OWNER}, **_refresh_arguments()))["ok"]
+    await check("sync after a descriptor change")
