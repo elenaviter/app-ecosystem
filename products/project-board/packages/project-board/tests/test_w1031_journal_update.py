@@ -361,3 +361,32 @@ def test_a_committed_revert_to_old_bytes_is_a_new_published_version(host, repo):
     assert (receipt["content_hash"], receipt["commit"]) == (a_hash, revert)
     assert [op["mode"] for op in receipt["local_operations"]] == ["index", "update", "update"]
     assert [w["code"] for w in result["warnings"]] == ["journal_update_intent_unrecorded"]
+
+
+def test_equal_bytes_at_a_newer_commit_move_the_receipt_and_fence_older_operations(host, repo):
+    ref = _publish(host, repo, "version A")
+    host.index(ref)
+    a1_commit, a_hash = _git(repo, "rev-parse", "HEAD"), host.receipt()["content_hash"]
+    _publish(host, repo, "version C", f"c\n\n{TRAILERS}")
+    c_entry, c_commit = _entry(host, ref), _git(repo, "rev-parse", "HEAD")
+    _publish(host, repo, "version A", f"a2\n\n{TRAILERS}")
+    a2_commit = _git(repo, "rev-parse", "HEAD")
+    host.index(ref, update=True)
+    assert (host.receipt()["content_hash"], host.receipt()["commit"]) == (a_hash, a2_commit)
+    with pytest.raises(DomainError) as caught:  # the stalled operation that targeted C from A1
+        host.field.record_journal_receipt(PROJECT_ID, worker_name=WORKER, entry=c_entry, mode="update",
+                                          target_commit=c_commit, precondition={"kind": "chain", "earlier": [
+                                              {"commit": a1_commit, "content_hash": a_hash}]})
+    assert caught.value.code == "journal_update_stale"
+    before = host.receipt()["local_operations"]
+    host.index(ref, update=True)
+    assert host.receipt()["local_operations"] == before
+
+
+def test_a_receipt_written_before_w1031_is_stamped_with_its_commit(host, repo):
+    ref = _publish(host, repo, "version A")
+    host.field.record_journal_receipt(PROJECT_ID, worker_name=WORKER, entry=_entry(host, ref))
+    assert host.receipt()["commit"] == ""
+    host.index(ref)
+    assert host.receipt()["commit"] == _git(repo, "rev-parse", "HEAD")
+    assert host.receipt()["local_operations"][-1]["mode"] == "materialize"

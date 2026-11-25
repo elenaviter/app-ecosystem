@@ -11530,14 +11530,36 @@ class SharedFieldStore:
                     "repository_journal_ref": row["repository_journal_ref"],
                 }
                 identity = {**fixed, "content_hash": row["content_hash"]}
-                same_bytes_new_commit = (
-                    clean_mode == "update"
-                    and bool(row["commit"])
-                    and bool(str(existing.get("commit") or ""))
-                    and str(existing.get("commit") or "") != row["commit"]
-                )
-                if _contains_identity(existing, identity) and not same_bytes_new_commit:
-                    return dict(existing)
+                existing_commit = str(existing.get("commit") or "")
+                if _contains_identity(existing, identity):
+                    # Same bytes. A replay only when the commit matches too (or the
+                    # caller names none); equal bytes at another commit are another
+                    # version (pb-knowledge, slice 2 R3).
+                    if not row["commit"] or existing_commit == row["commit"]:
+                        return dict(existing)
+                    if existing_commit and not receipt_precondition_allows(existing, clean_precondition):
+                        if clean_mode == "update" or precondition_kind == "chain":
+                            raise DomainError(
+                                "journal_update_stale",
+                                "The receipt is at another version of this entry than this operation expects.",
+                                status=409,
+                                details={
+                                    "entry_ref": row["entry_ref"],
+                                    "recorded_commit": existing_commit,
+                                    "target_commit": row["commit"],
+                                },
+                            )
+                        return dict(existing)  # an old-style caller: unchanged replay
+                    # Advance the commit only (a receipt written before W1031 is
+                    # stamped explicitly; a newer publication of equal bytes moves on).
+                    stamp = dict(existing)
+                    stamp["commit"] = row["commit"]
+                    operation = {**local_operation,
+                                 "mode": clean_mode if existing_commit else "materialize"}
+                    stamp["local_operations"] = [
+                        *list(existing.get("local_operations") or [])[-99:], operation]
+                    self._journal_receipts().write(clean_project, parsed_entry.object_id, stamp)
+                    return stamp
                 previous = str(clean_precondition.get("previous_content_hash") or "")
                 if (
                     clean_mode != "update"

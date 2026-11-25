@@ -167,9 +167,13 @@ coordinator included, and for every read and write of project state:
   `update_action` and `required_action`. A real replacement is still a new entry
   whose `supersedes_ref` names the old one, and the old entry stays hidden as
   before. `--update` indexes only a published version: the commit on the clean
-  clone's HEAD whose file equals the entry. The receipt advances only from the
-  hash it held when the update was prepared, so an older operation never
-  overwrites a newer receipt (`journal_update_stale`). Retrying the same commit
+  clone's HEAD whose file equals the entry. An older version restored in the
+  working tree is refused; a committed revert is a new version. The receipt
+  advances only from a version published before the target: its commit, or its
+  hash for a receipt written before this change. So an older operation never
+  overwrites a newer receipt (`journal_update_stale`). Equal bytes published
+  again at a newer commit move the receipt's commit, and a receipt without a
+  commit is stamped with one (`materialize`). Retrying the same commit
   replays the operation, and the same text published again later at a new
   commit is a new one. On a host with no receipt yet, an unflagged run indexes
   the published version as before and records that host's step as

@@ -28,6 +28,18 @@ from .journal_receipt_identity import (
 from .journal_receipt_precondition import receipt_precondition_allows
 
 
+def _receipt_at_target(observed: Mapping[str, Any], existing: Mapping[str, Any] | None,
+                       transition: Mapping[str, Any]) -> bool:
+    """The receipt already certifies this operation's target: same bytes and, when the
+    operation names one, the same commit (pb-knowledge, slice 2 R3). Equal bytes at
+    another commit are another version, decided by the locked store."""
+
+    if not observed.get("matches"):
+        return False
+    target_commit = str(transition.get("target_commit") or "")
+    return not target_commit or str((existing or {}).get("commit") or "") == target_commit
+
+
 def _entry_publication(entry: Mapping[str, Any]) -> tuple[ContentChain | None, dict[str, Any]]:
     """The entry's published chain on its clone's HEAD and the version equal to its content (W1031).
 
@@ -442,9 +454,10 @@ class JournalIndexWorkflow:
             entry_ref=str(entry.get("entry_ref") or ""),
         )
         observed = self.status_reader.receipt_observation(entry, existing)
-        if completed and observed.get("matches"):
+        at_target = _receipt_at_target(observed, existing, transition)
+        if completed and at_target:
             return
-        if observed.get("matches"):
+        if at_target:
             self.ledger.complete_step(
                 operation_id,
                 "local_receipt",
