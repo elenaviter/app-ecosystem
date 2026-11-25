@@ -5809,7 +5809,10 @@ class AutomationAccessService:
                 expected_card_revision=(existing.card_revision if expected_card_revision is None
                                         else expected_card_revision),
                 expected_catalog_version=catalog_version, request_id=request_id,
-                _application_write=_application_write, _slice_effects=slice_effects)
+                _application_write=_application_write, _slice_effects=slice_effects,
+                # A replacing grant (`replace`) is an explicit narrowing; a merge keeps
+                # what was granted (D5 option a).
+                _narrow_grants=not merge_existing)
             if saved.get("ok") is not True:
                 return saved
             current = await self._load_record_any_state(existing.access_id, grantor_subject=grantor_subject)
@@ -6909,6 +6912,7 @@ class AutomationAccessService:
         _initial_start: bool = False,
         holder_subject: str = "",
         _slice_effects: Sequence[Mapping[str, Any]] = (),
+        _narrow_grants: bool = False,
     ) -> dict[str, Any]:
         """Edit a card's authority IN PLACE, whatever family issued it.
 
@@ -7370,6 +7374,42 @@ class AutomationAccessService:
             except DescriptorAgentCardRefused as exc:
                 return exc.to_dict()
             selected_properties = _with_default_standard(selected_properties, default_standard)
+            # D5 option a: an owner's Save or a consent never narrows what was
+            # granted, so an older conversation keeps its choice. Only an explicit
+            # narrowing does: revoke (update_agent_capability_selection revoke=True)
+            # or a replacing grant (create_access merge_existing=False, `replace`).
+            # The selection above is the defaults; the grants keep the union.
+            from .agent_capability_sync import _ordered_union, _ordered_values
+
+            if not _narrow_grants:
+                kept_named = (existing.named_service_operations.to_stored()
+                              if not existing.named_service_operations.is_unknown else None)
+                new_named = (selected_named_service_operations.to_stored()
+                             if hasattr(selected_named_service_operations, "to_stored")
+                             else selected_named_service_operations)
+                named_union = new_named
+                if isinstance(kept_named, Mapping) and isinstance(new_named, Mapping):
+                    named_union = {
+                        resource: {namespace: _ordered_values(kept_named.get(resource, {}).get(namespace, ()),
+                                                              new_named.get(resource, {}).get(namespace, ()))
+                                   for namespace in set(kept_named.get(resource, {})) | set(new_named.get(resource, {}))}
+                        for resource in set(kept_named) | set(new_named)}
+                kept = await self._resolve_card_authority(
+                    user=user, existing=existing, active=active,
+                    resource_grants=_ordered_union(existing.resource_grants, selected_resource_grants),
+                    resource_operations=_ordered_union(existing.resource_operations,
+                                                       selected_resource_operations or {}),
+                    operations=selected_operations, named_service_operations=named_union,
+                    account_scope=selected_account_scope, properties=selected_properties,
+                    _delegable_grants=_delegable_grants, _platform_admin=_platform_admin,
+                )
+                if kept.error is not None:
+                    return kept.error
+                selected_resource_grants = kept.resource_grants
+                selected_resource_operations = kept.resource_operations
+                selected_named_service_operations = kept.named_service_operations
+                named_services = kept.named_services
+                selected_operations = kept.operations
         if _record_is_credentialless(existing):
             candidate = dataclasses.replace(
                 card_authority_from_record(existing),

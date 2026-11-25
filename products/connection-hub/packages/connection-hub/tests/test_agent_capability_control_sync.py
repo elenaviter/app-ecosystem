@@ -2062,3 +2062,7 @@ async def test_w40_an_owner_card_edit_also_moves_the_card_defaults() -> None:
     defaults = updated.properties[AGENT_CAPABILITY_DEFAULT_STANDARD_PROPERTY]
     assert defaults["named_service_operations"][NAMED_RESOURCE]["slack"] == ["object.list"]
     assert "slack:post" not in defaults["resource_grants"].get(NAMED_RESOURCE, [])
+    # D5 option a: the Save leaves the grants as they were, so an older
+    # conversation that chose posting keeps it; a new one starts from the defaults.
+    assert "slack:post" in updated.resource_grants[NAMED_RESOURCE]
+    assert "object.action.post_message" in updated.named_service_operations.to_stored()[NAMED_RESOURCE]["slack"]
