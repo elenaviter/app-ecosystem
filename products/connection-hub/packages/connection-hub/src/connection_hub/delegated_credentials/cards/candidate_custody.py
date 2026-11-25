@@ -258,11 +258,45 @@ class CandidateCustody:
                     "effects": checked["effects"], "collection": checked.get("collection"), "transaction": None}
         return {**manifest, "root": _root(manifest)}
 
+    async def _load_candidates(self, manifest, *, transaction_id: str, check_current: bool):
+        from .transaction_store import member_transaction_id
+
+        set_id = manifest["set_id"]
+        leaves = manifest["leaves"]
+        members = []
+        async with self.service._card_version_sections([_key(leaf) for leaf in leaves]):
+            for index, leaf in enumerate(leaves):
+                owners = {_owner(set_id)}
+                if manifest["transaction"] is not None:
+                    owners.add(member_transaction_id(transaction_id, index))
+                try:
+                    authority = await load_version(
+                        self.store, subject_hash=leaf["subject_hash"], access_id=leaf["access_id"],
+                        link=_link(leaf), owners=owners,
+                    )
+                    if check_current:
+                        current = await self.store.read_current_authority(
+                            subject_hash=leaf["subject_hash"], access_id=leaf["access_id"],
+                        )
+                        if (pointer_link(current[0]) if current else None) != leaf["original"]:
+                            raise DecisionRefused("candidate_custody_base_moved")
+                except CardRecordError as exc:
+                    code = "candidate_custody_missing" if str(exc) == "version_link_missing" else "candidate_custody_mismatch"
+                    raise DecisionRefused(code) from exc
+                except (OSError, DurableStorageError, CardStorageError) as exc:
+                    raise DecisionRefused("candidate_custody_unavailable") from exc
+                member = {**{key: leaf[key] for key in _MEMBER_FIELDS}, "candidate": authority.to_dict()}
+                if _member_digest(member, manifest["effects"]) != leaf["candidate_digest"]:
+                    raise DecisionRefused("candidate_custody_mismatch")
+                members.append(member)
+        candidate = group_candidate_value(members, manifest["effects"], collection=manifest["collection"])
+        if sha256_hex(canonical_json_bytes(candidate)) != manifest["logical_candidate_digest"]:
+            raise DecisionRefused("candidate_custody_mismatch")
+        return candidate
+
     @asynccontextmanager
     async def adopt(self, *, reference: Mapping[str, Any], verified: Any, peer: str, project: str):
         """Bind to this verified transaction before letting the intent recorder move any marker."""
-        from .transaction_store import member_transaction_id
-
         ref = validate_candidate_ref(reference)
         set_id = ref["set_id"]
         transaction = {"id": verified.intent.transaction_id, "digest": verified.intent.digest}
@@ -283,34 +317,13 @@ class CandidateCustody:
                 raise DecisionRefused("candidate_custody_mismatch")
             if verified.decision != "undecided" or self._now() >= verified.intent.expires_at:
                 raise DecisionRefused("candidate_custody_expired")
-            leaves = manifest["leaves"]
-            members = []
-            async with self.service._card_version_sections([_key(leaf) for leaf in leaves]):
-                for index, leaf in enumerate(leaves):
-                    owners = {_owner(set_id)}
-                    if manifest["transaction"] is not None:
-                        owners.add(member_transaction_id(transaction["id"], index))
-                    try:
-                        authority = await load_version(self.store, subject_hash=leaf["subject_hash"],
-                                                       access_id=leaf["access_id"], link=_link(leaf), owners=owners)
-                        current = await self.store.read_current_authority(subject_hash=leaf["subject_hash"],
-                                                                         access_id=leaf["access_id"])
-                        if (pointer_link(current[0]) if current else None) != leaf["original"]:
-                            raise DecisionRefused("candidate_custody_base_moved")
-                    except CardRecordError as exc:
-                        code = "candidate_custody_missing" if str(exc) == "version_link_missing" else "candidate_custody_mismatch"
-                        raise DecisionRefused(code) from exc
-                    except (OSError, DurableStorageError, CardStorageError) as exc:
-                        raise DecisionRefused("candidate_custody_unavailable") from exc
-                    member = {**{key: leaf[key] for key in _MEMBER_FIELDS}, "candidate": authority.to_dict()}
-                    if _member_digest(member, manifest["effects"]) != leaf["candidate_digest"]:
-                        raise DecisionRefused("candidate_custody_mismatch")
-                    members.append(member)
-                candidate = group_candidate_value(members, manifest["effects"], collection=manifest["collection"])
-                try:
-                    verify_group_projection(projection, candidate)
-                except DecisionRefused as exc:
-                    raise DecisionRefused("candidate_custody_mismatch") from exc
+            candidate = await self._load_candidates(
+                manifest, transaction_id=transaction["id"], check_current=True,
+            )
+            try:
+                verify_group_projection(projection, candidate)
+            except DecisionRefused as exc:
+                raise DecisionRefused("candidate_custody_mismatch") from exc
             path = _header_path(self.store, set_id)
             if manifest["transaction"] is None:
                 if self._now() >= verified.intent.expires_at:
@@ -319,9 +332,27 @@ class CandidateCustody:
                 await write_json_atomic(path, manifest)
             # The recorder reacquires the member sections in the same order.
             # We keep the set lock until its immutable adoption record is ready.
-            yield candidate, [_link(leaf) for leaf in leaves], _owner(set_id)
+            yield candidate, [_link(leaf) for leaf in manifest["leaves"]], _owner(set_id)
             if manifest["state"] != "adopted":
                 await write_json_atomic(path, {**manifest, "state": "adopted"})
+
+    async def read_prepared(
+        self, *, reference: Mapping[str, Any], peer: str, project: str, incarnation: str,
+        request_id: str, transaction_id: str, intent_digest: str,
+    ) -> dict[str, Any]:
+        """Read exact adopted versions for the peer's out-of-transaction COMMIT preload."""
+        ref = validate_candidate_ref(reference)
+        set_id = ref["set_id"]
+        async with self.service.candidate_set_section(set_id):
+            manifest = await self._read(set_id)
+            if manifest is None or manifest["state"] != "adopted":
+                raise DecisionRefused("candidate_custody_missing")
+            scope = manifest["scope"]
+            if (_ref(manifest) != ref or scope["peer"] != peer or scope["project"] != project
+                    or scope["incarnation"] != incarnation or manifest["request"]["id"] != request_id
+                    or manifest["transaction"] != {"id": transaction_id, "digest": intent_digest}):
+                raise DecisionRefused("candidate_custody_mismatch")
+            return await self._load_candidates(manifest, transaction_id=transaction_id, check_current=False)
 
     async def discard_unadopted(self, set_id: str) -> bool:
         async with self.service.candidate_set_section(set_id):

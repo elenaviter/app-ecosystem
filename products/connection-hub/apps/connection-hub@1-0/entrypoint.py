@@ -5000,17 +5000,29 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
     ) -> Any:
         """Seal the exact authenticated lifecycle plan for an admitted peer."""
         del request
+        return await self._candidate_set_operation(_payload(data, **kwargs), read_prepared=False)
+
+    @api(method="POST", alias="card_candidate_set_read_prepared", route="public")
+    @request_counters.counted("card_candidate_set_read_prepared")
+    async def card_candidate_set_read_prepared(
+        self, data: Optional[Dict[str, Any]] = None, request: Any = None, **kwargs: Any,
+    ) -> Any:
+        """Read the already adopted versions for the exact admitted transaction."""
+        del request
+        return await self._candidate_set_operation(_payload(data, **kwargs), read_prepared=True)
+
+    async def _candidate_set_operation(self, payload, *, read_prepared: bool) -> Any:
         from connection_hub.delegated_credentials.cards.candidate_custody import CandidateCustody
         from connection_hub.delegated_credentials.cards.candidate_registration import CandidateRegistration
 
         config = _connections_config(self)
         options = config.get("card_transactions")
         if (not card_transactions_enabled(config) or not isinstance(options, Mapping)
-                or options.get("candidate_registration_enabled") is not True):
+                or (not read_prepared and options.get("candidate_registration_enabled") is not True)):
             return {"ok": False, "status": 503, "error": {"code": "candidate_custody_registration_disabled"}}
         unavailable = {"ok": False, "status": 503, "error": {"code": "candidate_custody_unavailable"}}
-        attestation_secret = await _candidate_attestation_secret(self)
-        if not attestation_secret:
+        attestation_secret = "" if read_prepared else await _candidate_attestation_secret(self)
+        if not read_prepared and not attestation_secret:
             return unavailable
         redis = getattr(self, "redis", None) or get_async_redis_client(get_settings().REDIS_URL)
         persistence = await _delegated_card_persistence(self, redis)
@@ -5031,7 +5043,9 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
             nonces=redis, nonce_prefix=f"connection-hub:{tenant}:{project}:card-candidates:nonce:",
             tenant=tenant, app=f"{project}/connection-hub@1-0", attestation_secret=attestation_secret,
         )
-        return await operation.answer(_payload(data, **kwargs))
+        if read_prepared:
+            return await operation.read_prepared(payload)
+        return await operation.answer(payload)
 
     @api(method="POST", alias="card_lifecycle_plan", route="public")
     @request_counters.counted("card_lifecycle_plan")
