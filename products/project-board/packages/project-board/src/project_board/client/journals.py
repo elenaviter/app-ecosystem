@@ -824,7 +824,18 @@ class JournalWorkspace:
         self.rebuild_index()
         return entry
 
-    def prepare_entry(
+    def prepare_entry(self, *args: Any, **kwargs: Any) -> Any:
+        """One Git identity lookup per journal home for this whole pass (W1031 slice 3a)."""
+
+        if getattr(self, "_sticky_pass", None) is not None:
+            return self._prepare_entry_in_pass(*args, **kwargs)
+        self._sticky_pass = {}
+        try:
+            return self._prepare_entry_in_pass(*args, **kwargs)
+        finally:
+            self._sticky_pass = None
+
+    def _prepare_entry_in_pass(
         self,
         *,
         project_ref: str,
@@ -897,7 +908,18 @@ class JournalWorkspace:
             ),
         }
 
-    def _scan_documents(
+    def _scan_documents(self, *args: Any, **kwargs: Any) -> Any:
+        """One Git identity lookup per journal home for this whole pass (W1031 slice 3a)."""
+
+        if getattr(self, "_sticky_pass", None) is not None:
+            return self._scan_documents_in_pass(*args, **kwargs)
+        self._sticky_pass = {}
+        try:
+            return self._scan_documents_in_pass(*args, **kwargs)
+        finally:
+            self._sticky_pass = None
+
+    def _scan_documents_in_pass(
         self,
     ) -> tuple[
         list[JournalDocument],
@@ -1168,7 +1190,11 @@ class JournalWorkspace:
         relative = PurePosixPath(path.relative_to(home).as_posix())
         repository_journal_ref = self._portable_child(home_ref, relative)
         issues: list[dict[str, Any]] = []
-        if _running_candidate(relative, text) or self._published_running_path(home, path):
+        # Evaluate the Git identity index first, whatever the current text says: it
+        # loads _running_refs, which ties undetected renames by entry_ref
+        # (pb-knowledge, slice 3a companion finding).
+        published_running = self._published_running_path(home, path)
+        if published_running or _running_candidate(relative, text):
             # W1031 R2: every reader (explicit index, refresh, catalog search, browse)
             # comes through here, so a running entry's append-only history is enforced
             # once, against the last accepted generation in Git, not only by the
@@ -1326,12 +1352,23 @@ class JournalWorkspace:
         result is cached per HEAD in the host's disposable journal control folder.
         """
 
-        top = subprocess.run(["git", "-C", str(home), "rev-parse", "--show-toplevel", "HEAD"],
-                             capture_output=True, text=True, timeout=60)
-        lines = top.stdout.split()
-        if top.returncode != 0 or len(lines) != 2:
-            return False
-        root, head = Path(lines[0]), lines[1]
+        memo = getattr(self, "_sticky_pass", None)
+        if memo is not None and str(home) in memo:
+            root_text, head = memo[str(home)]
+            if not root_text:
+                return False
+            root = Path(root_text)
+        else:
+            top = subprocess.run(["git", "-C", str(home), "rev-parse", "--show-toplevel", "HEAD"],
+                                 capture_output=True, text=True, timeout=60)
+            lines = top.stdout.split()
+            if top.returncode != 0 or len(lines) != 2:
+                if memo is not None:
+                    memo[str(home)] = ("", "")
+                return False
+            root, head = Path(lines[0]), lines[1]
+            if memo is not None:
+                memo[str(home)] = (str(root), head)
         try:
             scope = (home.resolve() / "journal").relative_to(root.resolve()).as_posix()
         except ValueError:
@@ -1595,7 +1632,18 @@ class JournalWorkspace:
             limit=limit,
         )["entries"]
 
-    def view_catalog_page(
+    def view_catalog_page(self, *args: Any, **kwargs: Any) -> Any:
+        """One Git identity lookup per journal home for this whole pass (W1031 slice 3a)."""
+
+        if getattr(self, "_sticky_pass", None) is not None:
+            return self._view_catalog_page_in_pass(*args, **kwargs)
+        self._sticky_pass = {}
+        try:
+            return self._view_catalog_page_in_pass(*args, **kwargs)
+        finally:
+            self._sticky_pass = None
+
+    def _view_catalog_page_in_pass(
         self,
         *,
         project_ref: str,

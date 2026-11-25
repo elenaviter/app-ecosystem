@@ -221,3 +221,21 @@ def test_a_rename_out_of_features_that_rewrites_keeps_the_accepted_text(tmp_path
     git(repo, "commit", "-q", "-m", "move, flip and strip")
     fresh = workspace_for(tmp_path / "fresh", repo)
     assert hits(fresh, "gammaword") == [] and hits(fresh, "alphaword") == [ENTRY]
+
+
+def test_an_undetected_rename_that_keeps_running_markers_cannot_reset_the_history(tmp_path, repo):
+    ws = workspace_for(tmp_path / "ws", repo)
+    publish(ws, repo, entry_text([record("2026-11-02T08:00:00Z", "Accepted old context. " * 400)]))
+    old, new = running_path(ws), other_path(ws, "moved.md")
+    new.write_text(entry_text([record("2026-11-02T08:00:00Z", "Wholly different forbiddenword.")]), encoding="utf-8")
+    git(repo, "rm", "-q", str(old))
+    git(repo, "add", "-A")
+    git(repo, "commit", "-q", "-m", "delete and add, markers kept")
+    assert "R" not in git(repo, "show", "--name-status", "--format=", "HEAD").split()[0]  # Git saw D+A
+    fresh = workspace_for(tmp_path / "fresh", repo)
+    ref = f"{fresh.context(PROJECT_REF)['journal_authoring']['directory_ref']}/moved.md"
+    with pytest.raises(DomainError) as caught:  # strict access first, on a fresh workspace
+        fresh.prepare_entry(project_ref=PROJECT_REF, repository_journal_ref=ref)
+    assert caught.value.code == "journal_running_entry_rewritten"
+    other = workspace_for(tmp_path / "fresh2", repo)
+    assert hits(other, "forbiddenword") == [] and hits(other, "Accepted") == [ENTRY]
