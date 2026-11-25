@@ -172,7 +172,9 @@ it, what you touched (Rule 3), and what you are waiting on.
   ownership version and your last checkpoint: never an idle wait, an invented
   role or a kept stale tree. When the next action is the coordinator's (a decision, a routing, an integration with no named merger), assign the item to the acting coordinator, unless you were told otherwise: `assignment.assign`, or
   `review.assign` for an item in Review, with a note on the item naming the
-  reason, the next action and the time, then mail it. When the next action is the operator's (a test, a decision, an approval,
+  reason, the next action and the time, then mail it. The coordinator then
+  routes, decides or merges; where the project's facts say the coordinator
+  does not review, it never takes the review itself. When the next action is the operator's (a test, a decision, an approval,
   a choice of behaviour), assign the item to the operator yourself, without
   waiting for the coordinator, with the exact steps and the expected result
   on the item and a `decision` or `question` message naming it (Rule 11).
@@ -197,10 +199,16 @@ it, what you touched (Rule 3), and what you are waiting on.
   head on the item, then give the item to the next actor the route names,
   with the gates that remain and who clears each: the named merger when the
   next gate is a merge, else the coordinator. Route it with `review.assign`
-  naming that actor. `review.assign` to the coordinator is only for an
-  approval whose next gate is a merge, a deploy or an operator action, and
-  never where the project's facts say the coordinator does not review: there,
-  name the merger, or the operator once the merge and deploy evidence exists.
+  naming that actor. This is a handoff of an approved item, not a review:
+  the actor clears its gate (merges, deploys, or brings the operator's
+  check) and decides nothing about the source. So `review.assign` to the
+  coordinator is only for an approval whose next gate is a merge, a deploy or
+  an operator action that the coordinator itself clears, for example as the
+  item's named merger or as the merger when none is named
+  ([source and review](../source-and-review.md)). Where the project's facts
+  say the coordinator does not review, never route a review to it: an
+  unfinished verification, a returned change or a second opinion goes to a
+  qualified worker. An approved item it merges is still handed to it.
   An approval whose remaining acceptance needs builds is not handed on here;
   it goes back to the builder (the next bullet, "Approved phase, builds
   remain"). When your Card lacks the operation, write the same handoff

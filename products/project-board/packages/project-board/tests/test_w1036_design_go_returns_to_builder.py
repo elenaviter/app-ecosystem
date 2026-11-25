@@ -39,16 +39,42 @@ def test_an_approved_phase_is_returned_to_the_builder():
     assert collaboration.index("- **Source rework**", unmet) < collaboration.index("- **Approved phase, builds remain**", unmet)
 
 
-def test_the_coordinator_is_a_handoff_target_only_for_merge_deploy_or_operator_gates():
+def _handoff(collaboration: str) -> str:
+    return collaboration[collaboration.index("**A finished review hands the item on.**"):
+                         collaboration.index("**Unmet criteria go back; a review never waits for unowned work.**")]
+
+
+def test_the_coordinator_is_a_handoff_target_only_for_gates_it_clears():
     collaboration = _words(PROCEDURES / "collaboration.md")
-    handoff = collaboration[collaboration.index("**A finished review hands the item on.**"):
-                            collaboration.index("**Unmet criteria go back; a review never waits for unowned work.**")]
+    handoff = _handoff(collaboration)
+    assert "This is a handoff of an approved item, not a review" in handoff
     assert (
         "`review.assign` to the coordinator is only for an approval whose next gate is a merge, a deploy or an "
-        "operator action, and never where the project's facts say the coordinator does not review"
+        "operator action that the coordinator itself clears, for example as the item's named merger or as the "
+        "merger when none is named"
     ) in handoff
     assert "An approval whose remaining acceptance needs builds is not handed on here" in handoff
     assert "who routes it on, and reviews it only where the project's facts let the coordinator review." in collaboration
+
+
+def test_a_coordinator_that_does_not_review_still_receives_the_merge():
+    """pb-knowledge's W1036 review (P2): the coordinator may be the authorized merger in a project where
+    it does no technical review; the rule must route the approved item to it, not forbid the handoff."""
+    collaboration = _words(PROCEDURES / "collaboration.md")
+    handoff = _handoff(collaboration)
+    assert (
+        "Where the project's facts say the coordinator does not review, never route a review to it: an "
+        "unfinished verification, a returned change or a second opinion goes to a qualified worker. An approved "
+        "item it merges is still handed to it."
+    ) in handoff
+    # The blanket wording that forbade the merger handoff is gone.
+    assert "and never where the project's facts say the coordinator does not review: there, name the merger" not in collaboration
+    # The routing paragraph (Rule 6, assign to the coordinator) keeps routing, deciding and merging apart from review.
+    assert "The coordinator then routes, decides or merges; where the project's facts say the coordinator does not review, it never takes the review itself." in collaboration
+    module = _words(PROCEDURES / "coordinator" / "accept-return-cancel.md")
+    assert "That is a handoff, not a review. You receive it as the item's merger even where the project's facts say you do not review" in module
+    review = " ".join((PRODUCT / "docs" / "review.md").read_text(encoding="utf-8").split())
+    assert "even in a project where the coordinator does no technical review; there it merges and never reviews." in review
 
 
 def test_the_coordinator_module_states_the_same_limits():
@@ -65,4 +91,4 @@ def test_the_review_page_states_the_same_path():
         "An approved design or earlier phase whose remaining acceptance needs builds is also returned to the "
         "item's builder with `review.return`, naming the approval and the next phase"
     ) in review
-    assert "That is the coordinator only where the project lets the coordinator review." in review
+    assert "That handoff is not a review: the coordinator receives it when it clears the gate itself, for example as the merger" in review

@@ -96,7 +96,9 @@ Part of [coordinator](../coordinator.md).
    A reviewer may hand you an item with `review.assign` only for an approval
    whose next gate is a merge, a deploy or an operator action
    ([collaboration](../collaboration.md) Rule 6). Clear that gate or route
-   it to whoever clears it. An approved design or phase whose remaining
+   it to whoever clears it. That is a handoff, not a review. You receive it
+   as the item's merger even where the project's facts say you do not review;
+   you merge the approved head and decide nothing about the source. An approved design or phase whose remaining
    acceptance needs builds is not yours to hold: the reviewer returns it to
    the builder with `review.return`. When one reaches you anyway, route it
    back to the reviewer to decide, naming that decision. You only reassign

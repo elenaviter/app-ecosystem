@@ -317,8 +317,10 @@ neither accepted, because the acceptance is not met, nor routed to the
 coordinator. Post-source gates, a merge, an
 activation or the operator's check after the source is approved, are neither
 held nor returned: the item is routed on with `review.assign` to whoever
-clears the next gate. That is the coordinator only where the project lets the
-coordinator review. Only unfinished verification may be held: the
+clears the next gate. That handoff is not a review: the coordinator receives
+it when it clears the gate itself, for example as the merger, even in a
+project where the coordinator does no technical review; there it merges and
+never reviews. Only unfinished verification may be held: the
 reviewer's own check waits on one step someone else is doing, and the hold
 lasts while that step has a named actor working on it and a due time,
 recorded on the item; past that time the reviewer decides again. The
