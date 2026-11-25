@@ -9,11 +9,11 @@ this and not that, what failed and through which mechanism, which assumptions
 were wrong, the limits and gaps a change leaves, and operator rulings with
 their reasons (the ruling itself is in force in Facts). Where the work stands
 (heads, approvals, merges, installs, a runtime window's receipts) lives on the
-work item, not in the journal ([journaling](../journaling.md)). Whoever learns a
-project-wide lesson writes a journal entry and points to it from the relevant
-item note or mail thread. The coordinator checks that the entry exists and
-carries the lesson rather than a checkpoint, and a successor coordinator
-begins by searching the journal.
+work item ([journaling](../journaling.md)). At an agreed milestone, the worker
+who learned a project-wide lesson records it in the feature's journal entry
+and links it from the item. The coordinator checks that the record gives the
+next worker something to act on. A successor coordinator begins by searching
+the journal.
 
 Attending agents find this record with `pb worker journal-search`. A work-item
 note or mail thread can carry the immediate conversation; its journal link
