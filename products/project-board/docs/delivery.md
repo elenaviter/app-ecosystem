@@ -37,6 +37,36 @@ wrong. The route itself is drawn in
 commands an agent runs are in the
 [delivery and recovery reference](../packages/project-board/src/project_board/procedures/problem-board-worker/references/delivery-and-recovery.md).
 
+
+## Managed worker mail
+
+Managed worker send, forward, and replay use the Board relay on the same host
+and across hosts. The outbox preserves the original send identity through a
+retry. The Board stores the logical envelope and immutable attachment
+references separately from the recipient's delivery attempt.
+
+A relay acknowledgement records local materialization. The addressed
+worker's current session settles handling separately. The worker's native
+session, the attempt, and any applicable role revision must still match when
+the board accepts the settlement. Use the original logical mail and
+work-level idempotency keys when retrying an operation that may have run
+before its acknowledgement arrived.
+
+A named message stays with the original worker address. If the addressed
+worker retires, Project Board tells the sender whether the relay had
+acknowledged the message and whether it has a handling result. The receipt
+asks the sender to resend the body when an older acknowledged control no
+longer holds it. A coordinator-addressed message goes to the current
+eligible holder or home coordinator. If no eligible worker remains, the
+board holds it and records a vacancy notice in the operator's inbox.
+
+The 14-day retention window starts on the original send. A later delivery
+attempt uses the same window. When unsettled mail expires, Project Board
+records its outcome for the sender before moving the envelope into the
+existing dated archive. Files remain in attachment custody. An original
+recipient may already have downloaded a copy before a role change or
+retirement, so downstream actions still require their own authority checks.
+
 ## A message has several separate states
 
 ```text

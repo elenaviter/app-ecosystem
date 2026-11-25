@@ -6861,15 +6861,7 @@ class SharedFieldStore:
             correlation_id=str(message.get("correlation_id") or ""),
             reply_to="", idempotency_key=idempotency_key,
         )
-        # Direct worker mail is always adjudicated by the board, even when
-        # the recipient is absent from this host's directory (W304).
-        direct = str(recipient or "").strip().lower()
-        if not project_id and direct not in {"operator", "owner", *ROLE_RECIPIENTS}:
-            return self.enqueue_remote_mail(**common, attachments=files)
-        resolution = self.resolve_mail_recipient(project_id, recipient)
-        if files or resolution["route"] == "remote":
-            return self.enqueue_remote_mail(**common, attachments=files)
-        return self.send_mail(**common)
+        return self.enqueue_remote_mail(**common, attachments=files)
 
     def record_worker_mail_settlement(
         self, worker_name: str, *, message_ref: str
@@ -7838,16 +7830,6 @@ class SharedFieldStore:
             if not clean_project and requested_recipient not in {"operator", "owner"}
             else self.resolve_mail_recipient(clean_project, requested_recipient)
         )
-        if resolution["route"] != "remote" and not attachment_sources:
-            raise DomainError(
-                "field_mail_route_mismatch",
-                "The addressed worker belongs to this host; use the local route.",
-                status=409,
-                details={
-                    "recipient": resolution["worker_name"],
-                    "required_route": "local",
-                },
-            )
         clean_recipient = str(resolution["worker_name"])
         mail = {
             "kind": clean_kind,
@@ -13468,11 +13450,7 @@ class SharedFieldStore:
             "reply_to": str(payload.get("reply_to") or ""),
             "idempotency_key": replay_key,
         }
-        if resolution["route"] == "local":
-            replay = (self.enqueue_remote_mail(**common, attachments=attachments)
-                      if attachments else self.send_mail(**common))
-        else:
-            replay = self.enqueue_remote_mail(**common, attachments=attachments)
+        replay = self.enqueue_remote_mail(**common, attachments=attachments)
 
         with exclusive_lock(root / ".outbox.lock"):
             found = self._outbox.find(clean_id, worker_name=clean_worker)
