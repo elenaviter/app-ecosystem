@@ -198,8 +198,8 @@ For every returned item:
 3. When `operator_response` is present, send a visible correlated reply before
    settlement; [delivery and recovery](references/delivery-and-recovery.md) explains channel origin and delivery outcomes. A settlement summary is evidence, not a conversation turn.
 4. Apply the return-reconciliation gate above before queued execution. Handle
-   a confirmed current request within repository and operator authority, keeping the
-   journal current while decisions and failures are fresh.
+   a confirmed current request within repository and operator authority. Keep
+   working notes for the next agreed milestone.
 5. When the sender needs an answer, reply with the stable `sender`, the
    original `message_ref` as `--reply-to`, the original correlation ID, and a
    stable idempotency key.
@@ -337,7 +337,24 @@ move status ([ownership](references/identity-and-authorization.md)).
   content or an invented source event is a different report, not recovery.
 - Before an item with repository work moves to Done, whoever moves it (you, for your own item, included) confirms its merge commit is an ancestor of a freshly fetched `main`, and of the live head when live is claimed, and records that on the item: [source and review](references/source-and-review.md), "Before Done" (W685, a soft rule).
 - A `project.report` request reaches only the coordinator: before answering one, read [project-report](references/project-report.md).
-- Journal what the work taught the project (why this and not that, failures and their mechanism, wrong assumptions, limits) only when the project declares role `journal`; where the work stands goes on the item, not in the journal; no role means no journal work. The role is repository agnostic and every change is item-scoped. Before you write, index or search an entry, read [journaling](references/journaling.md): it owns when an entry is worth writing, its front matter and `entry_ref`, and `pb worker journal-index`, its resume and its status. Each signal of this skill and the test that pins it: [signals](references/signals.md).
+- **Journal — the project's research protocol.** When the project declares role
+  `journal`, the worker records what would change a successor's approach to a
+  complex feature or decision. At agreed milestones, distill the attempts,
+  outcomes, corrections, decisions and reusable lessons. Distinguish an
+  approach that cannot work from one that failed under particular conditions.
+  Append to one running entry per feature per month as supported. Search the
+  journal before trying an approach. Read [journaling](references/journaling.md)
+  for the retry rule, the repository-agnostic, item-scoped workflow and
+  `pb worker journal-index`, its resume and its status.
+- **Project knowledge base — what stands now.** When the project has a
+  knowledge package, read the relevant concept before work. At the milestone,
+  including one before merge, hand over what changed, how it behaves and the
+  evidence the keeper needs. The [knowledge keeper](references/knowledge-keeper.md)
+  can ask for more and writes the current architecture and behavior for each
+  concept. The worker's journal carries the history and ticket-specific reasoning.
+- **Item — the work.** Keep its status, design, acceptance and next step on
+  the item. Link the journal records and knowledge concepts that the work
+  changed. See [signals](references/signals.md) for the matching checks.
 - Your estimate is visible state. After planning, `pb worker busy-until <UTC> --note <one line>`
   says until when you expect to finish and what you are on. Set it again with the reason when it
   slips. Clear it with `pb worker busy-until --clear` when the work is done. The board shows it and

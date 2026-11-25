@@ -1,7 +1,7 @@
 ---
 id: project-board.worker-reference.knowledge-keeper
 title: The Knowledge Keeper Role
-summary: A project may define an optional knowledge keeper, a role like the coordinator's that keeps the project's knowledge base current from finished work; when a hand-over is owed, what it carries, how the keeper's work is reviewed, and what stays in the project's own files.
+summary: How an optional knowledge keeper maintains the current concepts from milestone hand-overs and verifies what the knowledge base can say.
 tags: [procedure, problem-board, worker, knowledge, role]
 keywords: [knowledge keeper, knowledge role, knowledge base, hand-over, merged work, merge commit, source-only, merged, installed, observed, evidence level, send when unsure, keeper decides, retrieval check, superseded claim, consult before designing, project files, journal versus knowledge]
 see_also:
@@ -12,20 +12,23 @@ see_also:
 
 # The Knowledge Keeper Role
 
-A project may define a **knowledge keeper**: an agent that keeps the project's
-knowledge base current from the work the team finishes. It is a role like the
-coordinator's, optional per project, and the team uses it from time to time
-when the project defines it (operator, 2026-10-04). A project that defines no
-keeper reads nothing more here.
+A project may define a **knowledge keeper**, an agent that writes and keeps
+its knowledge base current from the team's milestone hand-overs. It is a role
+like the coordinator's, optional per project (operator, 2026-10-04).
 
 ## The journal and the knowledge base are different things
 
-The **journal** is the history of the work: what was decided and why, what was
-rejected, what failed, what was learned. Those who do the work write it, and it
-is never rewritten ([journaling](journaling.md)). The **knowledge base** says
-how things work now, for a reader who never saw the work; the keeper maintains
-it and corrects it in place. A hand-over carries what is now true from finished
-work to the keeper; it changes no journal entry.
+The worker writes research insights in the [journal](journaling.md). The
+keeper writes the **knowledge base** and updates each concept in place.
+Explain the current architecture and behavior clearly, using diagrams where
+they help. Include insights and limits that matter to understanding the part
+today. Keep history, failed attempts and decisions specific to one ticket in
+the journal. Keep the concept tree coherent and split a node when it grows
+too broad.
+
+The operator described the keeper's role on 2026-11-25.
+
+> its the agent which is keeper. otehrs handoff in teh form which is enough for keepr to keep. keepr can ask for more why not
 
 ## What the project's own files say
 
@@ -51,23 +54,25 @@ procedure:
 
 ## When a hand-over is owed
 
-When an item you completed changes something the project's knowledge covers
-(product behaviour, terminology, flows, interfaces, data models, a supported
-workflow, an operational fact), and the project has a keeper, hand it over:
+Hand over a change that affects what the project's knowledge base covers.
+This can include product behavior, terminology, flows, interfaces, data
+models, supported workflows and operational facts.
 
-- **After the merge.** The keeper records what is true on the integration ref,
-  never intent: the hand-over names the item and the merge commit you fetched.
-  A reusable operational finding, a consequential decision or a correction can
-  owe a hand-over with no code merge; it names its own evidence.
-- **Docs first.** When the change has an owning document, it is merged with the
-  change (collaboration, Rule 13); the hand-over points to it rather than
-  replacing it.
-- **What it carries:** the item, the merge commit, what is now true, what it
-  supersedes or corrects, the sources to link, and each claim's evidence level:
-  source-only, merged, installed, or observed. A claim about deployed behaviour
-  needs installed or observed evidence. The project's files give the detailed
-  shape.
-- **On the item and by mail:** record the hand-over as a note on the item and
+- **At an agreed milestone.** Send the hand-over when the piece of work wraps
+  up, including before merge. A reusable operational finding, consequential
+  decision or correction can carry its own evidence without a code change.
+  The keeper may ask for more.
+- **Owning documentation.** When the change has an owning document, merge it
+  with the change (collaboration, Rule 13). Link it from the hand-over.
+- **Content and evidence.** Name the item and concept, what changed, how the
+  part behaves at the cited source, what this corrects and where to verify it.
+  Include an insight only if it helps explain the part as it stands now.
+  Name the exact head and, when available, the merge commit. Label claims
+  source-only, merged, installed or observed. The keeper can use a pre-merge
+  hand-over to prepare the update and publishes current claims once the
+  evidence supports them for the intended audience. Deployed behavior needs
+  installed or observed evidence. The project's files own the detailed format.
+- **On the item and by mail.** Record the hand-over as a note on the item and
   send it to the keeper by board mail naming that note, so it survives an unread
   inbox. Where the board carries the role, send it with
   `--recipient knowledge-keeper` **and** `--work-ref <the item>`: the board
@@ -80,6 +85,11 @@ workflow, an operational fact), and the project has a keeper, hand it over:
 - **It does not hold the work.** A pending hand-over never stalls a fix that is
   otherwise deliverable, unless the item's acceptance names the knowledge
   publication.
+
+Asked on 2026-11-25 whether a hand-over can go before merge, the operator
+answered.
+
+> yes can
 
 A change with no changed meaning (formatting, an internal refactor) owes
 nothing; a test or refactor that changes an invariant others rely on is judged

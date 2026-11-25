@@ -621,8 +621,8 @@ def test_work_report_and_journal_rules() -> None:
     # W563: authoring and indexing moved to journaling.md, *Write and index an entry*.
     assert "work:journal:<created-at>:<entry-id>:<semantic-name>" in journaling
     assert "pb worker journal-index" in skill and "pb worker journal-search" in skill
-    assert "no role means no journal work" in words
-    assert "the common procedure never assumes a fixed home" in journaling
+    assert "When the project declares role `journal`" in words
+    assert "The common procedure never assumes a fixed home" in journaling
     assert "With no journal role, there is no journal work" in journaling
     assert "Reuse the item's existing worktree when it already changes the journal repository" in journaling
     assert "<workspace>/wt/<item>-<journal-alias>" in journaling
@@ -1993,7 +1993,13 @@ def test_the_knowledge_keeper_role_is_generic_and_owns_its_hand_over() -> None:
     assert "a role like the coordinator's, optional per project" in keeper
     assert "The journal and the knowledge base are different things" in keeper
     assert "never in this procedure" in keeper
-    assert "**After the merge.**" in keeper
+    assert "**At an agreed milestone.**" in keeper
+    assert "including before merge" in keeper
+    assert "**After the merge.**" not in keeper
+    assert "The worker writes research insights" in keeper
+    assert "keeper writes the **knowledge base**" in keeper
+    assert "decisions specific to one ticket" in keeper
+    assert "source-only, merged, installed or observed" in keeper
     assert "**When unsure, send it,** marked \"keeper decides\"" in keeper
     assert "separate agent, with no maintenance context, ask one retrieval question per changed concept" in keeper
     assert "confirms the wrong answer is gone" in keeper
@@ -2412,8 +2418,8 @@ def test_the_coordinator_procedure_carries_the_w449_poll_result() -> None:
 
 
 def test_the_journal_keeps_what_the_project_learned_not_a_release_ledger() -> None:
-    # W453 (operator, 2026-10-01): the journal accumulates reasoning, failures,
-    # rejected alternatives and limits; where the work stands lives on the item.
+    # Research records preserve what changes a successor's approach. Work
+    # status belongs to the item, and journal records are written at milestones.
     raw = _read("references/journaling.md")
     journaling = _words(raw)
     skill = _words(_read("SKILL.md"))
@@ -2421,20 +2427,24 @@ def test_the_journal_keeps_what_the_project_learned_not_a_release_ledger() -> No
     assert "Journal Every Completed Move" not in raw
     assert "one entry per move" not in journaling.lower()
     assert "Write one entry for each completed move" not in journaling
-    assert "why it chose this and not that, what failed and through which mechanism" in journaling
-    assert "something which improves later the understandgin why we did this and not that way not to repeat the mistakes we made" in journaling
-    assert "A status, a head, a merge, an install or an approval is not a reason for an entry" in journaling
-    assert "progress and the release ledger live on the work item" in journaling
-    assert "**the lesson**, first" in journaling
-    assert "**the alternatives**: what was tried or considered, and why each was rejected" in journaling
+    assert "Write records only at milestones" in journaling
+    assert "A milestone is a point the person and worker agree on." in journaling
+    assert "> something that the user and worker agrees. usually the sign is that something is going to be merged or something like that" in raw
+    assert "> we only do this when we wrap up. on milestones" in raw
+    assert "**does not work at all**" in journaling
+    assert "**did not work then, because of stated conditions**" in journaling
+    assert "Repeat an earlier attempt only when the relevant conditions changed." in journaling
+    assert "Keep one running entry per feature per month" in journaling
+    assert "Earlier records remain intact." in journaling
+    assert "W1031 tracks deliberate re-indexing of amended entries" in journaling
     assert "| Progress, heads, approvals, gates, merges, installs: where the work stands | The work item's notes and reports |" in journaling
     assert "it becomes a procedure or documentation change so that every agent follows it" in journaling
     assert "Journal every completed move" not in skill
-    assert "where the work stands goes on the item, not in the journal" in skill
+    assert "Keep its status, design, acceptance and next step on the item." in skill
     # Review return at 4cb5b5b1: no text keeps the merged-checkpoint entry as a pattern.
     assert "journal entry that says landed" not in skill
     assert "journal entry that says landed" not in _words(_read("references/collaboration.md"))
-    assert "as they stand now, updated in the same change; why, and the history of what was tried, go to the journal" in journaling
+    assert "The journal records the reasoning and links the evidence" in journaling
 
 
 def test_the_consolidated_procedure_carries_the_w455_rules() -> None:

@@ -22,8 +22,9 @@ whether every valid state remains representable without loss. A count that
 cannot be traversed, a cursorless truncated result, or a canonical row that
 discards evidence needed later is a design failure even when the immediate UI or
 test passes. Coordination does not waive this duty. Record consequential
-alternatives and rejected assumptions in the journal, and where product policy
-is undecided, give the operator the competing readings. For Redis or other
+alternatives and rejected assumptions in the journal at the agreed milestone
+([journaling](journaling.md)). Where product policy is undecided, give the
+operator the competing readings. For Redis or other
 shared state, read [shared runtime state](shared-runtime-state.md).
 
 A session that learns a procedural lesson files it against this package
@@ -39,5 +40,5 @@ contract, leave the revision to the merger, reinstall it, and tell active worker
 the new revision: each loads it once, when `pb procedure verify` names it. With uncertain ownership or policy, create a work item with the
 evidence and ask. A procedure update is a semantic revision of the affected
 contract, never an append-only note, and it carries the rule with one clause of
-reason. Incidents go to the journal, where search finds them when they are
-needed, and not into this skill, which every session carries in its context.
+reason. At the milestone, distill what the incident taught the project in the
+journal so a successor can find it.
