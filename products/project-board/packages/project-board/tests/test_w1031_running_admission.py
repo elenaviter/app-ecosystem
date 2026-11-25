@@ -168,3 +168,56 @@ def test_ordinary_entry_unaffected(tmp_path, plain):
             "title": "Plain"}
     (home / "plain.md").write_text("---\n" + yaml.safe_dump(meta) + "---\n\nzetaword\n", encoding="utf-8")
     assert len(hits(ws, "zetaword")) == 1
+
+
+# --- pb-knowledge's slice 3a findings (reproduced at fe97c962) ---------------------------
+
+def other_path(ws, name="other/notes.md") -> Path:
+    path = Path(ws.context(PROJECT_REF)["local_journal_directory"]) / name
+    path.parent.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def publish_at(repo, path, text, message="j"):
+    path.write_text(text, encoding="utf-8")
+    git(repo, "add", "-A")
+    git(repo, "commit", "-q", "-m", message)
+
+
+def plain_text(body, title="Notes"):
+    meta = {"entry_ref": ENTRY, "project_ref": PROJECT_REF, "worker_name": "codex-api",
+            "recorded_at": "2026-11-01T00:00:00Z", "title": title}
+    return "---\n" + yaml.safe_dump(meta, sort_keys=False) + "---\n\n" + body
+
+
+def test_a_quoted_yaml_kind_is_running(tmp_path, repo):
+    ws = workspace_for(tmp_path / "ws", repo)
+    quoted = lambda records: entry_text(records).replace("kind: running", 'kind: "running"')
+    publish(ws, repo, quoted(A))
+    publish(ws, repo, quoted([record("2026-11-02T08:00:00Z", "Tried gammaword instead.")]), "rewrite")
+    assert hits(ws, "gammaword") == [] and hits(ws, "alphaword") == [ENTRY]
+
+
+def test_running_status_is_sticky_outside_features_on_a_fresh_workspace(tmp_path, repo):
+    ws = workspace_for(tmp_path / "ws", repo)
+    path = other_path(ws)
+    publish_at(repo, path, entry_text(A))
+    publish_at(repo, path, plain_text("Rewritten as gammaword, no records."), "flip and strip")
+    fresh = workspace_for(tmp_path / "fresh", repo)
+    assert hits(fresh, "gammaword") == [] and hits(fresh, "alphaword") == [ENTRY]
+    ref = f"{fresh.context(PROJECT_REF)['journal_authoring']['directory_ref']}/other/notes.md"
+    with pytest.raises(DomainError) as caught:
+        fresh.prepare_entry(project_ref=PROJECT_REF, repository_journal_ref=ref)
+    assert caught.value.code == "journal_running_entry_rewritten"
+
+
+def test_a_rename_out_of_features_that_rewrites_keeps_the_accepted_text(tmp_path, repo):
+    ws = workspace_for(tmp_path / "ws", repo)
+    publish(ws, repo, entry_text(A))
+    old, new = running_path(ws), other_path(ws, "moved.md")
+    git(repo, "mv", str(old), str(new))
+    new.write_text(plain_text("Moved and rewritten as gammaword."), encoding="utf-8")
+    git(repo, "add", "-A")
+    git(repo, "commit", "-q", "-m", "move, flip and strip")
+    fresh = workspace_for(tmp_path / "fresh", repo)
+    assert hits(fresh, "gammaword") == [] and hits(fresh, "alphaword") == [ENTRY]

@@ -373,17 +373,38 @@ def _frontmatter(text: str) -> tuple[dict[str, Any], str]:
     return dict(loaded), text[marker + 5 :]
 
 
-_RUNNING_KIND_LINE = re.compile(r"(?m)^kind:[ \t]*running[ \t]*$")
-
-
 def _declares_running(text: str) -> bool:
-    """Whether a version's front matter declares ``kind: running`` (W1031)."""
+    """Whether a version's front matter declares ``kind: running`` (W1031), read as YAML,
+    so a quoted or otherwise valid spelling counts (pb-knowledge, slice 3a finding 1)."""
 
     if not text.startswith("---\n"):
         return False
     marker = text.find("\n---\n", 4)
-    return marker > 0 and _RUNNING_KIND_LINE.search(text[4:marker]) is not None
+    if marker < 0 or "running" not in text[4:marker]:
+        return False
+    try:
+        loaded = yaml.safe_load(text[4:marker])
+    except yaml.YAMLError:
+        return False
+    return isinstance(loaded, Mapping) and loaded.get("kind") == "running"
 
+
+def _last_entry_ref(root: Path, relative: str) -> str:
+    """The entry_ref of a path's last present version on HEAD (a deleted path: before its deletion)."""
+
+    last = subprocess.run(["git", "-C", str(root), "log", "-1", "--format=%H", "HEAD", "--", relative],
+                          capture_output=True, text=True, timeout=60)
+    commit = last.stdout.strip()
+    if last.returncode != 0 or not commit:
+        return ""
+    for spec in (f"{commit}:{relative}", f"{commit}^:{relative}"):
+        shown = subprocess.run(["git", "-C", str(root), "show", spec], capture_output=True, text=True, timeout=60)
+        if shown.returncode == 0:
+            try:
+                return str(_frontmatter(shown.stdout)[0].get("entry_ref") or "")
+            except yaml.YAMLError:
+                return ""
+    return ""
 
 def _running_candidate(relative: PurePosixPath, text: str) -> bool:
     """Cheap test: only these files pay for the Git history check (W1031 R2)."""
@@ -1147,7 +1168,7 @@ class JournalWorkspace:
         relative = PurePosixPath(path.relative_to(home).as_posix())
         repository_journal_ref = self._portable_child(home_ref, relative)
         issues: list[dict[str, Any]] = []
-        if _running_candidate(relative, text):
+        if _running_candidate(relative, text) or self._published_running_path(home, path):
             # W1031 R2: every reader (explicit index, refresh, catalog search, browse)
             # comes through here, so a running entry's append-only history is enforced
             # once, against the last accepted generation in Git, not only by the
@@ -1296,6 +1317,61 @@ class JournalWorkspace:
             supersedes_ref=str(metadata.get("supersedes_ref") or metadata.get("supersedes") or "").strip(),
         )
 
+    def _published_running_path(self, home: Path, path: Path) -> bool:
+        """Sticky running status from Git (pb-knowledge, slice 3a finding 2).
+
+        A path counts when any commit on HEAD added or removed a ``kind: ...running``
+        line or a ``pb-record`` marker in it, whatever its current text says. One
+        ``git log -G`` per pattern per HEAD lists those paths (renames included); the
+        result is cached per HEAD in the host's disposable journal control folder.
+        """
+
+        top = subprocess.run(["git", "-C", str(home), "rev-parse", "--show-toplevel", "HEAD"],
+                             capture_output=True, text=True, timeout=60)
+        lines = top.stdout.split()
+        if top.returncode != 0 or len(lines) != 2:
+            return False
+        root, head = Path(lines[0]), lines[1]
+        try:
+            scope = (home.resolve() / "journal").relative_to(root.resolve()).as_posix()
+        except ValueError:
+            return False
+        cache_path = (self.control / "running-admission"
+                      / f"published-running-paths-{hashlib.sha256(scope.encode('utf-8')).hexdigest()[:16]}.json")
+        cached = read_json(cache_path, required=False) or {}
+        if cached.get("root") == str(root) and cached.get("head") == head and cached.get("scope") == scope:
+            paths = set(cached.get("paths") or [])
+        else:
+            paths = set()
+            for pattern in (r"kind:.*running", r"pb-record"):
+                listed = subprocess.run(["git", "-C", str(root), "log", "--format=", "--name-only", "-G", pattern,
+                                         "HEAD", "--", scope], capture_output=True, text=True, timeout=120)
+                if listed.returncode != 0:
+                    return False
+                paths.update(line.strip() for line in listed.stdout.splitlines() if line.strip())
+            refs: dict[str, list[str]] = {}
+            for listed_path in sorted(paths):
+                ref = _last_entry_ref(root, listed_path)
+                if ref:
+                    refs.setdefault(ref, []).append(listed_path)
+            atomic_write_json(cache_path, {"root": str(root), "head": head, "scope": scope,
+                                           "paths": sorted(paths), "refs": refs})
+            cached = {"paths": sorted(paths), "refs": refs}
+        self._running_refs = dict(cached.get("refs") or {})
+        try:
+            relative = path.resolve().relative_to(root.resolve()).as_posix()
+        except ValueError:
+            return False
+        if relative in paths:
+            return True
+        # A rename Git did not detect (the content changed too much) keeps the entry's
+        # identity: the same entry_ref as a published running entry is enough.
+        try:
+            metadata, _ = _frontmatter(path.read_text(encoding="utf-8"))
+        except (OSError, yaml.YAMLError):
+            return False
+        return str(metadata.get("entry_ref") or "") in self._running_refs
+
     def _admit_running(
         self,
         *,
@@ -1334,8 +1410,16 @@ class JournalWorkspace:
         cached = read_json(cache_path, required=False) or {}
         verdict = dict(cached.get("verdict") or {}) if cached.get("key") == cache_key else {}
         if not verdict:
+            try:
+                current_ref = str(_frontmatter(text)[0].get("entry_ref") or "")
+            except yaml.YAMLError:
+                current_ref = ""
+            related = [other for other in dict(getattr(self, "_running_refs", {}) or {}).get(current_ref, [])
+                       if other != relative_in_repo]
             verdict = self._running_verdict(root=root, relative=relative_in_repo, text=text,
-                                            current_hash=current_hash)
+                                            current_hash=current_hash,
+                                            home_relative=path.resolve().relative_to(home.resolve()).as_posix(),
+                                            related=related, entry_ref=current_ref)
             atomic_write_json(cache_path, {"key": cache_key, "verdict": verdict})
         kind = verdict.get("kind")
         if kind == "ordinary":
@@ -1369,7 +1453,9 @@ class JournalWorkspace:
                                 "details": {"repository_journal_ref": repository_journal_ref, **summary}}]
 
     @staticmethod
-    def _running_verdict(*, root: Path, relative: str, text: str, current_hash: str) -> dict[str, Any]:
+    def _running_verdict(*, root: Path, relative: str, text: str, current_hash: str,
+                         home_relative: str = "", related: Sequence[str] = (),
+                         entry_ref: str = "") -> dict[str, Any]:
         try:
             chain = published_chain(root, relative, ref="HEAD")
         except DomainError as exc:
@@ -1382,7 +1468,30 @@ class JournalWorkspace:
             return {"kind": "exclude", "code": "journal_running_history_unavailable",
                     "message": "The running entry's Git history is incomplete; fetch the full history.",
                     "details": {"reason": chain.reason}}
-        versions = chain.versions if chain is not None else ()
+        versions = list(chain.versions) if chain is not None else []
+        if related and entry_ref:
+            # Earlier paths of the same entry (a rename Git did not detect): merge their
+            # live versions into one history in first-parent order.
+            order = subprocess.run(["git", "-C", str(root), "rev-list", "--first-parent", "--reverse", "HEAD"],
+                                   capture_output=True, text=True, timeout=120)
+            if order.returncode != 0:
+                return {"kind": "exclude", "code": "journal_running_history_unavailable",
+                        "message": "The running entry's Git history cannot be ordered.", "details": {}}
+            position = {commit: index for index, commit in enumerate(order.stdout.split())}
+            merged = {version.commit: version for version in versions}
+            for other in related:
+                try:
+                    other_chain = published_chain(root, other, ref="HEAD")
+                except DomainError:
+                    continue
+                if not other_chain.complete:
+                    return {"kind": "exclude", "code": "journal_running_history_unavailable",
+                            "message": "An earlier path of this running entry has incomplete history.",
+                            "details": {"path": other, "reason": other_chain.reason}}
+                for version in other_chain.versions:
+                    if not version.deleted and version.entry_ref == entry_ref and version.commit not in merged:
+                        merged[version.commit] = version
+            versions = sorted(merged.values(), key=lambda version: position.get(version.commit, -1))
         declared = [version for version in versions if _declares_running(version.text)]
         if not versions:
             # Not yet published (an uncommitted file in the clone): judge the text alone.
@@ -1393,7 +1502,9 @@ class JournalWorkspace:
             except DomainError as exc:
                 return {"kind": "exclude", "code": exc.code, "message": str(exc), "details": {}}
             return {"kind": "admit", "served_commit": "", "observed_commit": "", "invalid_versions": []}
-        if not declared and not _declares_running(text) and not relative.startswith(FEATURES_DIRECTORY + "/"):
+        in_features = (home_relative or relative).startswith(FEATURES_DIRECTORY + "/")
+        marked = any("<!-- pb-record" in version.text or "<!--pb-record" in version.text for version in versions)
+        if not declared and not marked and not _declares_running(text) and not in_features:
             return {"kind": "ordinary"}  # running status is sticky: any published version that declared it
         generations = running_generations(versions)
         summary = generations.summary()
