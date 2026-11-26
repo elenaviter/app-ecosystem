@@ -45,6 +45,8 @@ class RegisteredConversation:
     owner_subject: str
     application: str
     created_at: int = 0
+    # The start of the conversation's latest completed deletion; 0 when never deleted.
+    epoch: int = 0
 
 
 class ConversationRegistry(Protocol):
@@ -131,12 +133,24 @@ def turn_tokens_from_secret(secret: str) -> "TurnTokens | None":
     return TurnTokens(hmac.new(raw, TURN_TOKEN_KEY_LABEL, hashlib.sha256).digest())
 
 
+def slice_epoch_differs(current: ConversationSlice, conversation_epoch: int | None) -> bool:
+    """True when the runtime names a deletion epoch other than the one the slice was seeded under."""
+    return conversation_epoch is not None and int(conversation_epoch) != int(current.conversation_epoch)
+
+
 async def begin_turn(
     *, store: BundleStorageConversationSliceStore, registry: ConversationRegistry, tokens: TurnTokens,
     card: Any, application: str, conversation_id: str, turn_id: str, seed_selection: Mapping[str, Any],
     card_generation: int, now: int, existing_token: str = "", mode: str = "renew",
+    conversation_epoch: int | None = None,
 ) -> tuple[str, ConversationSlice]:
-    """Issue or renew the turn token, seeding the slice once after the registry check."""
+    """Issue or renew the turn token, seeding the slice once after the registry check.
+
+    ``conversation_epoch`` is the conversation's deletion epoch as the runtime
+    sees it; a slice seeded under another epoch belongs to an earlier
+    conversation with this id and is seeded again. Without it the slice is
+    reused as it is.
+    """
 
     if not str(turn_id or "").strip():
         raise TurnRefused("turn_id_required", status=400)
@@ -162,7 +176,8 @@ async def begin_turn(
                                conversation_id=conversation_id)
     if current is not None and current.state == SLICE_STATE_DELETING:
         raise TurnRefused("conversation_deleting", status=409)
-    if current is None or current.card_generation != card_generation:
+    if (current is None or current.card_generation != card_generation
+            or slice_epoch_differs(current, conversation_epoch)):
         # One registry check, when the slice is (re)seeded; never per turn.
         try:
             registered = await registry.conversation(owner_subject=card.grantor_subject,
@@ -175,7 +190,8 @@ async def begin_turn(
             raise TurnRefused("conversation_application_mismatch")
         seeded = ConversationSlice(grantor_subject=card.grantor_subject, card_access_id=card.access_id,
                                    conversation_id=conversation_id, card_generation=card_generation,
-                                   base_card_revision=card.card_revision, selection=seed_selection)
+                                   base_card_revision=card.card_revision, selection=seed_selection,
+                                   conversation_epoch=int(getattr(registered, "epoch", 0) or 0))
         try:
             current = await store.write(seeded, expected_revision=current.slice_revision if current else 0)
         except SliceStoreError as exc:
@@ -190,5 +206,6 @@ async def begin_turn(
 
 __all__ = [
     "ConversationRegistry", "RegisteredConversation", "TOKEN_SECONDS", "TURN_CAP_SECONDS", "TurnClaims",
-    "TurnRefused", "TurnTokens", "begin_turn", "card_generation_of", "turn_tokens_from_secret",
+    "TurnRefused", "TurnTokens", "begin_turn", "card_generation_of", "slice_epoch_differs",
+    "turn_tokens_from_secret",
 ]

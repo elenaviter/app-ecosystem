@@ -39,7 +39,8 @@ def seed_selection_of(card: Any) -> dict[str, Any]:
 
 async def begin_agent_turn(service: Any, user: Mapping[str, Any], *, application: str, agent_id: str,
                            conversation_id: str, turn_id: str, turn_token: str = "",
-                           mode: str = "renew", now: int | None = None) -> dict[str, Any]:
+                           mode: str = "renew", now: int | None = None,
+                           conversation_epoch: int | None = None) -> dict[str, Any]:
     from connection_hub.delegated_credentials.cards.identity import (
         resident_client_id, stable_resident_access_id,
     )
@@ -64,7 +65,7 @@ async def begin_agent_turn(service: Any, user: Mapping[str, Any], *, application
             store=store, registry=registry, tokens=tokens, card=card, application=application,
             conversation_id=conversation_id, turn_id=turn_id, seed_selection=seed_selection_of(card),
             card_generation=card_generation_of(card), now=int(time.time()) if now is None else now,
-            existing_token=turn_token, mode=mode)
+            existing_token=turn_token, mode=mode, conversation_epoch=conversation_epoch)
     except TurnRefused as exc:
         return exc.to_dict()
     return {"ok": True, "turn_token": token, "conversation_id": conversation.conversation_id,

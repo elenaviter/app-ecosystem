@@ -96,6 +96,11 @@ class ConversationSlice:
     # The Card-transaction change that wrote this revision ("" for a direct
     # write), so a replayed COMMIT finds its own revision exactly (W582).
     change_id: str = ""
+    # The conversation's deletion epoch when this slice was seeded: the start
+    # of its latest completed deletion (0 when never deleted). A conversation
+    # created again under the same id after a deletion has a later epoch, so
+    # it never inherits this slice.
+    conversation_epoch: int = 0
 
     def __post_init__(self) -> None:
         if not str(self.grantor_subject or "").strip():
@@ -119,6 +124,7 @@ class ConversationSlice:
             "state": self.state,
             "slice_revision": int(self.slice_revision),
             "change_id": self.change_id,
+            "conversation_epoch": int(self.conversation_epoch),
         }
 
     @classmethod
@@ -135,6 +141,7 @@ class ConversationSlice:
             state=str(value.get("state") or ""),
             slice_revision=int(value.get("slice_revision") or 0),
             change_id=str(value.get("change_id") or ""),
+            conversation_epoch=int(value.get("conversation_epoch") or 0),
         )
 
 

@@ -1,17 +1,17 @@
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2026 Elena Viter
 
-"""W40: the slice writes KDCube asks for, outside any Card transaction.
+"""The conversation picker's write: a slice change outside any Card transaction.
 
-- the conversation picker replaces the conversation's selection; it applies
-  from the next call, as KDCube applies a capability change from the next
-  message and never defers one (only model and prompt may defer, KDCube
-  cec325247), so no deferred capability change exists here;
-- deleting a conversation first marks its slices deleting (no token, no
-  seed), then KDCube deletes the messages, then the slices are removed (A1).
+The picker replaces the conversation's selection; it applies from the next
+call, as KDCube applies a capability change from the next message. It is a
+direct slice write with the slice's own compare-and-set; one that meets an
+undecided Card transaction waits, bounded, then refuses retryably.
 
-Each is a direct slice write with the slice's own compare-and-set; one that
-meets an undecided Card transaction waits, bounded, then refuses retryably.
+Deleting a conversation needs nothing from here: while KDCube deletes it,
+its registry reports no such conversation, so no slice is seeded, and a
+conversation created again under the same id has a later deletion epoch, so
+it never inherits a slice left from the deleted one.
 """
 
 from __future__ import annotations
@@ -21,7 +21,7 @@ import time
 from typing import Any, Mapping
 
 from connection_hub.delegated_credentials.slices.store import (
-    SELECTION_CATEGORIES, SLICE_STATE_ACTIVE, SLICE_STATE_DELETING, ConversationSlice, SliceConflict,
+    SELECTION_CATEGORIES, SLICE_STATE_ACTIVE, ConversationSlice, SliceConflict,
     SlicePrepared, SliceStoreError,
 )
 from connection_hub.delegated_credentials.slices.turn_operation import seed_selection_of
@@ -55,11 +55,19 @@ def _guarded(selection: Any) -> dict[str, Any]:
     return selection
 
 
-async def _seeded(service: Any, store: Any, card: Any, application: str, conversation_id: str) -> ConversationSlice:
-    """The current slice; a picker write before the first turn seeds it after the registry check."""
+async def _seeded(service: Any, store: Any, card: Any, application: str, conversation_id: str,
+                  conversation_epoch: int | None = None) -> ConversationSlice:
+    """The current slice; a picker write before the first turn seeds it after the registry check.
+
+    A slice seeded under another deletion epoch belongs to an earlier
+    conversation with this id and is seeded again.
+    """
+    from connection_hub.delegated_credentials.slices.turns import slice_epoch_differs
+
     current = await store.read(grantor_subject=card.grantor_subject, card_access_id=card.access_id,
                                conversation_id=conversation_id)
-    if current is not None and current.card_generation == card_generation_of(card):
+    if (current is not None and current.card_generation == card_generation_of(card)
+            and not slice_epoch_differs(current, conversation_epoch)):
         return current
     registry = getattr(service, "_conversation_registry", None)
     if registry is None:
@@ -74,7 +82,8 @@ async def _seeded(service: Any, store: Any, card: Any, application: str, convers
         raise TurnRefused("conversation_application_mismatch")
     seeded = ConversationSlice(grantor_subject=card.grantor_subject, card_access_id=card.access_id,
                                conversation_id=conversation_id, card_generation=card_generation_of(card),
-                               base_card_revision=card.card_revision, selection=seed_selection_of(card))
+                               base_card_revision=card.card_revision, selection=seed_selection_of(card),
+                               conversation_epoch=int(getattr(registered, "epoch", 0) or 0))
     return await store.write(seeded, expected_revision=current.slice_revision if current else 0)
 
 
@@ -82,6 +91,7 @@ async def update_conversation_selection(
     service: Any, user: Mapping[str, Any], *, application: str, agent_id: str, conversation_id: str,
     selection: Mapping[str, Any] | None = None, expected_slice_revision: int | None = None,
     wait_seconds: float = PICKER_WAIT_SECONDS, selected_capabilities: Mapping[str, Any] | None = None,
+    conversation_epoch: int | None = None,
 ) -> dict[str, Any]:
     """The conversation picker: replace this conversation's guarded selection."""
 
@@ -98,7 +108,7 @@ async def update_conversation_selection(
             # The picker sends KDCube's capability selection; the Hub converts it.
             selection = await slice_selection_from_capabilities(service, card, selected_capabilities)
         wanted = _guarded(selection)
-        current = await _seeded(service, store, card, application, conversation_id)
+        current = await _seeded(service, store, card, application, conversation_id, conversation_epoch)
         if current.state != SLICE_STATE_ACTIVE:
             return _refusal("conversation_deleting")
         if expected_slice_revision is not None and int(expected_slice_revision) != current.slice_revision:
@@ -122,53 +132,7 @@ async def update_conversation_selection(
     return {"ok": True, "slice_revision": written.slice_revision, "selection": dict(written.selection)}
 
 
-async def mark_conversation_deleting(service: Any, user: Mapping[str, Any], *, conversation_id: str) -> dict[str, Any]:
-    """A1 step 1: every slice of the owner's conversation becomes deleting; nothing is deleted yet."""
-
-    from connection_hub.delegated_credentials.automation_access import _subject_from_user
-
-    grantor = _subject_from_user(user)
-    store, _ = service._conversation_slice_parts()
-    if not grantor or store is None:
-        return _refusal("conversation_slices_unavailable", retryable=True, status=503)
-    marked = 0
-    try:
-        for card_access_id in await store.cards_with_conversation(grantor_subject=grantor,
-                                                                  conversation_id=conversation_id):
-            current = await store.read(grantor_subject=grantor, card_access_id=card_access_id,
-                                       conversation_id=conversation_id)
-            if current is None or current.state == SLICE_STATE_DELETING:
-                continue
-            await store.write_when_open(dataclasses.replace(current, state=SLICE_STATE_DELETING, change_id=""),
-                                        expected_revision=current.slice_revision, wait_seconds=PICKER_WAIT_SECONDS)
-            marked += 1
-    except (SlicePrepared, SliceConflict, SliceStoreError):
-        # Nothing of the conversation is deleted while this refuses (A1).
-        return _refusal("agent_authority_updating", retryable=True, status=503)
-    return {"ok": True, "marked": marked}
-
-
-async def remove_conversation_slices(service: Any, user: Mapping[str, Any], *, conversation_id: str) -> dict[str, Any]:
-    """A1 step 3, after KDCube deleted the messages: remove every slice marked deleting."""
-
-    from connection_hub.delegated_credentials.automation_access import _subject_from_user
-
-    grantor = _subject_from_user(user)
-    store, _ = service._conversation_slice_parts()
-    if not grantor or store is None:
-        return _refusal("conversation_slices_unavailable", retryable=True, status=503)
-    removed = 0
-    for card_access_id in await store.cards_with_conversation(grantor_subject=grantor, conversation_id=conversation_id):
-        current = await store.read(grantor_subject=grantor, card_access_id=card_access_id,
-                                   conversation_id=conversation_id)
-        if current is not None and current.state != SLICE_STATE_DELETING:
-            return _refusal("conversation_not_marked_deleting")
-        removed += await store.remove(grantor_subject=grantor, card_access_id=card_access_id,
-                                      conversation_id=conversation_id)
-    return {"ok": True, "removed_revisions": removed}
-
-
-__all__ = ["mark_conversation_deleting", "remove_conversation_slices", "slice_selection_from_capabilities",
+__all__ = ["slice_selection_from_capabilities",
            "update_conversation_selection"]
 
 

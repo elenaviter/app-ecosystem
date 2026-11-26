@@ -145,3 +145,61 @@ async def test_a_per_call_token_lives_to_the_turn_cap_and_is_never_renewed(tmp_p
         await begin_turn(store=store, registry=Registry(), tokens=TurnTokens(KEY), card=CARD, application="app@1-0",
                          conversation_id="c1", turn_id="t2", seed_selection=SEED, card_generation=1, now=1100,
                          mode="forever")
+
+
+NARROWED = {"named_service_operations": {"https://n.example/mcp": {"slack": []}}}
+
+
+class EpochRegistry(Registry):
+    def __init__(self, epoch=0):
+        super().__init__()
+        self.epoch = epoch
+
+    async def conversation(self, *, owner_subject, conversation_id):
+        self.reads += 1
+        return RegisteredConversation(owner_subject=self.owner, application=self.application, epoch=self.epoch)
+
+
+async def _begin_epoch(store, registry, *, epoch, turn, now):
+    return await begin_turn(store=store, registry=registry, tokens=TurnTokens(KEY), card=CARD,
+                            application="app@1-0", conversation_id="c1", turn_id=turn, seed_selection=SEED,
+                            card_generation=1, now=now, conversation_epoch=epoch)
+
+
+@pytest.mark.asyncio
+async def test_a_conversation_created_again_under_its_id_does_not_inherit_the_earlier_slice(tmp_path):
+    """The slice records the deletion epoch it was seeded under; another epoch means another conversation."""
+    store, registry = BundleStorageConversationSliceStore(tmp_path), EpochRegistry(epoch=0)
+    _, first = await _begin_epoch(store, registry, epoch=0, turn="t1", now=1000)
+    narrowed = await store.write(
+        ConversationSlice(grantor_subject="user-1", card_access_id=CARD.access_id, conversation_id="c1",
+                          card_generation=1, base_card_revision=7, selection=NARROWED, conversation_epoch=0),
+        expected_revision=first.slice_revision)
+    # Same conversation, same epoch: the slice and its choice are kept, no registry read.
+    _, same = await _begin_epoch(store, registry, epoch=0, turn="t2", now=1100)
+    assert same.slice_revision == narrowed.slice_revision and same.selection == NARROWED
+    assert registry.reads == 1
+    # The conversation was deleted at 5000 and a new one uses the id: seeded again from the defaults.
+    registry.epoch = 5000
+    _, reseeded = await _begin_epoch(store, registry, epoch=5000, turn="t3", now=6000)
+    assert reseeded.selection == SEED and reseeded.conversation_epoch == 5000 and registry.reads == 2
+    # From then on the new slice is used as it is.
+    _, kept = await _begin_epoch(store, registry, epoch=5000, turn="t4", now=6100)
+    assert kept.slice_revision == reseeded.slice_revision and registry.reads == 2
+
+
+@pytest.mark.asyncio
+async def test_a_request_without_an_epoch_uses_the_slice_as_it_is(tmp_path):
+    store, registry = BundleStorageConversationSliceStore(tmp_path), EpochRegistry(epoch=0)
+    _, first = await _begin_epoch(store, registry, epoch=0, turn="t1", now=1000)
+    _, again = await _begin_epoch(store, registry, epoch=None, turn="t2", now=1100)
+    assert again.slice_revision == first.slice_revision and registry.reads == 1
+
+
+def test_the_epoch_survives_the_stored_document():
+    value = ConversationSlice(grantor_subject="user-1", card_access_id=CARD.access_id, conversation_id="c1",
+                              card_generation=1, base_card_revision=7, conversation_epoch=4242)
+    assert ConversationSlice.from_document(value.to_document()).conversation_epoch == 4242
+    legacy = value.to_document()
+    legacy.pop("conversation_epoch")
+    assert ConversationSlice.from_document(legacy).conversation_epoch == 0
