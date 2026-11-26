@@ -93,7 +93,7 @@ class ConversationSlice:
     state: str = SLICE_STATE_ACTIVE
     slice_revision: int = 0
     # The Card-transaction change that wrote this revision ("" for a direct
-    # Write), so a replayed COMMIT finds its own revision exactly.
+    # write), so a replayed COMMIT finds its own revision exactly.
     change_id: str = ""
     # The conversation's deletion epoch when this slice was seeded: the start
     # of its latest completed deletion (0 when never deleted). A conversation
@@ -150,7 +150,7 @@ class BundleStorageConversationSliceStore:
     def __init__(self, root: pathlib.Path | str) -> None:
         # A marker of a crashed transaction is released by the Hub's existing
         # recovery cron (card-transaction-recover), whose FINISH applies or
-        # Releases this effect; never here.
+        # releases this effect; never here.
         self._root = pathlib.Path(root)
 
     async def _markers(self, prepared_directory: pathlib.Path, *, own: str = "") -> list[str]:
