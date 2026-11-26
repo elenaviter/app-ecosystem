@@ -1,4 +1,4 @@
-"""W38: one ceiling rule for named-service object.action (kdcube#270 D1, D4).
+"""One ceiling rule for named-service object.action.
 
 | descriptor for a namespace       | action ceiling                         |
 | object.action only               | every action of the namespace in the Hub catalog |
@@ -60,7 +60,7 @@ async def test_a_parent_object_action_expands_the_capability_ceiling_to_every_ca
     # The parent stays allowed: the SDK reads it as the switch for the action call itself.
     assert f"slack/{PARENT}" in _keys(control, AGENT_CAPABILITY_AUTHORITY_PROPERTY)
     assert answer["states"]["named_service_operations"].get(f"slack/{PARENT}") == CAPABILITY_ALLOWED_SELECTED
-    # D1a: the picker state of a concrete action is decided by the expanded ceiling.
+    # The picker state of a concrete action is decided by the expanded ceiling.
     assert answer["states"]["named_service_operations"].get(f"slack/{POST}") == CAPABILITY_ALLOWED_SELECTED
 
 
@@ -77,7 +77,7 @@ async def test_a_list_without_the_parent_is_exactly_the_listed_actions():
 @pytest.mark.asyncio
 @pytest.mark.parametrize("declared", [(LIST, PARENT), (LIST, PARENT, POST)], ids=["parent-only", "parent-plus-list"])
 async def test_an_agent_card_editor_save_keeps_the_actions_of_a_parent_only_descriptor(tmp_path, declared):
-    """D1c: aligning the base after a Save intersects the Card's concrete actions with the ceiling."""
+    """Aligning the base after a Save intersects the Card's concrete actions with the ceiling."""
     from test_descriptor_agent_card_transaction import _current, _world
 
     service, persistence = _service(named_services=True)
@@ -105,7 +105,7 @@ async def test_an_agent_card_editor_save_keeps_the_actions_of_a_parent_only_desc
 
 @pytest.mark.asyncio
 async def test_a_props_override_from_an_older_sdk_does_not_narrow_the_control():
-    """Only the stored Control Card narrows. Before W757 a Control save also wrote
+    """Only the stored Control Card narrows. Earlier a Control save also wrote
     bundle props, and an SDK that still reads them marks the payload overridden and
     sends the narrower list: the descriptor's own standard part still counts."""
     service, persistence = _service(named_services=True)
@@ -186,7 +186,7 @@ HOST_FILE = "object.host_file"
 @pytest.mark.asyncio
 @pytest.mark.parametrize("declared", [(LIST, PARENT, HOST_FILE), (LIST, PARENT, POST, HOST_FILE)], ids=["parent-only", "parent-plus-list"])
 async def test_an_operation_outside_the_hub_catalog_stays_in_the_ceiling(declared):
-    """Live W38 regression: the descriptor also allows an SDK-side operation the Hub
+    """Regression: the descriptor also allows an SDK-side operation the Hub
     catalog does not list (object.host_file). Bounding the ceiling to the standard part
     narrows only object.action keys, so the operation stays and the selection the SDK
     sends is not refused as agent_capability_selection_outside_control."""
@@ -207,7 +207,7 @@ async def test_an_operation_outside_the_hub_catalog_stays_in_the_ceiling(declare
     (LIST, "object.action.add_reaction"),
 ], ids=["administrator-narrowing-keeps-the-parent", "descriptor-list-only"])
 async def test_a_narrowed_action_stays_on_the_agent_card_as_provenance(ceiling):
-    """kdcube#270 contract item 10, whichever way the Control narrows.
+    """A saved choice outside the Control is kept, whichever way the Control narrows.
 
     The sync's standard-part step keeps a saved choice the ceiling no longer
     governs. An administrator narrowing keeps the bare object.action parent
@@ -264,7 +264,7 @@ async def _administrator_keeps_only_list(service, created):
 
 @pytest.mark.asyncio
 async def test_the_agent_card_view_names_what_the_control_no_longer_allows():
-    """W38 visibility: the choice stays on the Card as provenance, and the
+    """The choice stays on the Card as provenance, and the
     owner sees which choices the Control excludes and who narrowed it."""
     service, persistence = _service(named_services=True)
     created = await _sync(service, LIST, POST)
@@ -283,7 +283,7 @@ async def test_the_agent_card_view_names_what_the_control_no_longer_allows():
 
 @pytest.mark.asyncio
 async def test_a_refused_sync_is_recorded_for_the_owner_and_cleared_by_the_next_success():
-    """W38 visibility: a refused sync changes no Card, so it is recorded."""
+    """A refused sync changes no Card, so it is recorded."""
     service, _persistence = _service(named_services=True)
     service._redis = _FakeRedis()
     created = await _sync(service, LIST, POST)
@@ -306,7 +306,7 @@ async def test_a_refused_sync_is_recorded_for_the_owner_and_cleared_by_the_next_
 @pytest.mark.asyncio
 @pytest.mark.parametrize("control_keeps_post", [False, True], ids=["control-excludes-the-claim", "only-the-card-lacks-it"])
 async def test_a_claim_the_control_excludes_is_not_asked_of_the_user(control_keeps_post):
-    """W38: the credential carries only effective claims, but the guard keeps the
+    """The credential carries only effective claims, but the guard keeps the
     live composition for the request. A missing claim the Control excludes gets
     the Control-blocked denial; a claim only the Agent Card lacks still asks."""
     import dataclasses
@@ -356,7 +356,7 @@ async def test_a_claim_the_control_excludes_is_not_asked_of_the_user(control_kee
 
 @pytest.mark.asyncio
 async def test_return_to_descriptor_hands_the_control_back_to_the_descriptor():
-    """W38: an administrator's Save only ever narrows on later descriptor
+    """An administrator's Save only ever narrows on later descriptor
     refreshes; the explicit way back clears the edited mark, and the next sync
     seeds the Control from the descriptor again."""
     from connection_hub.delegated_credentials.agent_capability_control import (
@@ -443,7 +443,7 @@ async def test_a_passive_sync_under_a_narrowed_control_is_not_refused(tmp_path):
 
 @pytest.mark.asyncio
 async def test_an_owner_save_keeps_the_choices_the_control_no_longer_allows(tmp_path):
-    """kdcube#270 item 10, editor Save: the editor shows a held action outside the
+    """Editor Save: the editor shows a held action outside the
     Control and does not send it; the Save must not read that as a removal, or the
     choice is lost for good (a passive sync never re-adds it)."""
     from test_descriptor_agent_card_transaction import _current

@@ -7261,7 +7261,7 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
         try:
             access_service = await _automation_access_service(self, request)
             if "return_to_descriptor" in payload:
-                # W38: the administrator hands a descriptor Control back to its descriptor.
+                # The administrator hands a descriptor Control back to its descriptor.
                 if payload.get("return_to_descriptor") is not True:
                     raise ValueError("return_to_descriptor must be true")
                 _result = await access_service.return_control_to_descriptor(

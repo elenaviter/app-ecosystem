@@ -351,7 +351,7 @@ export const updateDelegatedAccess = createAsyncThunk<
       // the refreshed card the editor must reload.
       if (res?.ok === false && res?.status === 409) return res;
       if (res?.ok === false && res.error === 'agent_capability_selection_outside_control') {
-        // kdcube#270 D4: name what the Control refused instead of the code.
+        // Name what the Control refused instead of the code.
         const named = outsideControlText((res as { details?: unknown }).details, (resource) => resource);
         if (named) return rejectWithValue(`${named} Untick it and save again; your draft is kept.`);
       }
@@ -407,7 +407,7 @@ export const updateAgentCapabilitySelection = createAsyncThunk<
   },
 );
 
-/** W38: hand an administrator-edited descriptor Control back to its
+/** Hand an administrator-edited descriptor Control back to its
  *  descriptor. The next sync of the agent seeds it from the descriptor. */
 export const returnControlToDescriptor = createAsyncThunk<
   DelegatedAccessCreateResult,

@@ -77,11 +77,11 @@ def selected_standard_maps(*, resident: Any, control: Any, authority: Any, selec
             visible = children(authority, "named_service_operations", namespace)
             if any(key.startswith(_OBJECT_ACTION_CHILD) for key in visible):
                 # A ceiling that lists its actions keeps the bare parent only as
-                # the SDK's switch for the action call (W38). Read as a pattern it
+                # the SDK's switch for the action call. Read as a pattern it
                 # would make an action the Control no longer allows "visible" and
                 # drop the owner's saved choice; an action outside the ceiling
                 # stays on the Card as provenance, as a descriptor narrowing
-                # keeps it (kdcube#270 contract item 10).
+                # keeps it.
                 visible.discard(_OBJECT_ACTION)
             if "named_service_operations" not in authority.capabilities:
                 visible = offered_ops

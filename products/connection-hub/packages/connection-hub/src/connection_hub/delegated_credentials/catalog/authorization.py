@@ -91,7 +91,7 @@ _CONTROL_NOT_GRANTED_MESSAGES = {
     CAPABILITY_NAMED_SERVICE_OPERATION: "The linked Control Card excludes the requested named-service operation.",
 }
 
-# W38: what an agent tells its user when the Control blocks a request. The
+# What an agent tells its user when the Control blocks a request. The
 # owner's consent cannot lift it, so the agent must not offer that.
 _CONTROL_BLOCKED_NEXT_STEP = (
     "This is limited by the agent's Control (set by its administrator or its "

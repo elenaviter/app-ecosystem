@@ -551,7 +551,7 @@ def _descriptor_standard_maps(
     The descriptor's standard part always counts. An administrator's narrowing
     lives only in the stored Control Card; a descriptor payload marked
     ``standard_authority_overridden`` (sent by an SDK that still read a bundle
-    props override) no longer replaces it (W38).
+    props override) no longer replaces it.
     """
 
     request = descriptor_payload.get("standard_authority")
@@ -994,7 +994,7 @@ async def sync_agent_capability_control(
             active,
             owner_subject=grantor_subject,
         )
-        # W38: the capability ceiling, the descriptive catalog and the defaults
+        # The capability ceiling, the descriptive catalog and the defaults
         # read object.action by the same rule as the standard part below.
         authority = expand_object_action_ceiling(authority, catalog_config)
         catalog = expand_object_action_ceiling(catalog, catalog_config)
@@ -1094,7 +1094,7 @@ async def sync_agent_capability_control(
     if selected_standard is not None and selected_standard.error is not None:
         return selected_standard.error
 
-    # W38: the capability ceiling never exceeds the standard part it describes,
+    # The capability ceiling never exceeds the standard part it describes,
     # so an administrator override narrows both parts of the Control alike.
     bounded_authority = bound_ceiling_to_standard_part(authority, resolved.named_service_operations)
     if bounded_authority is not authority:
@@ -1260,7 +1260,7 @@ async def sync_agent_capability_control(
         )
         if resolved.error is not None:
             return resolved.error
-        # W38: a human Control edit narrows the capability ceiling with it.
+        # A human Control edit narrows the capability ceiling with it.
         edited_ceiling = AgentCapabilityPolicy.from_property(
             refreshed_properties[AGENT_CAPABILITY_AUTHORITY_PROPERTY]
         )
@@ -1450,7 +1450,7 @@ async def sync_agent_capability_control(
         # passive sync re-sends the descriptor's default selection and keeps the
         # Card's own; refusing it whenever the descriptor allows more than an
         # administrator-narrowed Control refused every sync of the agent, which
-        # then ran closed (W38, live 2026-11-17).
+        # then ran closed.
         if (getattr(service, "_card_coordinator", None) is not None and requested_selection is not None
                 and replace_selection):
             stored_selection = (AgentCapabilityPolicy.from_property(raw_current_selection)

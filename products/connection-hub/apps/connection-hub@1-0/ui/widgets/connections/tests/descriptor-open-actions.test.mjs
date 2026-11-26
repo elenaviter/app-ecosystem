@@ -42,7 +42,7 @@ test('W38: no notice for a list-only descriptor, a caller Card or a non-descript
   assert.equal(descriptorOpenActions({ source: 'control', properties: {} }), null)
 })
 
-// kdcube#270 D4, live check 2026-11-16: the Agent Card editor offered docs provider.capabilities, which the
+// The Agent Card editor offered docs provider.capabilities, which the
 // agent's Control does not hold, as an ordinary checkbox; the save was then refused with a bare error code.
 test('D4: under an AND Control the editor does not offer an operation outside it', async () => {
   const { operationOutsideControl } = await import('../src/features/delegatedAccess/controlCardPreview.ts')

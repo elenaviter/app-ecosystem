@@ -1029,7 +1029,7 @@ function DriftCatalogRow({
 }: {
   row: { resource: string; namespace?: string; claim?: string; operation?: string };
   removed: boolean;
-  /** W38: a row outside the Control says what happens to it instead. */
+  /** A row outside the Control says what happens to it instead. */
   caption?: string;
 }) {
   const kind = row.claim ? 'Permission' : row.namespace ? 'Service action' : row.operation ? 'Tool' : 'Service';
@@ -1113,7 +1113,7 @@ function CatalogDriftNotice({ drift }: { drift?: DelegatedCatalogDrift }) {
   );
 }
 
-/** W38: choices this Card keeps that its Control no longer allows, and a
+/** Choices this Card keeps that its Control no longer allows, and a
  *  refused descriptor sync. Both come from the server; the panel only renders. */
 function ControlNarrowingNotice({
   outside,
@@ -5613,7 +5613,7 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
       ? 'or'
       : 'and';
     const callerDraft = pendingCallerAuthority(record);
-    // The Control bounds what the Card may hold in either view (kdcube#270 D4);
+    // The Control bounds what the Card may hold in either view;
     // only the diff markers follow the Effective Card view.
     const controlBound: EffectiveCompositionView | undefined = linkedControl?.control_authority
       ? {

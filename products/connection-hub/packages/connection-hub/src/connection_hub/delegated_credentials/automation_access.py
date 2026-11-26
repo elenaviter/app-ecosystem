@@ -1865,7 +1865,7 @@ def _descriptor_control_ceiling_after_edit(
     properties: Mapping[str, Any] | None,
     named_service_operations: Any,
 ) -> dict[str, Any]:
-    """An edit of a descriptor Control narrows its capability ceiling with it (W38).
+    """An edit of a descriptor Control narrows its capability ceiling with it.
 
     The edit is an explicit list on the standard part. The capability ceiling
     and the defaults on the same Card describe the same choice, so they are
@@ -2306,7 +2306,7 @@ class AutomationAccessService:
             return {"state": "not_controlled"}
         view = await self._effective_control_view_body(record, binding)
         if viewer is not None:
-            # kdcube#270 D2: whether this viewer may open the linked Control
+            # Whether this viewer may open the linked Control
             # itself; a descriptor Control opens only for an administrator.
             view["viewer_may_open"] = (
                 binding.issuer_kind != AGENT_DESCRIPTOR_ISSUER_KIND
@@ -2366,7 +2366,7 @@ class AutomationAccessService:
         return {
             "state": "active",
             "fail_closed": False,
-            # W38: what this Card keeps that the Control no longer allows. The
+            # What this Card keeps that the Control no longer allows. The
             # choices stay on the Card as provenance and grant nothing; the
             # owner sees why they do not apply and that they return when the
             # Control allows them again.
@@ -4945,7 +4945,7 @@ class AutomationAccessService:
             if profile is not None:
                 item["caller_profile"] = profile.to_dict()
                 item["stable_identity"] = record.access_id == profile.access_id
-                # W38: a refused descriptor sync changed nothing on this Card.
+                # A refused descriptor sync changed nothing on this Card.
                 refusal = await self._agent_sync_outcomes().read(
                     grantor_subject=record.grantor_subject,
                     application=profile.application,
@@ -6692,7 +6692,7 @@ class AutomationAccessService:
         resource_grants: Mapping[str, Any],
     ) -> tuple[dict[str, Any], dict[str, Any]]:
         """Add back held named-service operations (and their held claims) the
-        linked Control excludes, for resources the Save keeps (W38, item 10)."""
+        linked Control excludes, for resources the Save keeps."""
         named = {resource: dict(namespaces) if isinstance(namespaces, Mapping) else namespaces
                  for resource, namespaces in named_service_operations.items()}
         grants = {resource: list(_as_list(values)) for resource, values in resource_grants.items()}
@@ -7069,7 +7069,7 @@ class AutomationAccessService:
             and isinstance(named_service_operations, Mapping)
             and isinstance(resource_grants, Mapping)
         ):
-            # kdcube#270 item 10: an owner's Save keeps the choices the Control no
+            # An owner's Save keeps the choices the Control no
             # longer allows. The editor shows them outside the Control and never
             # sends them, so the Save must not read their absence as a removal;
             # they stay as provenance and apply again once the Control allows them.
@@ -8210,7 +8210,7 @@ class AutomationAccessService:
             issuer_label=issuer_label,
             manage_url=manage_url,
         )
-        # W38: a refused sync changes no Card; keep it so the editor can say so.
+        # A refused sync changes no Card; keep it so the editor can say so.
         await self._agent_sync_outcomes().record(
             result,
             grantor_subject=_subject_from_user(user),
@@ -8233,7 +8233,7 @@ class AutomationAccessService:
         expected_card_revision: int | None,
         expected_catalog_version: str | None = None,
     ) -> dict[str, Any]:
-        """Hand a descriptor Control back to its descriptor (W38).
+        """Hand a descriptor Control back to its descriptor.
 
         An administrator's Save marks the Control edited, and from then on a
         descriptor refresh only narrows it. This is the explicit way back: one
@@ -8365,7 +8365,7 @@ class AutomationAccessService:
         record = loaded[0] if loaded is not None else None
         if record is None or not _record_is_credentialless(record):
             return {"ok": False, "error": "control_card_not_found", "status": 404}
-        # kdcube#270 D2: a descriptor Control Card is the administrator's; an
+        # A descriptor Control Card is the administrator's; an
         # ordinary user reading it directly is refused without its authority
         # payload, as editing it already is.
         if _is_descriptor_control_record(record) and not (
@@ -8397,7 +8397,7 @@ class AutomationAccessService:
         access["catalog_drift"] = dict(card.get("catalog_drift") or {})
         access["resource_offers"] = list(card.get("resource_offers") or [])
         access["invocation_policies"] = []
-        # W38: the administrator sees a refused descriptor sync on the Control too.
+        # The administrator sees a refused descriptor sync on the Control too.
         marker = descriptor_control(record.properties)
         if marker is not None:
             try:
@@ -10135,7 +10135,7 @@ class AutomationAccessService:
                     if control is None or composed is None:
                         raise ControlCardMismatch("control_card_unresolvable")
                     # Keep who refuses: an operation the Control excludes is not
-                    # something the owner's consent can add (W38).
+                    # something the owner's consent can add.
                     composition = ResolvedCardComposition(
                         caller_card=card_authority_from_record(record),
                         effective_card=composed,

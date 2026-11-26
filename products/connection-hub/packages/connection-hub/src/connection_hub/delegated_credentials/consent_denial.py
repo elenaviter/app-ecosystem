@@ -452,9 +452,9 @@ def card_capability_consent_denial(
         return payload
     # The boundary attribution already decided no consent can help: the linked
     # Control Card (an administrator or the descriptor) excludes the operation.
-    # Adding a consent block would ask the user for what nobody can grant here
-    # (W38, from the live run: an administrator narrowing reached the agent as
-    # an unsatisfiable consent demand).
+    # Adding a consent block would ask the user for what nobody can grant here:
+    # an administrator's narrowing would reach the agent as an unsatisfiable
+    # consent demand.
     ret = payload.get("ret") if isinstance(payload.get("ret"), Mapping) else {}
     recovery = ret.get("recovery") if isinstance(ret.get("recovery"), Mapping) else {}
     if recovery.get("request_user_consent") is False:

@@ -1,4 +1,4 @@
-"""kdcube#270 D3, the OAuth path: a re-consent never leaves a selection without its tree.
+"""The OAuth path: a re-consent never leaves a selection without its tree.
 
 On 2026-09-28 an agent-grant write stored named_services: {} while the Card
 still selected named-service operations, and every composition with the

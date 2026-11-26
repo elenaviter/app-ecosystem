@@ -7,7 +7,7 @@ export interface ControlNarrowingRow {
   operation?: string;
 }
 
-/** W38: flatten the server's outside-Control block into rows the drift list
+/** Flatten the server's outside-Control block into rows the drift list
  *  renders: named-service operations, tools, then permissions. */
 export function controlNarrowingRows(outside?: DelegatedOutsideControl): ControlNarrowingRow[] {
   const rows: ControlNarrowingRow[] = [];

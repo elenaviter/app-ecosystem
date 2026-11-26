@@ -215,7 +215,7 @@ export interface DelegatedControlCardAuthority {
   properties?: Record<string, unknown>;
 }
 
-/** W38: what a Card keeps that its Control no longer allows. The choices stay
+/** What a Card keeps that its Control no longer allows. The choices stay
  *  on the Card as provenance, grant nothing, and apply again once allowed. */
 export interface DelegatedOutsideControl {
   by?: 'administrator' | 'descriptor' | string;
@@ -224,7 +224,7 @@ export interface DelegatedOutsideControl {
   claims?: Record<string, string[]>;
 }
 
-/** W38: the last refused descriptor sync; it changed no Card. */
+/** The last refused descriptor sync; it changed no Card. */
 export interface DelegatedAgentSyncRefusal {
   error: string;
   reason?: string;
@@ -235,7 +235,7 @@ export interface DelegatedAgentSyncRefusal {
 
 export interface DelegatedControlCardView {
   state: 'not_controlled' | 'active' | 'unavailable' | string;
-  /** kdcube#270 D2: false when this viewer may not open the linked Control
+  /** False when this viewer may not open the linked Control
    *  itself (a descriptor Control opens only for a platform administrator). */
   viewer_may_open?: boolean;
   outside_control?: DelegatedOutsideControl;
@@ -343,7 +343,7 @@ export interface DelegatedAccessRecord {
   catalog_version?: string;
   /** Backend-computed comparison with the active catalog. */
   catalog_drift?: DelegatedCatalogDrift;
-  /** W38: the last refused descriptor sync of this agent, if any. */
+  /** The last refused descriptor sync of this agent, if any. */
   agent_sync_refusal?: DelegatedAgentSyncRefusal;
   /** Invocation limits live beside card authority and are enforced immediately
    *  before the operation is admitted. An absent row means reusable. */

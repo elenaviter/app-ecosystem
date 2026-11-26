@@ -95,7 +95,7 @@ def _error_code(parsed: Mapping[str, Any]) -> str:
 
 
 def _consent_forbidden(parsed: Mapping[str, Any]) -> bool:
-    """Whether the denial says no user consent can lift it (W38)."""
+    """Whether the denial says no user consent can lift it."""
     ret = parsed.get("ret")
     if not isinstance(ret, Mapping):
         err = parsed.get("error") if isinstance(parsed.get("error"), Mapping) else {}
@@ -134,7 +134,7 @@ async def announce_result_consent(
         if code not in _ANNOUNCEABLE_CODES:
             return None
         if _consent_forbidden(parsed):
-            # W38: the surface attributed the refusal to a card no user consent
+            # The surface attributed the refusal to a card no user consent
             # can change (the agent's Control). Nothing to announce.
             return None
         block = _consent_block(parsed)

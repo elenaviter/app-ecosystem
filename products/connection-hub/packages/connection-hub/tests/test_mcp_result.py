@@ -426,7 +426,7 @@ async def test_account_only_hosted_denial_preserves_the_complete_review_context(
 
 @pytest.mark.asyncio
 async def test_a_control_blocked_denial_announces_nothing() -> None:
-    """W38 live 2026-11-18: a Control-blocked denial reached the MCP result
+    """A Control-blocked denial reached the MCP result
     handling with request_user_consent: false; it was treated as an announceable
     consent case and skipped only because its block was empty. It is now no
     consent case at all, even when a block is present."""

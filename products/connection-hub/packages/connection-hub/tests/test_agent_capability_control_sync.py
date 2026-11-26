@@ -1902,7 +1902,7 @@ async def test_metadata_only_agent_card_still_uses_the_standard_save() -> None:
 
 @pytest.mark.asyncio
 async def test_an_ordinary_user_cannot_read_a_descriptor_control_card() -> None:
-    """kdcube#270 D2: the read is refused without the authority payload."""
+    """The read is refused without the authority payload."""
 
     service, _persistence = _service()
     created = await _sync(
@@ -1930,7 +1930,7 @@ async def test_an_ordinary_user_cannot_read_a_descriptor_control_card() -> None:
 
 @pytest.mark.asyncio
 async def test_the_agent_card_offers_its_descriptor_control_only_to_an_administrator() -> None:
-    """kdcube#270 D2: the owner's Agent Card says whether its Control opens."""
+    """The owner's Agent Card says whether its Control opens."""
 
     service, _persistence = _service()
     created = await _sync(

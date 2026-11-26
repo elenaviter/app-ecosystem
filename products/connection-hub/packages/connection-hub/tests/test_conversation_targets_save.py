@@ -1,4 +1,4 @@
-"""kdcube#270: an owner's own Card that no Control governs may change its conversation applications.
+"""An owner's own Card that no Control governs may change its conversation applications.
 
 Since W755 the whole-Card Save refused every property change except on a
 person's My Card, so "Conversation applications" on an OAuth or automation Card

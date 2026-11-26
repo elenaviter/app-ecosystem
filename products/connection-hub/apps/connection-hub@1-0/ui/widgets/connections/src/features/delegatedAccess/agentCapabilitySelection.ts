@@ -211,7 +211,7 @@ export function agentCapabilitySelectionFromMap(
 }
 
 
-/** W38: on a descriptor Control, the namespaces whose descriptor allows every
+/** On a descriptor Control, the namespaces whose descriptor allows every
  *  action (`object.action`), and whether an administrator edit is in force. */
 export interface DescriptorOpenActions {
   namespaces: string[];

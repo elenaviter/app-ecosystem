@@ -1,7 +1,7 @@
-// kdcube#270 F9 (2026-09-29): after a 409 "Your draft is still here", a second Save stored the Slack
+// After a 409 "Your draft is still here", a second Save stored the Slack
 // operation but reset the model, instruction and skill. The Agent Card editor then saved in two writes:
 // the Card selection, and the KDCube agent defaults beside it. The first write moved the revision, so the
-// second one was refused, and only half of the draft landed. Since W755 a Save is one
+// second one was refused, and only half of the draft landed. Now a Save is one
 // delegated_access_update. The agent defaults travel in the same request as the Card's properties, and a
 // refusal stores nothing. These checks pin that, so a split save cannot come back.
 import assert from 'node:assert/strict'

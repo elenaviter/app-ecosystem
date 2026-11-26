@@ -147,7 +147,7 @@ export function authorityAllowsOuterOperation(
 }
 
 /** How one Caller/Control selection is represented in the Effective Card. */
-/** kdcube#270 D4: under an AND Control an operation the Control does not hold
+/** Under an AND Control an operation the Control does not hold
  *  can never take effect, and the Card save refuses it, so the editor shows it
  *  without offering it. Under OR (or with no Control) every row stays offered. */
 export function operationOutsideControl(

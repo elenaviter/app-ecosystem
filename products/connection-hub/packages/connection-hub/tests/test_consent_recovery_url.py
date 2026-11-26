@@ -158,7 +158,7 @@ def test_a_denial_carries_the_recovery_link_it_has():
 
 
 def test_a_denial_the_control_card_blocks_never_becomes_a_consent_demand():
-    """W38: the boundary attribution said the linked Control Card excludes the
+    """The boundary attribution said the linked Control Card excludes the
     operation, so no user consent can satisfy it; the denial passes unchanged."""
     from connection_hub.delegated_credentials.catalog.authorization import (
         CAPABILITY_NAMED_SERVICE_OPERATION,

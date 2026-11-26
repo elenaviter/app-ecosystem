@@ -1,4 +1,4 @@
-"""One ceiling rule for named-service ``object.action`` (W38, kdcube#270 D1 and D4).
+"""One ceiling rule for named-service ``object.action``.
 
 | descriptor for a namespace | action ceiling |
 | --- | --- |
@@ -34,7 +34,7 @@ def expand_object_action_ceiling(
     policy: AgentCapabilityPolicy | None,
     catalog_config: Any,
 ) -> AgentCapabilityPolicy | None:
-    """Apply the one ceiling rule for named-service actions to a capability policy (W38).
+    """Apply the one ceiling rule for named-service actions to a capability policy.
 
     A parent ``<namespace>/object.action`` names every action the active
     Connection Hub catalog offers for that namespace, today's and later ones,
@@ -92,7 +92,7 @@ def bound_ceiling_to_standard_part(
     policy: AgentCapabilityPolicy | None,
     named_service_operations: Any,
 ) -> AgentCapabilityPolicy | None:
-    """Keep the capability ceiling's named-service operations inside the standard part (W38).
+    """Keep the capability ceiling's named-service operations inside the standard part.
 
     Both parts of a descriptor Control describe one ceiling. Without an
     administrator override they already agree once ``object.action`` is

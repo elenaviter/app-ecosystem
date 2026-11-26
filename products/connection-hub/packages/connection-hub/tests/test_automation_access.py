@@ -477,7 +477,7 @@ def test_a_concrete_card_grant_is_offered_as_the_pattern_row_that_governs_it() -
 
 @pytest.mark.asyncio
 async def test_native_grant_state_names_the_control_card_when_it_excludes_the_operation() -> None:
-    """W38: an operation the linked Control Card excludes is not a consent case.
+    """An operation the linked Control Card excludes is not a consent case.
 
     The Agent Card holds object.search; the administrator's Control does not.
     The card-side denial names the Control as the blocker and asks for no
