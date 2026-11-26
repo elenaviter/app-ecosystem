@@ -232,7 +232,7 @@ export interface UpdateDelegatedAccessArgs {
    *  their choices; this also withdraws every permission not ticked, from
    *  every conversation at once. */
   revokeUnselected?: boolean;
-  /** W41: the application holding a shared descriptor Control being saved. */
+  /** The application holding a shared descriptor Control being saved. */
   holderSubject?: string;
   label: string;
   resourceGrants: Record<string, string[]>;

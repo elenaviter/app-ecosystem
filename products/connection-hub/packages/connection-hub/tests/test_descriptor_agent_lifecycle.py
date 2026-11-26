@@ -134,7 +134,7 @@ async def test_unknown_named_selection_is_preserved_on_sync_and_requires_review_
 
 
 async def _publish(service, arguments):
-    """W41: the deployment publishes the shared Control; no Agent Card is written."""
+    """The deployment publishes the shared Control; no Agent Card is written."""
     return await service.publish_agent_descriptor_control({"bundle_id": arguments["application"]}, **arguments)
 
 
@@ -191,7 +191,7 @@ async def test_group_keeps_configured_control_issuer_and_registered_resident_gat
     callers = CallerWriterRegistry()
     callers.register(AGENT_DESCRIPTOR_ISSUER_KIND, policy)
     service.bind_caller_writers(callers)
-    # W41: the configured issuer governs the deployment's publication of the shared Control.
+    # The configured issuer governs the deployment's publication of the shared Control.
     answer = await _publish(service, _refresh_arguments())
     assert answer["ok"] is not refuse, answer
     assert issuer.calls.count("decide") == 2
@@ -269,7 +269,7 @@ async def test_expired_bearer_does_not_block_a_narrower_control_decision(tmp_pat
         raise AssertionError("Control narrowing never depends on an ordinary mint")
 
     monkeypatch.setattr(service, "_mint_card_credential", mint)
-    # W41: the narrower Control is the deployment's publication; it never
+    # The narrower Control is the deployment's publication; it never
     # depends on any user's bearer, and it narrows the expired Card at once.
     published = await _publish(service, _refresh_arguments(allow_post=False))
     assert published["ok"] and published["control_changed"], published

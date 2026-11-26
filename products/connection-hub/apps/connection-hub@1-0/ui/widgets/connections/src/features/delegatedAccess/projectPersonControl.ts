@@ -22,7 +22,7 @@ export type ProjectControlCoordinates =
   | ProjectPersonControlCoordinates
   | ProjectInvitationControlCoordinates;
 
-/** W41: an application's shared descriptor Control is held by its synthetic
+/** An application's shared descriptor Control is held by its synthetic
  *  application subject, never by the person editing it. Reads and saves name
  *  that holder; the Hub checks it against the Control's own issuer. */
 export const APPLICATION_AUTHORITY_PREFIX = 'application-authority:';
@@ -132,7 +132,7 @@ export interface LinkedControlOpenTarget {
   controlId: string;
   projectRef?: string;
   targetSubject?: string;
-  /** W41: the application holding a shared descriptor Control. */
+  /** The application holding a shared descriptor Control. */
   holderSubject?: string;
 }
 

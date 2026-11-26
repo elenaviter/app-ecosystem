@@ -89,7 +89,7 @@ async def _paired(tmp_path, *, postgres_clock: int | None = None):
             tenant=w.authority.tenant, project=w.authority.project, application=APPLICATION, agent=AGENT)}
         answer = await seed.sync_agent_capability_control({"user_id": OWNER}, **w.arguments)
         assert answer["ok"], answer
-        # W41: the shared Control is published by the deployment, never by a
+        # The shared Control is published by the deployment, never by a
         # Card lifecycle; the productive store holds it before any issuance.
         shared = records.records[answer["control_card"]["access_id"]][0]
         await w.cards.commit(shared, subject_hash=subject_hash_for(shared.grantor_subject),
@@ -118,7 +118,7 @@ async def _paired(tmp_path, *, postgres_clock: int | None = None):
 
 
 def _request(w, *, original=None, resident=None, original_control=None, control=None, lease_seconds=604800):
-    # W41: the shared Control is already stored; an issuance reserves it, never writes it.
+    # The shared Control is already stored; an issuance reserves it, never writes it.
     return dict(original=original, resident=resident or w.resident, original_control=original_control or w.control,
                 control=control or w.control, active_catalog=w.catalog, lease_seconds=lease_seconds)
 
@@ -181,7 +181,7 @@ async def test_public_sync_first_create_begins_before_inactive_preparation_and_c
         row = await w.decisions.read(plan.transaction_id)
         assert row.state == "committed" and PARTICIPANT in row.finished
         stored = await w.authority.read_issuance_plan(plan.transaction_id)
-        # W41: the shared Control is reserved by the issuance, never a member.
+        # The shared Control is reserved by the issuance, never a member.
         assert {member["access_id"] for member in stored["plan"]["intent"]["members"]} == {plan.access_id}
         assert plan.slots == ("access",) and plan.delivery_deadline == plan.expires_at
         assert w.service._minter.await_count == 0
@@ -231,7 +231,7 @@ async def test_expired_resident_and_changed_control_rotate_under_one_committed_g
         async def inspect(*, plan):
             assert not (await w.decisions.read(plan.transaction_id)).terminal
             intent = await w.service._card_coordinator[1].load(plan.transaction_id)
-            # W41: the narrower Control was published first; the rotation renews the resident alone.
+            # The narrower Control was published first; the rotation renews the resident alone.
             assert {member.candidate.access_id: member.action for member in intent.members} == {
                 old.access_id: "renew"}
             plans.append(plan)
@@ -344,7 +344,7 @@ async def test_renew_policy_refusal_still_commits_descriptor_withdrawal(tmp_path
         answer = await w.service.sync_agent_capability_control(USER, **arguments)
         assert answer["ok"] is False and answer["error"] == "pb_refused", answer
         assert answer["retryable"] is False and answer["status"] == 409
-        # W41: the withdrawal is the deployment's publication, committed before and
+        # The withdrawal is the deployment's publication, committed before and
         # independently of the user's refused renewal; it narrows the Card at once.
         control = (await w.service._load_record_any_state(w.control.access_id, grantor_subject=w.control.grantor_subject))[0]
         assert control.card_revision == w.control.card_revision + 1

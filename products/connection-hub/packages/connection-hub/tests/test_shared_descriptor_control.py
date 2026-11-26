@@ -1,11 +1,10 @@
-"""W41: one descriptor Control per agent, written only by its two writers.
+"""One descriptor Control per agent, written only by its two writers.
 
-The operator's W212 ruling: the Control "is not per user... its for all users".
-The deployment publishes it; a platform administrator edits it on the
+The Control is shared by every user of the agent. The deployment publishes it; a platform administrator edits it on the
 application's behalf; every user's Agent Card composes with the same one. A
-user's sync, a user's Save and an agent bearer never write it (T1). A
-repeated or concurrent publication writes once (T3b), and a Card still bound
-to its owner's legacy per-user copy moves to the shared Control (T11).
+user's sync, a user's Save and an agent bearer never write it. A
+repeated or concurrent publication writes once, and a Card still bound
+to its owner's legacy per-user copy moves to the shared Control.
 """
 
 from __future__ import annotations
@@ -109,7 +108,7 @@ async def test_an_administrator_edit_reaches_every_user_at_once() -> None:
 
 
 @pytest.mark.asyncio
-async def test_t1_an_ordinary_user_never_writes_the_shared_control() -> None:
+async def test_an_ordinary_user_never_writes_the_shared_control() -> None:
     service, persistence = _service(named_services=True)
     published = await _publish(service, READ, POST)
     control = persistence.records[published["control_card"]["access_id"]][0]
@@ -131,7 +130,7 @@ async def test_t1_an_ordinary_user_never_writes_the_shared_control() -> None:
 
 
 @pytest.mark.asyncio
-async def test_t1_a_users_sync_reads_the_control_and_never_publishes() -> None:
+async def test_a_users_sync_reads_the_control_and_never_publishes() -> None:
     service, persistence = _service(named_services=True)
     published = await _publish(service, READ, POST)
     control = persistence.records[published["control_card"]["access_id"]][0]
@@ -154,7 +153,7 @@ async def test_t1_a_users_sync_reads_the_control_and_never_publishes() -> None:
     {"bundle_id": "other-app@1-0"},                            # another application's deployment
     {},
 ])
-async def test_t1_only_the_applications_own_deployment_publishes(deployment) -> None:
+async def test_only_the_applications_own_deployment_publishes(deployment) -> None:
     service, persistence = _service(named_services=True)
     refused = await service.publish_agent_descriptor_control(deployment, **_arguments(READ, POST))
     assert refused == {"ok": False, "error": "agent_descriptor_publication_requires_deployment", "status": 403}
@@ -162,7 +161,7 @@ async def test_t1_only_the_applications_own_deployment_publishes(deployment) -> 
 
 
 @pytest.mark.asyncio
-async def test_t1_a_forged_holder_names_no_control() -> None:
+async def test_a_forged_holder_names_no_control() -> None:
     service, persistence = _service(named_services=True)
     published = await _publish(service, READ, POST)
     control_id = published["control_card"]["access_id"]
@@ -173,7 +172,7 @@ async def test_t1_a_forged_holder_names_no_control() -> None:
 
 
 @pytest.mark.asyncio
-async def test_t3b_a_repeated_publication_writes_once() -> None:
+async def test_a_repeated_publication_writes_once() -> None:
     service, persistence = _service(named_services=True)
     first = await _publish(service, READ, POST)
     writes = len(persistence.persisted)
@@ -183,7 +182,7 @@ async def test_t3b_a_repeated_publication_writes_once() -> None:
 
 
 @pytest.mark.asyncio
-async def test_t3b_a_concurrent_publication_of_the_same_revision_is_a_no_op() -> None:
+async def test_a_concurrent_publication_of_the_same_revision_is_a_no_op() -> None:
     service, persistence = _service(named_services=True)
     first = await _publish(service, READ, POST)
     control = persistence.records[first["control_card"]["access_id"]][0]
@@ -207,7 +206,7 @@ async def test_t3b_a_concurrent_publication_of_the_same_revision_is_a_no_op() ->
 
 
 @pytest.mark.asyncio
-async def test_t11_a_card_on_its_owners_legacy_copy_moves_to_the_shared_control() -> None:
+async def test_a_card_on_its_owners_legacy_copy_moves_to_the_shared_control() -> None:
     service, persistence = _service(named_services=True)
     published = await _publish(service, READ, POST)
     synced = await service.user_sync_only({"user_id": OWNER}, **_arguments(READ, POST))
@@ -225,7 +224,7 @@ async def test_t11_a_card_on_its_owners_legacy_copy_moves_to_the_shared_control(
     assert (rebound.holder_subject, rebound.control_id) == (HOLDER, shared.access_id)
 
 
-def test_t11_a_card_bound_to_a_revoked_control_is_refused() -> None:
+def test_a_card_bound_to_a_revoked_control_is_refused() -> None:
     import asyncio
 
     async def scenario():
@@ -243,7 +242,7 @@ def test_t11_a_card_bound_to_a_revoked_control_is_refused() -> None:
 
 
 @pytest.mark.asyncio
-async def test_c1_an_ordinary_user_cannot_create_a_descriptor_control() -> None:
+async def test_an_ordinary_user_cannot_create_a_descriptor_control() -> None:
     service, persistence = _service(named_services=True)
     for user in ({"user_id": SECOND, "roles": ["kdcube:role:registered"]}, ADMIN):
         refused = await service.control_card_create(
@@ -253,7 +252,7 @@ async def test_c1_an_ordinary_user_cannot_create_a_descriptor_control() -> None:
 
 
 @pytest.mark.asyncio
-async def test_c1_a_legacy_per_user_copy_is_never_edited() -> None:
+async def test_a_legacy_per_user_copy_is_never_edited() -> None:
     service, persistence = _service(named_services=True)
     published = await _publish(service, READ, POST)
     shared = persistence.records[published["control_card"]["access_id"]]

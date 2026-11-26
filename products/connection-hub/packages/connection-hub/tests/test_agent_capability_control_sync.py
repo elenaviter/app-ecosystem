@@ -63,7 +63,7 @@ PROJECT = "project-a"
 APPLICATION = "problem-board@1-0"
 AGENT = "worker"
 OWNER = "user-1"
-# W41: the application's synthetic holder of its shared descriptor Controls.
+# The application's synthetic holder of its shared descriptor Controls.
 HOLDER = application_authority_subject(tenant=TENANT, project=PROJECT, application=APPLICATION)
 RESOURCE = application_resource(
     tenant=TENANT,
@@ -331,7 +331,7 @@ def _service(
 
 
 def publish_then_sync(service: AutomationAccessService) -> None:
-    """W41: the deployment publishes each descriptor revision before a user's sync reads it.
+    """The deployment publishes each descriptor revision before a user's sync reads it.
 
     KDCube publishes the shared Control when it deploys the application; a
     user's sync only reads it. The tests' sync therefore publishes first, as
@@ -1437,7 +1437,7 @@ async def test_live_control_defaults_seed_a_recreated_agent_card() -> None:
             control,
             card_revision=control.card_revision + 1,
             properties=control_properties,
-            # W41: an administrator's defaults on the shared Control seed new Cards.
+            # An administrator's defaults on the shared Control seed new Cards.
             provenance={**dict(control.provenance or {}), AGENT_DESCRIPTOR_CARD_EDIT_PROVENANCE_KEY: True},
         ),
         handles,
@@ -1639,7 +1639,7 @@ async def test_non_admin_grantor_may_edit_a_non_descriptor_control_card() -> Non
     }
     ordinary_control_card = dataclasses.replace(
         descriptor_control_card,
-        # An ordinary Control is its creator's own (W41 holds only descriptor
+        # An ordinary Control is its creator's own (only descriptor Controls are held by an application;
         # Controls under the application).
         grantor_subject=OWNER,
         issuer_kind="application",

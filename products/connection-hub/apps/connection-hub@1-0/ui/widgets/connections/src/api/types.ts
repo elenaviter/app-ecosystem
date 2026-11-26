@@ -203,7 +203,7 @@ export interface DelegatedControlCardBinding {
   issuer_label?: string;
   manage_url?: string;
   control_revision?: number;
-  /** W41: the application's holder of a shared descriptor Control. */
+  /** The application's holder of a shared descriptor Control. */
   holder_subject?: string;
 }
 

@@ -8,7 +8,7 @@ import {
   linkedControlOpenTarget,
 } from '../src/features/delegatedAccess/projectPersonControl.ts'
 
-// W41: one descriptor Control per agent, held by the application. The editor
+// One descriptor Control per agent, held by the application. The editor
 // names that holder on every read and save; the Hub checks it against the
 // Control's own issuer, so the value only routes, it never authorizes.
 const HOLDER = 'application-authority:' + 'a'.repeat(64)

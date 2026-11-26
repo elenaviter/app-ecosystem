@@ -531,7 +531,7 @@ async def test_return_to_descriptor_passes_the_agent_card_transaction(tmp_path, 
             _record_transform=strip)
         assert stripped["ok"], stripped
         control = await _current(store, control)
-        # W41: a user's sync only reads the shared Control; without descriptor
+        # A user's sync only reads the shared Control; without descriptor
         # evidence it is not current, and only the next publication reseeds it.
         refused = await service.user_sync_only({"user_id": OWNER}, **_sync_arguments())
         assert refused["ok"] is False and refused["error"] == "agent_descriptor_control_not_current"

@@ -300,7 +300,7 @@ async def decide_descriptor_resident_issuance(service: Any, raw: Mapping[str, An
     control_member = next((member for member in intent.members
                            if binding is not None and member.candidate.access_id == binding.control_id), None)
     if control_member is None:
-        # W41: the shared Control lives under its application holder.
+        # The shared Control lives under its application holder.
         found = await service._load_record_any_state(
             binding.control_id, grantor_subject=binding.holder_subject or plan.grantor_subject)
         if found is None or found[1] != "active":

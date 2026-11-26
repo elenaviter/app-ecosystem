@@ -1,8 +1,8 @@
-"""W41 migration: per-user descriptor Control copies to the one shared Control.
+"""Migration: per-user descriptor Control copies to the one shared Control.
 
 Dry run reads only and lists each copy and how it differs; apply rebinds each
 Agent Card still on its owner's copy to the shared Control, then revokes the
-copy; a second apply finds nothing (T10, T11). An administrator's override on
+copy; a second apply finds nothing. An administrator's override on
 their own copy is listed, never carried over.
 """
 

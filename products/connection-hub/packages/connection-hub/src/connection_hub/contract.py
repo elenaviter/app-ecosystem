@@ -45,7 +45,7 @@ AGENT_GRANT_CHECK = "agent_grant.check"
 # intentionally local-only; callers outside the host cannot assert descriptor
 # provenance.
 AGENT_CAPABILITY_SYNC = "agent_capability.sync"
-# W41: the application's deployment publishes one agent's shared descriptor
+# The application's deployment publishes one agent's shared descriptor
 # Control. Local-only, like the sync: the host binds the calling application,
 # and only that application's deployment may publish its agents' Controls.
 AGENT_CAPABILITY_PUBLISH = "agent_capability.publish"

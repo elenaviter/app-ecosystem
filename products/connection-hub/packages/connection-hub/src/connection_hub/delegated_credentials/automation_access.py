@@ -3653,7 +3653,7 @@ class AutomationAccessService:
         resident = card_authority_from_record(record)
         descriptor_agent_resource(resident, tenant=self._tenant, project=self._project,
                                   grantor_subject=grantor_subject)
-        # W41: the shared Control lives under its application holder.
+        # The shared Control lives under its application holder.
         loaded = await self._load_record_any_state(
             record.control_card.control_id, grantor_subject=record.control_card.holder_subject or grantor_subject)
         if loaded is None or loaded[1] != CARD_STATE_ACTIVE:
@@ -3661,7 +3661,7 @@ class AutomationAccessService:
         control = loaded[0]
         if control.access_token or control.refresh_token or control.session_id:
             raise DescriptorAgentCardRefused("agent_capability_control_identity_conflict")
-        # W41: a stale pin is not a refusal here; the write re-pins to this Control.
+        # A stale pin is not a refusal here; the write re-pins to this Control.
         from .descriptor_agent_lifecycle import _prior_binding
         validate_descriptor_agent_control(_prior_binding(resident, card_authority_from_record(control)),
                                           card_authority_from_record(control), tenant=self._tenant,
@@ -3680,7 +3680,7 @@ class AutomationAccessService:
         this validated existing-Card operation can take the local transaction;
         creation and credential changes require their own enlisted lifecycle.
 
-        W41 (design F1, decided 2026-11-20): the shared Control changes for
+        the shared Control changes for
         everyone, so the edit is checked against the live Control and re-pins
         the Card to it. A Control that moves between the read and the commit
         aborts the attempt (its revision is reserved); the server then re-reads
@@ -3726,7 +3726,7 @@ class AutomationAccessService:
         from .descriptor_agent_lifecycle import _prior_binding
 
         control_authority = card_authority_from_record(control)
-        # W41: re-pin the edit to the live shared Control it is checked against.
+        # Re-pin the edit to the live shared Control it is checked against.
         if record.control_card is not None and record.control_card.control_revision != control.card_revision:
             record = dataclasses.replace(record, control_card=dataclasses.replace(
                 record.control_card, control_revision=control.card_revision))
@@ -6928,7 +6928,7 @@ class AutomationAccessService:
         — no re-mint, no re-authorization. The submitted selection REPLACES the
         record exactly."""
         if _clean(holder_subject):
-            # W41: a platform administrator's Save of an application's shared
+            # A platform administrator's Save of an application's shared
             # descriptor Control, written on the application's behalf.
             acting, refused = await self._application_holder_user(
                 user, control_id=access_id, holder_subject=holder_subject)
@@ -7087,7 +7087,7 @@ class AutomationAccessService:
                 "status": 403,
             }
         if administrator_preset and not is_application_authority_subject(existing.grantor_subject):
-            # W41 (review C1): a per-user copy is migrated and revoked, never edited.
+            # A per-user copy is migrated and revoked, never edited.
             return {"ok": False, "error": "agent_descriptor_control_legacy_copy", "status": 409}
         if self._issuer_managed(existing) and not control_snapshot_is_exact(
             card_authority_from_record(existing)
@@ -8440,7 +8440,7 @@ class AutomationAccessService:
         return result
 
     async def publish_agent_descriptor_control(self, deployment: Mapping[str, Any], **descriptor: Any) -> dict[str, Any]:
-        """W41: the application's deployment publishes one agent's shared Control.
+        """The application's deployment publishes one agent's shared Control.
 
         ``deployment`` is the caller identity the platform bound to the request:
         the application itself (its ``bundle_id``), never a user. It must name the
@@ -8583,7 +8583,7 @@ class AutomationAccessService:
     async def _application_holder_user(
         self, user: Mapping[str, Any], *, control_id: str, holder_subject: str,
     ) -> tuple[Mapping[str, Any] | None, dict[str, Any] | None]:
-        """W41: a platform administrator acts on a shared descriptor Control for its application.
+        """A platform administrator acts on a shared descriptor Control for its application.
 
         ``holder_subject`` comes from the Agent Card's binding and is only a
         lookup key: the stored Control must be a descriptor Control whose holder
@@ -8629,7 +8629,7 @@ class AutomationAccessService:
 
         ``_delegable_grants`` and ``_platform_admin`` are for the project path
         (W379): the Card is read under its creator, and what it may take is
-        offered by the reading person's own role. ``holder_subject`` (W41) reads
+        offered by the reading person's own role. ``holder_subject`` reads
         an application's shared descriptor Control, for a platform administrator.
         """
 
@@ -8783,7 +8783,7 @@ class AutomationAccessService:
                 "status": 400,
             }
         if _clean(issuer_kind) == AGENT_DESCRIPTOR_ISSUER_KIND:
-            # W41 (review C1): a descriptor Control has exactly two writers, the
+            # A descriptor Control has exactly two writers, the
             # deployment's publication and a platform administrator on the shared one.
             return {"ok": False, "error": "agent_descriptor_control_publication_only", "status": 403}
         try:
@@ -9114,7 +9114,7 @@ class AutomationAccessService:
         # W562 F3: ``_through_project`` marks that project path and ``_initial_start`` the creation's own
         # first selection (``_start_control_card``); ``update_access`` refuses any other write to a
         # project's Control Card.
-        # W41: an application's shared descriptor Control is written on its
+        # An application's shared descriptor Control is written on its
         # application's behalf, the administrator recorded as the actor.
         administrator_subject = _subject_from_user(user)
         acting, refused = await self._application_holder_user(
