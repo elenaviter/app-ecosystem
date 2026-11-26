@@ -1,4 +1,4 @@
-/** W34 C: the MCP bridge tool an agent calls a named-service operation with.
+/** The MCP bridge tool an agent calls a named-service operation with.
  *  Mirrors Connection Hub's `_NAMED_SERVICE_OUTER_OPERATION`; a provider that
  *  exposes only the generic bridge is called through `named_services_call`. */
 const OUTER_OPERATION: Record<string, string> = {

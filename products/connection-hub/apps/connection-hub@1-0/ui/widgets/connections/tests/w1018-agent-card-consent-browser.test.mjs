@@ -112,7 +112,7 @@ test('W1018 A: the agent Card consent review', async (t) => {
       await page.getByTestId('agent-card-consent').waitFor({ timeout: 15000 })
       const op = page.getByTestId('agent-card-consent-operation').locator('input[type=checkbox]')
       assert.equal(await op.isChecked(), true)
-      // W34 live check: what the agent asked for is fixed on the review, answered, never unticked.
+      // What the agent asked for is fixed on the review, answered, never unticked.
       assert.equal(await op.isDisabled(), false, 'fixed, not greyed out')
       assert.equal(await op.getAttribute('aria-readonly'), 'true')
       await op.click({ force: true })

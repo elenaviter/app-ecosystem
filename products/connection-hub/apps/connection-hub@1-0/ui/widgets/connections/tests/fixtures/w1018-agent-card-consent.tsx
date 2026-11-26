@@ -26,7 +26,7 @@ const card = () => ({
   created_at: 1_760_000_000, expires_at: 1_960_000_000,
   resource_grants: { [NAMED]: ['named_services:use', 'slides:read'], [SERVICE]: ['records:read'] },
   resource_operations: { [NAMED]: ['named_services_call'], [SERVICE]: ['records_list'] },
-  // 'held-outside': the Card still holds slides provider.capabilities, which the Control no longer allows (W38).
+  // 'held-outside': the Card still holds slides provider.capabilities, which the Control no longer allows.
   named_service_operations: { [NAMED]: { slides: variant === 'held-outside' ? ['object.list', 'provider.capabilities'] : ['object.list'] } },
   catalog_row_by_resource: { [NAMED]: NAMED }, account_scope: bound, properties: {}, composition_mode: '',
   control_card: {
@@ -65,7 +65,7 @@ const resources = [{
 }]
 const google = (id: string, email: string, claims = ['slides:read', 'slides:write', 'sheets:read', 'sheets:write']) => ({
   account_id: id, provider_id: 'google', display_name: email, email, claims, status: 'active', has_credential: true })
-// W34: 'extras-missing' holds slides:read only, so an added object.upsert needs slides:write nobody holds;
+// 'extras-missing' holds slides:read only, so an added object.upsert needs slides:write nobody holds;
 // 'extras-none' has no Google account at all.
 const accounts = variant === 'extras-none' ? []
   : variant.startsWith('extras-missing') ? [google('google_acct_1', 'owner@example.test', ['slides:read'])]
@@ -75,7 +75,7 @@ const accounts = variant === 'extras-none' ? []
   : [google('google_acct_1', 'owner@example.test')]
 const calls: Array<{ operation: string, data: Record<string, unknown> }> = []
 ;(window as unknown as Record<string, unknown>).__calls = calls
-// W34: a save-then-request leaves this page; the calls made before it are kept for the test to read.
+// A save-then-request leaves this page; the calls made before it are kept for the test to read.
 try {
   ;(window as unknown as Record<string, unknown>).__previous = JSON.parse(sessionStorage.getItem('w34-calls') || '[]')
   sessionStorage.removeItem('w34-calls')
@@ -124,7 +124,7 @@ if (variant === 'pending-outside') Object.assign(link, { namespace: 'slides', op
 // An external client's pending request keeps the legacy pending page.
 if (variant === 'external') { delete link.agent_card_consent; Object.assign(link, { agent_client_id: 'dcr-cli', resource: SERVICE, claims: 'records:read', account_claim: '' }) }
 if (variant === 'provider') link.account_provider_id = 'google'
-// W34: no Google account at all; the SDK link names the provider (as connected_accounts.py does).
+// No Google account at all; the SDK link names the provider (as connected_accounts.py does).
 if (variant === 'extras-none') link.account_provider_id = 'google'
 // Outer (MCP/REST) operations keep the pending page's once/always contract inside the Card approval.
 if (variant === 'outer-choose') Object.assign(link, { resource: SERVICE, account_claim: '', outer_operation: 'records_export', invocation_policy: 'choose', invocation_change_id: 'consent-9' })

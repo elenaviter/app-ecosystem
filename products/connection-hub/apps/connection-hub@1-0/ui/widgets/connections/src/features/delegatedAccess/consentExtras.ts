@@ -1,5 +1,5 @@
 /**
- * W34: more access, added on the agent's Card in the same consent.
+ * More access, added on the agent's Card in the same consent.
  *
  * The Agent Card consent review offers, beside what the agent asked for,
  * everything the agent's Control allows on every
@@ -7,9 +7,9 @@
  * It only adds (merge): what the Card holds is shown and never removed; the
  * Card's own Edit stays the place that narrows (`replace`).
  *
- * The same pending page had this before W1018 ("Give this agent more access
- * (optional) - pick from anything delegable here", 2026-07-18); W1018 moved a
- * hosted agent's consent to its Card review, which held only the request.
+ * The older pending consent page offered the same ("Give this agent more
+ * access (optional)"); a hosted agent's consent moved to its Card review,
+ * which then held only the request.
  *
  * A provider permission no connected account holds is requested at that
  * provider by a button that first saves everything selected.
@@ -390,7 +390,7 @@ export function unboundPickedClaims(
 // the link: the provider step ignores it (the tab selects the panel), and
 // "Continue - grant it to <agent>" returns to the same request with the
 // account bound, instead of an account-only request that drops the operation
-// the agent asked for (W34 live check, 2026-11-16).
+// the agent asked for.
 const CARD_REVIEW_ACCOUNT_PARAMS = [
   'pending_agent_grant', 'account_claim', 'account_provider_id', 'agent_claims', 'connector_app_id', 'account_id',
 ];

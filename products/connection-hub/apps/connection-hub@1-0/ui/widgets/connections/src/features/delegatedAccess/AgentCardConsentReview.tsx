@@ -114,7 +114,7 @@ export function AgentCardConsentReview({
   ), heldScope);
   // What the agent asked for is fixed: shown selected and not removable here.
   // A request is answered by choosing its account (and an asked once/always),
-  // never by unticking what was asked (W34 live check).
+  // never by unticking what was asked.
   const operationSelected = operationAllowed && Boolean(request.operation);
   // An outer (MCP/REST) operation keeps the pending page's once/always contract:
   // chosen beside that one operation, or fixed by the request, and sent in the
@@ -149,7 +149,7 @@ export function AgentCardConsentReview({
     || (operationSelected && !operationHeld) || outerSelected || addsClaims;
   const outerReady = !outerSelected || policy === 'none' || (policy !== 'missing' && Boolean(mode));
   const blockedByControl = controlUnavailable(control);
-  // W34: more access beyond the request, only added (merge), within the Control.
+  // More access beyond the request, only added (merge), within the Control.
   const [picks, setPicks] = useState<ExtraPicks>(NO_EXTRA_PICKS);
   const offer = useMemo(() => consentExtrasOffer(card, control, resources, operationRows), [card, control, resources]);
   const extras = allowedPicks(offer, picks);

@@ -1,4 +1,4 @@
-// W34: the Agent Card consent review offers more access within the agent's Control and only adds;
+// The Agent Card consent review offers more access within the agent's Control and only adds;
 // a provider permission nobody holds is requested at its provider after saving the selection.
 // Mounted: the real DelegatedAccessPanel and store in Chromium, the Hub the recording bridge of the W1018 fixture
 // (tests/fixtures/w1018-agent-card-consent.tsx). The Card holds slides object.list; its Control also allows
@@ -83,7 +83,7 @@ test('W34: more access on the agent Card consent review', async (t) => {
     })
 
     await t.test('the account claim the agent asked for is marked requested, not already allowed', async () => {
-      // W34 live check, 2026-11-16: the review asked for docs:read on the only Google account, and the
+      // The review asked for docs:read on the only Google account, and the
       // accounts group below said "already allowed" for that same claim, which the Card did not hold.
       const { page, errors } = await open(browser, origin, 'account-only')
       await expand(page)

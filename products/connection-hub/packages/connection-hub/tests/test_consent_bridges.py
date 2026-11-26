@@ -1,4 +1,4 @@
-"""W34 C: a consent that adds a named-service operation adds the bridge tool too.
+"""A consent that adds a named-service operation adds the bridge tool too.
 
 A passive sync never re-creates a bridge the owner removed, so a consent that
 adds only the inner operation left the agent holding it with nothing to call it

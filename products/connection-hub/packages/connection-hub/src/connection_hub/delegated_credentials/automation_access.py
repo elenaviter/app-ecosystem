@@ -4991,7 +4991,7 @@ class AutomationAccessService:
         requested: Mapping[str, Any],
         config: Any,
     ) -> dict[str, tuple[str, ...]]:
-        """The bridge tools the requested named-service operations need (W34 C)."""
+        """The bridge tools the requested named-service operations need."""
         from connection_hub.delegated_credentials.agent_capability_sync import (
             _named_service_outer_operations,
         )
@@ -5520,7 +5520,7 @@ class AutomationAccessService:
             and is_resident_client_id(_clean(client_id))
             and isinstance(named_service_operations, Mapping)
         ):
-            # W34 C: a consent that adds a named-service operation also adds the
+            # A consent that adds a named-service operation also adds the
             # MCP bridge tool the agent calls it with, when the Card lacks it.
             # A passive sync never re-creates a bridge the owner removed, so
             # without this the agent held the operation and nothing to call it

@@ -1,4 +1,4 @@
-// W34: the Agent Card consent review adds more access within the agent's Control, and only adds.
+// The Agent Card consent review adds more access within the agent's Control, and only adds.
 // Narrowing stays in the Card's Edit. A provider permission no account holds is requested after a save.
 import assert from 'node:assert/strict'
 import test from 'node:test'
@@ -181,7 +181,7 @@ test('the provider link carries the agent hand-off and drops the Card review par
   assert.equal(href.searchParams.get('agent_resource'), NAMED)
   assert.equal(href.searchParams.get('keep'), '1')
   for (const key of ['pending_agent_grant', 'account_claim']) assert.equal(href.searchParams.has(key), false, key)
-  // The agent's request stays in the link, so the hand-off returns to it (W34 live check, 2026-11-16).
+  // The agent's request stays in the link, so the hand-off returns to it.
   assert.equal(href.searchParams.get('agent_card_consent'), '1')
   assert.equal(href.searchParams.get('namespace'), 'slides')
   const several = new URL(providerUpgradeHref(base, { providerId: 'google', connectorAppId: '', resource: NAMED, claims: ['drive:read'] },
@@ -203,7 +203,7 @@ test('an operation picked here whose provider permission nothing binds is named,
 })
 
 test('connecting an account from the Card review returns to the same request, operation included', () => {
-  // W34 live check, 2026-11-16: the agent asked for docs object.get with docs:read; no account could do
+  // The agent asked for docs object.get with docs:read; no account could do
   // docs:read, so the owner connected one and pressed "Continue - grant it to main". The review it
   // opened asked only for the account claim: the operation the agent asked for was gone.
   const review = new URL('https://hub.example/connections')

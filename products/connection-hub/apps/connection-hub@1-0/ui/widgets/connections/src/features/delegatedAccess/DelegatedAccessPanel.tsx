@@ -1309,7 +1309,7 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
   const [editOpenPermissions, setEditOpenPermissions] = useState<Record<string, boolean>>({});
   const [editOpenTools, setEditOpenTools] = useState<Record<string, boolean>>({});
   // Namespace narrowing being edited: {resource: {namespace: [operation]}}.
-  // W34 C: bridge tools ticked for the operations that need them, keyed
+  // Bridge tools ticked for the operations that need them, keyed
   // "<resource>\n<bridge>", so the editor can say what each one is for.
   const [addedBridges, setAddedBridges] = useState<Record<string, string[]>>({});
   const [editNamedServiceOperations, setEditNamedServiceOperations] =
@@ -3054,7 +3054,7 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
         ...current,
         ...Object.fromEntries(required.map((grant) => [`${resource}:${grant}`, true])),
       }));
-      // W34 C: the agent calls this operation through an MCP bridge tool; tick
+      // The agent calls this operation through an MCP bridge tool; tick
       // it too when the draft lacks it and the Control allows it. Its Once or
       // Every time choice stays the owner's, as for any added permission.
       const editing = items.find((item) => item.access_id === editingAccessId)

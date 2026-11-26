@@ -1,5 +1,5 @@
 /**
- * W34: the optional "Give this agent more access" section of the Agent Card
+ * The optional "Give this agent more access" section of the Agent Card
  * consent review. Everything the agent's Control allows, on every resource and
  * service, and every connected account's provider permissions; held entries
  * shown ticked and fixed, entries outside the Control shown disabled. It only
@@ -166,7 +166,7 @@ export function AgentCardConsentExtras({
         )}
         <span>
           {item.label !== item.key ? <>{item.label} <code>{item.key}</code></> : <code>{item.key}</code>}
-          {/* W38: outside the Control wins; a held choice there grants nothing, so it is never "already allowed". */}
+          {/* Outside the Control wins; a held choice there grants nothing, so it is never "already allowed". */}
           {item.held && item.inControl ? <span className="badge badge-ok" style={{ marginLeft: 8 }}>already allowed</span> : null}
           {item.inControl ? null : (
             <span className="badge badge-error" style={{ marginLeft: 8 }}>not in this agent&apos;s Control</span>
