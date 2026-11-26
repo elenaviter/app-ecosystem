@@ -1,13 +1,13 @@
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2026 Elena Viter
 
-"""W40: what a call may do in one conversation: slice AND Agent Card AND Control.
+"""What a call may do in one conversation: slice AND Agent Card AND Control.
 
 The guard first composes the Agent Card with its live Control as before
 (``effective_card_authority``); this module then narrows that result by the
 conversation's slice. A slice never widens: it only removes. A category the
 slice carries narrows to it; the resource-family switch removes the user's own
-connectors of a family the conversation turned off (review #464, nit 3), and a
+connectors of a family the conversation turned off, and a
 resource admitted through a family that stays on is governed by that switch,
 not by the slice's exact resource list.
 """
@@ -55,7 +55,7 @@ def narrow_by_slice(effective: CardAuthority, control: CardAuthority, conversati
 
 
 def card_default_selection(card: CardAuthority) -> Mapping[str, Any] | None:
-    """The Card's defaults as a selection (D5 option a), or None for a legacy Card."""
+    """The Card's defaults as a selection, or None for a legacy Card."""
     from connection_hub.delegated_credentials.agent_capability_policy import (
         AGENT_CAPABILITY_DEFAULT_STANDARD_PROPERTY, AGENT_CAPABILITY_SELECTION_PROPERTY,
     )
@@ -124,7 +124,7 @@ async def effective_for_turn(*, effective: CardAuthority, control: CardAuthority
     """The guard's entry: no token keeps the Card's authority (a call outside any conversation)."""
 
     if not str(turn_token or "").strip():
-        # A-1 (D5 option a): a call outside any conversation gets the Card's
+        # A call outside any conversation gets the Card's
         # defaults, not every grant it was ever given. A legacy Card has none.
         defaults = card_default_selection(effective)
         return effective if defaults is None else narrow_by_selection(effective, control, defaults)
@@ -151,10 +151,10 @@ async def effective_for_turn(*, effective: CardAuthority, control: CardAuthority
         # Fail closed: a token names a conversation whose slice the token's turn seeded.
         raise SliceGuardRefused("conversation_slice_missing", retryable=True)
     if conversation.card_generation != generation:
-        # T6: an older generation's slice is never reused; the next turn reseeds it.
+        # An older generation's slice is never reused; the next turn reseeds it.
         raise SliceGuardRefused("conversation_slice_generation_stale", retryable=True)
     narrowed = narrow_by_slice(effective, control, conversation)
-    # Option c (design 2026-11-24): while a Card transaction is undecided, the
+    # While a Card transaction is undecided, the
     # call is never refused for it; it gets the committed slice AND every
     # prepared one, so a consent (widening) applies only once committed and a
     # narrowing applies at once. A prepared deleting slice refuses.

@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2026 Elena Viter
 
-"""W40: the slice half of a consent given from a conversation (T7).
+"""The slice half of a consent given from a conversation.
 
 Consent writes the Agent Card (the new default) and that conversation's slice
 (this conversation's selection) in one Card transaction: the slice change is

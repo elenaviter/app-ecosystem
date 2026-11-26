@@ -50,7 +50,7 @@ class DelegatedServingResolvers:
 
     catalog: DelegatedCatalogResolver
     cards: BundleStorageDelegatedCardStore
-    # W40: the turn-token key (a TurnTokenSource over the Hub's secret) and
+    # The turn-token key (a TurnTokenSource over the Hub's secret) and
     # KDCube's conversation registry (liveness cached positively, briefly).
     # Absent: a call carrying a turn token is refused.
     turn_tokens: Any = None

@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2026 Elena Viter
 
-"""W40: the turn token and the one-time slice seeding.
+"""The turn token and the one-time slice seeding.
 
 At turn start the runtime asks, with the Agent Card bearer, for a token naming
 the conversation. The Hub verifies a conversation only once, when its slice is
@@ -66,7 +66,7 @@ class TurnClaims:
     turn_id: str
     turn_started_at: int
     expires_at: int
-    # Review B-3: the Card access id is deterministic across revoke and
+    # The Card access id is deterministic across revoke and
     # re-create, so the token also names the Card's generation.
     card_generation: int = 0
     # "renew": ten minutes, renewed for the same live turn (a runtime that sets
@@ -121,7 +121,7 @@ TURN_TOKEN_KEY_LABEL = b"connection-hub/turn-token/v1"
 
 
 def turn_tokens_from_secret(secret: str) -> "TurnTokens | None":
-    """The turn-token sealer from the Hub's own grantor-authority secret (design 2026-11-24, point 8).
+    """The turn-token sealer from the Hub's own grantor-authority secret.
 
     A purpose-bound key, as ``grantor_authority_proof._key`` derives its own, so
     neither protocol's tag can verify as the other's. None without the secret:
@@ -170,7 +170,7 @@ async def begin_turn(
         if not await registry.turn_alive(owner_subject=card.grantor_subject, conversation_id=conversation_id,
                                          turn_id=turn_id):
             raise TurnRefused("turn_not_alive")
-    # Option c (design 2026-11-24): an undecided Card transaction's marker does
+    # An undecided Card transaction's marker does
     # not block the turn; the guard applies committed AND prepared meanwhile.
     current = await store.read(grantor_subject=card.grantor_subject, card_access_id=card.access_id,
                                conversation_id=conversation_id)

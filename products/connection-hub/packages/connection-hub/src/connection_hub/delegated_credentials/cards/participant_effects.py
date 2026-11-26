@@ -71,7 +71,7 @@ _SAFE_TARGET_REASONS = frozenset({
     "card_effect_adapter_unavailable", "card_effect_binding_mismatch",
     "card_effect_target_revision_moved", "card_effect_custody_unavailable",
     "card_effect_policy_conflict", "card_effect_old_handle_invalid",
-    # W40: a slice another transaction holds prepared.
+    # A slice another transaction holds prepared.
     "card_effect_target_busy",
 })
 
@@ -154,7 +154,7 @@ def _payload(kind: str, key: str, value: Any, access_id: str,
         # W606: move one member Card's handle row to the committed AFTER, from its pinned identity.
         "handle_binding": {"access_id", "from_identity", "from_fingerprint", "from_revision", "from_expires_at",
                            "card_revision", "expires_at", "prepared_at"},
-        # W40: this decision's change of one conversation slice of the Card's owner.
+        # This decision's change of one conversation slice of the Card's owner.
         "conversation_slice": {"access_id", "owner_subject", "expected_revision", "slice"},
     }[kind]
     bound_elsewhere = kind in ("invocation_policy", "handle_binding")

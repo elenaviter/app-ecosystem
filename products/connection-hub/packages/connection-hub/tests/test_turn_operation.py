@@ -1,4 +1,4 @@
-"""W40 review B-1: the Hub computes the seed; the runtime names only the turn."""
+"""The Hub computes the seed; the runtime names only the turn."""
 
 from __future__ import annotations
 
@@ -10,13 +10,13 @@ from connection_hub.delegated_credentials.slices.turn_operation import seed_sele
 from connection_hub.delegated_credentials.slices.turns import TurnTokens, card_generation_of
 from test_agent_capability_control_sync import AGENT, APPLICATION, NAMED_RESOURCE, OWNER
 from test_descriptor_agent_consent import READ, _consent_world
-from test_w40_turn_token import Registry
+from test_turn_token import Registry
 
 KEY = b"o" * 32
 
 
 @pytest.mark.asyncio
-async def test_b1_the_turn_operation_seeds_from_the_card_and_answers_a_token(tmp_path):
+async def test_the_turn_operation_seeds_from_the_card_and_answers_a_token(tmp_path):
     service, store, decisions, resident, _, _, _ = await _consent_world(tmp_path)
     slices = BundleStorageConversationSliceStore(store._root)
     service.bind_conversation_slices(slices, TurnTokens(KEY))

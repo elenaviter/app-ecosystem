@@ -120,7 +120,7 @@ async def update_conversation_selection(
     except TurnRefused as exc:
         return exc.to_dict()
     except SlicePrepared:
-        # The authority-update window (design 2026-11-24): retry later.
+        # The authority-update window: retry later.
         return _refusal("agent_authority_updating", retryable=True, status=409)
     except SliceConflict as exc:
         return _refusal("conversation_slice_revision_conflict", retryable=True, current_revision=exc.current_revision)

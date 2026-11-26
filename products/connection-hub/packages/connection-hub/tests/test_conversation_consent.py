@@ -1,4 +1,4 @@
-"""W40 T7: a consent given in a conversation changes the Agent Card and that conversation's slice in one decision."""
+"""A consent given in a conversation changes the Agent Card and that conversation's slice in one decision."""
 
 from __future__ import annotations
 
@@ -43,7 +43,7 @@ def _consent(service, resident, token, **changes):
 
 
 @pytest.mark.asyncio
-async def test_t7_consent_in_a_conversation_commits_card_and_slice_together(tmp_path):
+async def test_consent_in_a_conversation_commits_card_and_slice_together(tmp_path):
     service, store, decisions, resident, _, card_service, _ = await _consent_world(tmp_path)
     slices, token = await _conversation(service, store, resident, card_service=card_service)
     _, other_token = await _conversation(service, store, resident, "c2")
@@ -83,7 +83,7 @@ async def test_a_consent_naming_a_foreign_or_unseeded_conversation_commits_nothi
 
 
 @pytest.mark.asyncio
-async def test_a2_e2_a_crashed_consent_never_blocks_calls_and_the_recovery_cron_releases_it(tmp_path):
+async def test_a_crashed_consent_never_blocks_calls_and_the_recovery_cron_releases_it(tmp_path):
     from connection_hub.delegated_credentials.live_grant import ResolvedCardComposition
     from connection_hub.delegated_credentials.slices import guard
 
@@ -102,8 +102,8 @@ async def test_a2_e2_a_crashed_consent_never_blocks_calls_and_the_recovery_cron_
 
     # A-2: a call meanwhile is not refused; it gets committed AND prepared (the
     # consent widens, so the committed READ-only slice applies).
-    # The undecided transaction also fences the Agent Card itself (W582: pending
-    # effects keep read resolution fenced), as for any Card transaction; the
+    # The undecided transaction also fences the Agent Card itself (pending effects
+    # keep read resolution fenced), as for any Card transaction; the
     # guard's own composition is checked here on the last committed Card.
     from connection_hub.delegated_credentials.cards.store import CardStorageError
     with pytest.raises(CardStorageError, match="card_transaction_undecided"):
@@ -117,7 +117,7 @@ async def test_a2_e2_a_crashed_consent_never_blocks_calls_and_the_recovery_cron_
                                                                 resolvers=readers)
         assert set(narrowed.effective_card.named_service_operations.operations[NAMED_RESOURCE]["slack"]) == {READ}
 
-    # E2: the Hub's recovery cron presumes ABORT (the test store's expiry CAS) and
+    # The Hub's recovery cron presumes ABORT (the test store's expiry CAS) and
     # FINISH releases the slice marker; neither the Card nor the slice moved.
     decisions.decide = decide
     # The cron's recover_card_transactions pages the production store; this test
@@ -131,7 +131,7 @@ async def test_a2_e2_a_crashed_consent_never_blocks_calls_and_the_recovery_cron_
 
 
 @pytest.mark.asyncio
-async def test_b2_the_slice_gains_the_bridge_tools_of_the_consented_operation(tmp_path):
+async def test_the_slice_gains_the_bridge_tools_of_the_consented_operation(tmp_path):
     service, store, decisions, resident, _, card_service, _ = await _consent_world(tmp_path)
     # This conversation had narrowed the named-service bridge away.
     slices, token = await _conversation(service, store, resident, card_service=card_service, selection={
@@ -146,7 +146,7 @@ async def test_b2_the_slice_gains_the_bridge_tools_of_the_consented_operation(tm
 
 
 @pytest.mark.asyncio
-async def test_d5_a_consent_in_a_conversation_also_becomes_the_cards_default(tmp_path):
+async def test_a_consent_in_a_conversation_also_becomes_the_cards_default(tmp_path):
     """Design: consent writes the Agent Card (the new default); new conversations and headless calls get it."""
     from connection_hub.delegated_credentials.slices.guard import card_default_selection
 

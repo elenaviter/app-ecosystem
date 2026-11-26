@@ -2068,7 +2068,7 @@ async def _automation_access_service_for(
         actor_classification=classification, tenant=snapshot_tenant, project=snapshot_project)
     if card_transactions_enabled(connections):
         await _bind_card_transactions(entrypoint, service, persistence=card_persistence, grant_store=grant_store)
-    # W40: the Hub checks a conversation's owner and a turn's liveness in KDCube's records.
+    # The Hub checks a conversation's owner and a turn's liveness in KDCube's records.
     pg_pool = getattr(entrypoint, "pg_pool", None)
     if pg_pool is not None:
         from kdcube_ai_app.apps.chat.sdk.context.vector.conv_index import ConvIndex

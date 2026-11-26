@@ -5770,15 +5770,15 @@ class AutomationAccessService:
             # standard authority and durable capability selection are aligned
             # by update_access and committed together, with the same bearer.
             # First issuance/rotation belongs to the enlisted lifecycle.
-            # W40 (T7): a consent given in a conversation names it by the turn
+            # A consent given in a conversation names it by the turn
             # token; the conversation's slice gains exactly what was granted,
             # in the same Card decision.
             slice_effects: list[dict[str, Any]] = []
             if _clean(turn_token):
                 from .descriptor_agent_card import DescriptorAgentCardRefused
                 try:
-                    # Review B-2: what this consent adds to the Card, including the
-                    # W34 C bridge tools, not the raw request.
+                    # What this consent adds to the Card, including the
+                    # Bridge tools, not the raw request.
                     def added(after: Mapping[str, Any], before: Mapping[str, Any]) -> dict[str, list[str]]:
                         out = {resource: sorted(set(values) - set(before.get(resource, ())))
                                for resource, values in after.items()}
@@ -5810,7 +5810,7 @@ class AutomationAccessService:
                                         else expected_card_revision),
                 expected_catalog_version=catalog_version, request_id=request_id,
                 _application_write=_application_write, _slice_effects=slice_effects,
-                # A merging consent keeps what was granted (D5 option a); a replacing
+                # A merging consent keeps what was granted; a replacing
                 # grant (`replace`) is an explicit narrowing.
                 _keep_grants=merge_existing)
             if saved.get("ok") is not True:
@@ -7359,7 +7359,7 @@ class AutomationAccessService:
                 selected_properties,
                 selection=aligned,
             )
-            # W40 D5 option a: the Card's defaults (the seed of a new conversation and
+            # The Card's defaults (the seed of a new conversation and
             # the authority of a headless call) follow its selection on every write
             # of it: an owner's Card edit and a consent alike. Derived from the
             # ALIGNED selection, so nothing outside the Card's authority can land in
@@ -7375,7 +7375,7 @@ class AutomationAccessService:
             except DescriptorAgentCardRefused as exc:
                 return exc.to_dict()
             selected_properties = _with_default_standard(selected_properties, default_standard)
-            # D5 option a: an owner's Save of an Agent Card and a merging consent
+            # An owner's Save of an Agent Card and a merging consent
             # never narrow what was granted, so an older conversation keeps its
             # choice. Opt-in (_keep_grants), passed only by those two paths: every
             # other caller (authorization profiles, Reset, Control and project
@@ -7593,7 +7593,7 @@ class AutomationAccessService:
         try:
             guard = {"before_commit": before_commit, "expected_issuer_digest": gate_digest} if before_commit is not None else {}
             if descriptor_control_record is not None:
-                # W40 (T7): a consent from a conversation also changes that
+                # A consent from a conversation also changes that
                 # conversation's slice, as an effect of this one Card decision.
                 await self._persist_descriptor_agent_edit(existing, updated, control=descriptor_control_record,
                     active_catalog=active, actor_subject=grantor_subject, request_id=request_id or "",
@@ -11595,11 +11595,11 @@ class AutomationAccessService:
         self._oauth_issuance_store = store
 
     def bind_conversation_slices(self, store: Any, tokens: Any) -> None:
-        """W40: the slice store and the Hub's turn-token sealer; never supplied by an API caller."""
+        """The slice store and the Hub's turn-token sealer; never supplied by an API caller."""
         self._conversation_slices, self._turn_tokens = store, tokens
 
     def bind_conversation_registry(self, registry: Any) -> None:
-        """W40: KDCube's conversation registry (owner, application, turn liveness), bound by the host."""
+        """KDCube's conversation registry (owner, application, turn liveness), bound by the host."""
         self._conversation_registry = registry
 
     async def begin_agent_turn(self, user: Mapping[str, Any], **turn: Any) -> dict[str, Any]:
@@ -11609,7 +11609,7 @@ class AutomationAccessService:
         return await begin_agent_turn(self, user, **turn)
 
     async def update_conversation_selection(self, user: Mapping[str, Any], **change: Any) -> dict[str, Any]:
-        """W40: the conversation picker's write; it applies from the next call."""
+        """The conversation picker's write; it applies from the next call."""
         from connection_hub.delegated_credentials.slices.conversation_ops import update_conversation_selection
 
         return await update_conversation_selection(self, user, **change)

@@ -145,7 +145,7 @@ class ConnectionsClient:
         return dict(getattr(response, "object", None) or {})
 
     async def begin_agent_turn(self, payload: dict[str, Any]) -> dict[str, Any]:
-        """W40: the token naming this turn's conversation (application, agent_id, conversation_id, turn_id)."""
+        """The token naming this turn's conversation (application, agent_id, conversation_id, turn_id)."""
 
         response = await self._call(AGENT_CAPABILITY_TURN, **dict(payload))
         return dict(getattr(response, "object", None) or {})

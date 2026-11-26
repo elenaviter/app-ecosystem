@@ -1,4 +1,4 @@
-"""W40: the conversation slice store: guarded categories only, exclusive revisions, digest paths."""
+"""The conversation slice store: guarded categories only, exclusive revisions, digest paths."""
 
 from __future__ import annotations
 

@@ -1,4 +1,4 @@
-"""W40 T6, T9: a call in a conversation is slice AND Agent Card AND Control; a slice only narrows."""
+"""A call in a conversation is slice AND Agent Card AND Control; a slice only narrows."""
 
 from __future__ import annotations
 
@@ -48,7 +48,7 @@ def _slack(card):
 
 
 @pytest.mark.asyncio
-async def test_t9_a_slice_narrows_the_card_and_never_widens_it(tmp_path):
+async def test_a_slice_narrows_the_card_and_never_widens_it(tmp_path):
     card, control = await _pair(tmp_path)
     # The Card's own (unmaterialized) selection holds READ and POST.
     card = dataclasses.replace(card, named_service_operations=type(card.named_service_operations).exact(
@@ -77,7 +77,7 @@ async def test_the_family_switch_closes_the_users_connectors_in_this_conversatio
 
 
 @pytest.mark.asyncio
-async def test_t6_the_guard_entry_reads_the_slice_by_the_turn_token_and_fails_closed(tmp_path):
+async def test_the_guard_entry_reads_the_slice_by_the_turn_token_and_fails_closed(tmp_path):
     card, control = await _pair(tmp_path)
     slices, tokens, now = BundleStorageConversationSliceStore(tmp_path / "slices"), TurnTokens(KEY), int(time.time())
     token = tokens.issue(TurnClaims(card.access_id, "c1", "t1", now, now + 600, card.created_at))
@@ -129,7 +129,7 @@ async def test_the_request_path_narrows_the_live_composition_and_denies_on_any_r
 
 
 @pytest.mark.asyncio
-async def test_a1_a_call_outside_any_conversation_gets_the_cards_defaults_not_every_grant(tmp_path):
+async def test_a_call_outside_any_conversation_gets_the_cards_defaults_not_every_grant(tmp_path):
     from connection_hub.delegated_credentials.agent_capability_policy import AGENT_CAPABILITY_DEFAULT_STANDARD_PROPERTY
 
     card, control = await _pair(tmp_path)

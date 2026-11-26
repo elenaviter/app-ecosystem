@@ -1,4 +1,4 @@
-"""W40 T7: a slice change rides a Card transaction as the conversation_slice effect (E1, E2)."""
+"""A slice change rides a Card transaction as the conversation_slice effect."""
 
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ from connection_hub.delegated_credentials.slices.store import (
     BundleStorageConversationSliceStore, ConversationSlice, SlicePrepared,
 )
 from connection_hub.delegated_credentials.slices.turns import TurnRefused, TurnTokens, begin_turn
-from test_w40_turn_token import CARD, KEY, Registry, SEED
+from test_turn_token import CARD, KEY, Registry, SEED
 
 GRANTED = {"named_service_operations": {"https://n.example/mcp": {"slack": ["object.list", "object.action.post"]}}}
 
@@ -39,12 +39,12 @@ async def _seeded(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_t7_stage_closes_the_slice_and_commit_applies_it_once(tmp_path):
+async def test_stage_closes_the_slice_and_commit_applies_it_once(tmp_path):
     store = await _seeded(tmp_path)
     target = ConversationSliceTarget(store)
     await target.prepare_once(_binding(), _payload())
 
-    # E1: a picker-only write refuses while it is prepared (and a bounded wait gives up).
+    # A picker-only write refuses while it is prepared (and a bounded wait gives up).
     with pytest.raises(SlicePrepared):
         await store.write(_slice({}), expected_revision=1)
     with pytest.raises(SlicePrepared):
@@ -64,7 +64,7 @@ async def test_t7_stage_closes_the_slice_and_commit_applies_it_once(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_e2_abort_or_an_expired_undecided_transaction_releases_only_its_marker(tmp_path):
+async def test_abort_or_an_expired_undecided_transaction_releases_only_its_marker(tmp_path):
     store = await _seeded(tmp_path)
     target = ConversationSliceTarget(store)
     await target.prepare_once(_binding(), _payload())
@@ -143,7 +143,7 @@ async def test_a_bounded_picker_write_lands_once_the_transaction_is_decided(tmp_
 def test_w873_card_version_never_carries_a_conversation_slice_effect():
     from connection_hub.delegated_credentials.cards import participant_card_version
 
-    # CardVersion's Hub effects are a closed set (W661 section 4a); its recovery
+    # CardVersion's Hub effects are a closed set; its recovery
     # proof is not the legacy decision log, so a slice marker there would stay forever.
     source = open(participant_card_version.__file__, encoding="utf-8").read()
     assert "conversation_slice" not in source

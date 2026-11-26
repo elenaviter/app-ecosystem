@@ -1,4 +1,4 @@
-"""W40 T4, T4b, T4c, T5, T6: the turn token and the one-time slice seeding."""
+"""The turn token and the one-time slice seeding."""
 
 from __future__ import annotations
 
@@ -60,14 +60,14 @@ async def test_the_first_turn_seeds_once_and_later_turns_never_reread_the_regist
     (Registry(application="other@1-0"), "conversation_application_mismatch"),
     (Registry(fail=True), "conversation_registry_unavailable"),
 ])
-async def test_t5_a_foreign_unknown_or_unverifiable_conversation_gets_no_slice(tmp_path, registry, reason):
+async def test_a_foreign_unknown_or_unverifiable_conversation_gets_no_slice(tmp_path, registry, reason):
     with pytest.raises(TurnRefused, match=reason):
         await _begin(tmp_path, registry)
     assert await BundleStorageConversationSliceStore(tmp_path).read(
         grantor_subject="user-1", card_access_id=CARD.access_id, conversation_id="c1") is None
 
 
-def test_t4_t4b_the_token_names_one_card_and_is_not_a_bearer():
+def test_the_token_names_one_card_and_is_not_a_bearer():
     tokens = TurnTokens(KEY)
     from connection_hub.delegated_credentials.slices.turns import TurnClaims
     token = tokens.issue(TurnClaims("agent-user-1", "c1", "t1", 1000, 1600))
@@ -82,7 +82,7 @@ def test_t4_t4b_the_token_names_one_card_and_is_not_a_bearer():
 
 
 @pytest.mark.asyncio
-async def test_t4c_renewal_needs_the_same_live_turn_and_stops_at_the_cap(tmp_path):
+async def test_renewal_needs_the_same_live_turn_and_stops_at_the_cap(tmp_path):
     store = BundleStorageConversationSliceStore(tmp_path)
     token, _ = await _begin(tmp_path, Registry(), store=store)
     renewed, _ = await _begin(tmp_path, Registry(), store=store, token=token, now=1000 + TOKEN_SECONDS - 5)
@@ -96,7 +96,7 @@ async def test_t4c_renewal_needs_the_same_live_turn_and_stops_at_the_cap(tmp_pat
 
 
 @pytest.mark.asyncio
-async def test_t6_a_deleting_slice_gets_no_token_and_a_new_card_generation_reseeds(tmp_path):
+async def test_a_deleting_slice_gets_no_token_and_a_new_card_generation_reseeds(tmp_path):
     store = BundleStorageConversationSliceStore(tmp_path)
     _, first = await _begin(tmp_path, Registry(), store=store)
     reseeded = (await _begin(tmp_path, Registry(), store=store, generation=2))[1]
@@ -107,7 +107,7 @@ async def test_t6_a_deleting_slice_gets_no_token_and_a_new_card_generation_resee
 
 
 @pytest.mark.asyncio
-async def test_b3_a_token_of_an_earlier_card_generation_is_refused(tmp_path):
+async def test_a_token_of_an_earlier_card_generation_is_refused(tmp_path):
     token, _ = await _begin(tmp_path, Registry(), generation=1)
     with pytest.raises(TurnRefused, match="turn_token_card_generation_mismatch"):
         TurnTokens(KEY).verify(token, card_access_id=CARD.access_id, now=1001, card_generation=2)

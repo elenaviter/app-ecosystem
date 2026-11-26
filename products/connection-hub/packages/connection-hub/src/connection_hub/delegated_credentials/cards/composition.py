@@ -123,7 +123,7 @@ def card_transaction_coordinator(*, persistence: Any, decisions: Any, grant_stor
                          policies=policies, accounts_for=accounts_for, issuance_store=issuance_store,
                          credential_handles=credential_handles, decisions=decisions,
                          resident_credentials=resident_credentials,
-                         # W40: conversation slices live beside the Cards they narrow.
+                         # Conversation slices live beside the Cards they narrow.
                          slices=_slice_store(card_store))
     intents = LocalCardIntentSource(card_store, service=card_service, decisions=decisions)
     participant = HubCardParticipant(service=card_service, store=card_store, intents=intents, decisions=decisions)

@@ -66,7 +66,7 @@ async def test_new_selection_above_ceiling_returns_nonretryable_code_before_a_de
 
 
 @pytest.mark.asyncio
-async def test_d5_deselection_changes_only_the_defaults_and_keeps_the_consented_grant(tmp_path):
+async def test_deselection_changes_only_the_defaults_and_keeps_the_consented_grant(tmp_path):
     from connection_hub.delegated_credentials.agent_capability_policy import AGENT_CAPABILITY_DEFAULT_STANDARD_PROPERTY
     from test_descriptor_agent_consent import NAMED_RESOURCE, _sync_arguments
 
@@ -75,7 +75,7 @@ async def test_d5_deselection_changes_only_the_defaults_and_keeps_the_consented_
     held = await _current(store, resident)
     assert (await _select(service, held, READ))["ok"]
     unticked = await _current(store, resident)
-    # W40 D5 option a: an older conversation keeps POST, so the Card keeps the grant ...
+    # An older conversation keeps POST, so the Card keeps the grant ...
     assert POST in unticked.named_service_operations.operations[NAMED_RESOURCE]["slack"]
     assert "slack:post" in unticked.resource_grants[NAMED_RESOURCE]
     # ... while the defaults (new conversations, calls outside one) no longer select it.
@@ -86,7 +86,7 @@ async def test_d5_deselection_changes_only_the_defaults_and_keeps_the_consented_
 
 
 @pytest.mark.asyncio
-async def test_d5_revoke_removes_the_standard_post_authority_and_sync_preserves_the_choice(tmp_path):
+async def test_revoke_removes_the_standard_post_authority_and_sync_preserves_the_choice(tmp_path):
     from test_descriptor_agent_consent import NAMED_RESOURCE, _sync_arguments
 
     service, store, decisions, resident, _, _, _ = await _consent_world(tmp_path)
@@ -316,8 +316,8 @@ async def test_fresh_participant_recovers_one_control_and_resident_commit_after_
 
 
 @pytest.mark.asyncio
-async def test_w40_every_selection_writer_stores_the_defaults_its_selection_implies(tmp_path):
-    """Review 2026-11-25: one stage for the defaults whatever wrote the selection.
+async def test_every_selection_writer_stores_the_defaults_its_selection_implies(tmp_path):
+    """One stage for the defaults whatever wrote the selection.
 
     After a sync, a selection save and a merging consent, the stored defaults
     equal the stored selection mapped through the live Control and bounded by

@@ -433,8 +433,8 @@ async def test_update_forwards_explicit_empty_account_scope(entrypoint):
 
 
 @pytest.mark.asyncio
-async def test_w40_the_owners_save_keeps_what_was_granted(entrypoint):
-    """D5 option a: only the owner's Save opts into keeping the granted union."""
+async def test_the_owners_save_keeps_what_was_granted(entrypoint):
+    """Only the owner's Save opts into keeping the granted union."""
     await entrypoint.module.ConnectionHubEntrypoint.delegated_access_update(
         entrypoint.instance,
         data={"access_id": "aut_1", "resource_grants": {"res": ["named_services:use"]}},

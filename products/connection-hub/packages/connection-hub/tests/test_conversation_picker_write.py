@@ -8,7 +8,7 @@ from connection_hub.delegated_credentials.slices.store import BundleStorageConve
 from connection_hub.delegated_credentials.slices.turns import TurnTokens
 from test_agent_capability_control_sync import AGENT, APPLICATION, NAMED_RESOURCE, OWNER
 from test_descriptor_agent_consent import POST, READ, _consent_world
-from test_w40_turn_token import EpochRegistry
+from test_turn_token import EpochRegistry
 
 KEY = b"p" * 32
 USER = {"user_id": OWNER}
@@ -31,7 +31,7 @@ def _picker(**change):
 
 
 @pytest.mark.asyncio
-async def test_t8_a_picker_write_before_the_first_turn_seeds_then_replaces_only_this_conversation(tmp_path):
+async def test_a_picker_write_before_the_first_turn_seeds_then_replaces_only_this_conversation(tmp_path):
     service, slices, resident = await _world(tmp_path)
     answer = await service.update_conversation_selection(USER, **_picker(selection=NOTHING))
     assert answer["ok"] and answer["slice_revision"] == 2, answer  # seeded (1), then the pick (2)

@@ -1,10 +1,9 @@
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2026 Elena Viter
 
-"""W40: durable conversation slices beside the Agent Card they narrow.
+"""Durable conversation slices beside the Agent Card they narrow.
 
-Layout under the shared bundle-storage Card root (design 2026-11-20, amended
-2026-11-23):
+Layout under the shared bundle-storage Card root:
 
     delegated-cards/v1/grantors/<subject_hash>/slices/<agent_card_access_id>/<conversation_key>/
         revisions/slice_revision_<NNNNNNNN>.json
@@ -51,7 +50,7 @@ class SliceStoreError(RuntimeError):
 
 
 class SlicePrepared(SliceStoreError):
-    """A Card transaction prepared a change of this slice and is undecided (review E1)."""
+    """A Card transaction prepared a change of this slice and is undecided."""
 
     def __init__(self) -> None:
         super().__init__("conversation_slice_prepared", retryable=True)
@@ -94,7 +93,7 @@ class ConversationSlice:
     state: str = SLICE_STATE_ACTIVE
     slice_revision: int = 0
     # The Card-transaction change that wrote this revision ("" for a direct
-    # write), so a replayed COMMIT finds its own revision exactly (W582).
+    # Write), so a replayed COMMIT finds its own revision exactly.
     change_id: str = ""
     # The conversation's deletion epoch when this slice was seeded: the start
     # of its latest completed deletion (0 when never deleted). A conversation
@@ -151,7 +150,7 @@ class BundleStorageConversationSliceStore:
     def __init__(self, root: pathlib.Path | str) -> None:
         # A marker of a crashed transaction is released by the Hub's existing
         # recovery cron (card-transaction-recover), whose FINISH applies or
-        # releases this effect (design 2026-11-24, point 4); never here.
+        # Releases this effect; never here.
         self._root = pathlib.Path(root)
 
     async def _markers(self, prepared_directory: pathlib.Path, *, own: str = "") -> list[str]:
@@ -192,7 +191,7 @@ class BundleStorageConversationSliceStore:
 
     async def prepared_candidates(self, *, grantor_subject: str, card_access_id: str,
                                   conversation_id: str) -> list[ConversationSlice]:
-        """The slices undecided Card transactions prepared (option c reads them; an unreadable one refuses)."""
+        """The slices undecided Card transactions prepared (the guard reads them; an unreadable one refuses)."""
         directory = self._prepared_directory(self._directory(grantor_subject, card_access_id, conversation_id))
         out = []
         for change_id in sorted(await self._markers(directory)):
@@ -204,7 +203,7 @@ class BundleStorageConversationSliceStore:
 
     async def write_when_open(self, candidate: ConversationSlice, *, expected_revision: int,
                               wait_seconds: float = 60.0, poll_seconds: float = 0.25) -> ConversationSlice:
-        """A direct write that waits, bounded, for an undecided transaction's marker (design point 3)."""
+        """A direct write that waits, bounded, for an undecided transaction's marker."""
         import asyncio
         import time
 
@@ -222,7 +221,7 @@ class BundleStorageConversationSliceStore:
         """Commit ``candidate`` as revision ``expected_revision + 1``; exclusive create is the CAS.
 
         A direct write refuses while a Card transaction holds a prepared change
-        of this slice (review E1); only that change's COMMIT may write then.
+        of this slice; only that change's COMMIT may write then.
         """
         directory = self._directory(candidate.grantor_subject, candidate.card_access_id, candidate.conversation_id)
         if await self._markers(self._prepared_directory(directory), own=_change_id):
@@ -247,7 +246,7 @@ class BundleStorageConversationSliceStore:
             os.close(descriptor)
         return committed
 
-    # -- Card-transaction effect (design 2026-11-23): STAGE, COMMIT, ABORT --------
+    # -- Card-transaction effect: STAGE, COMMIT, ABORT --------
 
     def _marker(self, candidate: ConversationSlice, change_id: str) -> pathlib.Path:
         if not _CHANGE_ID.fullmatch(str(change_id or "")):
@@ -281,7 +280,7 @@ class BundleStorageConversationSliceStore:
         prepared = await read_json_or_none(marker)
         written = await self._revision_written_by(candidate, change_id)
         if written is not None:
-            committed = written  # an earlier COMMIT of this change wrote it (W582 exact replay)
+            committed = written  # an earlier COMMIT of this change wrote it (an exact replay)
         elif prepared is None:
             raise SliceStoreError("conversation_slice_prepare_missing")
         else:
@@ -308,16 +307,6 @@ class BundleStorageConversationSliceStore:
             os.unlink(self._marker(candidate, change_id))
         except FileNotFoundError:
             pass
-
-    async def cards_with_conversation(self, *, grantor_subject: str, conversation_id: str) -> list[str]:
-        """The Agent Cards of this owner that hold a slice of the conversation (A1 delete)."""
-        base = self._root / "grantors" / subject_hash_for(grantor_subject) / SLICES_DIRNAME
-        key = conversation_key(conversation_id)
-        out = []
-        for card_access_id in await list_child_names(base):
-            if _ACCESS_ID.fullmatch(card_access_id) and key in await list_child_names(base / card_access_id):
-                out.append(card_access_id)
-        return sorted(out)
 
     async def remove(self, *, grantor_subject: str, card_access_id: str, conversation_id: str) -> int:
         """Remove every revision of one slice (after its conversation's messages are gone)."""

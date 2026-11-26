@@ -1,11 +1,11 @@
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2026 Elena Viter
 
-"""W40: ``agent_capability.turn``, the Hub side of a resident agent's turn start.
+"""``agent_capability.turn``, the Hub side of a resident agent's turn start.
 
 The runtime names only the application, agent, conversation and turn; the
 signed-in user is the host's binding. The Hub finds that user's Agent Card,
-computes the seed itself from the Card's defaults (review B-1; never a
+computes the seed itself from the Card's defaults (never a
 runtime-supplied selection), checks the conversation once in KDCube's
 registry when it seeds, and answers the turn token. The token carries no
 authority of its own: every call still presents the Card bearer.

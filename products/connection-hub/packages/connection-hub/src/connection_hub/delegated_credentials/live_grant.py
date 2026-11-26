@@ -38,7 +38,7 @@ from connection_hub.delegated_credentials.credential_view import (
 ACCESS_SOURCES = ("manual", "oauth", "agent")
 
 
-# W40 (design 2026-11-24, UX of the authority-update window): the reasons that
+# The reasons that
 # mean "a Card or its Control is being changed by a transaction right now",
 # answered to people and models as one retryable reason.
 AUTHORITY_UPDATING = "agent_authority_updating"

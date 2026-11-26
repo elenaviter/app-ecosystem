@@ -1008,6 +1008,37 @@ validated on the first exchange. Keeping the raw bearers in encrypted custody
 until that deadline is the SDK's part. So is activating the platform session
 only after a committed result.
 
+## A consent in a conversation: the conversation slice effect
+
+A hosted agent's consent given from a conversation changes two things: the
+Agent Card (the permission becomes a default for new conversations) and that
+conversation's slice (it works in this conversation at once); see
+[conversation slices](delegated-cards.md#conversation-slices). Both commit in
+the Agent Card edit's one coordinated decision, with the slice change as the
+`conversation_slice` effect, so either both apply or neither does. The
+consent names its conversation by the turn token it was given in; the slice
+gains exactly what the consent added to the Card, including the bridge tools
+of a consented named-service operation. Without the transaction machinery the
+edit refuses `agent_capability_transaction_unavailable` (503, retryable) and
+changes nothing.
+
+- **STAGE** writes a prepared marker beside the slice, checked against the
+  slice revision the consent read. A slice that moved meanwhile refuses the
+  decision (`card_effect_target_revision_moved`); a slice another undecided
+  transaction holds refuses it too (`card_effect_target_busy`).
+- **While undecided**, a direct slice write (the conversation picker) waits,
+  bounded, and then answers `agent_authority_updating`, retryable. Governed
+  calls are not refused: the guard narrows them by the committed slice and
+  every prepared one together, so a consent (a widening) takes effect only
+  once committed, and an unreadable marker refuses the call
+  (`conversation_slice_marker_unreadable`, retryable).
+- **COMMIT** writes the prepared slice as the next revision, tagged with the
+  transaction's change id, so a replayed COMMIT finds its own revision and
+  writes nothing twice.
+- **ABORT**, or the recovery cron's presumed abort of an expired undecided
+  transaction, removes only this change's marker; the committed slice stays
+  as it was.
+
 ## Configuration
 
 All of it lives in the Hub's bundle props under `connections.card_transactions`.

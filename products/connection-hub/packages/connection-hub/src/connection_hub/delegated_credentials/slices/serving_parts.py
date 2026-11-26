@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2026 Elena Viter
 
-"""W40: the turn-token key and the conversation registry, as guard readers.
+"""The turn-token key and the conversation registry, as guard readers.
 
 The delegated guard runs in the serving process (KDCube's ingress), whose
 readers are composed once at startup; it never builds the Hub service, so

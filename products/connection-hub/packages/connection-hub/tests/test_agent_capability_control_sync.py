@@ -1992,7 +1992,7 @@ async def test_the_agent_card_offers_its_descriptor_control_only_to_an_administr
 
 
 @pytest.mark.asyncio
-async def test_w40_an_owner_card_edit_also_moves_the_card_defaults() -> None:
+async def test_an_owner_card_edit_also_moves_the_card_defaults() -> None:
     service, persistence = _service(named_services=True)
     operations = {
         NAMED_RESOURCE: {
@@ -2055,7 +2055,7 @@ async def test_w40_an_owner_card_edit_also_moves_the_card_defaults() -> None:
         "slack/object.list"
     ]
     assert RESOURCE in updated.resource_acceptance
-    # W40 (D5 option a): the defaults follow the edited selection, so a new
+    # The defaults follow the edited selection, so a new
     # conversation and a headless call start from it, never from a stale copy.
     from connection_hub.delegated_credentials.agent_capability_policy import (
         AGENT_CAPABILITY_DEFAULT_STANDARD_PROPERTY,
@@ -2063,14 +2063,14 @@ async def test_w40_an_owner_card_edit_also_moves_the_card_defaults() -> None:
     defaults = updated.properties[AGENT_CAPABILITY_DEFAULT_STANDARD_PROPERTY]
     assert defaults["named_service_operations"][NAMED_RESOURCE]["slack"] == ["object.list"]
     assert "slack:post" not in defaults["resource_grants"].get(NAMED_RESOURCE, [])
-    # D5 option a: the Save leaves the grants as they were, so an older
+    # The Save leaves the grants as they were, so an older
     # conversation that chose posting keeps it; a new one starts from the defaults.
     assert "slack:post" in updated.resource_grants[NAMED_RESOURCE]
     assert "object.action.post_message" in updated.named_service_operations.to_stored()[NAMED_RESOURCE]["slack"]
 
 
 @pytest.mark.asyncio
-async def test_w40_without_keep_grants_an_agent_card_write_narrows_as_before() -> None:
+async def test_without_keep_grants_an_agent_card_write_narrows_as_before() -> None:
     service, persistence = _service(named_services=True)
     operations = {
         NAMED_RESOURCE: {
@@ -2132,7 +2132,7 @@ async def test_w40_without_keep_grants_an_agent_card_write_narrows_as_before() -
         "slack/object.list"
     ]
     assert RESOURCE in updated.resource_acceptance
-    # W40 (D5 option a): the defaults follow the edited selection, so a new
+    # The defaults follow the edited selection, so a new
     # conversation and a headless call start from it, never from a stale copy.
     from connection_hub.delegated_credentials.agent_capability_policy import (
         AGENT_CAPABILITY_DEFAULT_STANDARD_PROPERTY,
@@ -2146,8 +2146,8 @@ async def test_w40_without_keep_grants_an_agent_card_write_narrows_as_before() -
     assert "object.action.post_message" not in updated.named_service_operations.to_stored()[NAMED_RESOURCE]["slack"]
 
 
-def test_w40_only_the_owners_save_and_a_merging_consent_keep_the_granted_union():
-    """Review 2026-11-25: the union is opt-in; a new narrowing path cannot forget a flag."""
+def test_only_the_owners_save_and_a_merging_consent_keep_the_granted_union():
+    """The union is opt-in; a new narrowing path cannot forget a flag."""
     import pathlib
     import re
 
@@ -2157,4 +2157,5 @@ def test_w40_only_the_owners_save_and_a_merging_consent_keep_the_granted_union()
     for path in [*package.rglob("*.py"), *app.rglob("entrypoint.py")]:
         for match in re.finditer(r"_keep_grants=([^,)\n]+)", path.read_text()):
             passing.setdefault(path.name, []).append(match.group(1).strip())
-    assert passing == {"automation_access.py": ["merge_existing"], "entrypoint.py": ["True"]}
+    # The owner's Save keeps the union unless it asks to revoke what is unticked.
+    assert passing == {"automation_access.py": ["merge_existing"], "entrypoint.py": ["not _revoke_requested(payload"]}

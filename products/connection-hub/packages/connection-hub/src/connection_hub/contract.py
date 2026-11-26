@@ -49,7 +49,7 @@ AGENT_CAPABILITY_SYNC = "agent_capability.sync"
 # Control. Local-only, like the sync: the host binds the calling application,
 # and only that application's deployment may publish its agents' Controls.
 AGENT_CAPABILITY_PUBLISH = "agent_capability.publish"
-# W40: a resident agent's turn asks for the token naming its conversation.
+# A resident agent's turn asks for the token naming its conversation.
 # Local-only: the runtime presents the signed-in user and the calling app.
 AGENT_CAPABILITY_TURN = "agent_capability.turn"
 

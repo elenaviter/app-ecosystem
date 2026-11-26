@@ -1958,14 +1958,14 @@ async def sync_agent_capability_control(
                 return {"retryable": False, **aligned.error}
             from .agent_capability_policy import AGENT_CAPABILITY_DEFAULT_STANDARD_PROPERTY
 
-            # D5 option a: the defaults' standard authority is kept on the Card for the
+            # The defaults' standard authority is kept on the Card for the
             # guard (a call outside any conversation, the seed of a new one).
             default_standard = default_standard_from_maps(
                 aligned.resource_grants, aligned.resource_operations, aligned.named_service_operations)
             if existing_resident is not None:
                 # Neither a sync nor a defaults save narrows what was consented: the
                 # Card keeps the union, so an older conversation keeps its choice
-                # (D5). Only the explicit revoke narrows grants.
+                # Only the explicit revoke narrows grants.
                 union = _ordered_union
 
                 kept_named = existing_resident.named_service_operations
@@ -2116,7 +2116,7 @@ async def update_agent_capability_selection(
 ) -> dict[str, Any]:
     """Replace one resident Agent Card's visible descriptor selection.
 
-    W40, D5 option a: this changes the Card's defaults for new conversations
+    this changes the Card's defaults for new conversations
     (and for calls outside any conversation); it never narrows what was
     consented, so an older conversation keeps its choice. ``revoke`` is the
     explicit "revoke permission" action: the Card's grants then become the
@@ -2477,7 +2477,7 @@ __all__ = [
 
 
 def default_standard_from_maps(grants: Mapping[str, Any], operations: Mapping[str, Any], named: Any) -> dict[str, Any]:
-    """The stored form of a Card's defaults (D5 option a), from resolved standard maps."""
+    """The stored form of a Card's defaults, from resolved standard maps."""
     stored_named = named.to_stored() if hasattr(named, "to_stored") else named
     return {
         "resource_grants": {key: sorted(values) for key, values in dict(grants or {}).items()},

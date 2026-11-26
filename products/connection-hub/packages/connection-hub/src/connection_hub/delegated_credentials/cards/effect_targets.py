@@ -89,11 +89,12 @@ class CredentialLifetimeTarget:
 
 
 class ConversationSliceTarget:
-    """W40: one conversation slice, prepared at STAGE and committed at COMMIT.
+    """One conversation slice, prepared at STAGE and committed at COMMIT.
 
-    While prepared, the slice refuses every other writer and its turn token
-    (review E1). An ABORT, or the recovery that aborts an undecided
-    transaction whose intent expired (review E2), releases only this marker.
+    While prepared, the slice refuses every other writer; calls keep working,
+    narrowed by the committed and the prepared slice together. An ABORT, or
+    the recovery that aborts an undecided transaction whose intent expired,
+    releases only this marker.
     """
 
     def __init__(self, slices: Any) -> None:
@@ -490,7 +491,7 @@ def compose_card_effects(*, card_service: Any, card_store: Any, grant_store: Any
         "account_delete": AccountDeleteTarget(accounts_for),
         "credential_issue": issue,
         "handle_binding": HandleBindingTarget(credential_handles, card_store),
-        # W40: the conversation slice store, beside the Card store.
+        # The conversation slice store, beside the Card store.
         "conversation_slice": ConversationSliceTarget(slices),
     })
     card_service.bind_effect_applier(applier.apply)
