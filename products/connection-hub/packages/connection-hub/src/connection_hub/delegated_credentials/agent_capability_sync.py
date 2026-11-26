@@ -1739,7 +1739,7 @@ async def sync_agent_capability_control(
             grants, operations, named = selected_standard_maps(resident=existing_resident if passive_sync else resident,
                 control=record_from_card(control_authority), authority=authority, selected=selected, config=catalog_config,
                 allow_additions=not passive_sync)
-            # The agent's Card aligned in its transaction: its own account binding backs provider claims (W37).
+            # The agent's Card aligned in its transaction: its own account binding backs provider claims.
             aligned = await resolve_agent_card_standard_authority(service, active=active,
                 owner_subject=grantor_subject, resource_grants=grants, resource_operations=operations,
                 named_service_operations=named.to_stored(), properties=resident.properties,

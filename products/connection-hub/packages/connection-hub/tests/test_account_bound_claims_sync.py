@@ -1,4 +1,4 @@
-"""W37: a descriptor agent Card whose provider claim is bound on an account, not on the door.
+"""A descriptor agent Card whose provider claim is bound on an account, not on the door.
 
 Save accepts it: a provider-backed grant may be present on an exact account_scope binding
 instead of resource_grants (docs/connection-hub/package/delegated-cards.md, "Projection into a
