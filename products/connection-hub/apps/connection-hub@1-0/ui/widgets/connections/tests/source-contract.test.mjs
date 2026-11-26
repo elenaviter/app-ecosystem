@@ -692,7 +692,8 @@ test('W260: a Card read through a project says so up front, and only its editors
   // refused with the reason before anything is written.
   assert.match(panel, /cardReadOnlyReason\(item, focusedViewer\) \? null : \(/)
   assert.match(panel, /const readOnlyReason = cardSaveBlockedReason\(item, focusedViewer\);\n\s+if \(readOnlyReason\) \{\n\s+setEditActionError\(readOnlyReason\);\n\s+return;/)
-  assert.equal((panel.match(/Boolean\(cardSaveBlockedReason\((item|record), focusedViewer\)\)/g) || []).length, 3)
+  // Every save control is blocked for a reader: Save, Save and revoke unticked, and the two others.
+  assert.equal((panel.match(/Boolean\(cardSaveBlockedReason\((item|record), focusedViewer\)\)/g) || []).length, 4)
   // The notice shows on the focused Card; nobody is sent to the board's editor.
   assert.match(panel, /accessCardFocusState === 'resolved' && cardReadOnlyReason\(focusedCard, focusedViewer\)/)
   assert.doesNotMatch(panel, /Open Team &gt; People/)

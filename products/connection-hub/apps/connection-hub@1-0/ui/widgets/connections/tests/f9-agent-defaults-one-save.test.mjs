@@ -12,7 +12,7 @@ const panel = readFileSync(
   new URL('../src/features/delegatedAccess/DelegatedAccessPanel.tsx', import.meta.url),
   'utf8',
 )
-const start = panel.indexOf('const saveEdit = async (item: DelegatedAccessRecord) => {')
+const start = panel.indexOf('const saveEdit = async (item: DelegatedAccessRecord, revokeUnselected = false) => {')
 const save = panel.slice(start, panel.indexOf('\n  };\n', start))
 
 test('Save sends the agent defaults inside the one Card update', () => {

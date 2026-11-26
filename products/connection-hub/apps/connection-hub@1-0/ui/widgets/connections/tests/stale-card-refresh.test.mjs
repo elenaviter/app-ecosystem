@@ -80,7 +80,7 @@ test('Edit reads the Card from the server before it seeds and pins the draft', (
 })
 
 test('after a 409 a second Save sends nothing and the pin is unchanged', () => {
-  const save = panel.slice(panel.indexOf('const saveEdit = async (item: DelegatedAccessRecord) => {'))
+  const save = panel.slice(panel.indexOf('const saveEdit = async (item: DelegatedAccessRecord, revokeUnselected = false) => {'))
   const guard = save.indexOf('if (staleEdit(editBaseRevision.current, item.card_revision, editRefusedStale))')
   const request = save.indexOf('dispatch(updateDelegatedAccess(')
   assert.ok(guard > 0 && guard < request, 'the stale check runs before any request')

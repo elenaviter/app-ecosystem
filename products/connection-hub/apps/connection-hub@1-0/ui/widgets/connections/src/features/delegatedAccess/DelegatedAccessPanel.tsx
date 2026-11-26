@@ -1934,6 +1934,8 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
     cardRevision: number;
     label: string;
   } | null>(null);
+  // The Agent Card whose unticked permissions are about to be withdrawn everywhere.
+  const [confirmRevokeUnselected, setConfirmRevokeUnselected] = useState<DelegatedAccessRecord | null>(null);
   const nowSeconds = Math.floor(Date.now() / 1000);
   const [railGroupBy, setRailGroupBy] = useState<CardGroupBy>('kind');
   const [pendingLeave, setPendingLeave] = useState<{ kind: 'switch'; item: DelegatedAccessRecord } | { kind: 'leave' } | null>(null);
@@ -3251,6 +3253,24 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
     />
   );
 
+  const renderRevokeUnselectedDialog = () => (
+    <ConfirmDialog
+      open={confirmRevokeUnselected !== null}
+      title={`Revoke unticked permissions of ${confirmRevokeUnselected ? cardTitle(confirmRevokeUnselected) : 'this Agent Card'}?`}
+      body={'Save keeps every permission already granted, so conversations that chose one keep it; only new '
+        + 'conversations start from your selection. This saves your selection and also withdraws every permission '
+        + 'you left unticked from this agent: every conversation, older ones included, loses it at once. '
+        + 'To give one back later, tick it and grant it again.'}
+      confirmLabel="Save and revoke"
+      onCancel={() => setConfirmRevokeUnselected(null)}
+      onConfirm={() => {
+        const pending = confirmRevokeUnselected;
+        setConfirmRevokeUnselected(null);
+        if (pending) void saveEdit(pending, true);
+      }}
+    />
+  );
+
   const renderAgentResetDialog = () => (
     <ConfirmDialog
       open={confirmAgentReset !== null}
@@ -3481,7 +3501,7 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
     );
   };
 
-  const saveEdit = async (item: DelegatedAccessRecord) => {
+  const saveEdit = async (item: DelegatedAccessRecord, revokeUnselected = false) => {
     // W587: a stale edit is refused here; no request leaves the browser.
     if (staleEdit(editBaseRevision.current, item.card_revision, editRefusedStale)) {
       setEditActionError(STALE_EDIT_MESSAGE);
@@ -3652,6 +3672,7 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
       projectAgentCard: projectAgentCard || undefined,
       projectControlCard: projectControlCard || undefined,
       invocationModes,
+      revokeUnselected: revokeUnselected || undefined,
     };
     // W755: one Save is one request and one project transaction. A refusal changes nothing and keeps the draft.
     // Operator, 2026-10-11 21:03Z: "the card version is comapred to server. if on server newer exist this is
@@ -6020,6 +6041,21 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
             >
               Save
             </button>
+            {residentCapabilityCard ? (
+              <button
+                className="btn btn-danger"
+                type="button"
+                disabled={busy
+                  || problems.length > 0
+                  || staleEdit(editBaseRevision.current, record.card_revision, editRefusedStale)
+                  || Boolean(cardSaveBlockedReason(record, focusedViewer))
+                  || !residentCapabilityAuthority}
+                title="Save, and withdraw every unticked permission from all of this agent's conversations"
+                onClick={() => setConfirmRevokeUnselected(record)}
+              >
+                Save and revoke unticked
+              </button>
+            ) : null}
             <button className="btn btn-ghost" type="button" disabled={busy} onClick={clearEditState}>
               Cancel
             </button>
@@ -6411,6 +6447,7 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
     <section className="card">
       {renderRenewDialog()}
       {renderAgentResetDialog()}
+      {renderRevokeUnselectedDialog()}
       {renderReturnToDescriptorDialog()}
 
       {accessCardFocus && accessCardFocusState === 'loading' ? (

@@ -228,6 +228,10 @@ export const grantAgentAccess = createAsyncThunk<
 
 export interface UpdateDelegatedAccessArgs {
   accessId: string;
+  /** An Agent Card's Save keeps what was granted, so older conversations keep
+   *  their choices; this also withdraws every permission not ticked, from
+   *  every conversation at once. */
+  revokeUnselected?: boolean;
   /** W41: the application holding a shared descriptor Control being saved. */
   holderSubject?: string;
   label: string;
@@ -293,6 +297,7 @@ export const updateDelegatedAccess = createAsyncThunk<
       projectControlCard,
       invocationModes,
       holderSubject,
+      revokeUnselected,
     },
     { rejectWithValue },
   ) => {
@@ -325,6 +330,7 @@ export const updateDelegatedAccess = createAsyncThunk<
                 }
             : { access_id: accessId, ...(holderSubject ? { holder_subject: holderSubject } : {}) }),
           label,
+          ...(revokeUnselected ? { revoke: true } : {}),
           resource_grants: resourceGrants || {},
           resource_operations: resourceOperations || {},
           ...(operations !== undefined ? { operations } : {}),

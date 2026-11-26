@@ -515,6 +515,15 @@ def _profile_resource_scope(payload: Mapping[str, Any]) -> list[str] | None:
     return [item.strip() for item in value]
 
 
+def _revoke_requested(payload: Mapping[str, Any]) -> bool:
+    """An Agent Card Save that also withdraws every permission left unticked."""
+    if "revoke" not in payload:
+        return False
+    if not isinstance(payload.get("revoke"), bool):
+        raise ValueError("revoke must be true or false")
+    return bool(payload["revoke"])
+
+
 def _expected_card_revision(payload: Mapping[str, Any]) -> Optional[int]:
     """The revision the editor loaded. Absent means no precondition.
 
@@ -7336,6 +7345,8 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
             elif "reset_to_control_defaults" in payload:
                 if payload.get("reset_to_control_defaults") is not True:
                     raise ValueError("reset_to_control_defaults must be true")
+                if "revoke" in payload:
+                    raise ValueError("reset_to_control_defaults cannot include revoke")
                 if "selected_capabilities" in payload:
                     raise ValueError(
                         "reset_to_control_defaults cannot include selected_capabilities"
@@ -7356,6 +7367,7 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
                     access_id=_access_id_for_log,
                     selected_capabilities=dict(selected_capabilities),
                     expected_card_revision=_expected_card_revision(payload),
+                    revoke=_revoke_requested(payload),
                 )
             else:
                 async def authorize_agent_card(access_id: str, project_ref: str) -> Any:
@@ -7368,9 +7380,10 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
                     access_id=_access_id_for_log,
                     holder_subject=str(payload.get("holder_subject") or "").strip(),
                     _authorize_agent_card=authorize_agent_card,
-                    # W40 D5 option a: the owner's Save of an Agent Card's selection keeps
-                    # what was granted; only revoke or a replacing grant narrows.
-                    _keep_grants=True,
+                    # The owner's Save of an Agent Card's selection keeps what was
+                    # granted, so older conversations keep their choices; with
+                    # ``revoke`` it withdraws every permission left unticked.
+                    _keep_grants=not _revoke_requested(payload),
                     # W737: omitted stays omitted (an Accept-only save changes no selection).
                     resource_grants=(
                         dict(payload.get("resource_grants") or {})

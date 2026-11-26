@@ -467,6 +467,7 @@ async def test_update_dispatches_agent_capability_selection_without_generic_gran
         "access_id": "agent-card-1",
         "selected_capabilities": selection,
         "expected_card_revision": 4,
+        "revoke": False,
     }
 
 
@@ -1192,3 +1193,27 @@ def test_w1018_accepts_keyword_reads_the_signature(entrypoint):
     assert accepts(explicit, "granted_account_scope") is False
     assert accepts(open_ended, "granted_account_scope") is True
     assert accepts(object(), "x") is False
+
+
+
+@pytest.mark.asyncio
+async def test_revoke_unticked_turns_off_keeping_what_was_granted(entrypoint):
+    """Save keeps the granted union; Save with revoke writes the selection as the grants."""
+    await entrypoint.module.ConnectionHubEntrypoint.delegated_access_update(
+        entrypoint.instance,
+        data={"access_id": "aut_1", "resource_grants": {"res": ["named_services:use"]}, "revoke": True},
+    )
+    assert entrypoint.service.calls[-1]["method"] == "update"
+    assert entrypoint.service.calls[-1]["_keep_grants"] is False
+
+
+@pytest.mark.asyncio
+async def test_revoke_reaches_the_agent_capability_selection_write(entrypoint):
+    selection = {"schema": "connection_hub.agent_capability_policy.v1", "resource": "urn:a", "capabilities": {}}
+    await entrypoint.module.ConnectionHubEntrypoint.delegated_access_update(
+        entrypoint.instance,
+        data={"access_id": "agent-card-1", "selected_capabilities": selection, "expected_card_revision": 4,
+              "revoke": True},
+    )
+    assert entrypoint.service.calls[-1]["method"] == "update_agent_capability_selection"
+    assert entrypoint.service.calls[-1]["revoke"] is True
