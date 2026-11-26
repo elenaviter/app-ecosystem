@@ -18,7 +18,7 @@ def test_operation_inventory_is_attribute_and_mapping_compatible():
     for operation, spec in operations.items():
         assert isinstance(spec, ConnectionOperationSpec)
         assert spec.operation == operation
-        # W41: the publication is local-only, as the sync is.
+        # The publication is local-only, as the sync is.
         expected = ("local",) if operation in (AGENT_CAPABILITY_SYNC, AGENT_CAPABILITY_PUBLISH) else ("local", "api")
         assert spec.transports == expected
         assert spec["transports"] == list(expected)

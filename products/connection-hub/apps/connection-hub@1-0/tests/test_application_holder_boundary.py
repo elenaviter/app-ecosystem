@@ -1,4 +1,4 @@
-"""W41 F6: an application's synthetic holder never authenticates as a person.
+"""An application's synthetic holder never authenticates as a person.
 
 The shared descriptor Control lives under ``application-authority:<digest>``.
 Only the Hub acts for that holder, after its own checks (the deployment's

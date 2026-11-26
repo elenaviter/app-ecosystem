@@ -187,7 +187,7 @@ async def test_new_descriptor_default_stays_unselected_and_withdrawn_choice_rest
         assert set(answer["projection"]["capabilities"].get("named_service_operations", ())) == visible
         defaults = answer["control_card"]["properties"][AGENT_CAPABILITY_DEFAULTS_PROPERTY]
         assert defaults["capabilities"]["named_service_operations"] == [f"slack/{POST}"]
-    # W41: each new descriptor revision is the deployment's own publication
+    # Each new descriptor revision is the deployment's own publication
     # (one decision each); the user's syncs here change no Card.
     assert set(decisions.decisions) == {"committed"}
     before_replay = list(decisions.decisions)
@@ -232,8 +232,8 @@ def test_control_refusal_details_are_bounded_catalog_coordinates_only(caplog):
 
 
 @pytest.mark.asyncio
-async def test_t6b_consent_after_a_publication_re_pins_instead_of_refusing(tmp_path):
-    """W41 (F1): the shared Control moved for everyone; this user's consent still commits."""
+async def test_consent_after_a_publication_re_pins_instead_of_refusing(tmp_path):
+    """The shared Control moved for everyone; this user's consent still commits."""
     import time
     from dataclasses import replace
 

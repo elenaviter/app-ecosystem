@@ -3626,7 +3626,7 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
     const projectControlCard = projectControlCardUpdateTarget(item);
     const baseArgs = {
       accessId: item.access_id,
-      // W41: an application's shared descriptor Control is saved for its holder.
+      // An application's shared descriptor Control is saved for its holder.
       holderSubject: applicationHolder(item) || undefined,
       label: editLabel.trim() || item.label || 'Automation access',
       resourceGrants: routedKept,

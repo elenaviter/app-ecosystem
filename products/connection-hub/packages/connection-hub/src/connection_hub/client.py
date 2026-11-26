@@ -138,7 +138,7 @@ class ConnectionsClient:
         self,
         payload: dict[str, Any],
     ) -> dict[str, Any]:
-        """W41: the application's deployment publishes one agent's shared descriptor Control."""
+        """The application's deployment publishes one agent's shared descriptor Control."""
 
         response = await self._call(AGENT_CAPABILITY_PUBLISH, **dict(payload))
         return dict(getattr(response, "object", None) or {})

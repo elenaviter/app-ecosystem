@@ -178,7 +178,7 @@ def _mover(service, card_service, control, *, times):
 
 
 @pytest.mark.asyncio
-async def test_t6b_a_control_moving_during_the_owner_save_is_retried_once_and_re_pinned(tmp_path, monkeypatch):
+async def test_a_control_moving_during_the_owner_save_is_retried_once_and_re_pinned(tmp_path, monkeypatch):
     service, store, decisions, resident, control, card_service, _ = await _world(tmp_path)
     race, state = _mover(service, card_service, control, times=1)
     monkeypatch.setattr(service, "_coordinated_write", race)
@@ -194,7 +194,7 @@ async def test_t6b_a_control_moving_during_the_owner_save_is_retried_once_and_re
 
 
 @pytest.mark.asyncio
-async def test_t6b_a_control_that_keeps_moving_refuses_after_one_retry(tmp_path, monkeypatch):
+async def test_a_control_that_keeps_moving_refuses_after_one_retry(tmp_path, monkeypatch):
     service, store, decisions, resident, control, card_service, _ = await _world(tmp_path)
     race, state = _mover(service, card_service, control, times=2)
     monkeypatch.setattr(service, "_coordinated_write", race)
@@ -208,7 +208,7 @@ async def test_t6b_a_control_that_keeps_moving_refuses_after_one_retry(tmp_path,
 
 
 @pytest.mark.asyncio
-async def test_t6b_an_owner_save_after_a_publication_re_pins_instead_of_refusing(tmp_path):
+async def test_an_owner_save_after_a_publication_re_pins_instead_of_refusing(tmp_path):
     service, store, decisions, resident, control, card_service, _ = await _world(tmp_path)
     published = replace(control, card_revision=control.card_revision + 1, label="Published later")
     await card_service.commit(published, subject_hash=subject_hash_for(control.grantor_subject),

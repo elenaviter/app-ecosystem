@@ -1,12 +1,11 @@
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2026 Elena Viter
 
-"""W41: one descriptor Control per agent, held by the application.
+"""One descriptor Control per agent, held by the application.
 
-The operator's W212 ruling: the Control "is not per user... its for all
-users". One Control per (tenant, project, application, agent) is stored under
-a synthetic application subject, the way a project's Cards live under
-``project-authority:<digest>``. The subject is a holder only: it has no
+The Control is shared by every user of the agent: one Control per (tenant,
+project, application, agent) is stored under a synthetic application
+subject, the way a project's Cards live under ``project-authority:<digest>``. The subject is a holder only: it has no
 credential and never signs in.
 
 The holder and the Control id are computed from the binding's ``issuer_ref``,

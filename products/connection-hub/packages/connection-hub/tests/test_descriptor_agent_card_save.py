@@ -139,7 +139,7 @@ async def test_foreign_forged_or_stale_descriptor_binding_never_authorizes_save(
 
 
 @pytest.mark.asyncio
-# W41 (F1): a newer Control is not a refusal; the owner's write re-pins to it (test_descriptor_agent_card_transaction).
+# A newer Control is not a refusal; the owner's write re-pins to it (test_descriptor_agent_card_transaction).
 @pytest.mark.parametrize("case", ["missing", "marker", "invalid_marker", "foreign_owner", "foreign_deployment"])
 async def test_bad_stored_descriptor_control_refuses_before_choosing_local_route(case):
     service, resident, control = await _descriptor_pair()

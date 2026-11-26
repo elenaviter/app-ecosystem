@@ -1,4 +1,4 @@
-"""W41 T2: an Agent Card reaches the shared descriptor Control only by its exact edge.
+"""An Agent Card reaches the shared descriptor Control only by its exact edge.
 
 The holder and the Control id are computed from the binding's issuer_ref. A
 binding that names another application's holder, or a non-deterministic id,

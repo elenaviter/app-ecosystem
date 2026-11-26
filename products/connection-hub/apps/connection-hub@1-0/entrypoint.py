@@ -907,7 +907,7 @@ def _platform_user_payload(entrypoint: Any, *, user_id: Optional[str] = None) ->
     if not platform_user_id:
         return {}
     if is_application_authority_subject(platform_user_id):
-        # W41: an application's synthetic holder is never a person; no request
+        # An application's synthetic holder is never a person; no request
         # authenticates as it (the Hub alone acts for it, after its own checks).
         return {}
     roles, permissions = _entrypoint_user_roles_permissions(entrypoint)
@@ -5920,7 +5920,7 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
         fingerprint: Optional[str] = None,
         **kwargs: Any,
     ) -> Dict[str, Any]:
-        """W41: list, and with ``apply`` migrate, per-user descriptor Control copies.
+        """List, and with ``apply`` migrate, per-user descriptor Control copies.
 
         A platform administrator runs it in the deployment window: first a dry
         run (the default) whose report is reviewed, then ``{"apply": true}``.
@@ -7318,7 +7318,7 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
                 _result = await access_service.return_control_to_descriptor(
                     user,
                     access_id=_access_id_for_log,
-                    # W41: an application's shared descriptor Control (verified by the Hub).
+                    # An application's shared descriptor Control (verified by the Hub).
                     holder_subject=str(payload.get("holder_subject") or "").strip(),
                     expected_card_revision=_expected_card_revision(payload),
                     expected_catalog_version=str(payload.get("expected_catalog_version") or "").strip() or None,

@@ -124,7 +124,7 @@ def descriptor_agent_resource(
 
 
 def _binding_names_a_descriptor_control(binding: Any, resource: str, *, grantor_subject: str) -> bool:
-    """W41: the shared Control at its computed holder, or the owner's own legacy copy.
+    """The shared Control at its computed holder, or the owner's own legacy copy.
 
     The legacy per-user copy is accepted only until migration rebinds the Card.
     """
@@ -137,7 +137,7 @@ def _binding_names_a_descriptor_control(binding: Any, resource: str, *, grantor_
 
 
 def rebinds_to_shared_control(before: CardAuthority, control: CardAuthority) -> bool:
-    """W41 migration: ``before`` is bound to its owner's legacy copy, ``control`` is the shared one.
+    """Migration: ``before`` is bound to its owner's legacy copy, ``control`` is the shared one.
 
     Such a write moves the binding; the legacy copy is not this write's
     ceiling, so the old binding is not validated against ``control``.
@@ -159,7 +159,7 @@ def rebinds_to_shared_control(before: CardAuthority, control: CardAuthority) -> 
 
 
 def shared_control_write_refusal(prior_control: Any, control: Any) -> "DescriptorAgentCardRefused | None":
-    """W41: an Agent Card lifecycle never creates or changes the shared descriptor Control.
+    """An Agent Card lifecycle never creates or changes the shared descriptor Control.
 
     The deployment's publication and a platform administrator are its only
     writers. A Card write reserves the stored Control; it never carries a new one.

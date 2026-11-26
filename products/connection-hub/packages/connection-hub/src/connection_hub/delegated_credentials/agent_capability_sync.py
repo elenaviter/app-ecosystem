@@ -1027,7 +1027,7 @@ async def _commit_publication(
 
 
 async def publish_agent_descriptor_control(service: Any, **descriptor: Any) -> dict[str, Any]:
-    """W41: publish one agent's descriptor Control for every user of the agent.
+    """Publish one agent's descriptor Control for every user of the agent.
 
     Called by the application's deployment (never on a user's behalf) with the
     same descriptor arguments a sync carries. It writes only the shared Control
@@ -1075,7 +1075,7 @@ async def sync_agent_capability_control(
     attachment or explicit replacement, so new capabilities stay unselected.
     """
 
-    # W41: the Control is one per agent, under its application holder. Only the
+    # The Control is one per agent, under its application holder. Only the
     # publication writes it; a user's sync reads it and writes only that user's
     # Agent Card.
     grantor_subject = "" if _publication else _subject_from_user(user)
@@ -1593,7 +1593,7 @@ async def sync_agent_capability_control(
     existing_resident = loaded_resident[0] if loaded_resident is not None else None
     control_edited = dict(getattr(control_authority, "provenance", None) or {}).get(
         AGENT_DESCRIPTOR_CARD_EDIT_PROVENANCE_KEY) is True
-    # W41: the shared Control is current for everyone once published, so "this
+    # The shared Control is current for everyone once published, so "this
     # descriptor revision is already applied" is now a fact of this user's own
     # Agent Card: its descriptor evidence equals the Control's.
     resident_evidence = (dict(existing_resident.resource_acceptance or {}).get(agent_resource)
@@ -1618,7 +1618,7 @@ async def sync_agent_capability_control(
             "error": "agent_capability_card_identity_conflict",
             "status": 409,
         }
-    # W41: a Card still bound to its owner's legacy per-user copy is rebound to
+    # A Card still bound to its owner's legacy per-user copy is rebound to
     # the shared Control here (migration's fallback); any other Control is a conflict.
     rebinding = (
         existing_resident is not None
@@ -1651,7 +1651,7 @@ async def sync_agent_capability_control(
             AgentCapabilityPolicy.from_property(raw_current_selection)
             if raw_current_selection is not None
             else (
-                # W41: a new Agent Card starts from the runtime's seed (the
+                # A new Agent Card starts from the runtime's seed (the
                 # descriptor default with the user's own earlier picks), unless an
                 # administrator edited the shared Control: then from its defaults.
                 requested_selection

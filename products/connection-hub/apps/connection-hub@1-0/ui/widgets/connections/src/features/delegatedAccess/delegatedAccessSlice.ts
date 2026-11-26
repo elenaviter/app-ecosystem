@@ -228,7 +228,7 @@ export const grantAgentAccess = createAsyncThunk<
 
 export interface UpdateDelegatedAccessArgs {
   accessId: string;
-  /** W41: the application holding a shared descriptor Control being saved. */
+  /** The application holding a shared descriptor Control being saved. */
   holderSubject?: string;
   label: string;
   resourceGrants: Record<string, string[]>;

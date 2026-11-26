@@ -497,7 +497,7 @@ def effective_card_authority(
         and AGENT_DESCRIPTOR_ISSUER_KIND in (binding.issuer_kind, control.issuer_kind)
         and not descriptor_edge_matches(card, control)
     ):
-        # W41: an Agent Card reaches another holder's descriptor Control only
+        # An Agent Card reaches another holder's descriptor Control only
         # through the exact edge (holder and id computed from its issuer_ref).
         raise ControlCardMismatch("descriptor_control_edge_invalid")
     if (
@@ -570,7 +570,7 @@ def compose_card_authority_selection(
             tuple(control.resource_operations.get(resource, ())),
         )
     if mode != CONTROL_COMPOSITION_OR:
-        # W41: a descriptor family admits resources the Control does not list,
+        # A descriptor family admits resources the Control does not list,
         # so it is honoured only on the owner's own Control or the exact
         # shared descriptor edge, never on another cross-owner edge.
         if projection is not None and descriptor_families_admitted(card, control):

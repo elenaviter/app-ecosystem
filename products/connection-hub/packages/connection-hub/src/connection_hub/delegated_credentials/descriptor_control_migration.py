@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2026 Elena Viter
 
-"""W41 migration: from per-user descriptor Control copies to the one shared Control.
+"""Migration: from per-user descriptor Control copies to the one shared Control.
 
 Design (applications journal, 2026-11-20, section 6): the deployment publishes
 the shared Control; this migration then
@@ -97,7 +97,7 @@ async def migrate_descriptor_controls(host: Any, store: Any, *, apply: bool) -> 
             "administrator_edited": dict(copy.provenance or {}).get(AGENT_DESCRIPTOR_CARD_EDIT_PROVENANCE_KEY) is True,
             "differs_from_shared": _differs(copy, target),
             "bound_agent_cards": len(bound.get(copy.access_id, ())),
-            # Review C4: the owner's own connectors this copy listed. After the
+            # The owner's own connectors this copy listed. After the
             # move they reach the agent only through the descriptor's resource
             # families; with none declared they are no longer admitted.
             "own_connectors_lost": _connectors_lost(copy, target),
