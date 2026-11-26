@@ -1,4 +1,4 @@
-"""W34 F1: the account-connect OAuth state is opaque to the provider.
+"""The account-connect OAuth state is opaque to the provider.
 
 The state carried the whole connection context (user, provider, claims,
 account, the full return URL with request tickets) as readable base64 JSON;
