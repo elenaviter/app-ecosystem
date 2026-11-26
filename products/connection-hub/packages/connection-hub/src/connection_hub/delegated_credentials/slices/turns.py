@@ -23,7 +23,7 @@ from dataclasses import dataclass
 from typing import Any, Mapping, Protocol
 
 from connection_hub.delegated_credentials.slices.store import (
-    BundleStorageConversationSliceStore, ConversationSlice, SLICE_STATE_DELETING, SliceStoreError,
+    BundleStorageConversationSliceStore, ConversationSlice, SliceStoreError,
 )
 
 TOKEN_SECONDS = 600
@@ -133,6 +133,28 @@ def turn_tokens_from_secret(secret: str) -> "TurnTokens | None":
     return TurnTokens(hmac.new(raw, TURN_TOKEN_KEY_LABEL, hashlib.sha256).digest())
 
 
+async def seed_slice(store: Any, seeded: ConversationSlice, *, current: ConversationSlice | None,
+                     conversation_epoch: int | None) -> ConversationSlice:
+    """Write the seeded slice; when another request seeded it first, use theirs.
+
+    Two requests of one conversation (a turn and a picker write, or two
+    workers) may seed at once. The one that loses the revision race reads the
+    winner instead of refusing, as long as the winner was seeded for the same
+    Card generation and deletion epoch.
+    """
+    from connection_hub.delegated_credentials.slices.store import SliceConflict
+
+    try:
+        return await store.write(seeded, expected_revision=current.slice_revision if current else 0)
+    except SliceConflict:
+        winner = await store.read(grantor_subject=seeded.grantor_subject, card_access_id=seeded.card_access_id,
+                                  conversation_id=seeded.conversation_id)
+        if (winner is None or winner.card_generation != seeded.card_generation
+                or slice_epoch_differs(winner, conversation_epoch)):
+            raise
+        return winner
+
+
 def slice_epoch_differs(current: ConversationSlice, conversation_epoch: int | None) -> bool:
     """True when the runtime names a deletion epoch other than the one the slice was seeded under."""
     return conversation_epoch is not None and int(conversation_epoch) != int(current.conversation_epoch)
@@ -174,8 +196,6 @@ async def begin_turn(
     # not block the turn; the guard applies committed AND prepared meanwhile.
     current = await store.read(grantor_subject=card.grantor_subject, card_access_id=card.access_id,
                                conversation_id=conversation_id)
-    if current is not None and current.state == SLICE_STATE_DELETING:
-        raise TurnRefused("conversation_deleting", status=409)
     if (current is None or current.card_generation != card_generation
             or slice_epoch_differs(current, conversation_epoch)):
         # One registry check, when the slice is (re)seeded; never per turn.
@@ -193,7 +213,7 @@ async def begin_turn(
                                    base_card_revision=card.card_revision, selection=seed_selection,
                                    conversation_epoch=int(getattr(registered, "epoch", 0) or 0))
         try:
-            current = await store.write(seeded, expected_revision=current.slice_revision if current else 0)
+            current = await seed_slice(store, seeded, current=current, conversation_epoch=conversation_epoch)
         except SliceStoreError as exc:
             raise TurnRefused(exc.reason, retryable=True, status=409) from None
     token = tokens.issue(TurnClaims(card_access_id=card.access_id, conversation_id=conversation_id,
@@ -206,6 +226,6 @@ async def begin_turn(
 
 __all__ = [
     "ConversationRegistry", "RegisteredConversation", "TOKEN_SECONDS", "TURN_CAP_SECONDS", "TurnClaims",
-    "TurnRefused", "TurnTokens", "begin_turn", "card_generation_of", "slice_epoch_differs",
+    "TurnRefused", "TurnTokens", "begin_turn", "card_generation_of", "seed_slice", "slice_epoch_differs",
     "turn_tokens_from_secret",
 ]

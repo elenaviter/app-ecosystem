@@ -109,7 +109,7 @@ async def test_consent_builds_one_effect_that_adds_only_the_granted_choice(tmp_p
 
 
 @pytest.mark.asyncio
-async def test_w582_a_replayed_commit_finds_its_own_revision_after_a_later_picker_write(tmp_path):
+async def test_a_replayed_commit_finds_its_own_revision_after_a_later_picker_write(tmp_path):
     store = await _seeded(tmp_path)
     target = ConversationSliceTarget(store)
     await target.prepare_once(_binding(), _payload())
@@ -140,7 +140,7 @@ async def test_a_bounded_picker_write_lands_once_the_transaction_is_decided(tmp_
     assert (await waiting).slice_revision == 2
 
 
-def test_w873_card_version_never_carries_a_conversation_slice_effect():
+def test_card_version_never_carries_a_conversation_slice_effect():
     from connection_hub.delegated_credentials.cards import participant_card_version
 
     # CardVersion's Hub effects are a closed set; its recovery

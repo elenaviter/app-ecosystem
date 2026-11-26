@@ -15,7 +15,7 @@ import dataclasses
 from typing import Any, Mapping
 
 from connection_hub.delegated_credentials.slices.store import (
-    SELECTION_CATEGORIES, SLICE_STATE_DELETING, BundleStorageConversationSliceStore, SliceStoreError,
+    SELECTION_CATEGORIES, BundleStorageConversationSliceStore, SliceStoreError,
 )
 
 
@@ -41,8 +41,6 @@ async def conversation_slice_effect(
     if current is None:
         # A conversation's consent follows its turn token, which seeded the slice.
         raise SliceStoreError("conversation_slice_missing", retryable=True)
-    if current.state == SLICE_STATE_DELETING:
-        raise SliceStoreError("conversation_deleting")
     selection = {category: _union(current.selection.get(category), granted.get(category))
                  for category in SELECTION_CATEGORIES if category in current.selection or category in granted}
     candidate = dataclasses.replace(current, selection=selection)

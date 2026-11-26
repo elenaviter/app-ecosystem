@@ -21,7 +21,7 @@ from typing import Any, Mapping
 from connection_hub.delegated_credentials.agent_capability_policy import AGENT_CAPABILITY_METADATA_PROPERTY
 from connection_hub.delegated_credentials.cards.model import CardAuthority, NamedServiceSelection
 from connection_hub.delegated_credentials.controls.effective import intersect_card_authority_selection
-from connection_hub.delegated_credentials.slices.store import SLICE_STATE_ACTIVE, ConversationSlice
+from connection_hub.delegated_credentials.slices.store import ConversationSlice
 
 
 class SliceGuardRefused(RuntimeError):
@@ -47,8 +47,6 @@ def _family_patterns(control: CardAuthority) -> dict[str, tuple[str, ...]]:
 def narrow_by_slice(effective: CardAuthority, control: CardAuthority, conversation: ConversationSlice) -> CardAuthority:
     """``effective`` (Agent Card AND Control) narrowed by this conversation's slice."""
 
-    if conversation.state != SLICE_STATE_ACTIVE:
-        raise SliceGuardRefused("conversation_deleting")
     if conversation.card_access_id != effective.access_id or conversation.grantor_subject != effective.grantor_subject:
         raise SliceGuardRefused("conversation_slice_card_mismatch")
     return narrow_by_selection(effective, control, conversation.selection)

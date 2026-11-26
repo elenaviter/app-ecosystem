@@ -34,8 +34,7 @@ REVISIONS_DIRNAME = "revisions"
 PREPARED_DIRNAME = "prepared"
 SLICE_SCHEMA = "connection-hub.conversation-slice.v1"
 SLICE_STATE_ACTIVE = "active"
-SLICE_STATE_DELETING = "deleting"
-SLICE_STATES = frozenset({SLICE_STATE_ACTIVE, SLICE_STATE_DELETING})
+SLICE_STATES = frozenset({SLICE_STATE_ACTIVE})
 SELECTION_CATEGORIES = ("resource_grants", "resource_operations", "named_service_operations", "resource_families")
 _REVISION_FILE = re.compile(r"^slice_revision_([0-9]{8})\.json$")
 _ACCESS_ID = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
@@ -144,6 +143,53 @@ class ConversationSlice:
         )
 
 
+def _create_exclusive(path: pathlib.Path, document: Mapping[str, Any]) -> bool:
+    """Make ``path`` appear with its complete content, or not at all; False when it already exists.
+
+    The bytes go to a temporary file first and are made durable; ``os.link``
+    then publishes them under ``path`` atomically and refuses an existing
+    name, so a reader never sees a partial file and two creators never both
+    succeed. A crash leaves at most an unpublished temporary file.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f".{path.name}.{os.getpid()}.{os.urandom(6).hex()}.tmp")
+    payload = json.dumps(dict(document), sort_keys=True).encode("utf-8")
+    descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    try:
+        os.write(descriptor, payload)
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+    try:
+        os.link(temporary, path)
+        return True
+    except FileExistsError:
+        return False
+    finally:
+        _unlink_quietly(temporary)
+        _fsync_directory(path.parent)
+
+
+def _unlink_quietly(path: pathlib.Path) -> None:
+    try:
+        os.unlink(path)
+    except FileNotFoundError:
+        pass
+
+
+def _fsync_directory(directory: pathlib.Path) -> None:
+    try:
+        descriptor = os.open(directory, os.O_RDONLY)
+    except OSError:
+        return
+    try:
+        os.fsync(descriptor)
+    except OSError:
+        pass
+    finally:
+        os.close(descriptor)
+
+
 class BundleStorageConversationSliceStore:
     """Slices under ``<cards root>/grantors/<subject_hash>/slices``."""
 
@@ -232,19 +278,25 @@ class BundleStorageConversationSliceStore:
             raise SliceConflict(current)
         committed = ConversationSlice(**{**candidate.__dict__, "slice_revision": current + 1,
                                          "change_id": _change_id})
-        directory.mkdir(parents=True, exist_ok=True)
         path = directory / f"slice_revision_{current + 1:08d}.json"
-        payload = json.dumps(committed.to_document(), sort_keys=True).encode("utf-8")
-        try:
-            descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-        except FileExistsError:
-            raise SliceConflict(current + 1) from None
-        try:
-            os.write(descriptor, payload)
-            os.fsync(descriptor)
-        finally:
-            os.close(descriptor)
+        if not _create_exclusive(path, committed.to_document()):
+            raise SliceConflict(current + 1)
+        # A transaction may have prepared against ``current`` between the check
+        # above and this create. Each side publishes its own file before it
+        # looks at the other's, so at least one of them sees the overlap; a
+        # write that sees such a marker withdraws its revision.
+        if await self._marker_expecting(self._prepared_directory(directory), current, own=_change_id):
+            _unlink_quietly(path)
+            raise SlicePrepared()
         return committed
+
+    async def _marker_expecting(self, prepared_directory: pathlib.Path, revision: int, *, own: str) -> bool:
+        """Whether another change's marker was prepared against ``revision`` (an unreadable one counts)."""
+        for change_id in await self._markers(prepared_directory, own=own):
+            document = await read_json_or_none(prepared_directory / f"{change_id}.json")
+            if not isinstance(document, Mapping) or int(document.get("expected_revision") or 0) == int(revision):
+                return True
+        return False
 
     # -- Card-transaction effect: STAGE, COMMIT, ABORT --------
 
@@ -265,14 +317,19 @@ class BundleStorageConversationSliceStore:
         revisions = await self._revisions(directory)
         if (revisions[-1] if revisions else 0) != int(expected_revision):
             raise SliceConflict(revisions[-1] if revisions else 0)
-        marker.parent.mkdir(parents=True, exist_ok=True)
         document = {"expected_revision": int(expected_revision), "slice": candidate.to_document()}
-        descriptor = os.open(marker, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-        try:
-            os.write(descriptor, json.dumps(document, sort_keys=True).encode("utf-8"))
-            os.fsync(descriptor)
-        finally:
-            os.close(descriptor)
+        if not _create_exclusive(marker, document):
+            return  # a concurrent replay of this same STAGE created it
+        # The marker is published before the slice is looked at again: a direct
+        # write that created the next revision meanwhile, or another change that
+        # prepared meanwhile, makes this STAGE withdraw its marker.
+        revisions = await self._revisions(directory)
+        if (revisions[-1] if revisions else 0) != int(expected_revision):
+            _unlink_quietly(marker)
+            raise SliceConflict(revisions[-1] if revisions else 0)
+        if await self._markers(marker.parent, own=change_id):
+            _unlink_quietly(marker)
+            raise SlicePrepared()
 
     async def commit_prepared(self, candidate: ConversationSlice, *, change_id: str) -> ConversationSlice:
         """COMMIT: write the prepared revision once; a replay finds it written and returns it."""
@@ -308,17 +365,6 @@ class BundleStorageConversationSliceStore:
         except FileNotFoundError:
             pass
 
-    async def remove(self, *, grantor_subject: str, card_access_id: str, conversation_id: str) -> int:
-        """Remove every revision of one slice (after its conversation's messages are gone)."""
-        directory = self._directory(grantor_subject, card_access_id, conversation_id)
-        removed = 0
-        for revision in await self._revisions(directory):
-            try:
-                os.unlink(directory / f"slice_revision_{revision:08d}.json")
-                removed += 1
-            except FileNotFoundError:
-                pass
-        return removed
 
 
 __all__ = [
@@ -326,7 +372,6 @@ __all__ = [
     "ConversationSlice",
     "SELECTION_CATEGORIES",
     "SLICE_STATE_ACTIVE",
-    "SLICE_STATE_DELETING",
     "SliceConflict",
     "SlicePrepared",
     "SliceStoreError",

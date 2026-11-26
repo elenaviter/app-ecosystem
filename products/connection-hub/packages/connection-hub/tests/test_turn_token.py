@@ -7,7 +7,7 @@ from types import SimpleNamespace
 import pytest
 
 from connection_hub.delegated_credentials.slices.store import (
-    BundleStorageConversationSliceStore, ConversationSlice, SLICE_STATE_DELETING,
+    BundleStorageConversationSliceStore, ConversationSlice,
 )
 from connection_hub.delegated_credentials.slices.turns import (
     TOKEN_SECONDS, TURN_CAP_SECONDS, RegisteredConversation, TurnRefused, TurnTokens, begin_turn,
@@ -96,14 +96,11 @@ async def test_renewal_needs_the_same_live_turn_and_stops_at_the_cap(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_a_deleting_slice_gets_no_token_and_a_new_card_generation_reseeds(tmp_path):
+async def test_a_new_card_generation_reseeds(tmp_path):
     store = BundleStorageConversationSliceStore(tmp_path)
     _, first = await _begin(tmp_path, Registry(), store=store)
     reseeded = (await _begin(tmp_path, Registry(), store=store, generation=2))[1]
     assert reseeded.card_generation == 2 and reseeded.slice_revision == 2
-    await store.write(ConversationSlice(**{**reseeded.__dict__, "state": SLICE_STATE_DELETING}), expected_revision=2)
-    with pytest.raises(TurnRefused, match="conversation_deleting"):
-        await _begin(tmp_path, Registry(), store=store, generation=3)
 
 
 @pytest.mark.asyncio
@@ -203,3 +200,37 @@ def test_the_epoch_survives_the_stored_document():
     legacy = value.to_document()
     legacy.pop("conversation_epoch")
     assert ConversationSlice.from_document(legacy).conversation_epoch == 0
+
+
+@pytest.mark.asyncio
+async def test_a_turn_that_loses_the_seeding_race_uses_the_slice_the_winner_seeded(tmp_path):
+    """Two requests seed one conversation at once; the loser reads the winner instead of refusing."""
+    store, registry = BundleStorageConversationSliceStore(tmp_path), EpochRegistry(epoch=0)
+    _, winner = await _begin_epoch(store, registry, epoch=0, turn="t1", now=1000)
+    original = store.read
+    calls = {"n": 0}
+
+    async def stale_first_read(**scope):
+        calls["n"] += 1
+        return None if calls["n"] == 1 else await original(**scope)
+
+    store.read = stale_first_read
+    token, used = await _begin_epoch(store, registry, epoch=0, turn="t2", now=1100)
+    assert token and used.slice_revision == winner.slice_revision
+
+
+@pytest.mark.asyncio
+async def test_a_seeding_race_won_under_another_epoch_still_refuses(tmp_path):
+    store, registry = BundleStorageConversationSliceStore(tmp_path), EpochRegistry(epoch=0)
+    await _begin_epoch(store, registry, epoch=0, turn="t1", now=1000)
+    original = store.read
+    calls = {"n": 0}
+
+    async def stale_first_read(**scope):
+        calls["n"] += 1
+        return None if calls["n"] == 1 else await original(**scope)
+
+    store.read = stale_first_read
+    registry.epoch = 5000
+    with pytest.raises(TurnRefused, match="conversation_slice_revision_conflict"):
+        await _begin_epoch(store, registry, epoch=5000, turn="t2", now=1100)

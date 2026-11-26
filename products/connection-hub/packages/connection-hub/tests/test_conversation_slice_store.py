@@ -7,7 +7,7 @@ import asyncio
 import pytest
 
 from connection_hub.delegated_credentials.slices.store import (
-    BundleStorageConversationSliceStore, ConversationSlice, SLICE_STATE_DELETING, SliceConflict, SliceStoreError,
+    BundleStorageConversationSliceStore, ConversationSlice, SliceConflict, SliceStoreError,
     conversation_key,
 )
 
@@ -62,12 +62,83 @@ def test_a_slice_never_holds_what_kdcube_carries_out():
             _slice(selection={category: ["x"]})
 
 
+def _scope():
+    return dict(grantor_subject="user-1", card_access_id="agent-user-1", conversation_id="conv/../1")
+
+
 @pytest.mark.asyncio
-async def test_a_deleting_tombstone_is_a_revision_and_removal_clears_the_slice(tmp_path):
+async def test_a_transaction_that_prepares_inside_a_picker_write_still_commits_and_leaves_no_marker(tmp_path):
+    """The picker write and a consent's STAGE overlap; the write withdraws, the commit lands."""
+    from connection_hub.delegated_credentials.slices.store import SlicePrepared
+
     store = BundleStorageConversationSliceStore(tmp_path)
     await store.write(_slice(), expected_revision=0)
-    marked = await store.write(_slice(state=SLICE_STATE_DELETING), expected_revision=1)
-    assert marked.state == SLICE_STATE_DELETING
+    consent = _slice(selection={"named_service_operations": {NAMED: {"slack": ["object.list", "object.post"]}}})
+    original = store._revisions
+    calls = {"n": 0}
 
-    assert await store.remove(grantor_subject="user-1", card_access_id="agent-user-1", conversation_id="conv/../1") == 2
-    assert await store.read(grantor_subject="user-1", card_access_id="agent-user-1", conversation_id="conv/../1") is None
+    async def revisions_with_a_stage_in_between(directory):
+        calls["n"] += 1
+        if calls["n"] == 1:  # the picker write passed its marker check; the STAGE runs now
+            await store.prepare(consent, expected_revision=1, change_id="txn-1")
+        return await original(directory)
+
+    store._revisions = revisions_with_a_stage_in_between
+    with pytest.raises(SlicePrepared):
+        await store.write(_slice(selection={}), expected_revision=1)
+    store._revisions = original
+
+    committed = await store.commit_prepared(consent, change_id="txn-1")
+    assert committed.slice_revision == 2 and committed.selection == consent.selection
+    assert await store.prepared_changes(**_scope()) == []
+    assert (await store.read(**_scope())).selection == consent.selection
+
+
+@pytest.mark.asyncio
+async def test_a_stage_that_finds_the_slice_moved_after_its_marker_withdraws_it(tmp_path):
+    store = BundleStorageConversationSliceStore(tmp_path)
+    await store.write(_slice(), expected_revision=0)
+    original = store._revisions
+    calls = {"n": 0}
+
+    async def revisions_moved_after_the_marker(directory):
+        calls["n"] += 1
+        if calls["n"] == 2:  # the marker is published; a write that passed its check earlier lands now
+            store._revisions = original
+            await BundleStorageConversationSliceStore(tmp_path)._write_unchecked_for_test(_slice(selection={}), 1)
+        return await original(directory)
+
+    async def _write_unchecked(self, candidate, expected):
+        from connection_hub.delegated_credentials.slices import store as module
+        directory = self._directory(candidate.grantor_subject, candidate.card_access_id, candidate.conversation_id)
+        written = ConversationSlice(**{**candidate.__dict__, "slice_revision": expected + 1})
+        assert module._create_exclusive(directory / f"slice_revision_{expected + 1:08d}.json", written.to_document())
+
+    BundleStorageConversationSliceStore._write_unchecked_for_test = _write_unchecked
+    try:
+        store._revisions = revisions_moved_after_the_marker
+        with pytest.raises(SliceConflict):
+            await store.prepare(_slice(), expected_revision=1, change_id="txn-2")
+    finally:
+        del BundleStorageConversationSliceStore._write_unchecked_for_test
+    assert await store.prepared_changes(**_scope()) == []
+
+
+@pytest.mark.asyncio
+async def test_a_crash_while_writing_a_revision_leaves_the_slice_readable(tmp_path, monkeypatch):
+    """The bytes are published whole or not at all; a partial revision never becomes the current one."""
+    from connection_hub.delegated_credentials.slices import store as module
+
+    store = BundleStorageConversationSliceStore(tmp_path)
+    first = await store.write(_slice(), expected_revision=0)
+
+    def crash(*args, **kwargs):
+        raise OSError("disk went away")
+
+    monkeypatch.setattr(module.os, "link", crash)
+    with pytest.raises(OSError):
+        await store.write(_slice(selection={}), expected_revision=1)
+    monkeypatch.undo()
+    assert await store.read(**_scope()) == first
+    assert not [path for path in tmp_path.rglob("*.tmp")]
+    assert (await store.write(_slice(selection={}), expected_revision=1)).slice_revision == 2

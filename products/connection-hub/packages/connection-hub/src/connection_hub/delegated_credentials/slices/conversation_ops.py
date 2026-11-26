@@ -21,7 +21,7 @@ import time
 from typing import Any, Mapping
 
 from connection_hub.delegated_credentials.slices.store import (
-    SELECTION_CATEGORIES, SLICE_STATE_ACTIVE, ConversationSlice, SliceConflict,
+    SELECTION_CATEGORIES, ConversationSlice, SliceConflict,
     SlicePrepared, SliceStoreError,
 )
 from connection_hub.delegated_credentials.slices.turn_operation import seed_selection_of
@@ -84,7 +84,9 @@ async def _seeded(service: Any, store: Any, card: Any, application: str, convers
                                conversation_id=conversation_id, card_generation=card_generation_of(card),
                                base_card_revision=card.card_revision, selection=seed_selection_of(card),
                                conversation_epoch=int(getattr(registered, "epoch", 0) or 0))
-    return await store.write(seeded, expected_revision=current.slice_revision if current else 0)
+    from connection_hub.delegated_credentials.slices.turns import seed_slice
+
+    return await seed_slice(store, seeded, current=current, conversation_epoch=conversation_epoch)
 
 
 async def update_conversation_selection(
@@ -109,8 +111,6 @@ async def update_conversation_selection(
             selection = await slice_selection_from_capabilities(service, card, selected_capabilities)
         wanted = _guarded(selection)
         current = await _seeded(service, store, card, application, conversation_id, conversation_epoch)
-        if current.state != SLICE_STATE_ACTIVE:
-            return _refusal("conversation_deleting")
         if expected_slice_revision is not None and int(expected_slice_revision) != current.slice_revision:
             return _refusal("conversation_slice_revision_conflict", retryable=True,
                             current_revision=current.slice_revision)

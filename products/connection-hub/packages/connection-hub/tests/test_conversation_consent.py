@@ -100,7 +100,7 @@ async def test_a_crashed_consent_never_blocks_calls_and_the_recovery_cron_releas
     assert await slices.prepared_changes(grantor_subject=OWNER, card_access_id=resident.access_id,
                                          conversation_id="c1")
 
-    # A-2: a call meanwhile is not refused; it gets committed AND prepared (the
+    # A call meanwhile is not refused; it gets committed AND prepared (the
     # consent widens, so the committed READ-only slice applies).
     # The undecided transaction also fences the Agent Card itself (pending effects
     # keep read resolution fenced), as for any Card transaction; the
@@ -110,12 +110,10 @@ async def test_a_crashed_consent_never_blocks_calls_and_the_recovery_cron_releas
         await _current(store, resident)
     from types import SimpleNamespace
     readers = SimpleNamespace(turn_tokens=TurnTokens(KEY), conversation_registry=None)
-    if True:
-        card = resident
-        composition = ResolvedCardComposition(caller_card=card, control_card=control, effective_card=card)
-        narrowed = await guard.narrow_live_composition_for_turn(composition, card_store=store, turn_token=token,
-                                                                resolvers=readers)
-        assert set(narrowed.effective_card.named_service_operations.operations[NAMED_RESOURCE]["slack"]) == {READ}
+    composition = ResolvedCardComposition(caller_card=resident, control_card=control, effective_card=resident)
+    narrowed = await guard.narrow_live_composition_for_turn(composition, card_store=store, turn_token=token,
+                                                            resolvers=readers)
+    assert set(narrowed.effective_card.named_service_operations.operations[NAMED_RESOURCE]["slack"]) == {READ}
 
     # The Hub's recovery cron presumes ABORT (the test store's expiry CAS) and
     # FINISH releases the slice marker; neither the Card nor the slice moved.

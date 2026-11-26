@@ -12,7 +12,7 @@ from connection_hub.delegated_credentials.agent_capability_policy import AGENT_C
 from connection_hub.delegated_credentials.controls.effective import effective_card_authority
 from connection_hub.delegated_credentials.slices.guard import SliceGuardRefused, effective_for_turn, narrow_by_slice
 from connection_hub.delegated_credentials.slices.store import (
-    BundleStorageConversationSliceStore, ConversationSlice, SLICE_STATE_DELETING,
+    BundleStorageConversationSliceStore, ConversationSlice,
 )
 from connection_hub.delegated_credentials.slices.turns import TurnClaims, TurnRefused, TurnTokens
 from test_agent_capability_control_sync import NAMED_RESOURCE, OWNER
@@ -94,9 +94,6 @@ async def test_the_guard_entry_reads_the_slice_by_the_turn_token_and_fails_close
     with pytest.raises(TurnRefused, match="turn_token_card_mismatch"):
         await effective_for_turn(effective=dataclasses.replace(card, access_id="agent-other"), control=control,
                                  slices=slices, tokens=tokens, turn_token=token, now=now)
-    await slices.write(_slice(card, {}, state=SLICE_STATE_DELETING), expected_revision=1)
-    with pytest.raises(SliceGuardRefused, match="conversation_deleting"):
-        await effective_for_turn(effective=card, control=control, slices=slices, tokens=tokens, turn_token=token, now=now)
 
 
 @pytest.mark.asyncio
@@ -158,7 +155,7 @@ def test_the_fence_reasons_answer_one_retryable_authority_update_reason():
 
 
 @pytest.mark.asyncio
-async def test_alpha_2_a_rotation_with_a_warm_cache_still_verifies_a_token_of_the_new_key():
+async def test_a_rotation_with_a_warm_cache_still_verifies_a_token_of_the_new_key():
     from connection_hub.delegated_credentials.slices.serving_parts import TurnTokenSource
     from connection_hub.delegated_credentials.slices.turns import turn_tokens_from_secret
 
@@ -178,7 +175,7 @@ async def test_alpha_2_a_rotation_with_a_warm_cache_still_verifies_a_token_of_th
 
 
 @pytest.mark.asyncio
-async def test_alpha_3_a_per_call_token_is_refused_once_the_turn_ended_within_five_seconds(tmp_path):
+async def test_a_per_call_token_is_refused_once_the_turn_ended_within_five_seconds(tmp_path):
     from connection_hub.delegated_credentials.slices.serving_parts import LivenessCache
 
     card, control = await _pair(tmp_path)
