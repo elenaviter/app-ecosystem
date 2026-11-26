@@ -4,8 +4,8 @@ title: "Delegated Access Cards: Storage, Rendering, And Enforcement"
 summary: "Canonical lifecycle of Connection Hub Cards: credential-backed callers, credentialless Control Cards, live composition and enforcement, and descriptor-drift reconciliation."
 status: active
 tags: ["sdk", "solutions", "connections", "connection-hub", "delegated-access", "cards", "grants", "mcp", "named-services"]
-keywords: ["Delegated by KDCube", "AutomationAccessRecord", "resource_grants", "resource_operations", "application operations", "delegated role", "named_service_operations", "account_scope", "registry_access_id", "card authority", "control card", "My Card", "project identity edge", "effective authority", "descriptor drift", "grant lifecycle", "stable resident identity", "resource_acceptance", "multi-resource card", "card read model"]
-updated_at: 2026-11-17
+keywords: ["Delegated by KDCube", "AutomationAccessRecord", "resource_grants", "resource_operations", "application operations", "delegated role", "named_service_operations", "account_scope", "registry_access_id", "card authority", "control card", "My Card", "project identity edge", "effective authority", "descriptor drift", "grant lifecycle", "stable resident identity", "resource_acceptance", "multi-resource card", "card read model", "conversation slice", "turn token", "agent_capability.turn", "deletion epoch", "revoke unticked"]
+updated_at: 2026-11-26
 see_also:
   - ./delegated-authority-and-admission.md
   - ./oauth-delegated-credential-protocol.md
@@ -1052,6 +1052,67 @@ action: their linked Control Card is a ceiling, while their owner grant is the
 starting selection. A descriptor-managed hosted Agent Card has a stable
 identity, so Connection Hub refuses direct revocation; the reset action
 restores its starting selection without destroying that identity.
+
+The owner's Save of a hosted Agent Card in this editor changes its
+**defaults**, the selection new conversations and calls outside a
+conversation start from, and keeps the permissions already **granted**, so a
+conversation that chose a permission keeps it after the owner unticks it.
+**Save and revoke unticked** (`delegated_access_update` with `revoke: true`,
+after a confirmation) writes the submitted selection as the grants as well:
+every unticked permission is withdrawn from every conversation of that agent
+at once. Every other write path (an agent's own Card write, a profile change)
+writes exactly what it submits.
+
+### Conversation slices
+
+A hosted agent works in many conversations of one user, and each
+conversation may choose its own permissions within the Agent Card. Connection
+Hub keeps that choice as the conversation's **slice** and enforces it at the
+operation boundary: a governed call made in a conversation is allowed only
+within `slice ∩ Agent Card ∩ Control`. A slice only narrows; it never adds
+authority the Card and its Control do not give. It holds only what the guard
+decides (operations, resources, named-service operations, resource-family
+switches), never a credential, an account or a model choice. Slices are
+stored beside the Agent Card under the bundle-storage Card root, one
+revision file per change (the file is created exclusively, which is the
+slice's compare-and-set); the path uses a digest of the conversation id.
+
+- **Turn token** (`agent_capability.turn`, local only). At turn start the
+  runtime names the application, agent, conversation and turn; the signed-in
+  user is the host's binding. Connection Hub answers a token bound to (Agent
+  Card, conversation, turn). It is not a bearer: a call presents it together
+  with the Card bearer. It lives ten minutes, is renewed only for the same
+  turn while KDCube reports that turn running, and never past a two-hour cap.
+  A call with a token is narrowed by that conversation's slice; a call
+  without one (outside any conversation, such as an automation run) by the
+  Agent Card's defaults.
+- **Seeding.** A slice is created once, from the Agent Card's defaults within
+  the current Control, never from a selection the runtime supplies. Before
+  seeding, Connection Hub checks KDCube's conversation registry once: the
+  conversation must belong to the Card's grantor in this application. A new
+  Agent Card generation (revoke and create again) seeds again. A conversation
+  being deleted does not exist for the registry, so it gets no token and no
+  slice.
+- **Deletion epoch.** Conversation ids are chosen by the client, so a deleted
+  conversation's id can come back. The slice records the conversation's
+  deletion epoch at seeding (the start of its latest completed deletion, 0
+  when never deleted); the runtime names the current epoch with each token
+  request and picker write, and a different epoch seeds the slice again from
+  the Card defaults. A request without an epoch uses the slice as it is.
+- **Picker** (`agent_capability.conversation`). The conversation picker
+  replaces the slice's selection, from the next call; KDCube's capability
+  selection is converted within the live Control. A picker write before the
+  first turn seeds the slice first. While a Card transaction on the agent is
+  undecided the write waits, bounded, and then answers
+  `agent_authority_updating` to retry.
+- **Consent in a conversation** writes the Agent Card (the new default) and
+  that conversation's slice in one Card transaction; the slice change is the
+  transaction's `conversation_slice` effect, so both apply or neither does.
+  Other existing conversations do not get the permission.
+
+A slice left behind by a deleted conversation grants nothing beyond its Card
+and Control, and a conversation created again under the id never uses it
+(the epoch differs).
 
 An administrator's Save submits one revision-checked Control Card update. The
 Card records that the administrator edited its selection; from then on a
