@@ -737,9 +737,9 @@ async def resolve_agent_card_standard_authority(
     provider-backed grant bound on ``account_scope``, exactly as a Card Save
     decides it (``_effective_named_service_grants``; delegated-cards.md,
     "Projection into a saved card"). ``account_scope`` is required: pass the
-    Card's binding, or ``{}`` when it binds no account. W37: before this split one
-    function served both the ceiling and the agent's Card and counted door grants
-    only, so the sync refused Cards that Save and consent accept.
+    Card's binding, or ``{}`` when it binds no account. The ceiling has its own
+    entry point, which counts door grants only: a ceiling resolved like a Card
+    would refuse Cards that Save and consent accept.
     """
 
     return await _resolve_descriptor_standard_authority(

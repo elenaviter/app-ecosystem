@@ -955,8 +955,10 @@ the Agent Card's own `account_scope`. The descriptor Control Card is
 credentialless and has no account binding, so its ceiling is resolved from door
 grants only. The two are separate entry points
 (`resolve_descriptor_control_ceiling`, `resolve_agent_card_standard_authority`)
-over one shared check, and the agent entry point always takes the Card's
-binding, `{}` when it binds no account.
+over one shared check. The agent entry point takes the Card's binding, `{}`
+when it binds no account. The agent's requested selection is resolved before
+any Card is loaded, so it uses `{}`; the Card's own binding is applied when the
+Card is projected and aligned in the same sync.
 
 An MCP server with individually declared tool capabilities stores the selected
 tools. A server exposed only as one capability selects the operations declared
