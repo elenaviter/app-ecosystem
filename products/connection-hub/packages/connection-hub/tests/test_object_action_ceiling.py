@@ -544,3 +544,24 @@ async def test_return_to_descriptor_passes_the_agent_card_transaction(tmp_path, 
     assert set(control.named_service_operations.operations[NAMED_RESOURCE]["slack"]) == {READ, POST}
     again = await service.sync_agent_capability_control({"user_id": OWNER}, **_sync_arguments())
     assert again["ok"], again
+
+
+@pytest.mark.asyncio
+async def test_a_selection_that_lists_actions_never_gets_an_unticked_action_back_through_the_parent():
+    """Beside a listed action the parent is only the action call; post_message stays off."""
+    other = "object.action.archive_channel"
+    service, persistence = _service(named_services=True)
+    answer = await _sync(service, LIST, PARENT, POST, selected=_policy_with_named_operations(LIST, PARENT, other))
+    assert answer["ok"], answer
+    resident = persistence.records[answer["card"]["access_id"]][0]
+    assert POST not in resident.named_service_operations.operations.get(NAMED_RESOURCE, {}).get("slack", ())
+    assert f"slack/{POST}" not in _keys(resident, AGENT_CAPABILITY_SELECTION_PROPERTY)
+
+
+@pytest.mark.asyncio
+async def test_a_selection_with_only_the_parent_still_takes_every_action():
+    service, persistence = _service(named_services=True)
+    answer = await _sync(service, LIST, PARENT, selected=_policy_with_named_operations(LIST, PARENT))
+    assert answer["ok"], answer
+    resident = persistence.records[answer["card"]["access_id"]][0]
+    assert POST in resident.named_service_operations.operations[NAMED_RESOURCE]["slack"]

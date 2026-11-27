@@ -10,6 +10,7 @@ from urllib.parse import quote, unquote
 
 from .cards.model import NamedServiceSelection
 from .descriptor_agent_card import DescriptorAgentCardRefused
+from .object_action_ceiling import selection_matches
 
 _OBJECT_ACTION = "object.action"
 _OBJECT_ACTION_CHILD = _OBJECT_ACTION + "."
@@ -89,11 +90,14 @@ def selected_standard_maps(*, resident: Any, control: Any, authority: Any, selec
             allowed = (offered_ops if ceiling_named.is_all else
                        set(ceiling_named.operations.get(resource, {}).get(namespace, ())))
             wanted = children(selected, "named_service_operations", namespace)
+            # Beside a listed action the parent is only the action call.
+            matches = selection_matches(wanted)
             if "named_service_operations" not in selected.capabilities:
                 wanted = visible
+                matches = _operation_matches
             chosen = {operation for operation in visible & allowed
                       if namespace in selected.capabilities.get("named_services", ())
-                      and any(_operation_matches(want, operation) for want in wanted)}
+                      and any(matches(want, operation) for want in wanted)}
             rows[namespace] = (rows.get(namespace, set()) - visible) | chosen
             by_operation = _named_operation_grants(configured.named_services, namespace)
             for operation in visible:

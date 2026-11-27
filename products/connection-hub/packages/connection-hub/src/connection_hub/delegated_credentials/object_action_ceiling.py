@@ -80,6 +80,65 @@ def expand_object_action_ceiling(
     )
 
 
+def selection_matches(selected: set[str] | frozenset[str]):
+    """How a user's chosen operations match offered ones in one namespace.
+
+    Beside a listed ``object.action.<name>`` the bare parent matches only the
+    action call itself; without a listed action it covers every action.
+    """
+
+    lists_actions = any(str(value).startswith(f"{_OBJECT_ACTION}.") for value in selected)
+
+    def matches(wanted: str, operation: str) -> bool:
+        if wanted == "*" or operation == wanted:
+            return True
+        if lists_actions and wanted == _OBJECT_ACTION:
+            return False
+        return operation.startswith(f"{wanted}.")
+
+    return matches
+
+
+def expand_selected_object_action(
+    policy: AgentCapabilityPolicy | None,
+    catalog_config: Any,
+) -> AgentCapabilityPolicy | None:
+    """Read ``object.action`` in a user's selection.
+
+    A selection lists the actions it chose. Beside a listed action the bare
+    parent only keeps the action call open; it never brings back an action the
+    user left out. Only a namespace whose selection lists no action at all
+    reads the parent as every action (a descriptor that declares only the
+    parent offers no list to choose from).
+    """
+
+    if policy is None:
+        return None
+    listed: set[str] = set()
+    for value in policy.capabilities.get(_NAMED_SERVICE_OPERATIONS_CATEGORY, ()):
+        namespace, separator, operation = str(value or "").partition("/")
+        if separator and unquote(operation).startswith(f"{_OBJECT_ACTION}."):
+            listed.add(unquote(namespace).strip().lower().rstrip(":"))
+    if not listed:
+        return expand_object_action_ceiling(policy, catalog_config)
+    kept = tuple(
+        value for value in policy.capabilities.get(_NAMED_SERVICE_OPERATIONS_CATEGORY, ())
+        if not (unquote(str(value).partition("/")[2]) == _OBJECT_ACTION
+                and unquote(str(value).partition("/")[0]).strip().lower().rstrip(":") in listed)
+    )
+    narrowed = AgentCapabilityPolicy(resource=policy.resource, capabilities={
+        **dict(policy.capabilities), _NAMED_SERVICE_OPERATIONS_CATEGORY: kept})
+    expanded = expand_object_action_ceiling(narrowed, catalog_config)
+    if expanded is None:
+        return policy
+    return AgentCapabilityPolicy(resource=policy.resource, capabilities={
+        **dict(expanded.capabilities),
+        _NAMED_SERVICE_OPERATIONS_CATEGORY: tuple(sorted(
+            set(expanded.capabilities.get(_NAMED_SERVICE_OPERATIONS_CATEGORY, ()))
+            | set(policy.capabilities.get(_NAMED_SERVICE_OPERATIONS_CATEGORY, ())))),
+    })
+
+
 def _is_object_action_member(value: str) -> bool:
     _, separator, operation = str(value or "").partition("/")
     operation = unquote(operation)

@@ -105,6 +105,8 @@ from connection_hub.delegated_credentials.conversation_target_policy import (
 from connection_hub.delegated_credentials.object_action_ceiling import (
     bound_ceiling_to_standard_part,
     expand_object_action_ceiling,
+    expand_selected_object_action,
+    selection_matches,
 )
 from connection_hub.delegated_credentials.named_service_policy import (
     configured_named_service_operations,
@@ -652,7 +654,7 @@ def _descriptor_standard_maps(
                 and (
                     selected_inner is None
                     or any(
-                        _operation_matches(wanted, operation)
+                        selection_matches(selected_inner)(wanted, operation)
                         for wanted in selected_inner
                     )
                 )
@@ -999,8 +1001,8 @@ async def sync_agent_capability_control(
         authority = expand_object_action_ceiling(authority, catalog_config)
         catalog = expand_object_action_ceiling(catalog, catalog_config)
         control_defaults = expand_object_action_ceiling(control_defaults, catalog_config)
-        # A selection that holds the parent chose every action it names.
-        requested_selection = expand_object_action_ceiling(requested_selection, catalog_config)
+        # A selection lists its actions; the parent beside them is only the call.
+        requested_selection = expand_selected_object_action(requested_selection, catalog_config)
         descriptor_properties = {
             **descriptor_properties,
             **descriptor_control_properties(
