@@ -59,6 +59,9 @@ CARD_LOCK_FILENAME = ".mutation.lock"
 # Bounds how long a caller waits for another mutation on the same card. The
 # lock itself is held for the owner's lifetime, so this only caps the wait.
 CARD_LOCK_WAIT_SECONDS = 30.0
+# A slice section guards one small file write and may sit inside a Card section
+# (a consent's STAGE), so it waits far less than the Card section's budget.
+SLICE_LOCK_WAIT_SECONDS = 5.0
 # W704: the OAuth issuance request section's file layer: a fixed set of stripe files, never one per request.
 OAUTH_REQUEST_LOCK_DIR = ".oauth-request-locks"
 OAUTH_REQUEST_LOCK_STRIPES = 256
@@ -257,6 +260,15 @@ class DelegatedCardService:
             await release_transaction(self._store, transaction_id, section=self._account_fence_section)
         except CardMutationLockTimeout as exc:
             raise CardConflict("card_mutation_lock_timeout") from exc
+
+    def conversation_slice_section(self, subject_hash: str, access_id: str, conversation_key: str):
+        """One conversation slice's section of the bound production mutation lock (the innermost section)."""
+        return self._mutation_lock(
+            lock_path=self._store.root / "grantors" / subject_hash / "slices" / access_id / conversation_key
+            / ".slice.lock",
+            resource_id=f"conversation-slice:{subject_hash}:{access_id}:{conversation_key}",
+            operation="conversation-slice", wait_seconds=SLICE_LOCK_WAIT_SECONDS,
+        )
 
     def _account_fence_section(self, provider_id: str, account_id: str):
         """W578: one account fence's section of the bound production mutation lock."""

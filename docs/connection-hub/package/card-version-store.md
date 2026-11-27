@@ -279,7 +279,9 @@ Materialization"): the per-key Redis lock first, THEN the observed file lock. Th
 
 - **The key:** `kdcube:cards:lock:<tenant>:<project>:card:<subject_hash>:<access_id>`; the owner goes in the value
   (lock metadata with a per-operation owner token). The service's other sections use `:lifecycle-txn:`,
-  `:issuer-update-txn:`, `:account:` and `:collection:`, taken in the service's existing order.
+  `:issuer-update-txn:`, `:account:` and `:collection:`, taken in the service's existing order. A
+  conversation slice uses `:slice:<subject_hash>:<access_id>:<conversation_key>`, always the innermost
+  section (delegated-cards.md, "Conversation slices").
 - **Renewal:** an owner-checked Lua `PEXPIRE` every 20 s (TTL 120 s) in a task bound to the operation. A failure
   marks the operation lost.
 - **The write check:** before every write and deletion under the Card store root made INSIDE an R operation,

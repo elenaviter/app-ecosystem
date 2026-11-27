@@ -67,66 +67,28 @@ def _scope():
 
 
 @pytest.mark.asyncio
-async def test_a_transaction_that_prepares_inside_a_picker_write_still_commits_and_leaves_no_marker(tmp_path):
-    """The picker write and a consent's STAGE overlap; the write withdraws, the commit lands."""
-    from connection_hub.delegated_credentials.slices.store import SlicePrepared
-
+async def test_two_writers_that_both_passed_the_revision_check_still_commit_once(tmp_path, monkeypatch):
+    """With no lock (or one that let both in), the exclusive claim is the compare-and-set."""
     store = BundleStorageConversationSliceStore(tmp_path)
     await store.write(_slice(), expected_revision=0)
-    consent = _slice(selection={"named_service_operations": {NAMED: {"slack": ["object.list", "object.post"]}}})
-    original = store._revisions
-    calls = {"n": 0}
+    real = store._revisions
+    seen = {"n": 0}
 
-    async def revisions_with_a_stage_in_between(directory):
-        calls["n"] += 1
-        if calls["n"] == 1:  # the picker write passed its marker check; the STAGE runs now
-            await store.prepare(consent, expected_revision=1, change_id="txn-1")
-        return await original(directory)
+    async def stale_listing(directory):
+        seen["n"] += 1
+        return [1]  # both writers see revision 1 as current, even after the first commits revision 2
 
-    store._revisions = revisions_with_a_stage_in_between
-    with pytest.raises(SlicePrepared):
-        await store.write(_slice(selection={}), expected_revision=1)
-    store._revisions = original
-
-    committed = await store.commit_prepared(consent, change_id="txn-1")
-    assert committed.slice_revision == 2 and committed.selection == consent.selection
-    assert await store.prepared_changes(**_scope()) == []
-    assert (await store.read(**_scope())).selection == consent.selection
+    monkeypatch.setattr(store, "_revisions", stale_listing)
+    first = await store.write(_slice(selection={}), expected_revision=1)
+    with pytest.raises(SliceConflict):
+        await store.write(_slice(selection={"resource_families": ["mcp"]}), expected_revision=1)
+    monkeypatch.setattr(store, "_revisions", real)
+    assert await store.read(**_scope()) == first
 
 
 @pytest.mark.asyncio
-async def test_a_stage_that_finds_the_slice_moved_after_its_marker_withdraws_it(tmp_path):
-    store = BundleStorageConversationSliceStore(tmp_path)
-    await store.write(_slice(), expected_revision=0)
-    original = store._revisions
-    calls = {"n": 0}
-
-    async def revisions_moved_after_the_marker(directory):
-        calls["n"] += 1
-        if calls["n"] == 2:  # the marker is published; a write that passed its check earlier lands now
-            store._revisions = original
-            await BundleStorageConversationSliceStore(tmp_path)._write_unchecked_for_test(_slice(selection={}), 1)
-        return await original(directory)
-
-    async def _write_unchecked(self, candidate, expected):
-        from connection_hub.delegated_credentials.slices import store as module
-        directory = self._directory(candidate.grantor_subject, candidate.card_access_id, candidate.conversation_id)
-        written = ConversationSlice(**{**candidate.__dict__, "slice_revision": expected + 1})
-        assert module._create_exclusive(directory / f"slice_revision_{expected + 1:08d}.json", written.to_document())
-
-    BundleStorageConversationSliceStore._write_unchecked_for_test = _write_unchecked
-    try:
-        store._revisions = revisions_moved_after_the_marker
-        with pytest.raises(SliceConflict):
-            await store.prepare(_slice(), expected_revision=1, change_id="txn-2")
-    finally:
-        del BundleStorageConversationSliceStore._write_unchecked_for_test
-    assert await store.prepared_changes(**_scope()) == []
-
-
-@pytest.mark.asyncio
-async def test_a_crash_while_writing_a_revision_leaves_the_slice_readable(tmp_path, monkeypatch):
-    """The bytes are published whole or not at all; a partial revision never becomes the current one."""
+async def test_a_crash_between_the_claim_and_the_revision_leaves_the_slice_readable(tmp_path, monkeypatch):
+    """A claimed revision that was never written is invisible; once stale, the next write takes it over."""
     from connection_hub.delegated_credentials.slices import store as module
 
     store = BundleStorageConversationSliceStore(tmp_path)
@@ -135,10 +97,86 @@ async def test_a_crash_while_writing_a_revision_leaves_the_slice_readable(tmp_pa
     def crash(*args, **kwargs):
         raise OSError("disk went away")
 
-    monkeypatch.setattr(module.os, "link", crash)
+    monkeypatch.setattr(module, "_write_durable", crash)
     with pytest.raises(OSError):
         await store.write(_slice(selection={}), expected_revision=1)
     monkeypatch.undo()
     assert await store.read(**_scope()) == first
-    assert not [path for path in tmp_path.rglob("*.tmp")]
+    # A fresh claim refuses: its writer may still be writing.
+    with pytest.raises(SliceConflict):
+        await store.write(_slice(selection={}), expected_revision=1)
+    monkeypatch.setattr(module, "STALE_CLAIM_SECONDS", -1.0)
     assert (await store.write(_slice(selection={}), expected_revision=1)).slice_revision == 2
+    assert not [path for path in tmp_path.rglob("*.tmp")]
+
+
+@pytest.mark.asyncio
+async def test_a_stage_refuses_while_a_revision_is_claimed_but_not_written(tmp_path, monkeypatch):
+    from connection_hub.delegated_credentials.slices import store as module
+
+    store = BundleStorageConversationSliceStore(tmp_path)
+    await store.write(_slice(), expected_revision=0)
+
+    def crash(*args, **kwargs):
+        raise OSError("disk went away")
+
+    monkeypatch.setattr(module, "_write_durable", crash)
+    with pytest.raises(OSError):
+        await store.write(_slice(selection={}), expected_revision=1)
+    monkeypatch.undo()
+    with pytest.raises(SliceConflict):
+        await store.prepare(_slice(selection={}), expected_revision=1, change_id="txn-1:slice")
+    assert not await store.prepared_changes(**_scope())
+
+
+@pytest.mark.asyncio
+async def test_every_write_runs_in_the_slice_section(tmp_path):
+    from contextlib import asynccontextmanager
+
+    from connection_hub.delegated_credentials.cards.store import subject_hash_for
+
+    entered = []
+
+    @asynccontextmanager
+    async def section(subject_hash, access_id, conversation):
+        entered.append((subject_hash, access_id, conversation))
+        yield
+
+    store = BundleStorageConversationSliceStore(tmp_path, section=section)
+    await store.write(_slice(), expected_revision=0)
+    await store.prepare(_slice(selection={}), expected_revision=1, change_id="txn-1:slice")
+    await store.commit_prepared(_slice(selection={}), change_id="txn-1:slice")
+    await store.prepare(_slice(), expected_revision=2, change_id="txn-2:slice")
+    await store.release(_slice(), change_id="txn-2:slice")
+    key = (subject_hash_for("user-1"), "agent-user-1", conversation_key("conv/../1"))
+    assert entered == [key] * 5
+
+
+@pytest.mark.asyncio
+async def test_a_card_section_is_refused_inside_a_slice_section(tmp_path):
+    """The slice section is the innermost one: taking a Card section inside it would invert the order."""
+    from contextlib import asynccontextmanager
+
+    from connection_hub.delegated_credentials.cards.locks import row_fenced_lock
+    from connection_hub.delegated_credentials.cards.store import CardStorageError
+
+    @asynccontextmanager
+    async def base(**_kwargs):
+        yield None
+
+    lock = row_fenced_lock(base)
+    async with lock(lock_path=tmp_path / "c.lock", resource_id="delegated-card:agent-1", operation="t",
+                    wait_seconds=1):
+        async with lock(lock_path=tmp_path / "s.lock", resource_id="conversation-slice:h:agent-1:k",
+                        operation="t", wait_seconds=1):
+            with pytest.raises(CardStorageError, match="card_lock_order_violation"):
+                async with lock(lock_path=tmp_path / "c2.lock", resource_id="delegated-card:agent-2",
+                                operation="t", wait_seconds=1):
+                    pass
+
+
+def test_the_slice_key_is_its_own_redis_lock_kind():
+    from connection_hub.delegated_credentials.cards.redis_lock import card_lock_key
+
+    assert card_lock_key(tenant="t", project="p", resource_id="conversation-slice:h:agent-1:k") == (
+        "kdcube:cards:lock:t:p:slice:h:agent-1:k")

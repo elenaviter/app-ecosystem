@@ -65,6 +65,8 @@ _KINDS = {
     # of the decision request id; the key never holds a Card id and grows with nothing (TTL, owner-checked delete).
     "oauth-issuance-request": "oauth-request",
     "card-version-txn": "card-version-txn",  # W661 P: a txn that names no member Card (service._txn_section)
+    # One conversation's slice of one Agent Card: <subject_hash>:<access_id>:<conversation_key>.
+    "conversation-slice": "slice",
 }
 
 

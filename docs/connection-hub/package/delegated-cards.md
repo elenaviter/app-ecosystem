@@ -1074,8 +1074,20 @@ authority the Card and its Control do not give. It holds only what the guard
 decides (operations, resources, named-service operations, resource-family
 switches), never a credential, an account or a model choice. Slices are
 stored beside the Agent Card under the bundle-storage Card root, one
-revision file per change (the file is created exclusively, which is the
-slice's compare-and-set); the path uses a digest of the conversation id.
+revision file per change; the path uses a digest of the conversation id.
+Every slice write (the picker, seeding, a consent's STAGE, COMMIT and ABORT)
+runs in the slice's section of the Card mutation lock, key kind `slice`
+(`card-version-store.md`, Option R). The section is the innermost one: a
+consent's STAGE takes the Card's section and then the slice's, and a Card
+section is refused inside a slice section (`card_lock_order_violation`). It
+waits 5 s and then refuses `card_mutation_lock_timeout`, retryable. Under
+that lock, revision N+1 is claimed by creating `slice_revision_N+1.claim`
+exclusively, which is the slice's compare-and-set even where the lock lets
+two writers in; the revision is then written to a durable temporary file and
+moved onto `slice_revision_N+1.json`. Readers see only `.json` files. A claim
+whose revision was never written is taken over by the next write after three
+minutes; until then a write or a STAGE expecting that revision is refused,
+retryable. The store needs no hard links.
 
 - **Turn token** (`agent_capability.turn`, local only). At turn start the
   runtime names the application, agent, conversation and turn; the signed-in

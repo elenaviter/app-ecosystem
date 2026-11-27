@@ -9,11 +9,18 @@ Layout under the shared bundle-storage Card root:
         revisions/slice_revision_<NNNNNNNN>.json
 
 ``<conversation_key>`` is a digest of the conversation id, so no client-chosen
-id reaches a path. A revision file is created exclusively: two writers that
-expect the same revision cannot both commit, which is the slice's
-compare-and-set. The current slice is its highest revision. A slice holds only
+id reaches a path. The current slice is its highest revision. A slice holds only
 what the Hub guard decides (operations, resources, named-service operations,
 resource families), never a credential, an account or a model choice.
+
+Every write runs in the slice's section of the Card mutation lock (Redis with
+the observed file lock, or the file lock alone, as configured for Cards). The
+storage check underneath does not depend on that lock: revision N+1 is first
+claimed by creating ``slice_revision_N+1.claim`` exclusively (``O_EXCL``), so two
+writers that expect revision N cannot both commit even when the lock fails.
+The claimant then writes the revision to a temporary file, makes it durable and
+moves it onto ``slice_revision_N+1.json``. Readers list only ``.json`` files, so
+they never see a partial revision. Nothing needs hard links.
 """
 
 from __future__ import annotations
@@ -23,8 +30,10 @@ import json
 import os
 import pathlib
 import re
+import time
+from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
-from typing import Any, Mapping
+from typing import Any, AsyncIterator, Callable, Mapping
 
 from connection_hub.delegated_credentials.cards.store import subject_hash_for
 from connection_hub.delegated_credentials.durable_io import list_child_names, read_json_or_none
@@ -37,6 +46,10 @@ SLICE_STATE_ACTIVE = "active"
 SLICE_STATES = frozenset({SLICE_STATE_ACTIVE})
 SELECTION_CATEGORIES = ("resource_grants", "resource_operations", "named_service_operations", "resource_families")
 _REVISION_FILE = re.compile(r"^slice_revision_([0-9]{8})\.json$")
+_CLAIM_FILE = re.compile(r"^slice_revision_([0-9]{8})\.claim$")
+# A claim without its revision older than this was left by a writer that
+# stopped between claiming and writing (the Card lock TTL is 120 s).
+STALE_CLAIM_SECONDS = 180.0
 _ACCESS_ID = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
 _CHANGE_ID = re.compile(r"^[A-Za-z0-9_.:-]{1,200}$")
 
@@ -143,14 +156,8 @@ class ConversationSlice:
         )
 
 
-def _create_exclusive(path: pathlib.Path, document: Mapping[str, Any]) -> bool:
-    """Make ``path`` appear with its complete content, or not at all; False when it already exists.
-
-    The bytes go to a temporary file first and are made durable; ``os.link``
-    then publishes them under ``path`` atomically and refuses an existing
-    name, so a reader never sees a partial file and two creators never both
-    succeed. A crash leaves at most an unpublished temporary file.
-    """
+def _write_durable(path: pathlib.Path, document: Mapping[str, Any]) -> None:
+    """Replace ``path`` with the complete ``document``: a durable temporary file moved over it."""
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_name(f".{path.name}.{os.getpid()}.{os.urandom(6).hex()}.tmp")
     payload = json.dumps(dict(document), sort_keys=True).encode("utf-8")
@@ -161,13 +168,25 @@ def _create_exclusive(path: pathlib.Path, document: Mapping[str, Any]) -> bool:
     finally:
         os.close(descriptor)
     try:
-        os.link(temporary, path)
-        return True
-    except FileExistsError:
-        return False
+        os.replace(temporary, path)
     finally:
         _unlink_quietly(temporary)
         _fsync_directory(path.parent)
+
+
+def _claim(path: pathlib.Path) -> bool:
+    """Create the empty claim ``path`` exclusively; False when it already exists."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    except FileExistsError:
+        return False
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+    _fsync_directory(path.parent)
+    return True
 
 
 def _unlink_quietly(path: pathlib.Path) -> None:
@@ -190,14 +209,32 @@ def _fsync_directory(directory: pathlib.Path) -> None:
         os.close(descriptor)
 
 
-class BundleStorageConversationSliceStore:
-    """Slices under ``<cards root>/grantors/<subject_hash>/slices``."""
+SliceSection = Callable[[str, str, str], Any]
 
-    def __init__(self, root: pathlib.Path | str) -> None:
+
+class BundleStorageConversationSliceStore:
+    """Slices under ``<cards root>/grantors/<subject_hash>/slices``.
+
+    ``section(subject_hash, card_access_id, conversation_key)`` is the slice's
+    section of the Card mutation lock (``DelegatedCardService.conversation_slice_section``).
+    A store without one still refuses a lost update through its exclusive claim.
+    """
+
+    def __init__(self, root: pathlib.Path | str, *, section: SliceSection | None = None) -> None:
         # A marker of a crashed transaction is released by the Hub's existing
         # recovery cron (card-transaction-recover), whose FINISH applies or
         # releases this effect; never here.
         self._root = pathlib.Path(root)
+        self._section = section
+
+    @asynccontextmanager
+    async def _held(self, candidate: "ConversationSlice") -> AsyncIterator[None]:
+        if self._section is None:
+            yield
+            return
+        async with self._section(subject_hash_for(candidate.grantor_subject), candidate.card_access_id,
+                                 conversation_key(candidate.conversation_id)):
+            yield
 
     async def _markers(self, prepared_directory: pathlib.Path, *, own: str = "") -> list[str]:
         """Prepared markers other than ``own``."""
@@ -214,14 +251,23 @@ class BundleStorageConversationSliceStore:
         names = await list_child_names(directory)
         return sorted(int(match.group(1)) for name in names if (match := _REVISION_FILE.fullmatch(name)))
 
+    async def _claims(self, directory: pathlib.Path) -> list[int]:
+        names = await list_child_names(directory)
+        return sorted(int(match.group(1)) for name in names if (match := _CLAIM_FILE.fullmatch(name)))
+
     async def read(self, *, grantor_subject: str, card_access_id: str,
                    conversation_id: str) -> ConversationSlice | None:
         """The current slice (its highest revision), or None when none exists."""
         directory = self._directory(grantor_subject, card_access_id, conversation_id)
-        revisions = await self._revisions(directory)
-        if not revisions:
-            return None
-        document = await read_json_or_none(directory / f"slice_revision_{revisions[-1]:08d}.json")
+        for _attempt in range(2):
+            revisions = await self._revisions(directory)
+            if not revisions:
+                return None
+            document = await read_json_or_none(directory / f"slice_revision_{revisions[-1]:08d}.json")
+            if document is not None:
+                break
+            # The highest revision went away between the listing and the read
+            # (a withdrawn write): list once more.
         current = ConversationSlice.from_document(document)
         if (current.grantor_subject, current.card_access_id, current.conversation_id, current.slice_revision) != (
                 grantor_subject, card_access_id, conversation_id, revisions[-1]):
@@ -251,7 +297,6 @@ class BundleStorageConversationSliceStore:
                               wait_seconds: float = 60.0, poll_seconds: float = 0.25) -> ConversationSlice:
         """A direct write that waits, bounded, for an undecided transaction's marker."""
         import asyncio
-        import time
 
         deadline = time.monotonic() + max(0.0, wait_seconds)
         while True:
@@ -262,41 +307,45 @@ class BundleStorageConversationSliceStore:
                     raise
                 await asyncio.sleep(poll_seconds)
 
-    async def write(self, candidate: ConversationSlice, *, expected_revision: int,
-                    _change_id: str = "") -> ConversationSlice:
-        """Commit ``candidate`` as revision ``expected_revision + 1``; exclusive create is the CAS.
+    async def write(self, candidate: ConversationSlice, *, expected_revision: int) -> ConversationSlice:
+        """Commit ``candidate`` as revision ``expected_revision + 1``.
 
         A direct write refuses while a Card transaction holds a prepared change
         of this slice; only that change's COMMIT may write then.
         """
+        async with self._held(candidate):
+            return await self._write(candidate, expected_revision=expected_revision, change_id="")
+
+    async def _write(self, candidate: ConversationSlice, *, expected_revision: int,
+                     change_id: str) -> ConversationSlice:
         directory = self._directory(candidate.grantor_subject, candidate.card_access_id, candidate.conversation_id)
-        if await self._markers(self._prepared_directory(directory), own=_change_id):
+        if await self._markers(self._prepared_directory(directory), own=change_id):
             raise SlicePrepared()
         revisions = await self._revisions(directory)
         current = revisions[-1] if revisions else 0
         if current != int(expected_revision):
             raise SliceConflict(current)
+        claim = directory / f"slice_revision_{current + 1:08d}.claim"
+        if not _claim(claim):
+            if not self._stale(claim):
+                raise SliceConflict(current + 1)
+            # Its writer stopped between claiming and writing: the claim is
+            # removed and this write claims again.
+            _unlink_quietly(claim)
+            if not _claim(claim):
+                raise SliceConflict(current + 1)
         committed = ConversationSlice(**{**candidate.__dict__, "slice_revision": current + 1,
-                                         "change_id": _change_id})
-        path = directory / f"slice_revision_{current + 1:08d}.json"
-        if not _create_exclusive(path, committed.to_document()):
-            raise SliceConflict(current + 1)
-        # A transaction may have prepared against ``current`` between the check
-        # above and this create. Each side publishes its own file before it
-        # looks at the other's, so at least one of them sees the overlap; a
-        # write that sees such a marker withdraws its revision.
-        if await self._marker_expecting(self._prepared_directory(directory), current, own=_change_id):
-            _unlink_quietly(path)
-            raise SlicePrepared()
+                                         "change_id": change_id})
+        _write_durable(directory / f"slice_revision_{current + 1:08d}.json", committed.to_document())
         return committed
 
-    async def _marker_expecting(self, prepared_directory: pathlib.Path, revision: int, *, own: str) -> bool:
-        """Whether another change's marker was prepared against ``revision`` (an unreadable one counts)."""
-        for change_id in await self._markers(prepared_directory, own=own):
-            document = await read_json_or_none(prepared_directory / f"{change_id}.json")
-            if not isinstance(document, Mapping) or int(document.get("expected_revision") or 0) == int(revision):
-                return True
-        return False
+    @staticmethod
+    def _stale(claim: pathlib.Path) -> bool:
+        try:
+            age = time.time() - claim.stat().st_mtime
+        except FileNotFoundError:
+            return True
+        return age > STALE_CLAIM_SECONDS and not claim.with_suffix(".json").exists()
 
     # -- Card-transaction effect: STAGE, COMMIT, ABORT --------
 
@@ -309,45 +358,34 @@ class BundleStorageConversationSliceStore:
     async def prepare(self, candidate: ConversationSlice, *, expected_revision: int, change_id: str) -> None:
         """STAGE: pin the expected revision and close the slice to every other writer."""
         marker = self._marker(candidate, change_id)
-        if marker.exists():
-            return  # replay of this same STAGE
-        directory = self._directory(candidate.grantor_subject, candidate.card_access_id, candidate.conversation_id)
-        if await self._markers(marker.parent, own=change_id):
-            raise SlicePrepared()
-        revisions = await self._revisions(directory)
-        if (revisions[-1] if revisions else 0) != int(expected_revision):
-            raise SliceConflict(revisions[-1] if revisions else 0)
-        document = {"expected_revision": int(expected_revision), "slice": candidate.to_document()}
-        if not _create_exclusive(marker, document):
-            return  # a concurrent replay of this same STAGE created it
-        # The marker is published before the slice is looked at again: a direct
-        # write that created the next revision meanwhile, or another change that
-        # prepared meanwhile, makes this STAGE withdraw its marker.
-        revisions = await self._revisions(directory)
-        if (revisions[-1] if revisions else 0) != int(expected_revision):
-            _unlink_quietly(marker)
-            raise SliceConflict(revisions[-1] if revisions else 0)
-        if await self._markers(marker.parent, own=change_id):
-            _unlink_quietly(marker)
-            raise SlicePrepared()
+        async with self._held(candidate):
+            if marker.exists():
+                return  # replay of this same STAGE
+            directory = self._directory(candidate.grantor_subject, candidate.card_access_id,
+                                        candidate.conversation_id)
+            if await self._markers(marker.parent, own=change_id):
+                raise SlicePrepared()
+            revisions = await self._revisions(directory)
+            current = revisions[-1] if revisions else 0
+            if current != int(expected_revision) or (await self._claims(directory))[-1:] > [current]:
+                raise SliceConflict(current)
+            _write_durable(marker, {"expected_revision": int(expected_revision), "slice": candidate.to_document()})
 
     async def commit_prepared(self, candidate: ConversationSlice, *, change_id: str) -> ConversationSlice:
         """COMMIT: write the prepared revision once; a replay finds it written and returns it."""
         marker = self._marker(candidate, change_id)
-        prepared = await read_json_or_none(marker)
-        written = await self._revision_written_by(candidate, change_id)
-        if written is not None:
-            committed = written  # an earlier COMMIT of this change wrote it (an exact replay)
-        elif prepared is None:
-            raise SliceStoreError("conversation_slice_prepare_missing")
-        else:
-            committed = await self.write(candidate, expected_revision=int(prepared["expected_revision"]),
-                                         _change_id=change_id)
-        try:
-            os.unlink(marker)
-        except FileNotFoundError:
-            pass
-        return committed
+        async with self._held(candidate):
+            prepared = await read_json_or_none(marker)
+            written = await self._revision_written_by(candidate, change_id)
+            if written is not None:
+                committed = written  # an earlier COMMIT of this change wrote it (an exact replay)
+            elif prepared is None:
+                raise SliceStoreError("conversation_slice_prepare_missing")
+            else:
+                committed = await self._write(candidate, expected_revision=int(prepared["expected_revision"]),
+                                              change_id=change_id)
+            _unlink_quietly(marker)
+            return committed
 
     async def _revision_written_by(self, candidate: ConversationSlice, change_id: str) -> ConversationSlice | None:
         directory = self._directory(candidate.grantor_subject, candidate.card_access_id, candidate.conversation_id)
@@ -360,11 +398,8 @@ class BundleStorageConversationSliceStore:
 
     async def release(self, candidate: ConversationSlice, *, change_id: str) -> None:
         """ABORT (or an expired, undecided transaction's recovery): remove only this change's marker."""
-        try:
-            os.unlink(self._marker(candidate, change_id))
-        except FileNotFoundError:
-            pass
-
+        async with self._held(candidate):
+            _unlink_quietly(self._marker(candidate, change_id))
 
 
 __all__ = [

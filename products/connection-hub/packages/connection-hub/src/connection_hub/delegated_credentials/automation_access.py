@@ -11618,11 +11618,13 @@ class AutomationAccessService:
         """The bound parts, or the composed default: slices beside the Card store, the derived sealer."""
         store, tokens = getattr(self, "_conversation_slices", None), getattr(self, "_turn_tokens", None)
         if store is None:
-            card_store = getattr(getattr(self, "_persistence", None), "card_store", None)
+            persistence = getattr(self, "_persistence", None)
+            card_store = getattr(persistence, "card_store", None)
             root = getattr(card_store, "root", None) or getattr(card_store, "_root", None)
             if root is not None:
                 from connection_hub.delegated_credentials.slices.store import BundleStorageConversationSliceStore
-                store = BundleStorageConversationSliceStore(root)
+                section = getattr(getattr(persistence, "card_service", None), "conversation_slice_section", None)
+                store = BundleStorageConversationSliceStore(root, section=section)
         if tokens is None:
             from connection_hub.delegated_credentials.slices.turns import turn_tokens_from_secret
             tokens = turn_tokens_from_secret(getattr(self, "_grantor_authority_secret", ""))

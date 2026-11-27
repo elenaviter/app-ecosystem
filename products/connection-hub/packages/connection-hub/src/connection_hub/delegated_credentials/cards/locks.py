@@ -171,6 +171,13 @@ def current_lock_session() -> "CardRowOperation | None":
     return operation
 
 
+SLICE_RESOURCE_PREFIX = "conversation-slice:"
+# How many conversation-slice sections this task holds. A slice section is the
+# innermost one: a Card section is taken first (a consent's STAGE), never while
+# a slice section is held, so the two cannot wait on each other.
+_SLICE_SECTIONS: ContextVar[int] = ContextVar("conversation_slice_sections", default=0)
+
+
 def row_fenced_lock(base_lock: CardMutationLock) -> CardMutationLock:
     """``base_lock`` plus this operation's row context: the outermost lock section opens it, nested sections of
     the same operation share it (their resources add up), and it closes when the outermost section ends."""
@@ -178,28 +185,44 @@ def row_fenced_lock(base_lock: CardMutationLock) -> CardMutationLock:
     @asynccontextmanager
     async def lock(*, lock_path: pathlib.Path, resource_id: str, operation: str,
                    wait_seconds: float) -> AsyncIterator[Any]:
-        current = _ROW_OPERATION.get()
-        owner = current is None or current.closed
-        context = CardRowOperation() if owner else current
-        token = _ROW_OPERATION.set(context) if owner else None
+        is_slice = str(resource_id).startswith(SLICE_RESOURCE_PREFIX)
+        if _SLICE_SECTIONS.get() and not is_slice:
+            raise CardStorageError("card_lock_order_violation")
+        slice_token = _SLICE_SECTIONS.set(_SLICE_SECTIONS.get() + 1) if is_slice else None
         try:
-            async with base_lock(lock_path=lock_path, resource_id=resource_id, operation=operation,
-                                 wait_seconds=wait_seconds) as held:
-                if not context.resources.get(resource_id):
-                    context.fence_token = None  # a token drawn before this acquisition may predate a successor's
-                context.resources[resource_id] = context.resources.get(resource_id, 0) + 1
-                try:
-                    yield held
-                finally:
-                    context.resources[resource_id] -= 1
-                    if not context.resources[resource_id]:
-                        del context.resources[resource_id]
+            async with _row_fenced(base_lock, lock_path=lock_path, resource_id=resource_id,
+                                   operation=operation, wait_seconds=wait_seconds) as held:
+                yield held
         finally:
-            if owner:
-                context.closed = True
-                _ROW_OPERATION.reset(token)
+            if slice_token is not None:
+                _SLICE_SECTIONS.reset(slice_token)
 
     return lock
+
+
+@asynccontextmanager
+async def _row_fenced(base_lock: CardMutationLock, *, lock_path: pathlib.Path, resource_id: str, operation: str,
+                      wait_seconds: float) -> AsyncIterator[Any]:
+    current = _ROW_OPERATION.get()
+    owner = current is None or current.closed
+    context = CardRowOperation() if owner else current
+    token = _ROW_OPERATION.set(context) if owner else None
+    try:
+        async with base_lock(lock_path=lock_path, resource_id=resource_id, operation=operation,
+                             wait_seconds=wait_seconds) as held:
+            if not context.resources.get(resource_id):
+                context.fence_token = None  # a token drawn before this acquisition may predate a successor's
+            context.resources[resource_id] = context.resources.get(resource_id, 0) + 1
+            try:
+                yield held
+            finally:
+                context.resources[resource_id] -= 1
+                if not context.resources[resource_id]:
+                    del context.resources[resource_id]
+    finally:
+        if owner:
+            context.closed = True
+            _ROW_OPERATION.reset(token)
 
 
 def hub_card_mutation_lock(base_lock: CardMutationLock, root: os.PathLike[str] | str,
