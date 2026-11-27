@@ -87,12 +87,13 @@ async def test_a_forged_or_expired_state_is_refused():
 
 
 @pytest.mark.asyncio
-async def test_a_state_issued_before_the_change_still_completes():
+async def test_a_readable_state_is_no_longer_accepted():
+    """Only opaque states are issued; a readable one is refused and stays in the store."""
     store = MemoryOAuthStateStore()
     payload = {"v": 1, "user_id": "u", "provider_id": "google", "connector_app_id": "kdcube_gmail",
                "claims": [], "nonce": "n1", "iat": int(time.time()), "exp": int(time.time()) + 900}
     legacy = sign_state(payload, SECRET)
     await store.put(legacy, payload, ttl_seconds=900)
     assert not is_opaque_state(legacy)
-    assert peek_state_payload(legacy)["user_id"] == "u"
-    assert (await consume_oauth_state(store, state=legacy, secret=SECRET))["nonce"] == "n1"
+    with pytest.raises(ValueError, match="invalid"):
+        await consume_oauth_state(store, state=legacy, secret=SECRET)

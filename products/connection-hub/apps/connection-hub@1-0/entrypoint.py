@@ -212,12 +212,11 @@ from kdcube_ai_app.apps.chat.sdk.integrations.connection_hub.delegated_to_kdcube
     RedisOAuthStateStore,
     DelegatedToKdcubeStore,
     operations_for_user,
-    peek_state_payload,
     delegated_to_kdcube_config,
     state_digest,
 )
 import connection_hub.delegated_to_kdcube.providers  # noqa: F401
-from connection_hub.delegated_to_kdcube.oauth import consume_oauth_state, is_opaque_state
+from connection_hub.delegated_to_kdcube.oauth import consume_oauth_state
 from connection_hub.delegated_to_kdcube.refresh_lock import RedisRefreshLock
 from connection_hub.delegated_credentials.credential_view import DelegatedCredentialView
 from connection_hub.project_github_key import AgentGitHubTokenIssuer, ProjectGitHubKey
@@ -8318,18 +8317,15 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
                 body="The OAuth callback is missing code or state.",
             )
         try:
-            # An opaque state names nothing: the callback consumes it from the
-            # state store (one use, as before) to learn whose store to open.
-            consumed_state = None
-            if is_opaque_state(state):
-                consumed_state = await consume_oauth_state(
-                    _delegated_to_kdcube_oauth_state_store(self),
-                    state=state,
-                    secret=await _delegated_to_kdcube_oauth_state_secret(self),
-                )
-                preview = consumed_state
-            else:
-                preview = peek_state_payload(state)
+            # The state names nothing: the callback consumes it from the state
+            # store (one use) to learn whose store to open, and hands what it
+            # consumed to the completion, which must not consume it again.
+            consumed_state = await consume_oauth_state(
+                _delegated_to_kdcube_oauth_state_store(self),
+                state=state,
+                secret=await _delegated_to_kdcube_oauth_state_secret(self),
+            )
+            preview = consumed_state
             platform_user_id = str(preview.get("user_id") or "").strip()
             if not platform_user_id:
                 raise ValueError("OAuth state is missing user_id")

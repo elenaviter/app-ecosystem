@@ -70,7 +70,6 @@ def verify_state(state: str, secret: str) -> dict[str, Any]:
 # An opaque account-connect state: a random reference and its signature. The
 # provider carries it to the callback and back; it reads nothing from it. The
 # connection context (user, provider, claims, account, return target) stays in
-# the state store. Earlier states carried that context as readable base64 JSON.
 _OPAQUE_STATE_PREFIX = "v2."
 _OPAQUE_STATE_CONTEXT = "kdcube.delegated-to-kdcube.oauth-state.v2:"
 
@@ -210,24 +209,20 @@ async def consume_oauth_state(
     state: str,
     secret: str,
 ) -> dict[str, Any]:
-    if is_opaque_state(state):
-        nonce = _verify_opaque_state(state, secret)
-        stored = await state_store.pop(state)
-        if stored is None:
-            raise ValueError("OAuth state was not found or already used")
-        if str(stored.get("nonce") or "") != nonce:
-            raise ValueError("OAuth state storage mismatch")
-        if int(stored.get("exp") or 0) < int(time.time()):
-            raise ValueError("OAuth state expired")
-        return dict(stored)
-    # A state issued before opaque states: readable and self-describing.
-    payload = verify_state(state, secret)
+    if not is_opaque_state(state):
+        # Only opaque states are issued; a state lives about ten minutes, so a
+        # connect started before that change is simply started again.
+        raise ValueError("OAuth state is invalid")
+    nonce = _verify_opaque_state(state, secret)
     stored = await state_store.pop(state)
     if stored is None:
         raise ValueError("OAuth state was not found or already used")
-    if str(stored.get("nonce") or "") != str(payload.get("nonce") or ""):
+    if str(stored.get("nonce") or "") != nonce:
         raise ValueError("OAuth state storage mismatch")
-    return payload
+    if int(stored.get("exp") or 0) < int(time.time()):
+        raise ValueError("OAuth state expired")
+    return dict(stored)
+
 
 
 __all__ = [

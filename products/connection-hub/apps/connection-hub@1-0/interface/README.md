@@ -268,9 +268,8 @@ It accepts `code`, `state`, `error` and completes the hub-owned flow. The
 `connections.delegated_to_kdcube.oauth_state_secret`. The provider sees
 nothing of the connection in it. The callback verifies the signature and
 consumes the state from the state store once; the user, provider, connector
-app, claims, account and return target come from that stored record. A
-readable signed state issued before this change is still accepted until it
-expires.
+app, claims, account and return target come from that stored record. A state
+that is not opaque is refused; a connect left half-way is started again.
 
 The remote-MCP callback consumes a random single-use state. Its durable
 pointer contains only a digest, owner, secret reference, and expiry. PKCE,
