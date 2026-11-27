@@ -279,16 +279,18 @@ An operation brings the door grants it needs. Provider permissions that the
 Card's held or selected operations need are marked **needed** on each account
 that can hold them; they are never ticked for the owner.
 
-One **Approve on this Card** writes, in order:
+One **Approve on this Card** sends one `delegated_agent_grant_create`: the
+request's own grant, carrying the Card-wide `account_scope` and whatever was
+added on the requested resource (a focused once/always grant keeps its policy
+on exactly that operation), and every further resource the selection touches
+as `extras`. Connection Hub writes all of it in one Card transaction, at the
+revision the review shows, so either everything commits or nothing does.
 
-1. the request's own grant, carrying the Card-wide `account_scope` and
-   whatever was added on the requested resource, so both commit together (a
-   focused once/always grant stays exactly that operation and is not merged);
-2. one merge `delegated_agent_grant_create` per further resource the selection
-   touches.
-
-Each write uses the revision the previous write returned. A refusal stops the
-sequence and is shown.
+A refusal changes nothing and is shown. When the Control refused an extra
+(it narrowed meanwhile), the review names it and offers **Approve without what
+the Control does not allow**, which sends the same approval without those
+entries, from the Card revision the refusal reported. The agent's own request
+is never dropped this way.
 
 A provider permission that this consent needs and no connected account holds
 gets a button: one the request itself asks for, or one an operation selected

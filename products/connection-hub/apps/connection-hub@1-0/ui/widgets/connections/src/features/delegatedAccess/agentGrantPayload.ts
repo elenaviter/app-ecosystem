@@ -35,6 +35,10 @@ export interface GrantAgentAccessArgs {
   /** W727: the Card revision this grant is made against. A project-managed
    *  Card is changed only by its project's transaction, which requires it. */
   expectedCardRevision?: number;
+  /** Further per-resource grants chosen in the same review; they commit with
+   *  this grant in one Card transaction, or not at all. */
+  extras?: Array<{ resource: string; claims: string[]; resourceOperations?: string[];
+    namedServiceOperations?: Record<string, string[]> }>;
 }
 
 export function agentGrantWirePayload(args: GrantAgentAccessArgs): Record<string, unknown> {
@@ -42,7 +46,7 @@ export function agentGrantWirePayload(args: GrantAgentAccessArgs): Record<string
     clientId, resource, claims, accessId, invocationMode, invocationChangeId, requestBound,
     requestDigest, requestApprovalTicket, requestCardRevision, requestAuthorityRevision,
     approvalContext, label, resourceOperations, namedServiceOperations, replace, accountScope,
-    expectedCardRevision,
+    expectedCardRevision, extras,
   } = args;
   return {
     client_id: clientId,
@@ -65,5 +69,15 @@ export function agentGrantWirePayload(args: GrantAgentAccessArgs): Record<string
       : {}),
     ...(accountScope !== undefined ? { account_scope: accountScope } : {}),
     ...(expectedCardRevision !== undefined ? { expected_card_revision: expectedCardRevision } : {}),
+    ...(extras && extras.length ? {
+      extras: extras.map((extra) => ({
+        resource: extra.resource,
+        claims: extra.claims || [],
+        ...(extra.resourceOperations !== undefined
+          ? { resource_operations: { [extra.resource]: extra.resourceOperations } } : {}),
+        ...(extra.namedServiceOperations && Object.keys(extra.namedServiceOperations).length
+          ? { named_service_operations: extra.namedServiceOperations } : {}),
+      })),
+    } : {}),
   };
 }

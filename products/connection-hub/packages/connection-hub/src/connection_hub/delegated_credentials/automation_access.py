@@ -4991,7 +4991,12 @@ class AutomationAccessService:
         requested: Mapping[str, Any],
         config: Any,
     ) -> dict[str, tuple[str, ...]]:
-        """The bridge tools the requested named-service operations need."""
+        """The bridge tools the newly requested named-service operations need.
+
+        An operation the Card already holds brings no bridge back: the review
+        resends the Card's own operations, and a bridge the owner removed
+        beside a kept operation stays removed.
+        """
         from connection_hub.delegated_credentials.agent_capability_sync import (
             _named_service_outer_operations,
         )
@@ -5011,11 +5016,14 @@ class AutomationAccessService:
                 continue
             configured = self._configured_resource(resource, config=config)
             tools = [tool.name for tool in (getattr(configured, "tools", None) or ())]
+            held = (existing.named_service_operations.operations.get(resource, {})
+                    if existing.named_service_operations.is_exact else {})
             inner = {
                 str(operation)
-                for operations in namespaces.values()
+                for namespace, operations in namespaces.items()
                 if isinstance(operations, (list, tuple, set, frozenset))
                 for operation in operations
+                if str(operation) not in set(held.get(namespace, ()))
             }
             bridges = _named_service_outer_operations(inner, tools)
             if control_operations is not None:

@@ -1,13 +1,13 @@
 /**
- * W1018 A: the consent for a hosted agent opens on its own Agent Card.
- * Operator, 2026-11-07 (relayed by the coordinator): "W1018 - A".
+ * The consent for a hosted agent opens on its own Agent Card.
  *
  * The review shows the Card as it is (revision, what it holds, its Control),
  * what the agent asked for, and the connected accounts that can do it, with the
  * requested account and claim highlighted. One Approve sends one
  * `delegated_agent_grant_create` on that Card at the shown revision: the
- * requested capability and the exact account scope, in the existing Card
- * transaction. There is no second Save.
+ * requested capability, the extras chosen beside it and the exact account
+ * scope, in one Card transaction. Either all of it commits or none of it; a
+ * refusal names what blocked it and offers to approve without it.
  */
 import { useMemo, useState } from 'react';
 
@@ -31,6 +31,8 @@ import {
   outerOperationInControl,
   outerPolicyState,
   outsideControlText,
+  refusedRows,
+  type RefusedRow,
   proposeConsentAccount,
   withAccountClaims,
   type AgentCardConsentRequest,
@@ -130,6 +132,10 @@ export function AgentCardConsentReview({
   const [busy, setBusy] = useState(false);
   const [done, setDone] = useState(false);
   const [error, setError] = useState('');
+  // What the last refusal named outside the Control, and the Card revision it
+  // reported, so "approve without it" starts from the Card as it is now.
+  const [refused, setRefused] = useState<RefusedRow[]>([]);
+  const [latestRevision, setLatestRevision] = useState<number | undefined>(undefined);
 
   const satisfied = requirements.every((requirement, index) => {
     const accountId = chosen[index];
@@ -228,21 +234,31 @@ export function AgentCardConsentReview({
   const approve = async (chosen = extras): Promise<boolean> => {
     setBusy(true);
     setError('');
+    setRefused([]);
     try {
-      let revision: number | undefined = typeof card.card_revision === 'number' ? card.card_revision : undefined;
-      for (const args of writes(chosen)) {
-        const answer = await postOp<Record<string, unknown>>('delegated_agent_grant_create', agentGrantWirePayload({
-          ...args, expectedCardRevision: revision,
-        }));
-        if (answer?.ok === false) {
-          const outside = answer.error === 'agent_capability_selection_outside_control'
-            ? outsideControlText(answer.details, resourceLabel)
-            : '';
-          setError(outside || `Connection Hub refused the change: ${String(answer.error || 'unknown reason')}.`);
-          return false;
+      const [first, ...rest] = writes(chosen);
+      if (!first) return false;
+      const revision = latestRevision ?? (typeof card.card_revision === 'number' ? card.card_revision : undefined);
+      const answer = await postOp<Record<string, unknown>>('delegated_agent_grant_create', agentGrantWirePayload({
+        ...first,
+        expectedCardRevision: revision,
+        extras: rest.map((grant) => ({
+          resource: grant.resource, claims: grant.claims, resourceOperations: grant.resourceOperations,
+          namedServiceOperations: grant.namedServiceOperations,
+        })),
+      }));
+      if (answer?.ok === false) {
+        const current = (answer.access as { card_revision?: unknown } | undefined)?.card_revision
+          ?? (answer as { current_card_revision?: unknown }).current_card_revision;
+        if (typeof current === 'number') setLatestRevision(current);
+        if (answer.error === 'agent_capability_selection_outside_control') {
+          setRefused(refusedRows(answer.details));
+          setError(outsideControlText(answer.details, resourceLabel)
+            || `Connection Hub refused the change: ${String(answer.error)}. Nothing was changed.`);
+        } else {
+          setError(`Connection Hub refused the change: ${String(answer.error || 'unknown reason')}. Nothing was changed.`);
         }
-        const next = (answer?.access as { card_revision?: unknown } | undefined)?.card_revision;
-        revision = typeof next === 'number' ? next : undefined;
+        return false;
       }
       setDone(true);
       onApproved();
@@ -254,6 +270,27 @@ export function AgentCardConsentReview({
       setBusy(false);
     }
   };
+
+  // The extras without what the last refusal named; the agent's own request is never dropped here.
+  const withoutRefused = (chosen: ExtraPicks): ExtraPicks => {
+    const named: ExtraPicks['named'] = {};
+    Object.entries(chosen.named).forEach(([resource, byNamespace]) => {
+      Object.entries(byNamespace).forEach(([namespace, operations]) => {
+        const kept = operations.filter((operation) => !refused.some((row) => (
+          row.resource === resource && row.namespace === namespace && row.operation === operation)));
+        if (kept.length) named[resource] = { ...(named[resource] || {}), [namespace]: kept };
+      });
+    });
+    const outer: ExtraPicks['outer'] = {};
+    Object.entries(chosen.outer).forEach(([resource, operations]) => {
+      const kept = operations.filter((operation) => !refused.some((row) => (
+        row.resource === resource && !row.namespace && row.operation === operation)));
+      if (kept.length) outer[resource] = kept;
+    });
+    return { ...chosen, named, outer };
+  };
+  const refusedAnExtra = refused.length > 0
+    && JSON.stringify(withoutRefused(extras)) !== JSON.stringify(extras);
 
   // Once the request is answered: save what is selected first, then go to the
   // provider; a refusal stays here. Before that, only go to the provider.
@@ -488,6 +525,12 @@ export function AgentCardConsentReview({
         <div className="notice" role="status">This agent&apos;s Control cannot be read now, so nothing can be added to its Card. Try again later.</div>
       ) : null}
       {error ? <div className="error" role="alert">{error}</div> : null}
+      {error && refusedAnExtra ? (
+        <button type="button" className="btn" disabled={busy}
+          onClick={() => { const chosen = withoutRefused(extras); setPicks(chosen); void approve(chosen); }}>
+          Approve without what the Control does not allow
+        </button>
+      ) : null}
       {done ? (
         <div className="notice" role="status">Approved. The agent&apos;s Card now allows this; go back and retry the request.</div>
       ) : null}

@@ -22,13 +22,28 @@ export function bridgeForOperation(operation: string, offered: readonly string[]
 }
 
 /** The bridge to tick with a newly ticked operation, or '' when the Card draft
- *  already has it, the resource does not offer it, or the Control excludes it. */
+ *  already has it, the resource does not offer it, the Control excludes it, or
+ *  the linked Control cannot be read now (nothing is offered beyond it then). */
 export function bridgeToAdd(
   operation: string,
-  { offered, selected, controlAllowed }: { offered: readonly string[]; selected: readonly string[]; controlAllowed?: readonly string[] },
+  { offered, selected, controlAllowed, controlUnavailable = false }: {
+    offered: readonly string[]; selected: readonly string[]; controlAllowed?: readonly string[]; controlUnavailable?: boolean;
+  },
 ): string {
+  if (controlUnavailable) return '';
   const bridge = bridgeForOperation(operation, offered);
   if (!bridge || selected.includes(bridge)) return '';
   if (controlAllowed && !controlAllowed.includes(bridge)) return '';
   return bridge;
+}
+
+/** The bridge to untick with an unticked operation: the one it was called
+ *  through, when no operation still ticked on the resource needs it. */
+export function bridgeToRemove(
+  operation: string,
+  { offered, selected, stillTicked }: { offered: readonly string[]; selected: readonly string[]; stillTicked: readonly string[] },
+): string {
+  const bridge = bridgeForOperation(operation, offered);
+  if (!bridge || !selected.includes(bridge)) return '';
+  return stillTicked.some((other) => bridgeForOperation(other, offered) === bridge) ? '' : bridge;
 }

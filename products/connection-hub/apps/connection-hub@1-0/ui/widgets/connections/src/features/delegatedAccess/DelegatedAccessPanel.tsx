@@ -1,5 +1,5 @@
 import { FormEvent, Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { bridgeToAdd } from './bridgeTools';
+import { bridgeToAdd, bridgeToRemove } from './bridgeTools';
 import { CONNECTORS_OWNER_ONLY_NOTE, connectorsOwnerOnly, isConnectorResource } from './connectorOwnership';
 import { useAppDispatch, useAppSelector } from '../../app/hooks';
 import { PaneGroup } from '../../components/Pane';
@@ -1312,6 +1312,9 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
   // Bridge tools ticked for the operations that need them, keyed
   // "<resource>\n<bridge>", so the editor can say what each one is for.
   const [addedBridges, setAddedBridges] = useState<Record<string, string[]>>({});
+  // The linked Control could not be read when an operation was ticked, so no
+  // bridge tool was offered beside it.
+  const [bridgeControlUnavailable, setBridgeControlUnavailable] = useState(false);
   const [editNamedServiceOperations, setEditNamedServiceOperations] =
     useState<DelegatedAccessNamedServiceOperations>({});
   // Card resource -> catalog row, for the record being edited.
@@ -3063,10 +3066,13 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
       const controlAllowed = control?.state === 'active'
         ? (control.control_authority?.resource_operations || {})[resource] || []
         : undefined;
+      const controlUnavailable = Boolean(control) && control?.state !== 'active';
+      if (controlUnavailable) setBridgeControlUnavailable(true);
       const bridge = bridgeToAdd(operation, {
         offered: (resourceOption?.operations || []).map((item) => item.name),
         selected: editResourceOperations[resource] || [],
         controlAllowed,
+        controlUnavailable,
       });
       if (bridge) {
         setEditResourceOperations((current) => withLinkedOperation(current, resource, bridge));
@@ -3074,6 +3080,24 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
           ...current,
           [`${resource}\n${bridge}`]: Array.from(new Set([...(current[`${resource}\n${bridge}`] || []), operation])),
         }));
+      }
+    }
+    if (!checked) {
+      // The bridge this operation was called through goes with the last
+      // ticked operation that needs it.
+      const offered = (catalogRowFor(resources, resource, editRowFor)?.operations || []).map((item) => item.name);
+      const stillTicked = Object.entries(editNamedServiceOperations[resource] || {}).flatMap(
+        ([name, operations]) => (operations || []).filter((item) => !(name === namespace && item === operation)));
+      const bridge = bridgeToRemove(operation, { offered, selected: editResourceOperations[resource] || [], stillTicked });
+      if (bridge) {
+        setEditResourceOperations((current) => ({
+          ...current, [resource]: (current[resource] || []).filter((item) => item !== bridge),
+        }));
+        setAddedBridges((current) => {
+          const next = { ...current };
+          delete next[`${resource}\n${bridge}`];
+          return next;
+        });
       }
     }
     setEditNamedServiceOperations((current) => {
@@ -3098,6 +3122,7 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
     setEditPicks({});
     setEditResourceOperations({});
     setAddedBridges({});
+    setBridgeControlUnavailable(false);
     setEditApplicationRolePolicy({ defaultRole: '', operationRoles: {} });
     setEditOpenResources({});
     setEditOpenPermissions({});
@@ -5633,6 +5658,12 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
             </div>
           ) : null}
           <CatalogDriftNotice drift={cardCatalogDrift(record)} />
+          {bridgeControlUnavailable ? (
+            <div className="notice" role="status" data-testid="bridge-control-unavailable">
+              This agent&apos;s Control cannot be read right now, so no bridge tool was added for the operations you ticked.
+              Reload the Card once its Control is available.
+            </div>
+          ) : null}
           {Object.keys(addedBridges).length ? (
             <div className="notice added-bridges-notice" role="status" data-testid="added-bridges-notice">
               <strong>Bridge tools added for the operations you ticked</strong>

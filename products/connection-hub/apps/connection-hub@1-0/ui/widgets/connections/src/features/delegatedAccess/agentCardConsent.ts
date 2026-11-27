@@ -355,6 +355,21 @@ export function agentCardConsentGrant(input: AgentCardConsentGrantInput) {
 }
 
 /** The bounded refusal rows (`details.outside`) as one sentence; no raw text. */
+export interface RefusedRow { resource: string; namespace: string; operation: string }
+
+/** The rows a refusal named outside the Control, as resource / namespace / operation. */
+export function refusedRows(details: unknown): RefusedRow[] {
+  const rows = Array.isArray((details as { outside?: unknown })?.outside)
+    ? ((details as { outside: unknown[] }).outside)
+    : [];
+  return rows.flatMap((row) => {
+    if (!row || typeof row !== 'object') return [];
+    const { resource, namespace, operation } = row as Record<string, unknown>;
+    if (typeof resource !== 'string' || typeof operation !== 'string') return [];
+    return [{ resource, namespace: typeof namespace === 'string' ? namespace : '', operation }];
+  });
+}
+
 export function outsideControlText(
   details: unknown,
   resourceLabel: (resource: string) => string,

@@ -577,6 +577,50 @@ def _named_service_operations_for_resource(value: Any, resource: str) -> Any:
     return dict(per_resource) if isinstance(per_resource, Mapping) else {}
 
 
+def _merge_consent_extras(payload: Mapping[str, Any], *, resource: str, claims: list[str],
+                          resource_operations: Any, named_service_operations: Any) -> tuple[dict, Any, Any]:
+    """Merge the review's extras into the request's own grant, for one Card write.
+
+    ``extras`` lists further per-resource grants chosen in the same consent
+    review: ``{resource, claims, resource_operations?, named_service_operations?}``.
+    They join the agent's own request in one Card transaction, so either all of
+    them commit or none does. Returns ``(resource_grants, resource_operations,
+    named_service_operations)`` shaped as Card maps.
+    """
+    raw = payload.get("extras")
+    grants: dict[str, list[str]] = {resource: list(claims)}
+    if raw is None:
+        return grants, resource_operations, named_service_operations
+    if not isinstance(raw, list) or isinstance(named_service_operations, str):
+        raise ValueError("extras must be a list of per-resource grants")
+    operations = dict(resource_operations) if isinstance(resource_operations, Mapping) else (
+        {} if resource_operations is None else None)
+    named = dict(named_service_operations) if isinstance(named_service_operations, Mapping) else {}
+    for extra in raw:
+        if not isinstance(extra, Mapping):
+            raise ValueError("an extra must be an object")
+        extra_resource = str(extra.get("resource") or "").strip()
+        if not extra_resource:
+            raise ValueError("an extra names its resource")
+        extra_claims = _safe_list(extra.get("claims"))
+        grants[extra_resource] = list(dict.fromkeys([*grants.get(extra_resource, []), *extra_claims]))
+        extra_operations = _resource_operations_for(extra, extra_resource)
+        if isinstance(extra_operations, Mapping):
+            if operations is None:
+                raise ValueError("extras cannot widen an unbounded operation selection")
+            for key, values in extra_operations.items():
+                operations[key] = list(dict.fromkeys([*operations.get(key, []), *values]))
+        extra_named = _named_service_operations_for(extra, extra_resource)
+        if isinstance(extra_named, str):
+            raise ValueError("an extra names exact named-service operations")
+        for key, namespaces in (extra_named or {}).items():
+            merged = dict(named.get(key) or {})
+            for namespace, values in dict(namespaces).items():
+                merged[namespace] = list(dict.fromkeys([*_safe_list(merged.get(namespace)), *_safe_list(values)]))
+            named[key] = merged
+    return grants, (operations if operations else resource_operations), (named or named_service_operations)
+
+
 def _resource_operations_for(payload: Mapping[str, Any], resource: str) -> Any:
     """The exact outer operation selection carried by a focused grant.
 
@@ -7817,12 +7861,20 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
                 # an edit — the UI calls delegated_access_revoke for that.
                 replace = bool(payload.get("replace"))
                 try:
+                    if payload.get("extras") is not None and replace:
+                        # An invocation policy stays keyed to the request's own
+                        # operation, so extras may join a once/always grant; a
+                        # replacing edit has no review to join.
+                        raise ValueError("extras join only a merging grant")
+                    grants, merged_operations, merged_named = _merge_consent_extras(
+                        payload, resource=resource, claims=claims, resource_operations=resource_operations,
+                        named_service_operations=named_service_operations)
                     result = await access_service.create_access(
                         user,
                         label=str(payload.get("label") or "").strip() or client_id,
-                        resource_grants={resource: claims},
-                        resource_operations=resource_operations,
-                        named_service_operations=named_service_operations,
+                        resource_grants=grants,
+                        resource_operations=merged_operations,
+                        named_service_operations=merged_named,
                         account_scope=account_scope,
                         ttl_seconds=payload.get("ttl_seconds") or AGENT_GRANT_DEFAULT_TTL_SECONDS,
                         client_id=client_id,

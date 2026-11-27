@@ -98,7 +98,7 @@ test('W34: more access on the agent Card consent review', async (t) => {
       await page.close()
     })
 
-    await t.test('one Approve sends the request, then one merge per resource the extras touch, at the chained revision', async () => {
+    await t.test('one Approve sends the request and every extra in one Card write, at the shown revision', async () => {
       const { page, errors } = await open(browser, origin, 'account-only')
       await expand(page)
       await operation(page, 'values.update').check()
@@ -117,16 +117,15 @@ test('W34: more access on the agent Card consent review', async (t) => {
       await page.getByRole('button', { name: 'Approve on this Card' }).click()
       await page.getByText('Approved. The agent').waitFor({ timeout: 10000 })
       const sent = await grants(page)
-      // The request and what was added on the requested resource commit in one write; other resources follow.
+      // The request, what was added beside it and the other resources' extras commit in one write.
       assert.deepEqual(sent, [{
         client_id: CLIENT, resource: NAMED, claims: ['named_services:use', 'slides:read'], label: '', access_id: 'agent-0e150a469bf4edbd',
         named_service_operations: { slides: ['object.list'], sheets: ['values.update'] },
         account_scope: { google: { google_acct_1: ['slides:read', 'sheets:read', 'sheets:write'] } }, expected_card_revision: 7,
-      }, {
-        client_id: CLIENT, resource: MEMORIES, claims: ['memories:read'], label: '', access_id: 'agent-0e150a469bf4edbd', expected_card_revision: 8,
-      }, {
-        client_id: CLIENT, resource: SERVICE, claims: ['records:read'], label: '', access_id: 'agent-0e150a469bf4edbd',
-        resource_operations: { [SERVICE]: ['records_list', 'records_export'] }, expected_card_revision: 9,
+        extras: [
+          { resource: MEMORIES, claims: ['memories:read'] },
+          { resource: SERVICE, claims: ['records:read'], resource_operations: { [SERVICE]: ['records_list', 'records_export'] } },
+        ],
       }])
       assert.ok(sent.every((grant) => !('replace' in grant)), 'the review only adds')
       assert.deepEqual(errors, [])
